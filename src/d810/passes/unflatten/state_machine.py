@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from d810.core.typing import ClassVar
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PassFact,
@@ -652,6 +651,12 @@ class LowerStateMachine(PipelinePass):
             materialized_indirect_transfers = _analysis(
                 context, "materialized_indirect_transfers", ()
             ) or ()
+            imported_direct_boundary_evidence = _analysis(
+                context, "imported_direct_boundary_evidence", ()
+            ) or ()
+            imported_conditional_boundary_evidence = _analysis(
+                context, "imported_conditional_boundary_evidence", ()
+            ) or ()
             materialized_state_routes = _analysis(
                 context, "materialized_state_routes", ()
             ) or ()
@@ -716,6 +721,12 @@ class LowerStateMachine(PipelinePass):
                 ),
                 recover_multi_entry_back_edges=recover_multi_entry_back_edges,
                 materialized_indirect_transfers=materialized_indirect_transfers,
+                imported_direct_boundary_evidence=(
+                    imported_direct_boundary_evidence
+                ),
+                imported_conditional_boundary_evidence=(
+                    imported_conditional_boundary_evidence
+                ),
                 materialized_state_routes=materialized_state_routes,
                 handler_entry_eas_by_serial=materialized_handler_entry_eas,
                 materialized_computed_goto_profile=(

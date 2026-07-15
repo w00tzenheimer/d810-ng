@@ -244,6 +244,8 @@ class TestUnflattenBoundedRerunGate:
             "materialized_computed_goto_profile": False,
             "materialized_handler_entry_eas": {},
             "residual_entry_bridge_evidence": None,
+            "imported_direct_boundary_evidence": (),
+            "imported_conditional_boundary_evidence": (),
         }
         assert captured["prepared_analysis_seeds"] == {
             "range_evidence": None,
@@ -252,6 +254,8 @@ class TestUnflattenBoundedRerunGate:
             "materialized_computed_goto_profile": False,
             "materialized_handler_entry_eas": {},
             "residual_entry_bridge_evidence": None,
+            "imported_direct_boundary_evidence": (),
+            "imported_conditional_boundary_evidence": (),
         }
         assert captured["reset_func"] == _EA
 

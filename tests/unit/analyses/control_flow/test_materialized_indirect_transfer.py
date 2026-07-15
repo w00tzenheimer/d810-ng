@@ -250,6 +250,47 @@ def test_residual_state_route_bridge_requires_unique_live_one_way_endpoints() ->
     ) == ()
 
 
+def test_residual_state_route_bridge_activates_one_source_per_state_target() -> None:
+    state = 0x10203040
+    target_ea = 0x401500
+    first = MaterializedIndirectTransfer(
+        source_jmp_ea=0x401120,
+        source_block_ea=0x401110,
+        materialized_anchor_eas=(),
+        target_eas=(target_ea,),
+        selector_state_var_reg=20,
+        selector_state_constant=state,
+        resolver_kind="residual_state_route_evidence",
+    )
+    second = MaterializedIndirectTransfer(
+        source_jmp_ea=0x401220,
+        source_block_ea=0x401210,
+        materialized_anchor_eas=(),
+        target_eas=(target_ea,),
+        selector_state_var_reg=20,
+        selector_state_constant=state,
+        resolver_kind="residual_state_route_evidence",
+    )
+
+    assert plan_residual_state_route_bridges(
+        (second, first),
+        live_blocks_by_ea={
+            first.source_jmp_ea: 11,
+            second.source_jmp_ea: 12,
+            target_ea: 50,
+        },
+        one_way_source_blocks=frozenset({11, 12}),
+    ) == (
+        ResidualStateRouteBridgePlan(
+            source_block_serial=11,
+            target_block_serial=50,
+            source_write_ea=first.source_jmp_ea,
+            target_ea=target_ea,
+            state_constant=state,
+        ),
+    )
+
+
 def test_terminal_state_route_requests_early_maturity_return_carrier() -> None:
     state = 0x19A7218A
     graph = FlowGraph(

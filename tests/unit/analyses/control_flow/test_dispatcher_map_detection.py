@@ -16,14 +16,20 @@ from d810.ir.flowgraph import (
 )
 from d810.ir.semantics import PredicateKind
 from d810.analyses.control_flow.dispatcher_recovery import (
+    _augment_residual_equality_rows,
     _recover_computed_goto_loop_header,
     build_state_dispatcher_map_from_flow_graph,
     recover_dispatcher,
     recover_entry_dominated_initial_state,
 )
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
 )
+from d810.capabilities.dispatcher import RouterKind
 
 C1 = 0x10000001
 C2 = 0x10000002
@@ -145,6 +151,113 @@ def test_recovery_promotes_exact_static_equality_route_into_dispatch_map():
 
     assert recovery.dispatch_map is not None
     assert recovery.dispatch_map.resolve_target(exit_state) == 4
+
+
+def test_resolver_augmentation_recomputes_equality_only_bst_region():
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (8,), (1, 2, 40)),
+            8: _blk(8, (20, 30), (0,)),
+            20: _blk(20, (1, 30), (8,), _ne_check(C1, 30)),
+            30: _blk(30, (2, 40), (8, 20), _ne_check(C2, 40)),
+            1: _blk(1, (0,), (20,)),
+            2: _blk(2, (0,), (30,)),
+            40: _blk(40, (0,), (30,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dmap = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                C1,
+                1,
+                20,
+                20,
+                "ne",
+                RouterKind.CONDITION_CHAIN,
+            ),
+            StateDispatcherRow(
+                C2,
+                2,
+                30,
+                30,
+                "ne",
+                RouterKind.CONDITION_CHAIN,
+            ),
+        ),
+        dispatcher_entry_block=0,
+        dispatcher_blocks=frozenset({20, 30}),
+        state_var_stkoff=STATE_OFF,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+    )
+    evidence = MaterializedIndirectTransfer(
+        source_jmp_ea=0x5000,
+        source_block_ea=0x4FF0,
+        materialized_anchor_eas=(),
+        target_eas=(graph.blocks[40].start_ea,),
+        selector_state_constant=C2 + 1,
+        resolver_kind="static_equality_route",
+    )
+
+    augmented = _augment_residual_equality_rows(graph, dmap, (evidence,))
+
+    assert augmented.resolve_target(C2 + 1) == 40
+    assert augmented.dispatcher_blocks == frozenset({0, 8, 20, 30})
+
+
+def test_resolver_evidence_recomputes_region_when_rows_are_already_complete():
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (8,), (1, 2)),
+            8: _blk(8, (20, 30), (0,)),
+            20: _blk(20, (1, 30), (8,), _ne_check(C1, 30)),
+            30: _blk(30, (2,), (8, 20), _ne_check(C2, 2)),
+            1: _blk(1, (0,), (20,)),
+            2: _blk(2, (0,), (30,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dmap = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                C1,
+                1,
+                20,
+                20,
+                "ne",
+                RouterKind.CONDITION_CHAIN,
+            ),
+            StateDispatcherRow(
+                C2,
+                2,
+                30,
+                30,
+                "ne",
+                RouterKind.CONDITION_CHAIN,
+            ),
+        ),
+        dispatcher_entry_block=0,
+        dispatcher_blocks=frozenset({20, 30}),
+        state_var_stkoff=STATE_OFF,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+    )
+    evidence = MaterializedIndirectTransfer(
+        source_jmp_ea=0x5000,
+        source_block_ea=0x4FF0,
+        materialized_anchor_eas=(),
+        target_eas=(graph.blocks[2].start_ea,),
+        selector_state_constant=C2,
+        resolver_kind="static_equality_route",
+    )
+
+    confirmed = _augment_residual_equality_rows(graph, dmap, (evidence,))
+
+    assert confirmed.rows == dmap.rows
+    assert confirmed.dispatcher_blocks == frozenset({0, 8, 20, 30})
 
 
 def test_small_constants_are_not_state_checks():

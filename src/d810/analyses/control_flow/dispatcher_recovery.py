@@ -42,8 +42,16 @@ from d810.analyses.control_flow.dispatcher_resolver import (
 from d810.analyses.control_flow.switch_table_analysis import (
     analyze_switch_table_flow_graph,
 )
+from d810.core.logging import getLogger
 
 StorageView = Varnode | WeakStackSlot | None
+logger = getLogger(__name__)
+
+
+def _block_label(graph: FlowGraph, serial: int) -> str:
+    block = graph.blocks.get(int(serial))
+    ea = int(block.start_ea) if block is not None else 0
+    return f"blk{int(serial)}@0x{ea:X}"
 
 
 def _const_of(view: StorageView) -> int | None:
@@ -506,6 +514,7 @@ def _augment_residual_equality_rows(
 
     rows = list(dmap.rows)
     existing = {int(row.state_const) for row in rows}
+    has_resolver_route_evidence = False
     for transfer in transfers:
         if not isinstance(transfer, MaterializedIndirectTransfer):
             continue
@@ -535,10 +544,13 @@ def _augment_residual_equality_rows(
             branch_kind = "resolver_proven_residual_equality"
         else:
             continue
-        if state is None or target_ea is None or int(state) in existing:
+        if state is None or target_ea is None:
             continue
         target = find_unique_target_block(graph, int(target_ea))
         if target is None:
+            continue
+        has_resolver_route_evidence = True
+        if int(state) in existing:
             continue
         rows.append(
             StateDispatcherRow(
@@ -553,7 +565,7 @@ def _augment_residual_equality_rows(
             )
         )
         existing.add(int(state))
-    if len(rows) == len(dmap.rows):
+    if len(rows) == len(dmap.rows) and not has_resolver_route_evidence:
         return dmap
 
     dispatcher_region = dmap.dispatcher_blocks
@@ -562,17 +574,42 @@ def _augment_residual_equality_rows(
         for row in rows
         if row.compare_block is not None
     )
-    # The initial portable pass knows only live equality leaves.  Resolver
-    # augmentation can add handler entries that the first router-region walk
-    # mistakenly traversed as ordinary glue.  Recompute the computed-goto BST
-    # region with the complete exact handler set before publishing the map.
-    if set(dispatcher_region) - set(equality_blocks):
-        dispatcher_region = _computed_goto_dispatcher_region(
+    # The initial portable pass can know only live equality leaves. Resolver
+    # augmentation completes the handler set, so recompute the condition-chain
+    # router region even when the old set contains equality leaves only. A newly
+    # proven handler can make an old comparison unreachable from the dispatcher,
+    # so stale equality leaves may legitimately disappear. Adopt only a nonempty
+    # closure that still contains the dispatcher entry and an equality node.
+    if (
+        dmap.router_kind is RouterKind.CONDITION_CHAIN
+        and has_resolver_route_evidence
+        and equality_blocks
+    ):
+        recomputed_region = _computed_goto_dispatcher_region(
             graph,
             entry=int(dmap.dispatcher_entry_block),
             chain_blocks=equality_blocks,
             handler_blocks=frozenset(int(row.target_block) for row in rows),
         )
+        if (
+            int(dmap.dispatcher_entry_block) in recomputed_region
+            and not recomputed_region.isdisjoint(equality_blocks)
+        ):
+            dispatcher_region = recomputed_region
+        if logger.info_on:
+            logger.info(
+                "materialized resolver router-region: entry=%s rows=%d->%d "
+                "old=%s equality=%s recomputed=%s adopted=%s",
+                _block_label(graph, int(dmap.dispatcher_entry_block)),
+                len(dmap.rows),
+                len(rows),
+                tuple(_block_label(graph, block) for block in sorted(dmap.dispatcher_blocks)),
+                tuple(_block_label(graph, block) for block in sorted(equality_blocks)),
+                tuple(_block_label(graph, block) for block in sorted(recomputed_region)),
+                dispatcher_region == recomputed_region,
+            )
+    if len(rows) == len(dmap.rows) and dispatcher_region == dmap.dispatcher_blocks:
+        return dmap
     return replace(
         dmap,
         rows=tuple(rows),

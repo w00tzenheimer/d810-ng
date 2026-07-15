@@ -17,6 +17,7 @@ from d810.analyses.control_flow.detached_handler_island import (
     plan_detached_snippet_terminal_routes,
     plan_conditional_handler_bridges,
     select_detached_source_path,
+    select_boundary_owned_terminal_source_blocks,
     select_unique_block_native_ea,
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
@@ -51,6 +52,7 @@ from d810.hexrays.mutation.detached_handler_island import (
     find_unique_live_block_by_ea,
     has_detached_snippet_template,
     has_detached_replacement_snippet_template,
+    imported_detached_snippet_direct_boundary_evidence,
     imported_detached_snippet_target_eas,
     imported_detached_snippet_instruction_origins,
     materialize_detached_handler_island,
@@ -73,6 +75,10 @@ from d810.hexrays.preanalysis.locopt_preanalysis import (
     register_locopt_preanalysis_handler,
     unregister_locopt_preanalysis_handler,
 )
+from d810.hexrays.preanalysis.preopt_preanalysis import (
+    register_preopt_preanalysis_handler,
+    unregister_preopt_preanalysis_handler,
+)
 from d810.hexrays.preanalysis.indirect_jump_labels import (
     get_materialized_indirect_transfers,
     record_materialized_indirect_transfers,
@@ -88,7 +94,124 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
 logger = getLogger("D810.optimizer.materialized_computed_goto_island")
 _CALLS_HANDLER_NAME = "materialized_computed_goto_island.calls_done"
 _LOCOPT_HANDLER_NAME = "materialized_computed_goto_island.locopt"
+_PREOPT_HANDLER_NAME = "materialized_computed_goto_island.preopt"
 _PROJECT_CLEANUP_NAME = "materialized_computed_goto_island"
+
+
+def _block_instruction_eas(block: object) -> tuple[int, ...]:
+    instruction_eas: list[int] = []
+    instruction = block.head
+    while instruction is not None:
+        instruction_eas.append(int(instruction.ea))
+        if instruction is block.tail:
+            break
+        instruction = instruction.next
+    return tuple(instruction_eas)
+
+
+def _boundary_owned_terminal_source_blocks(
+    mba: object,
+    terminal_origins: tuple[tuple[int, int], ...],
+) -> frozenset[int]:
+    """Find terminal sources whose incoming edges were all redirected.
+
+    Applied direct-port evidence is authoritative only for its exact endpoint
+    and old-successor topology.  The predecessor-subset check keeps an
+    uncovered sibling path eligible for the legacy resolver fallback.
+    """
+    applied = imported_detached_snippet_direct_boundary_evidence(mba)
+    if not applied:
+        return frozenset()
+
+    endpoint_blocks_by_old_successor: dict[int, set[int]] = {}
+    for evidence in applied:
+        port = evidence.port
+        if port.delivery_mode != "redirect_edge" or not port.old_successor_eas:
+            continue
+        for old_successor_ea in port.old_successor_eas:
+            endpoint_blocks_by_old_successor.setdefault(
+                int(old_successor_ea),
+                set(),
+            )
+        endpoint_blocks = {
+            int(block.serial): block
+            for anchor_ea in evidence.endpoint_anchor_eas
+            for block in (
+                find_unique_live_block_by_ea(
+                    mba,
+                    int(anchor_ea),
+                    exact_instruction_ea=int(anchor_ea),
+                ),
+            )
+            if block is not None
+        }
+        if len(endpoint_blocks) != 1:
+            endpoint = find_unique_live_block_by_ea(
+                mba,
+                int(port.endpoint_block_ea),
+            )
+            endpoint_blocks = (
+                {}
+                if endpoint is None
+                else {int(endpoint.serial): endpoint}
+            )
+        if len(endpoint_blocks) != 1:
+            continue
+        endpoint_serial = next(iter(endpoint_blocks))
+        for old_successor_ea in port.old_successor_eas:
+            endpoint_blocks_by_old_successor.setdefault(
+                int(old_successor_ea),
+                set(),
+            ).add(int(endpoint_serial))
+    if not endpoint_blocks_by_old_successor:
+        return frozenset()
+
+    instruction_origins = dict(
+        imported_detached_snippet_instruction_origins(mba)
+    )
+    source_native_ea_by_block: dict[int, int] = {}
+    predecessor_blocks_by_source: dict[int, frozenset[int]] = {}
+    for imported_exit_ea, _native_exit_ea in terminal_origins:
+        source = find_unique_live_block_by_ea(mba, int(imported_exit_ea))
+        if source is None:
+            continue
+        source_serial = int(source.serial)
+        imported_instruction_eas = _block_instruction_eas(source)
+        native_instruction_eas = tuple(
+            int(instruction_origins.get(int(ea), int(ea)))
+            for ea in imported_instruction_eas
+        )
+        native_block_ea = select_unique_block_native_ea(
+            int(instruction_origins.get(int(source.start), int(source.start))),
+            native_instruction_eas,
+        )
+        if native_block_ea is None:
+            continue
+        source_native_ea_by_block[source_serial] = int(native_block_ea)
+        predecessor_blocks_by_source[source_serial] = frozenset(
+            int(predecessor) for predecessor in source.predset
+        )
+
+    selected = select_boundary_owned_terminal_source_blocks(
+        source_native_ea_by_block=source_native_ea_by_block,
+        predecessor_blocks_by_source=predecessor_blocks_by_source,
+        redirect_endpoint_blocks_by_old_successor_ea={
+            native_ea: frozenset(endpoint_blocks)
+            for native_ea, endpoint_blocks in (
+                endpoint_blocks_by_old_successor.items()
+            )
+        },
+    )
+    if selected:
+        logger.info(
+            "detached terminal fallback suppressed by applied boundary ports: "
+            "sources=%s",
+            [
+                f"blk{serial}@0x{source_native_ea_by_block[serial]:X}"
+                for serial in sorted(selected)
+            ],
+        )
+    return selected
 
 
 def _capture_calls_done_templates(
@@ -104,8 +227,30 @@ def _capture_calls_done_templates(
 def _disable_calls_done_capture() -> None:
     unregister_calls_done_preanalysis_handler(_CALLS_HANDLER_NAME)
     unregister_locopt_preanalysis_handler(_LOCOPT_HANDLER_NAME)
+    unregister_preopt_preanalysis_handler(_PREOPT_HANDLER_NAME)
     clear_detached_handler_call_templates()
     clear_terminal_return_carrier_templates()
+
+
+def _restore_preopt_terminal_return_carriers(
+    *,
+    function_ea: int,
+    mba: object,
+    decision: dict[str, object],
+) -> None:
+    """Replay proven return carriers before Hex-Rays infers call ABI/returns."""
+    restored = restore_terminal_return_carriers(mba, int(function_ea))
+    if restored <= 0:
+        return
+    decision["microcode_modified"] = True
+    decision["details"] = {
+        "terminal_return_carriers": int(restored),
+    }
+    logger.info(
+        "PREOPT restored %d terminal return carrier(s) before local and call "
+        "analysis",
+        int(restored),
+    )
 
 
 def _candidate_plans(function_ea: int) -> tuple[DetachedHandlerIslandPlan, ...]:
@@ -328,6 +473,10 @@ def _apply_detached_snippet_terminal_routes(
             target = find_unique_live_block_by_ea(mba, int(target_ea))
             if target is not None:
                 target_blocks_by_ea[int(target_ea)] = int(target.serial)
+    already_routed_source_blocks = _boundary_owned_terminal_source_blocks(
+        mba,
+        terminal_origins,
+    )
     plans = plan_detached_snippet_terminal_routes(
         tuple(
             DetachedSnippetTerminalEvidence(
@@ -340,6 +489,7 @@ def _apply_detached_snippet_terminal_routes(
         source_blocks_by_imported_ea=source_blocks_by_imported_ea,
         target_blocks_by_ea=target_blocks_by_ea,
         zero_way_source_blocks=frozenset(zero_way_source_blocks),
+        already_routed_source_blocks=already_routed_source_blocks,
     )
     logger.info(
         "detached terminal route planner: origins=%s resolver_targets=%s "
@@ -1426,6 +1576,10 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
         register_locopt_preanalysis_handler(
             _LOCOPT_HANDLER_NAME,
             _materialize_locopt_preanalysis,
+        )
+        register_preopt_preanalysis_handler(
+            _PREOPT_HANDLER_NAME,
+            _restore_preopt_terminal_return_carriers,
         )
         register_project_reload_cleanup(
             _PROJECT_CLEANUP_NAME,

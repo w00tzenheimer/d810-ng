@@ -39,6 +39,11 @@ from d810.analyses.control_flow.branch_witness_provider import (
     block_has_unresolved_indirect_state_store,
     indirect_state_store_branch_witness,
 )
+from d810.analyses.control_flow.detached_handler_island import (
+    AppliedDetachedSnippetDirectBoundaryPort,
+    AppliedDetachedSnippetConditionalBoundaryPort,
+    DetachedSnippetBoundaryPortOwner,
+)
 from d810.analyses.control_flow.minimal_state_recovery import (
     HandlerTransition,
     StateWriteTransition,
@@ -159,6 +164,16 @@ class ConditionalStateTransitionCandidate:
     reason: str = "conditional_state_transition"
     suppressed_redirect_sources: frozenset[int] = frozenset()
     edge_kind: str = "CONDITIONAL_TRANSITION"
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalEntryBridgeProof:
+    """One exact live entry predicate routed to two known handlers."""
+
+    source_serial: int
+    predicate_ea: int
+    false_target_serial: int
+    true_target_serial: int
 
 
 def lower_conditional_transition_candidates(
@@ -972,6 +987,8 @@ def build_state_write_redirects(
     condition_chain_handlers: frozenset[int] = frozenset(),
     infer_unmatched_returns: bool = True,
     entry_bridge_evidence: EntryBridgeEvidence | None = None,
+    conditional_entry_bridge: ConditionalEntryBridgeProof | None = None,
+    protected_edges: frozenset[tuple[int, int]] = frozenset(),
 ) -> list[object]:
     """Build the redirect modifications that linearize the interval-set graph.
 
@@ -988,6 +1005,8 @@ def build_state_write_redirects(
 
     def _add(src: int, old: int, new: int | None, *, two_way: bool) -> None:
         if new is None or int(old) == int(new):
+            return
+        if (int(src), int(old)) in protected_edges:
             return
         key = ("B" if two_way else "G", int(src), int(old), int(new))
         if key in seen:
@@ -1029,7 +1048,7 @@ def build_state_write_redirects(
     # via the bridge keeps the function-entry path explicit and avoids ever
     # redirecting the entry to the shared-return block.
     prologue_preds: set[int] = set()
-    if disp is not None:
+    if disp is not None and conditional_entry_bridge is None:
         if strict_pre_header_prologue and pre_header_serial is not None:
             prologue_preds = {int(pre_header_serial)}
         else:
@@ -1272,6 +1291,7 @@ def build_state_write_redirects(
         disp is not None
         and state_var_reg is not None
         and not conditional_entry_arms
+        and conditional_entry_bridge is None
     ):
         for pred, merge, handler in _recover_register_conditional_entry(
             flow_graph,
@@ -1355,6 +1375,187 @@ def _exact_live_state_edge_keys(
         }:
             continue
         keys.add((source, target))
+    return keys
+
+
+def _anchor_blocks(
+    flow_graph,
+    anchor_eas: tuple[int, ...],
+) -> set[int]:
+    anchors = {int(ea) for ea in anchor_eas}
+    if not anchors:
+        return set()
+    unique_matches: set[int] = set()
+    for anchor in anchors:
+        matches = {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if int(block.start_ea) == anchor
+            or any(
+                int(instruction.ea) == anchor
+                for instruction in block.insn_snapshots
+            )
+        }
+        if len(matches) == 1:
+            unique_matches.update(matches)
+    return unique_matches
+
+
+def _applied_direct_boundary_edge_keys(
+    flow_graph,
+    evidence_rows: tuple[AppliedDetachedSnippetDirectBoundaryPort, ...],
+) -> set[tuple[int, int]]:
+    """Project applied PREOPT direct ports onto exact live graph edges."""
+    keys: set[tuple[int, int]] = set()
+    for evidence in evidence_rows:
+        port = evidence.port
+        source_candidates = _anchor_blocks(
+            flow_graph,
+            evidence.endpoint_anchor_eas,
+        )
+        target_candidates = _anchor_blocks(
+            flow_graph,
+            evidence.target_anchor_eas,
+        )
+        native_source_starts = {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if int(block.start_ea) == int(port.endpoint_block_ea)
+        }
+        native_target_starts = {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if int(block.start_ea) == int(port.target_ea)
+        }
+        if native_source_starts:
+            source_candidates = native_source_starts
+        if not target_candidates and native_target_starts:
+            target_candidates = native_target_starts
+        exact_edges = {
+            (int(source), int(target))
+            for source in source_candidates
+            for target in target_candidates
+            if (source_block := flow_graph.get_block(int(source))) is not None
+            and int(target) in {int(successor) for successor in source_block.succs}
+        }
+        if len(exact_edges) == 1:
+            keys.update(exact_edges)
+            continue
+
+        if (
+            port.delivery_mode != "terminal_goto"
+            or port.endpoint_owner.value
+            != DetachedSnippetBoundaryPortOwner.LIVE.value
+        ):
+            continue
+        endpoint_ea = int(port.endpoint_block_ea)
+        folded_edges: set[tuple[int, int]] = set()
+        for target in target_candidates:
+            target_block = flow_graph.get_block(int(target))
+            if target_block is None:
+                continue
+            for predecessor in target_block.preds:
+                source_block = flow_graph.get_block(int(predecessor))
+                if source_block is None or int(target) not in {
+                    int(successor) for successor in source_block.succs
+                }:
+                    continue
+                source_eas = {
+                    int(source_block.start_ea),
+                    *(
+                        int(instruction.ea)
+                        for instruction in source_block.insn_snapshots
+                        if int(instruction.ea) > 0
+                    ),
+                }
+                if source_eas and max(source_eas) <= endpoint_ea:
+                    folded_edges.add((int(predecessor), int(target)))
+        if len(folded_edges) == 1:
+            keys.update(folded_edges)
+    return keys
+
+
+def _applied_conditional_boundary_edge_keys(
+    flow_graph,
+    evidence_rows: tuple[AppliedDetachedSnippetConditionalBoundaryPort, ...],
+) -> set[tuple[int, int]]:
+    """Project applied PREOPT conditional arms onto their live corridors.
+
+    ``LowerConditionalStateTransition`` materializes each arm through a one-way
+    helper block.  The applied port owns both the predicate edge into that
+    helper and the helper corridor into the proven target.  We retain an arm
+    only when its predicate block and its complete one-way path are unique;
+    ambiguous or pruned arms contribute no protection.
+    """
+
+    def _target_candidates(anchor_eas: tuple[int, ...], target_ea: int) -> set[int]:
+        anchored = _anchor_blocks(flow_graph, anchor_eas)
+        if anchored:
+            return anchored
+        return {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if int(block.start_ea) == int(target_ea)
+        }
+
+    def _unique_arm_path(
+        source: int,
+        targets: set[int],
+    ) -> tuple[tuple[int, int], ...] | None:
+        source_block = flow_graph.get_block(int(source))
+        if source_block is None or source_block.nsucc != 2 or not targets:
+            return None
+        paths: set[tuple[tuple[int, int], ...]] = set()
+        for successor in source_block.succs:
+            current = int(successor)
+            edges: list[tuple[int, int]] = [(int(source), current)]
+            seen = {int(source)}
+            while current not in seen:
+                seen.add(current)
+                if current in targets:
+                    paths.add(tuple(edges))
+                    break
+                block = flow_graph.get_block(current)
+                if block is None or block.nsucc != 1:
+                    break
+                next_block = int(block.succs[0])
+                edges.append((current, next_block))
+                current = next_block
+        return next(iter(paths)) if len(paths) == 1 else None
+
+    keys: set[tuple[int, int]] = set()
+    for evidence in evidence_rows:
+        port = evidence.port
+        predicate_blocks = {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if any(
+                int(instruction.ea) == int(port.predicate_ea)
+                for instruction in block.insn_snapshots
+            )
+        }
+        if len(predicate_blocks) != 1:
+            continue
+        source = next(iter(predicate_blocks))
+        arm_paths = (
+            _unique_arm_path(
+                source,
+                _target_candidates(
+                    evidence.taken_target_anchor_eas,
+                    int(port.taken_target_ea),
+                ),
+            ),
+            _unique_arm_path(
+                source,
+                _target_candidates(
+                    evidence.fallthrough_target_anchor_eas,
+                    int(port.fallthrough_target_ea),
+                ),
+            ),
+        )
+        for path in arm_paths:
+            if path is not None:
+                keys.update(path)
     return keys
 
 
@@ -2547,13 +2748,17 @@ def _preserve_fully_resolved_state_forks(
 def build_source_keyed_handler_redirects(
     flow_graph,
     handler_transitions: tuple[HandlerTransition, ...],
+    *,
+    protected_edges: frozenset[tuple[int, int]] = frozenset(),
 ) -> list[object]:
     """Emit exact one-way redirects owned by snapshot-local handler evidence.
 
     Both materialized state routes and resolver transfer-exit register snapshots
     name the current block that owns the proven route.  Rewrite a one-way edge
     directly, or the exact path-selected arm of a two-way owner, and abstain if
-    multiple facts disagree.
+    multiple facts disagree.  ``protected_edges`` carries stronger, already-live
+    topology (for example a resolver-proven PREOPT boundary edge) that replayed
+    source-keyed state evidence must not replace.
     """
     handler_entries = {
         int(transition.handler) for transition in handler_transitions
@@ -2665,6 +2870,8 @@ def build_source_keyed_handler_redirects(
                         # overwritten inside the arm; do not replace that
                         # stronger edge with stale handler-tail evidence.
                         continue
+            if (int(source), int(old)) in protected_edges:
+                continue
             if old == int(target):
                 continue
             candidates.setdefault((int(source), old), set()).add(int(target))
@@ -3041,6 +3248,26 @@ def build_materialized_conditional_handler_bridges(
                 int(transfer.false_target_ea),
             ):
                 false_target_from_route = None
+            if (
+                true_target_from_ea is not None
+                and true_target_from_route is not None
+                and _one_way_path_reaches(
+                    flow_graph,
+                    int(true_target_from_route),
+                    int(true_target_from_ea),
+                )
+            ):
+                true_target_from_route = int(true_target_from_ea)
+            if (
+                false_target_from_ea is not None
+                and false_target_from_route is not None
+                and _one_way_path_reaches(
+                    flow_graph,
+                    int(false_target_from_route),
+                    int(false_target_from_ea),
+                )
+            ):
+                false_target_from_route = int(false_target_from_ea)
         true_target_without_route = _reconcile_conditional_bridge_target(
             flow_graph,
             true_target_from_ea,
@@ -3337,6 +3564,329 @@ def build_materialized_conditional_handler_bridges(
             )
         )
     return result
+
+
+def _prove_materialized_conditional_entry_bridge(
+    flow_graph,
+    modifications: tuple[object, ...],
+    *,
+    dispatcher_entry_serial: int,
+    handler_serials: frozenset[int],
+) -> ConditionalEntryBridgeProof | None:
+    """Prove that one exact live entry-prefix predicate reaches two handlers.
+
+    The conditional bridge builder already checked predicate identity,
+    polarity, and exact state-to-handler arm routing. This projection accepts
+    that proof as the function's entry bridge only when its source is reachable
+    before crossing either the dispatcher or any handler entry. Handler-local
+    predicates therefore cannot satisfy the entry safety gate.
+    """
+    dispatcher_entry = int(dispatcher_entry_serial)
+    handlers = frozenset(int(serial) for serial in handler_serials)
+    if not handlers:
+        return None
+
+    entry_prefix: set[int] = set()
+    pending = [int(flow_graph.entry_serial)]
+    boundaries = set(handlers)
+    boundaries.add(dispatcher_entry)
+    while pending:
+        serial = pending.pop()
+        if serial in entry_prefix or serial in boundaries:
+            continue
+        block = flow_graph.get_block(serial)
+        if block is None:
+            continue
+        entry_prefix.add(serial)
+        pending.extend(int(successor) for successor in block.succs)
+
+    candidates: set[ConditionalEntryBridgeProof] = set()
+    for modification in modifications:
+        if not isinstance(modification, LowerConditionalStateTransition):
+            continue
+        condition = modification.condition_operand
+        if not isinstance(condition, PreserveLivePredicateCondition):
+            continue
+        source = int(modification.source_serial)
+        false_target = int(modification.false_target_serial)
+        true_target = int(modification.true_target_serial)
+        if (
+            source not in entry_prefix
+            or false_target == true_target
+            or false_target not in handlers
+            or true_target not in handlers
+        ):
+            continue
+        source_block = flow_graph.get_block(source)
+        predicate_ea = int(condition.predicate_ea)
+        if (
+            source_block is None
+            or source_block.nsucc != 2
+            or not any(
+                instruction.is_conditional_jump
+                and int(instruction.ea) == predicate_ea
+                for instruction in source_block.insn_snapshots
+            )
+        ):
+            continue
+        candidates.add(
+            ConditionalEntryBridgeProof(
+                source_serial=source,
+                predicate_ea=predicate_ea,
+                false_target_serial=false_target,
+                true_target_serial=true_target,
+            )
+        )
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def _prove_imported_conditional_entry_bridge(
+    flow_graph,
+    evidence_rows: tuple[AppliedDetachedSnippetConditionalBoundaryPort, ...],
+    *,
+    dispatcher_entry_serial: int,
+    handler_serials: frozenset[int],
+    state_var_reg: int | None,
+) -> ConditionalEntryBridgeProof | None:
+    """Bind a successfully applied PREOPT conditional port to CALLS blocks.
+
+    The importer records instruction anchors from each exact created arm block.
+    The source predicate must still be the exact live two-way tail. When an arm
+    anchor survives, its current path must agree through only acyclic one-way
+    glue. When CALLS DCE removes every arm anchor, the already-applied port may
+    fall back only to that exact predicate's surviving non-dispatcher arm.
+    """
+    dispatcher_entry = int(dispatcher_entry_serial)
+    if not evidence_rows or state_var_reg is None:
+        return None
+
+    def resolve_anchors(anchor_eas: tuple[int, ...]) -> int | None:
+        anchors = {int(ea) for ea in anchor_eas}
+        matches = {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if any(int(insn.ea) in anchors for insn in block.insn_snapshots)
+        }
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    resolved: list[
+        tuple[
+            AppliedDetachedSnippetConditionalBoundaryPort,
+            int | None,
+            int | None,
+        ]
+    ] = []
+    for evidence in evidence_rows:
+        port = evidence.port
+        if (
+            port.state_register is None
+            or int(port.state_register) != int(state_var_reg)
+            or port.taken_state is None
+            or port.fallthrough_state is None
+            or (
+                int(port.taken_state) & 0xFFFFFFFF
+                == int(port.fallthrough_state) & 0xFFFFFFFF
+            )
+        ):
+            continue
+        taken_target = resolve_anchors(evidence.taken_target_anchor_eas)
+        fallthrough_target = resolve_anchors(
+            evidence.fallthrough_target_anchor_eas
+        )
+        if (
+            taken_target is not None
+            and fallthrough_target is not None
+            and taken_target == fallthrough_target
+        ):
+            logger.info(
+                "imported conditional entry abstained: predicate=0x%X "
+                "gate=target_anchor taken=%s fallthrough=%s "
+                "taken_anchors=%s fallthrough_anchors=%s",
+                int(port.predicate_ea),
+                (
+                    None
+                    if taken_target is None
+                    else _format_block_label(flow_graph, taken_target)
+                ),
+                (
+                    None
+                    if fallthrough_target is None
+                    else _format_block_label(flow_graph, fallthrough_target)
+                ),
+                [
+                    "0x%X" % int(ea)
+                    for ea in evidence.taken_target_anchor_eas[:4]
+                ],
+                [
+                    "0x%X" % int(ea)
+                    for ea in evidence.fallthrough_target_anchor_eas[:4]
+                ],
+            )
+            continue
+        resolved.append((evidence, taken_target, fallthrough_target))
+
+    handlers = frozenset(
+        {
+            *(int(serial) for serial in handler_serials),
+            *(
+                int(serial)
+                for _evidence, taken, fallthrough in resolved
+                for serial in (taken, fallthrough)
+                if serial is not None
+            ),
+        }
+    )
+    if not resolved or not handlers:
+        return None
+
+    entry_prefix: set[int] = set()
+    pending = [int(flow_graph.entry_serial)]
+    boundaries = set(handlers)
+    boundaries.add(dispatcher_entry)
+    while pending:
+        serial = pending.pop()
+        if serial in entry_prefix or serial in boundaries:
+            continue
+        block = flow_graph.get_block(serial)
+        if block is None:
+            continue
+        entry_prefix.add(serial)
+        pending.extend(int(successor) for successor in block.succs)
+
+    def arm_reaches_handler(start_serial: int, target_serial: int) -> bool:
+        current = int(start_serial)
+        target = int(target_serial)
+        visited: set[int] = set()
+        while current != target:
+            if current in visited or current in handlers or current == dispatcher_entry:
+                return False
+            visited.add(current)
+            block = flow_graph.get_block(current)
+            if block is None or len(block.succs) != 1:
+                return False
+            current = int(block.succs[0])
+        return True
+
+    candidates: set[ConditionalEntryBridgeProof] = set()
+    for evidence, taken_target, fallthrough_target in resolved:
+        port = evidence.port
+        source_matches = tuple(
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if block.insn_snapshots
+            and block.insn_snapshots[-1].is_conditional_jump
+            and int(block.insn_snapshots[-1].ea) == int(port.predicate_ea)
+        )
+        if len(source_matches) != 1:
+            logger.info(
+                "imported conditional entry abstained: predicate=0x%X "
+                "gate=source_match matches=%s",
+                int(port.predicate_ea),
+                [
+                    _format_block_label(flow_graph, serial)
+                    for serial in source_matches
+                ],
+            )
+            continue
+        source = source_matches[0]
+        if source not in entry_prefix:
+            logger.info(
+                "imported conditional entry abstained: predicate=0x%X "
+                "source=%s gate=entry_prefix",
+                int(port.predicate_ea),
+                _format_block_label(flow_graph, source),
+            )
+            continue
+        source_block = flow_graph.get_block(source)
+        if (
+            source_block is None
+            or source_block.nsucc != 2
+        ):
+            logger.info(
+                "imported conditional entry abstained: predicate=0x%X "
+                "source=%s gate=target_bind taken=%s fallthrough=%s",
+                int(port.predicate_ea),
+                _format_block_label(flow_graph, source),
+                (
+                    None
+                    if taken_target is None
+                    else _format_block_label(flow_graph, taken_target)
+                ),
+                (
+                    None
+                    if fallthrough_target is None
+                    else _format_block_label(flow_graph, fallthrough_target)
+                ),
+            )
+            continue
+        predicate = source_block.insn_snapshots[-1]
+        taken_start = predicate.d.block_ref
+        if taken_start is None:
+            continue
+        source_successors = tuple(int(successor) for successor in source_block.succs)
+        taken_start = int(taken_start)
+        if taken_start not in source_successors:
+            continue
+        fallthrough_starts = tuple(
+            successor for successor in source_successors if successor != taken_start
+        )
+        if len(fallthrough_starts) != 1:
+            continue
+        taken_proof_target = (
+            int(taken_target) if taken_target is not None else int(taken_start)
+        )
+        fallthrough_proof_target = (
+            int(fallthrough_target)
+            if fallthrough_target is not None
+            else int(fallthrough_starts[0])
+        )
+        taken_reaches = (
+            taken_start != dispatcher_entry
+            and flow_graph.get_block(taken_start) is not None
+            if taken_target is None
+            else arm_reaches_handler(taken_start, int(taken_target))
+        )
+        fallthrough_reaches = (
+            fallthrough_starts[0] != dispatcher_entry
+            and flow_graph.get_block(fallthrough_starts[0]) is not None
+            if fallthrough_target is None
+            else arm_reaches_handler(
+                fallthrough_starts[0], int(fallthrough_target)
+            )
+        )
+        if not taken_reaches or not fallthrough_reaches:
+            logger.info(
+                "imported conditional entry abstained: predicate=0x%X "
+                "source=%s gate=arm_path taken_start=%s taken_target=%s "
+                "taken_reaches=%s fallthrough_start=%s "
+                "fallthrough_target=%s fallthrough_reaches=%s",
+                int(port.predicate_ea),
+                _format_block_label(flow_graph, source),
+                _format_block_label(flow_graph, taken_start),
+                (
+                    "applied-arm"
+                    if taken_target is None
+                    else _format_block_label(flow_graph, taken_target)
+                ),
+                taken_reaches,
+                _format_block_label(flow_graph, fallthrough_starts[0]),
+                (
+                    "applied-arm"
+                    if fallthrough_target is None
+                    else _format_block_label(flow_graph, fallthrough_target)
+                ),
+                fallthrough_reaches,
+            )
+            continue
+        candidates.add(
+            ConditionalEntryBridgeProof(
+                source_serial=source,
+                predicate_ea=int(port.predicate_ea),
+                false_target_serial=fallthrough_proof_target,
+                true_target_serial=taken_proof_target,
+            )
+        )
+    return next(iter(candidates)) if len(candidates) == 1 else None
 
 
 def _normalize_degenerate_branch_redirects(
@@ -4019,7 +4569,6 @@ def build_shared_merge_conditional_redirects(
     appending ``redirects``.  Detection is strictly shape-gated; a handler that
     does not match this exact OLLVM select shape contributes nothing.
     """
-    disp = int(dispatcher_entry_serial)
     default_target = dispatcher.default_target
     redirects: list[object] = []
     suppressed: set[int] = set()
@@ -4155,6 +4704,12 @@ def emit_minimal_unflatten(
     recover_multi_entry_back_edges: bool = False,
     state_var_reg: int | None = None,
     materialized_indirect_transfers: tuple[MaterializedIndirectTransfer, ...] = (),
+    imported_direct_boundary_evidence: tuple[
+        AppliedDetachedSnippetDirectBoundaryPort, ...
+    ] = (),
+    imported_conditional_boundary_evidence: tuple[
+        AppliedDetachedSnippetConditionalBoundaryPort, ...
+    ] = (),
     materialized_state_routes: tuple[MaterializedStateRoute, ...] = (),
     handler_entry_eas_by_serial: Mapping[int, int] | None = None,
     materialized_computed_goto_profile: bool = False,
@@ -4212,6 +4767,15 @@ def emit_minimal_unflatten(
         live_block_for=live_block_for,
         include_multi_entry_back_edges=recover_multi_entry_back_edges,
         state_var_reg=state_var_reg,
+        dispatcher_region_serials=(
+            dispatcher_region_serials
+            if materialized_computed_goto_profile
+            and (
+                imported_direct_boundary_evidence
+                or imported_conditional_boundary_evidence
+            )
+            else frozenset()
+        ),
     )
     route_handler_serials = condition_chain_handlers
     if materialized_computed_goto_profile:
@@ -4234,6 +4798,55 @@ def emit_minimal_unflatten(
         condition_chain_dag=condition_chain_dag,
         condition_chain_handlers=route_handler_serials,
         state_var_reg=state_var_reg,
+    )
+    conditional_boundary_edges = _applied_conditional_boundary_edge_keys(
+        flow_graph,
+        imported_conditional_boundary_evidence,
+    )
+    conditional_bridge_mods = build_materialized_conditional_handler_bridges(
+        flow_graph,
+        materialized_indirect_transfers,
+        dispatcher=dispatcher,
+        materialized_state_routes=materialized_state_routes,
+        handler_entry_eas_by_serial=handler_entry_eas_by_serial,
+    )
+    if conditional_boundary_edges:
+        conditional_bridge_mods = [
+            mod
+            for mod in conditional_bridge_mods
+            if not (
+                isinstance(mod, (RedirectGoto, RedirectBranch))
+                and (int(mod.from_serial), int(mod.old_target))
+                in conditional_boundary_edges
+            )
+        ]
+    materialized_conditional_entry_bridge = (
+        _prove_materialized_conditional_entry_bridge(
+            flow_graph,
+            tuple(conditional_bridge_mods),
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+            handler_serials=route_handler_serials,
+        )
+    )
+    imported_conditional_entry_bridge = _prove_imported_conditional_entry_bridge(
+        flow_graph,
+        imported_conditional_boundary_evidence,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+        handler_serials=route_handler_serials,
+        state_var_reg=state_var_reg,
+    )
+    conditional_entry_bridges = {
+        proof
+        for proof in (
+            materialized_conditional_entry_bridge,
+            imported_conditional_entry_bridge,
+        )
+        if proof is not None
+    }
+    conditional_entry_bridge = (
+        next(iter(conditional_entry_bridges))
+        if len(conditional_entry_bridges) == 1
+        else None
     )
     terminal_carrier_convergence = transitions_use_terminal_stack_alias_guard(
         transitions
@@ -4261,6 +4874,29 @@ def emit_minimal_unflatten(
             len(transitions),
             dict(sorted(kinds.items())),
         )
+        unresolved_rows = []
+        for transition in transitions:
+            if transition.next_state is not None and transition.target_handler is not None:
+                continue
+            source = _format_block_label(flow_graph, int(transition.write_block))
+            via = (
+                "none"
+                if transition.via_block is None
+                else _format_block_label(flow_graph, int(transition.via_block))
+            )
+            proof = (
+                "unattributed"
+                if transition.proof is None
+                else f"{transition.proof.oracle_kind}:{transition.proof.kind}"
+            )
+            unresolved_rows.append(
+                f"{source}(via={via},arm={transition.branch_arm},proof={proof})"
+            )
+        if unresolved_rows:
+            logger.info(
+                "unflat unresolved transitions: %s",
+                ", ".join(unresolved_rows),
+            )
     # Recover the initial state from the prologue's own state-write fold when the
     # caller could not supply it. The comparison-range evidence collapses to a
     # single catch-all on a wide equality chain, so
@@ -4294,6 +4930,26 @@ def emit_minimal_unflatten(
                 initial_state is not None
                 and dispatcher.lookup(int(initial_state) & 0xFFFFFFFF) is not None
             )
+            if not bridged and conditional_entry_bridge is not None:
+                bridged = True
+                if logger.info_on:
+                    logger.info(
+                        "unflat entry bridge: EXACT_CONDITIONAL source=%s "
+                        "predicate=0x%X false=%s true=%s",
+                        _format_block_label(
+                            flow_graph,
+                            conditional_entry_bridge.source_serial,
+                        ),
+                        conditional_entry_bridge.predicate_ea,
+                        _format_block_label(
+                            flow_graph,
+                            conditional_entry_bridge.false_target_serial,
+                        ),
+                        _format_block_label(
+                            flow_graph,
+                            conditional_entry_bridge.true_target_serial,
+                        ),
+                    )
             # d81-3rja step 1: a register-conditional prologue (the initial state is
             # carried in a scratch register while the state var holds a decoy) is
             # bridged by the register-conditional pass in build_state_write_redirects,
@@ -4339,6 +4995,8 @@ def emit_minimal_unflatten(
         condition_chain_handlers=route_handler_serials,
         infer_unmatched_returns=not materialized_computed_goto_profile,
         entry_bridge_evidence=entry_bridge_evidence,
+        conditional_entry_bridge=conditional_entry_bridge,
+        protected_edges=frozenset(conditional_boundary_edges),
     )
     # Conditional/multi-arm transitions (ticket llr-aga1): the back-edge model
     # above emits one redirect per dispatcher predecessor and collapses a
@@ -4422,17 +5080,27 @@ def emit_minimal_unflatten(
         ]
     if latch_redirects:
         mods = list(mods) + latch_redirects
+    exact_live_state_edges = _exact_live_state_edge_keys(
+        flow_graph,
+        materialized_state_routes,
+    )
+    exact_live_state_edges.update(conditional_boundary_edges)
+    exact_live_state_edges.update(
+        _applied_direct_boundary_edge_keys(
+            flow_graph,
+            imported_direct_boundary_evidence,
+        )
+    )
     source_keyed_mods = build_source_keyed_handler_redirects(
         flow_graph,
         handler_transitions,
+        protected_edges=frozenset(exact_live_state_edges),
     )
     source_keyed_edges = _existing_redirect_keys(source_keyed_mods)
     source_keyed_edges.update(
         _existing_redirect_keys(terminal_state_route_mods)
     )
-    source_keyed_edges.update(
-        _exact_live_state_edge_keys(flow_graph, materialized_state_routes)
-    )
+    source_keyed_edges.update(exact_live_state_edges)
     if source_keyed_edges:
         mods = [
             mod
@@ -4475,13 +5143,6 @@ def emit_minimal_unflatten(
             )
             not in existing_terminal_redirects
         ]
-    conditional_bridge_mods = build_materialized_conditional_handler_bridges(
-        flow_graph,
-        materialized_indirect_transfers,
-        dispatcher=dispatcher,
-        materialized_state_routes=materialized_state_routes,
-        handler_entry_eas_by_serial=handler_entry_eas_by_serial,
-    )
     if terminal_state_writer_sources:
         conditional_bridge_mods = [
             mod

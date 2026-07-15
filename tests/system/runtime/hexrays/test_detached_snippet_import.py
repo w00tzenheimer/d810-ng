@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from enum import Enum
 from types import SimpleNamespace
 
 import ida_hexrays
@@ -180,6 +181,15 @@ class _Block:
     def nsucc(self) -> int:
         return len(self.succset)
 
+    def succ(self, index: int) -> int:
+        return int(self.succset[index])
+
+    def npred(self) -> int:
+        return len(self.predset)
+
+    def pred(self, index: int) -> int:
+        return int(self.predset[index])
+
     @property
     def mba(self) -> "_MBA":
         assert self.owner is not None
@@ -300,6 +310,11 @@ def _install_runtime_fakes(monkeypatch) -> list[tuple[int, int]]:
         _fake_minsn,
     )
     monkeypatch.setattr(
+        detached_handler_island.ida_hexrays,
+        "mop_t",
+        _Operand,
+    )
+    monkeypatch.setattr(
         DeferredGraphModifier,
         "create_standalone_block",
         create_standalone_block,
@@ -324,6 +339,24 @@ def _install_runtime_fakes(monkeypatch) -> list[tuple[int, int]]:
         detached_handler_island,
         "_IMPORTED_INSTRUCTION_ORIGINS",
         {},
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_IMPORTED_DIRECT_BOUNDARY_EVIDENCE",
+        {},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_IMPORTED_CONDITIONAL_BOUNDARY_EVIDENCE",
+        {},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_TERMINAL_RETURN_CARRIER_TEMPLATES",
+        {},
+        raising=False,
     )
     return created
 
@@ -413,6 +446,137 @@ def test_recursively_rebases_all_stack_operand_shapes(monkeypatch) -> None:
         == source_offsets[3] + stable_destination_delta
     )
     assert int(imported_arg.size) == 8
+
+
+def test_transparent_empty_entry_uses_first_anchored_successor_as_root(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40A7AE
+    body_ea = 0x40A7BD
+    source = _MBA(
+        (
+            _Block(0, target_ea, (), (1,)),
+            _Block(
+                1,
+                body_ea,
+                (_Instruction(ida_hexrays.m_nop, body_ea),),
+            ),
+        ),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+    )
+
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, body_ea + 1),),
+        owned_block_entry_eas=(target_ea, body_ea),
+    )
+    template = detached_handler_island._DETACHED_SNIPPET_TEMPLATES[
+        (function_ea, target_ea)
+    ]
+    assert template.root_source_serial == 1
+
+    roots = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+    )
+
+    imported = destination.get_mblock(roots[target_ea])
+    assert imported.head is not None
+    root_block = next(
+        block
+        for block in template.blocks
+        if int(block.source_serial) == int(template.root_source_serial)
+    )
+    assert root_block.native_entry_ea == body_ea
+
+
+def test_range_capture_does_not_infer_empty_interior_block_ownership(
+    monkeypatch,
+) -> None:
+    """Range-only LOCOPT capture leaves transparent tails in the live MBA."""
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40B236
+    empty_ea = 0x40B262
+    dispatcher_ea = 0x40A607
+    source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+                (1,),
+            ),
+            _Block(1, empty_ea, (), (2,)),
+            _Block(
+                2,
+                dispatcher_ea,
+                (_Instruction(ida_hexrays.m_nop, dispatcher_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_LOCOPT,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+    source.get_mblock(1).type = int(ida_hexrays.BLT_1WAY)
+
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, empty_ea + 1),),
+    )
+    template = detached_handler_island._DETACHED_SNIPPET_TEMPLATES[
+        (function_ea, target_ea)
+    ]
+
+    assert tuple(block.native_entry_ea for block in template.blocks) == (
+        target_ea,
+    )
+
+
+def test_duplicate_empty_entry_alias_resolves_to_anchored_root(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40A7AE
+    source = _MBA(
+        (
+            _Block(0, target_ea, (), (1,)),
+            _Block(
+                1,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+            ),
+        ),
+    )
+
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, target_ea + 1),),
+        owned_block_entry_eas=(target_ea,),
+    )
+    template = detached_handler_island._DETACHED_SNIPPET_TEMPLATES[
+        (function_ea, target_ea)
+    ]
+
+    assert template.root_source_serial == 1
+    assert tuple(block.source_serial for block in template.blocks) == (1,)
 
 
 def test_capture_normalizes_negative_fragment_stack_identity_by_frame_size(
@@ -1624,6 +1788,189 @@ def test_preopt_import_preserves_raw_call_for_destination_analysis(
     assert int(imported_block.flags) & int(ida_hexrays.MBL_PUSH)
 
 
+def test_preopt_import_splits_multiple_raw_calls_into_closing_blocks(
+    monkeypatch,
+) -> None:
+    """Every raw PREOPT call must close its own imported block."""
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40B10C
+    first_call_ea = 0x40B114
+    second_call_ea = 0x40B11B
+    suffix_ea = 0x40B121
+    raw_block = _Block(
+        0,
+        target_ea,
+        (
+            _Instruction(ida_hexrays.m_push, first_call_ea - 1),
+            _Instruction(ida_hexrays.m_call, first_call_ea),
+            _Instruction(ida_hexrays.m_push, second_call_ea - 1),
+            _Instruction(ida_hexrays.m_call, second_call_ea),
+            _Instruction(ida_hexrays.m_mov, suffix_ea),
+        ),
+    )
+    raw_block.flags = int(ida_hexrays.MBL_PUSH)
+    raw_source = _MBA(
+        (raw_block,),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_GENERATED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        raw_source,
+        ((target_ea, suffix_ea + 1),),
+    )
+
+    roots = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+        expected_template_maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+        allow_raw_preopt_calls=True,
+    )
+
+    first = destination.get_mblock(roots[target_ea])
+    second = destination.get_mblock(int(first.succset[0]))
+    suffix = destination.get_mblock(int(second.succset[0]))
+    assert int(first.tail.opcode) == int(ida_hexrays.m_call)
+    assert int(second.tail.opcode) == int(ida_hexrays.m_call)
+    assert int(suffix.tail.opcode) == int(ida_hexrays.m_mov)
+    assert all(
+        int(instruction.opcode)
+        not in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}
+        for block in (first, second, suffix)
+        for instruction in block.instructions()[:-1]
+    )
+
+
+def test_locopt_capture_preserves_analyzed_call_block_shape(monkeypatch) -> None:
+    """Raw-call normalization must not rewrite established LOCOPT templates."""
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40B10C
+    first_call_ea = 0x40B114
+    second_call_ea = 0x40B11B
+    suffix_ea = 0x40B121
+    analyzed_source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (
+                    _Instruction(ida_hexrays.m_call, first_call_ea),
+                    _Instruction(ida_hexrays.m_call, second_call_ea),
+                    _Instruction(ida_hexrays.m_mov, suffix_ea),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_LOCOPT,
+    )
+
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        analyzed_source,
+        ((target_ea, suffix_ea + 1),),
+    )
+
+    template = detached_handler_island._DETACHED_SNIPPET_TEMPLATES[
+        (function_ea, target_ea)
+    ]
+    assert len(template.blocks) == 1
+    assert tuple(
+        int(instruction.opcode)
+        for instruction in template.blocks[0].instructions
+    ) == (
+        int(ida_hexrays.m_call),
+        int(ida_hexrays.m_call),
+        int(ida_hexrays.m_mov),
+    )
+
+
+def test_conditional_fallthrough_helper_is_raw_preopt_scoped(
+    monkeypatch,
+) -> None:
+    """LOCOPT import must retain its established topology unchanged."""
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40AF00
+    taken_ea = 0x40AF20
+    fallthrough_ea = 0x40AF40
+    source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_jnz,
+                        target_ea + 4,
+                        dest=_Operand(ida_hexrays.mop_b, block_ref=1),
+                    ),
+                ),
+                (1, 2),
+            ),
+            _Block(
+                1,
+                taken_ea,
+                (_Instruction(ida_hexrays.m_nop, taken_ea),),
+            ),
+            _Block(
+                2,
+                fallthrough_ea,
+                (_Instruction(ida_hexrays.m_nop, fallthrough_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_LOCOPT,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_2WAY)
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_LOCOPT,
+    )
+
+    def reject_preopt_helper(*_args, **_kwargs) -> int:
+        raise AssertionError("PREOPT fallthrough helper used by LOCOPT import")
+
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "insert_nop_block_now",
+        reject_preopt_helper,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, fallthrough_ea + 1),),
+    )
+
+    roots = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+    )
+
+    assert target_ea in roots
+
+
 def test_preopt_native_range_import_preserves_call_ea_and_marks_outline(
     monkeypatch,
 ) -> None:
@@ -1976,6 +2323,1789 @@ def test_import_materializes_nonadjacent_external_fallthrough_as_goto(
     assert (int(imported.flags) & int(ida_hexrays.MBL_GOTO)) != 0
 
 
+def test_empty_nonadjacent_fallthrough_can_be_made_explicit(
+    monkeypatch,
+) -> None:
+    """A fully-subsumed CALLS setup block still needs a verifier-valid tail."""
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    empty = _Block(0, function_ea, (), (2,))
+    empty.type = int(ida_hexrays.BLT_1WAY)
+    destination = _MBA(
+        (
+            empty,
+            _Block(
+                1,
+                function_ea + 1,
+                (_Instruction(ida_hexrays.m_nop, function_ea + 1),),
+            ),
+            _Block(
+                2,
+                0x40A607,
+                (_Instruction(ida_hexrays.m_nop, 0x40A607),),
+            ),
+        )
+    )
+
+    DeferredGraphModifier(destination).make_displaced_fallthrough_explicit_now(
+        empty
+    )
+
+    assert empty.tail is not None
+    assert int(empty.tail.opcode) == int(ida_hexrays.m_goto)
+    assert int(empty.tail.l.t) == int(ida_hexrays.mop_b)
+    assert int(empty.tail.l.b) == 2
+    assert tuple(empty.succset) == (2,)
+
+
+def _direct_boundary_port(
+    *,
+    source_block_ea: int,
+    endpoint_block_ea: int,
+    old_successor_eas: tuple[int, ...],
+    target_ea: int,
+    source_owner: object,
+    endpoint_owner: object,
+    target_owner: object,
+    old_successor_owners: tuple[object, ...] = (),
+    delivery_mode: str = "redirect_edge",
+) -> object:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetDirectBoundaryPort,
+    )
+
+    return DetachedSnippetDirectBoundaryPort(
+        source_block_ea=source_block_ea,
+        source_instruction_ea=source_block_ea,
+        endpoint_block_ea=endpoint_block_ea,
+        old_successor_eas=old_successor_eas,
+        target_ea=target_ea,
+        state_register=7,
+        state_constant=0x1234,
+        source_owner=source_owner,
+        endpoint_owner=endpoint_owner,
+        target_owner=target_owner,
+        delivery_mode=delivery_mode,
+        resolver_kind="runtime_test",
+        old_successor_owners=old_successor_owners,
+    )
+
+
+def test_capture_boundary_port_wrapper_cannot_bypass_normalization() -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+        DetachedSnippetBoundaryPorts,
+    )
+
+    first = _direct_boundary_port(
+        source_block_ea=0x1000,
+        endpoint_block_ea=0x1010,
+        old_successor_eas=(0x1100,),
+        target_ea=0x1200,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+    conflicting = _direct_boundary_port(
+        source_block_ea=0x1000,
+        endpoint_block_ea=0x1010,
+        old_successor_eas=(0x1100,),
+        target_ea=0x1300,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+
+    assert detached_handler_island._normalize_capture_boundary_ports(
+        DetachedSnippetBoundaryPorts(
+            direct=(first, conflicting),
+            conditional=(),
+        )
+    ) is None
+
+def _conditional_boundary_port(
+    *,
+    source_block_ea: int,
+    predicate_ea: int,
+    old_taken_target_ea: int | None,
+    old_fallthrough_target_ea: int | None,
+    taken_target_ea: int,
+    fallthrough_target_ea: int,
+    source_owner: object,
+    taken_target_owner: object,
+    fallthrough_target_owner: object,
+    old_taken_target_owner: object | None = None,
+    old_fallthrough_target_owner: object | None = None,
+    logical_source_anchor_ea: int | None = None,
+    predicate_ida_stkoff: int | None = None,
+    predicate_size: int | None = None,
+    condition_code: int | None = None,
+    state_register: int | None = 7,
+    taken_state: int | None = 0x1234,
+    fallthrough_state: int | None = 0x5678,
+    resolver_kind: str = "runtime_test",
+) -> object:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetConditionalBoundaryPort,
+    )
+
+    return DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=source_block_ea,
+        predicate_ea=predicate_ea,
+        old_taken_target_ea=old_taken_target_ea,
+        old_fallthrough_target_ea=old_fallthrough_target_ea,
+        taken_target_ea=taken_target_ea,
+        fallthrough_target_ea=fallthrough_target_ea,
+        state_register=state_register,
+        taken_state=taken_state,
+        fallthrough_state=fallthrough_state,
+        source_owner=source_owner,
+        taken_target_owner=taken_target_owner,
+        fallthrough_target_owner=fallthrough_target_owner,
+        resolver_kind=resolver_kind,
+        old_taken_target_owner=old_taken_target_owner,
+        old_fallthrough_target_owner=old_fallthrough_target_owner,
+        logical_source_anchor_ea=logical_source_anchor_ea,
+        predicate_ida_stkoff=predicate_ida_stkoff,
+        predicate_size=predicate_size,
+        condition_code=condition_code,
+    )
+
+
+def _terminal_return_import_fixture() -> tuple[
+    int,
+    int,
+    int,
+    int,
+    object,
+    _MBA,
+    _MBA,
+]:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        TerminalReturnCarrierRequest,
+    )
+
+    function_ea = 0x9000
+    predicate_ea = 0x1008
+    terminal_target_ea = 0x4000
+    sibling_target_ea = 0x4100
+    carrier_source_ea = 0x3000
+    carrier_ea = 0x3005
+    state_register = 20
+    state_constant = 0x19A7218A
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=carrier_source_ea,
+        terminal_target_ea=terminal_target_ea,
+        state_var_reg=state_register,
+        state_constant=state_constant,
+    )
+    state_write = _Instruction(
+        ida_hexrays.m_mov,
+        carrier_source_ea,
+        left=_Operand(ida_hexrays.mop_n, value=state_constant),
+        dest=_Operand(ida_hexrays.mop_r, register=state_register),
+    )
+    carrier = _Instruction(
+        ida_hexrays.m_mov,
+        carrier_ea,
+        left=_Operand(ida_hexrays.mop_v, target_ea=0x48B8A4),
+        dest=_Operand(
+            ida_hexrays.mop_r,
+            register=int(ida_hexrays.reg2mreg(0)),
+        ),
+    )
+    carrier_source = _MBA(
+        (_Block(0, carrier_source_ea, (state_write, carrier)),),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    terminal = _Block(
+        0,
+        terminal_target_ea,
+        (
+            _Instruction(
+                ida_hexrays.m_goto,
+                terminal_target_ea,
+                left=_Operand(ida_hexrays.mop_b, block_ref=2),
+            ),
+        ),
+        (2,),
+    )
+    terminal.type = int(ida_hexrays.BLT_1WAY)
+    sibling = _Block(
+        1,
+        sibling_target_ea,
+        (_Instruction(ida_hexrays.m_nop, sibling_target_ea),),
+    )
+    synthetic_exit = _Block(2, 0xFFFFFFFFFFFFFFFF, ())
+    source = _MBA(
+        (terminal, sibling, synthetic_exit),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+            _Block(
+                1,
+                0x1000,
+                (_Instruction(ida_hexrays.m_jnz, predicate_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    port = _conditional_boundary_port(
+        source_block_ea=0x1000,
+        predicate_ea=predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=terminal_target_ea,
+        fallthrough_target_ea=sibling_target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        state_register=state_register,
+        taken_state=state_constant,
+        fallthrough_state=None,
+        resolver_kind="preopt_terminal_return_boundary",
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        terminal_target_ea,
+        source,
+        (
+            (terminal_target_ea, terminal_target_ea + 1),
+            (sibling_target_ea, sibling_target_ea + 1),
+        ),
+        boundary_ports=(port,),
+    )
+    return (
+        function_ea,
+        terminal_target_ea,
+        carrier_ea,
+        state_constant,
+        request,
+        carrier_source,
+        destination,
+    )
+
+
+def test_terminal_return_port_inserts_captured_carrier_in_imported_return_arm(
+    monkeypatch,
+) -> None:
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+    _install_runtime_fakes(monkeypatch)
+    (
+        function_ea,
+        terminal_target_ea,
+        carrier_ea,
+        _state_constant,
+        request,
+        carrier_source,
+        destination,
+    ) = _terminal_return_import_fixture()
+    assert detached_handler_island.capture_terminal_return_carrier_template(
+        function_ea,
+        request,
+        carrier_source,
+    )
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "restore_pruned_conditional_now",
+        lambda *_args, **_kwargs: True,
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (terminal_target_ea,),
+    )
+
+    imported_return = destination.get_mblock(result[terminal_target_ea])
+    instructions = imported_return.instructions()
+    assert len(instructions) == 2
+    inserted_carrier, preserved_return = instructions
+    assert int(inserted_carrier.opcode) == int(ida_hexrays.m_mov)
+    assert int(inserted_carrier.l.t) == int(ida_hexrays.mop_v)
+    assert int(inserted_carrier.l.g) == 0x48B8A4
+    assert int(inserted_carrier.d.t) == int(ida_hexrays.mop_r)
+    assert int(inserted_carrier.d.r) == int(ida_hexrays.reg2mreg(0))
+    assert int(preserved_return.opcode) == int(ida_hexrays.m_ret)
+    assert int(imported_return.type) == int(ida_hexrays.BLT_0WAY)
+    assert tuple(imported_return.succset) == ()
+    origins = dict(
+        detached_handler_island.imported_detached_snippet_instruction_origins(
+            destination
+        )
+    )
+    assert origins[int(inserted_carrier.ea)] == carrier_ea
+
+
+def test_terminal_return_port_abstains_atomically_without_unique_carrier(
+    monkeypatch,
+) -> None:
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+    _install_runtime_fakes(monkeypatch)
+    (
+        function_ea,
+        terminal_target_ea,
+        _carrier_ea,
+        _state_constant,
+        _request,
+        _carrier_source,
+        destination,
+    ) = _terminal_return_import_fixture()
+    restored: list[bool] = []
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "restore_pruned_conditional_now",
+        lambda *_args, **_kwargs: restored.append(True) or True,
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (terminal_target_ea,),
+    )
+
+    assert len(result) == 0
+    assert result.applied_boundary_ports == ()
+    assert len(result.abstained_boundary_ports) == 1
+    assert restored == []
+
+
+def test_preflight_uses_proven_logical_source_when_predicate_is_absent(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    source_ea = 0x1000
+    predicate_ea = 0x1008
+    anchor_ea = 0x1204
+    taken_target_ea = 0x1100
+    fallthrough_target_ea = 0x1180
+    source = _MBA(
+        (
+            _Block(
+                0,
+                taken_target_ea,
+                (_Instruction(ida_hexrays.m_nop, taken_target_ea),),
+            ),
+            _Block(
+                1,
+                fallthrough_target_ea,
+                (_Instruction(ida_hexrays.m_nop, fallthrough_target_ea),),
+            ),
+        )
+    )
+    anchor = _Block(
+        1,
+        anchor_ea,
+        (_Instruction(ida_hexrays.m_mov, anchor_ea),),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+            anchor,
+        )
+    )
+    port = _conditional_boundary_port(
+        source_block_ea=source_ea,
+        predicate_ea=predicate_ea,
+        old_taken_target_ea=anchor_ea,
+        old_fallthrough_target_ea=predicate_ea,
+        taken_target_ea=taken_target_ea,
+        fallthrough_target_ea=fallthrough_target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        logical_source_anchor_ea=anchor_ea,
+        predicate_ida_stkoff=0x18,
+        predicate_size=4,
+        condition_code=5,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        taken_target_ea,
+        source,
+        (
+            (taken_target_ea, taken_target_ea + 1),
+            (fallthrough_target_ea, fallthrough_target_ea + 1),
+        ),
+        boundary_ports=(port,),
+    )
+    template = detached_handler_island._DETACHED_SNIPPET_TEMPLATES[
+        (function_ea, taken_target_ea)
+    ]
+
+    batch = detached_handler_island._preflight_boundary_port_batch(
+        destination,
+        (template,),
+    )
+
+    assert batch is not None
+    assert len(batch.conditional) == 1
+    mutation = batch.conditional[0]
+    assert mutation.source.live_block is anchor
+    assert mutation.materialize_logical_source is True
+
+    queued_seed: list[dict[str, object]] = []
+    queued_lowering: list[dict[str, object]] = []
+
+    def _queue_seed(_modifier, **kwargs) -> None:
+        queued_seed.append(kwargs)
+
+    def _queue_lowering(_modifier, **kwargs) -> None:
+        queued_lowering.append(kwargs)
+
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "queue_terminal_goto_change",
+        _queue_seed,
+    )
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "queue_lower_conditional_state_transition",
+        _queue_lowering,
+    )
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "apply",
+        lambda _modifier, **_kwargs: 2,
+    )
+    taken_block = _Block(
+        2,
+        taken_target_ea,
+        (_Instruction(ida_hexrays.m_nop, taken_target_ea),),
+    )
+    fallthrough_block = _Block(
+        3,
+        fallthrough_target_ea,
+        (_Instruction(ida_hexrays.m_nop, fallthrough_target_ea),),
+    )
+    applied = detached_handler_island._apply_boundary_port_batch(
+        destination,
+        batch,
+        {
+            mutation.taken_target.imported_key: taken_block,
+            mutation.fallthrough_target.imported_key: fallthrough_block,
+        },
+    )
+
+    assert applied is not None
+    assert len(applied) == 1
+    assert queued_seed == [
+        {
+            "block_serial": int(anchor.serial),
+            "goto_target": int(taken_block.serial),
+            "description": "seed logical resolver conditional source",
+            "priority": 5,
+        }
+    ]
+    assert len(queued_lowering) == 1
+    lowering = queued_lowering[0]
+    assert lowering["source_serial"] == int(anchor.serial)
+    assert lowering["rewrite_from_ea"] == anchor_ea
+    assert lowering["false_target_serial"] == int(fallthrough_block.serial)
+    assert lowering["true_target_serial"] == int(taken_block.serial)
+    condition = lowering["condition_operand"]
+    assert condition.t == int(ida_hexrays.mop_S)
+    assert condition.s.off == 0x18
+    assert condition.size == 4
+
+
+def test_boundary_port_result_uses_template_record_kind_across_reload(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+
+    class ReloadedDirectBoundaryPort:
+        pass
+
+    port = _direct_boundary_port(
+        source_block_ea=0x1000,
+        endpoint_block_ea=0x1000,
+        old_successor_eas=(0x1200,),
+        target_ea=0x1100,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+    record = detached_handler_island.DetachedSnippetTemplateDirectBoundaryPort(
+        port=port,
+        source_serial=None,
+        endpoint_serial=None,
+        target_serial=0,
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "DetachedSnippetDirectBoundaryPort",
+        ReloadedDirectBoundaryPort,
+    )
+
+    result = detached_handler_island._boundary_port_result(
+        record,
+        reason="preflight",
+    )
+
+    assert result.source_instruction_ea == 0x1000
+    assert result.endpoint_block_ea == 0x1000
+    assert result.target_eas == (0x1100,)
+    assert result.reason == "preflight"
+
+
+def test_boundary_port_binding_identity_uses_live_block_serial() -> None:
+    class LiveBlockProxy:
+        def __init__(self, serial: int) -> None:
+            self.serial = serial
+
+    first = detached_handler_island._BoundaryPortBlockBinding(
+        native_ea=0x1200,
+        live_block=LiveBlockProxy(7),
+    )
+    second = detached_handler_island._BoundaryPortBlockBinding(
+        native_ea=0x1200,
+        live_block=LiveBlockProxy(7),
+    )
+
+    assert detached_handler_island._boundary_port_binding_identity(
+        first
+    ) == detached_handler_island._boundary_port_binding_identity(second)
+
+
+def test_import_boundary_port_connects_imported_source_to_imported_target(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    source_ea = 0x1000
+    target_ea = 0x1100
+    dispatcher_ea = 0x1200
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_ea,
+                (_Instruction(ida_hexrays.m_nop, source_ea),),
+                (2,),
+            ),
+            _Block(
+                1,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+            ),
+            _Block(
+                2,
+                dispatcher_ea,
+                (_Instruction(ida_hexrays.m_nop, dispatcher_ea),),
+            ),
+        )
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+            _Block(1, dispatcher_ea, (_Instruction(ida_hexrays.m_nop, dispatcher_ea),)),
+        )
+    )
+
+    port = _direct_boundary_port(
+        source_block_ea=source_ea,
+        endpoint_block_ea=source_ea,
+        old_successor_eas=(dispatcher_ea,),
+        target_ea=target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        source_ea,
+        source,
+        ((source_ea, source_ea + 1), (target_ea, target_ea + 1)),
+        boundary_ports=(port,),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (source_ea,),
+    )
+
+    imported_source = destination.get_mblock(result[source_ea])
+    origins = dict(
+        detached_handler_island.imported_detached_snippet_instruction_origins(
+            destination
+        )
+    )
+    imported_target = next(
+        block
+        for block in destination.blocks
+        if block.head is not None
+        and origins.get(int(block.head.ea)) == target_ea
+    )
+    assert tuple(imported_source.succset) == (int(imported_target.serial),)
+    assert result.applied_boundary_ports[0].endpoint_block_ea == source_ea
+
+
+def test_import_boundary_port_prefers_template_local_old_successor(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    source_ea = 0x1000
+    target_ea = 0x1100
+    dispatcher_ea = 0x1200
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_ea,
+                (_Instruction(ida_hexrays.m_nop, source_ea),),
+                (2,),
+            ),
+            _Block(
+                1,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+            ),
+            _Block(
+                2,
+                dispatcher_ea,
+                (_Instruction(ida_hexrays.m_nop, dispatcher_ea),),
+            ),
+        )
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+            _Block(
+                1,
+                dispatcher_ea,
+                (_Instruction(ida_hexrays.m_nop, dispatcher_ea),),
+            ),
+        )
+    )
+
+    port = _direct_boundary_port(
+        source_block_ea=source_ea,
+        endpoint_block_ea=source_ea,
+        old_successor_eas=(dispatcher_ea,),
+        target_ea=target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        source_ea,
+        source,
+        (
+            (source_ea, source_ea + 1),
+            (target_ea, target_ea + 1),
+            (dispatcher_ea, dispatcher_ea + 1),
+        ),
+        boundary_ports=(port,),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (source_ea,),
+    )
+
+    assert result[source_ea] >= 0
+    imported_source = destination.get_mblock(result[source_ea])
+    origins = dict(
+        detached_handler_island.imported_detached_snippet_instruction_origins(
+            destination
+        )
+    )
+    imported_target = next(
+        block
+        for block in destination.blocks
+        if block.head is not None
+        and origins.get(int(block.head.ea)) == target_ea
+    )
+    assert tuple(imported_source.succset) == (int(imported_target.serial),)
+    assert result.applied_boundary_ports[0].endpoint_block_ea == source_ea
+
+
+def test_import_conditional_port_prefers_owned_old_targets_over_live_duplicates(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    source_ea = 0x1000
+    predicate_ea = 0x1008
+    old_taken_ea = 0x1100
+    old_fallthrough_ea = 0x1200
+    taken_target_ea = 0x1300
+    fallthrough_target_ea = 0x1400
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_ea,
+                (
+                    _Instruction(ida_hexrays.m_nop, source_ea),
+                    _Instruction(
+                        ida_hexrays.m_jnz,
+                        predicate_ea,
+                        dest=_Operand(ida_hexrays.mop_b, block_ref=2),
+                    ),
+                ),
+                (2, 3),
+            ),
+            _Block(
+                1,
+                fallthrough_target_ea,
+                (_Instruction(ida_hexrays.m_nop, fallthrough_target_ea),),
+            ),
+            _Block(
+                2,
+                old_taken_ea,
+                (_Instruction(ida_hexrays.m_nop, old_taken_ea),),
+            ),
+            _Block(
+                3,
+                old_fallthrough_ea,
+                (_Instruction(ida_hexrays.m_nop, old_fallthrough_ea),),
+            ),
+            _Block(
+                4,
+                taken_target_ea,
+                (_Instruction(ida_hexrays.m_nop, taken_target_ea),),
+            ),
+        )
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_2WAY)
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+            _Block(
+                1,
+                old_taken_ea,
+                (_Instruction(ida_hexrays.m_nop, old_taken_ea),),
+            ),
+            _Block(
+                2,
+                old_fallthrough_ea,
+                (_Instruction(ida_hexrays.m_nop, old_fallthrough_ea),),
+            ),
+        )
+    )
+
+    inserted_helpers: list[int] = []
+
+    def _insert_fake_fallthrough_helper(
+        modifier,
+        source_serial: int,
+    ) -> int:
+        block = modifier.mba.get_mblock(source_serial)
+        conditional_target = int(block.tail.d.b)
+        old_fallthrough = next(
+            int(successor)
+            for successor in block.succset
+            if int(successor) != conditional_target
+        )
+        helper_serial = int(modifier.mba.qty)
+        helper = _Block(
+            helper_serial,
+            0xF20000 + helper_serial,
+            (
+                _Instruction(
+                    ida_hexrays.m_goto,
+                    0xF20000 + helper_serial,
+                    left=_Operand(
+                        ida_hexrays.mop_b,
+                        block_ref=old_fallthrough,
+                    ),
+                ),
+            ),
+            (old_fallthrough,),
+        )
+        helper.type = int(ida_hexrays.BLT_1WAY)
+        helper.flags = int(ida_hexrays.MBL_GOTO)
+        modifier.mba.append_block(helper)
+        block.succset._del(old_fallthrough)
+        block.succset.push_back(helper_serial)
+        old_fallthrough_block = modifier.mba.get_mblock(old_fallthrough)
+        old_fallthrough_block.predset._del(int(block.serial))
+        old_fallthrough_block.predset.push_back(helper_serial)
+        helper.predset.push_back(int(block.serial))
+        inserted_helpers.append(helper_serial)
+        return helper_serial
+
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "insert_nop_block_now",
+        _insert_fake_fallthrough_helper,
+    )
+    port = _conditional_boundary_port(
+        source_block_ea=source_ea,
+        predicate_ea=predicate_ea,
+        old_taken_target_ea=old_taken_ea,
+        old_fallthrough_target_ea=old_fallthrough_ea,
+        taken_target_ea=taken_target_ea,
+        fallthrough_target_ea=fallthrough_target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        source_ea,
+        source,
+        tuple(
+            (ea, ea + 1)
+            for ea in (
+                source_ea,
+                old_taken_ea,
+                old_fallthrough_ea,
+                taken_target_ea,
+                fallthrough_target_ea,
+            )
+        ),
+        boundary_ports=(port,),
+        owned_block_entry_eas=(
+            source_ea,
+            old_taken_ea,
+            old_fallthrough_ea,
+            taken_target_ea,
+            fallthrough_target_ea,
+        ),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (source_ea,),
+    )
+
+    imported_source = destination.get_mblock(result[source_ea])
+    origins = dict(
+        detached_handler_island.imported_detached_snippet_instruction_origins(
+            destination
+        )
+    )
+    imported_targets = {
+        origins[int(block.head.ea)]: int(block.serial)
+        for block in destination.blocks
+        if block.head is not None
+        and origins.get(int(block.head.ea))
+        in {taken_target_ea, fallthrough_target_ea}
+    }
+    assert inserted_helpers
+    assert imported_targets[taken_target_ea] in imported_source.succset
+    helper_serial = next(
+        int(successor)
+        for successor in imported_source.succset
+        if int(successor) != imported_targets[taken_target_ea]
+    )
+    helper = destination.get_mblock(helper_serial)
+    assert tuple(helper.succset) == (
+        imported_targets[fallthrough_target_ea],
+    )
+    assert int(imported_source.tail.d.b) == imported_targets[taken_target_ea]
+    assert len(result.applied_boundary_ports) == 1
+
+
+def test_import_direct_port_collapses_conditional_through_owned_helper(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    source_ea = 0x1000
+    predicate_ea = 0x1008
+    old_taken_ea = 0x1100
+    old_fallthrough_ea = 0x1200
+    target_ea = 0x1300
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_ea,
+                (
+                    _Instruction(ida_hexrays.m_nop, source_ea),
+                    _Instruction(
+                        ida_hexrays.m_jnz,
+                        predicate_ea,
+                        dest=_Operand(ida_hexrays.mop_b, block_ref=1),
+                    ),
+                ),
+                (1, 2),
+            ),
+            _Block(
+                1,
+                old_taken_ea,
+                (_Instruction(ida_hexrays.m_nop, old_taken_ea),),
+            ),
+            _Block(
+                2,
+                old_fallthrough_ea,
+                (_Instruction(ida_hexrays.m_nop, old_fallthrough_ea),),
+            ),
+            _Block(
+                3,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+            ),
+        )
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_2WAY)
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        )
+    )
+
+    def _insert_fake_fallthrough_helper(
+        modifier,
+        source_serial: int,
+        *,
+        force_adjacent: bool = False,
+    ) -> int:
+        assert not force_adjacent
+        block = modifier.mba.get_mblock(source_serial)
+        conditional_target = int(block.tail.d.b)
+        old_fallthrough = next(
+            int(successor)
+            for successor in block.succset
+            if int(successor) != conditional_target
+        )
+        helper_serial = int(modifier.mba.qty)
+        helper = _Block(
+            helper_serial,
+            0xF40000 + helper_serial,
+            (
+                _Instruction(
+                    ida_hexrays.m_goto,
+                    0xF40000 + helper_serial,
+                    left=_Operand(
+                        ida_hexrays.mop_b,
+                        block_ref=old_fallthrough,
+                    ),
+                ),
+            ),
+            (old_fallthrough,),
+        )
+        helper.type = int(ida_hexrays.BLT_1WAY)
+        helper.flags = int(ida_hexrays.MBL_GOTO)
+        modifier.mba.append_block(helper)
+        block.succset._del(old_fallthrough)
+        block.succset.push_back(helper_serial)
+        old_fallthrough_block = modifier.mba.get_mblock(old_fallthrough)
+        old_fallthrough_block.predset._del(int(block.serial))
+        old_fallthrough_block.predset.push_back(helper_serial)
+        helper.predset.push_back(int(block.serial))
+        return helper_serial
+
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "insert_nop_block_now",
+        _insert_fake_fallthrough_helper,
+    )
+    port = _direct_boundary_port(
+        source_block_ea=source_ea,
+        endpoint_block_ea=source_ea,
+        old_successor_eas=(old_taken_ea, old_fallthrough_ea),
+        target_ea=target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        source_ea,
+        source,
+        tuple(
+            (ea, ea + 1)
+            for ea in (
+                source_ea,
+                old_taken_ea,
+                old_fallthrough_ea,
+                target_ea,
+            )
+        ),
+        boundary_ports=(port,),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (source_ea,),
+    )
+
+    imported_source = destination.get_mblock(result[source_ea])
+    origins = dict(
+        detached_handler_island.imported_detached_snippet_instruction_origins(
+            destination
+        )
+    )
+    imported_target = next(
+        block
+        for block in destination.blocks
+        if block.head is not None
+        and origins.get(int(block.head.ea)) == target_ea
+    )
+    assert int(imported_source.type) == int(ida_hexrays.BLT_1WAY)
+    assert tuple(imported_source.succset) == (int(imported_target.serial),)
+    assert len(result.applied_boundary_ports) == 1
+    evidence = (
+        detached_handler_island.imported_detached_snippet_direct_boundary_evidence(
+            destination
+        )
+    )
+    assert len(evidence) == 1
+    assert evidence[0].port == port
+    assert set(evidence[0].endpoint_anchor_eas) == {
+        int(instruction.ea) for instruction in imported_source.instructions()
+    }
+    assert set(evidence[0].target_anchor_eas) == {
+        int(instruction.ea) for instruction in imported_target.instructions()
+    }
+
+
+def test_import_boundary_port_connects_live_source_to_imported_target(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    live_source_ea = 0x1000
+    target_ea = 0x1100
+    dispatcher_ea = 0x1200
+    source = _MBA(
+        (
+            _Block(0, target_ea, (_Instruction(ida_hexrays.m_nop, target_ea),)),
+        )
+    )
+    destination = _MBA(
+        (
+            _Block(0, function_ea, (_Instruction(ida_hexrays.m_nop, function_ea),)),
+            _Block(1, live_source_ea, (_Instruction(ida_hexrays.m_nop, live_source_ea),), (2,)),
+            _Block(
+                2,
+                dispatcher_ea,
+                (_Instruction(ida_hexrays.m_nop, dispatcher_ea),),
+            ),
+        )
+    )
+    destination.get_mblock(1).type = int(ida_hexrays.BLT_1WAY)
+    destination.get_mblock(2).predset.push_back(1)
+    port = _direct_boundary_port(
+        source_block_ea=live_source_ea,
+        endpoint_block_ea=live_source_ea,
+        old_successor_eas=(dispatcher_ea,),
+        target_ea=target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, target_ea + 1),),
+        boundary_ports=(port,),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+    )
+
+    assert tuple(destination.get_mblock(1).succset) == (result[target_ea],)
+    assert result.applied_boundary_ports[0].endpoint_block_ea == live_source_ea
+
+
+def test_import_boundary_port_distinguishes_live_old_copy_from_imported_target(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    live_source_ea = 0x1000
+    shared_target_ea = 0x1100
+    source = _MBA(
+        (
+            _Block(
+                0,
+                shared_target_ea,
+                (_Instruction(ida_hexrays.m_nop, shared_target_ea),),
+            ),
+        )
+    )
+    destination = _MBA(
+        (
+            _Block(0, function_ea, (_Instruction(ida_hexrays.m_nop, function_ea),)),
+            _Block(
+                1,
+                live_source_ea,
+                (_Instruction(ida_hexrays.m_nop, live_source_ea),),
+                (2,),
+            ),
+            _Block(
+                2,
+                shared_target_ea,
+                (_Instruction(ida_hexrays.m_nop, shared_target_ea),),
+            ),
+        )
+    )
+    destination.get_mblock(1).type = int(ida_hexrays.BLT_1WAY)
+    destination.get_mblock(2).predset.push_back(1)
+    port = _direct_boundary_port(
+        source_block_ea=live_source_ea,
+        endpoint_block_ea=live_source_ea,
+        old_successor_eas=(shared_target_ea,),
+        target_ea=shared_target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        old_successor_owners=(DetachedSnippetBoundaryPortOwner.LIVE,),
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        shared_target_ea,
+        source,
+        ((shared_target_ea, shared_target_ea + 1),),
+        boundary_ports=(port,),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (shared_target_ea,),
+    )
+
+    assert result[shared_target_ea] != 2
+    assert tuple(destination.get_mblock(1).succset) == (
+        result[shared_target_ea],
+    )
+
+
+def test_import_boundary_port_accepts_owner_enum_from_reloaded_module(
+    monkeypatch,
+) -> None:
+    class ReloadedBoundaryPortOwner(str, Enum):
+        IMPORTED = "imported"
+        LIVE = "live"
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    live_source_ea = 0x1000
+    target_ea = 0x1100
+    dispatcher_ea = 0x1200
+    source = _MBA(
+        (
+            _Block(0, target_ea, (_Instruction(ida_hexrays.m_nop, target_ea),)),
+        )
+    )
+    destination = _MBA(
+        (
+            _Block(0, function_ea, (_Instruction(ida_hexrays.m_nop, function_ea),)),
+            _Block(
+                1,
+                live_source_ea,
+                (_Instruction(ida_hexrays.m_nop, live_source_ea),),
+                (2,),
+            ),
+            _Block(2, dispatcher_ea, (_Instruction(ida_hexrays.m_nop, dispatcher_ea),)),
+        )
+    )
+    destination.get_mblock(1).type = int(ida_hexrays.BLT_1WAY)
+    destination.get_mblock(2).predset.push_back(1)
+    port = _direct_boundary_port(
+        source_block_ea=live_source_ea,
+        endpoint_block_ea=live_source_ea,
+        old_successor_eas=(dispatcher_ea,),
+        target_ea=target_ea,
+        source_owner=ReloadedBoundaryPortOwner.LIVE,
+        endpoint_owner=ReloadedBoundaryPortOwner.LIVE,
+        target_owner=ReloadedBoundaryPortOwner.IMPORTED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, target_ea + 1),),
+        boundary_ports=(port,),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+    )
+
+    assert tuple(destination.get_mblock(1).succset) == (result[target_ea],)
+
+
+def test_import_boundary_port_materializes_pruned_live_frontier(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    live_source_ea = 0x1000
+    target_ea = 0x1100
+    dispatcher_ea = 0x1200
+    source = _MBA(
+        (
+            _Block(0, target_ea, (_Instruction(ida_hexrays.m_nop, target_ea),)),
+        )
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+            _Block(
+                1,
+                live_source_ea,
+                (_Instruction(ida_hexrays.m_jnz, live_source_ea),),
+            ),
+        )
+    )
+    port = _direct_boundary_port(
+        source_block_ea=live_source_ea,
+        endpoint_block_ea=live_source_ea,
+        old_successor_eas=(dispatcher_ea,),
+        target_ea=target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, target_ea + 1),),
+        boundary_ports=(port,),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+    )
+
+    assert tuple(destination.get_mblock(1).succset) == (result[target_ea],)
+    assert result.applied_boundary_ports[0].endpoint_block_ea == live_source_ea
+    closing_instructions = tuple(
+        instruction
+        for instruction in destination.get_mblock(1).instructions()
+        if ida_hexrays.is_mcode_jcond(int(instruction.opcode))
+        or int(instruction.opcode) == int(ida_hexrays.m_goto)
+    )
+    assert len(closing_instructions) == 1
+    assert int(closing_instructions[0].opcode) == int(ida_hexrays.m_goto)
+
+
+def test_import_boundary_port_restores_pruned_live_conditional(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    live_source_ea = 0x1000
+    predicate_ea = 0x1008
+    taken_target_ea = 0x1100
+    fallthrough_target_ea = 0x1180
+    source = _MBA(
+        (
+            _Block(
+                0,
+                taken_target_ea,
+                (_Instruction(ida_hexrays.m_nop, taken_target_ea),),
+            ),
+            _Block(
+                1,
+                fallthrough_target_ea,
+                (_Instruction(ida_hexrays.m_nop, fallthrough_target_ea),),
+            ),
+        )
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+            _Block(
+                1,
+                live_source_ea,
+                (_Instruction(ida_hexrays.m_jnz, predicate_ea),),
+            ),
+        )
+    )
+    port = _conditional_boundary_port(
+        source_block_ea=live_source_ea,
+        predicate_ea=predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=taken_target_ea,
+        fallthrough_target_ea=fallthrough_target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        taken_target_ea,
+        source,
+        (
+            (taken_target_ea, taken_target_ea + 1),
+            (fallthrough_target_ea, fallthrough_target_ea + 1),
+        ),
+        boundary_ports=(port,),
+    )
+
+    restored: list[tuple[int, int, int]] = []
+
+    def _restore(
+        _modifier,
+        live_source,
+        *,
+        taken_target,
+        fallthrough_target,
+    ) -> bool:
+        restored.append(
+            (
+                int(live_source.start),
+                int(taken_target.serial),
+                int(fallthrough_target.serial),
+            )
+        )
+        return True
+
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "restore_pruned_conditional_now",
+        _restore,
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (taken_target_ea,),
+    )
+
+    assert restored and restored[0][0] == live_source_ea
+    assert len(result.applied_boundary_ports) == 1
+    assert result.applied_boundary_ports[0].source_instruction_ea == predicate_ea
+    evidence = (
+        detached_handler_island.imported_detached_snippet_conditional_boundary_evidence(
+            destination
+        )
+    )
+    assert len(evidence) == 1
+    assert evidence[0].port == port
+    taken_block = destination.get_mblock(restored[0][1])
+    fallthrough_block = destination.get_mblock(restored[0][2])
+    assert evidence[0].taken_target_anchor_eas
+    assert evidence[0].fallthrough_target_anchor_eas
+    assert set(evidence[0].taken_target_anchor_eas) == {
+        int(instruction.ea) for instruction in taken_block.instructions()
+    }
+    assert set(evidence[0].fallthrough_target_anchor_eas) == {
+        int(instruction.ea) for instruction in fallthrough_block.instructions()
+    }
+
+    # CALLS may eliminate every instruction from the exact PREOPT target block
+    # while the imported-root lineage still relocates that native target to a
+    # surviving merged block.  Querying the applied evidence must refresh the
+    # arm anchors from that live root instead of returning stale PREOPT anchors.
+    rebound_anchor_ea = 0xF20000
+    rebound_taken_block = _Block(
+        destination.qty,
+        rebound_anchor_ea,
+        (_Instruction(ida_hexrays.m_nop, rebound_anchor_ea),),
+    )
+    destination.append_block(rebound_taken_block)
+    identity = detached_handler_island.stable_mba_identity(destination)
+    detached_handler_island._IMPORTED_SNIPPET_ROOTS[
+        (identity, taken_target_ea)
+    ] = detached_handler_island._ImportedSnippetRoot(
+        serial_hint=int(rebound_taken_block.serial),
+        anchor_eas=(rebound_anchor_ea,),
+        owned_instruction_eas=(rebound_anchor_ea,),
+    )
+
+    rebound_evidence = (
+        detached_handler_island.imported_detached_snippet_conditional_boundary_evidence(
+            destination
+        )
+    )
+    assert rebound_evidence[0].taken_target_anchor_eas == (rebound_anchor_ea,)
+
+
+def test_import_boundary_port_preserves_call_corridor(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    source_ea = 0x1000
+    call_ea = 0x1008
+    target_ea = 0x1100
+    dispatcher_ea = 0x1200
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_ea,
+                (
+                    _Instruction(ida_hexrays.m_nop, source_ea),
+                    _Instruction(ida_hexrays.m_call, call_ea),
+                ),
+                (2,),
+            ),
+            _Block(1, target_ea, (_Instruction(ida_hexrays.m_nop, target_ea),)),
+            _Block(2, dispatcher_ea, (_Instruction(ida_hexrays.m_nop, dispatcher_ea),)),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+    destination = _MBA(
+        (
+            _Block(0, function_ea, (_Instruction(ida_hexrays.m_nop, function_ea),)),
+            _Block(1, dispatcher_ea, (_Instruction(ida_hexrays.m_nop, dispatcher_ea),)),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    inserted_helpers: list[int] = []
+
+    def _insert_fake_call_fallthrough_helper(
+        modifier,
+        source_serial: int,
+        *,
+        force_adjacent: bool = False,
+    ) -> int:
+        assert force_adjacent
+        block = modifier.mba.get_mblock(source_serial)
+        old_fallthrough = int(block.succset[0])
+        helper_serial = int(modifier.mba.qty)
+        helper = _Block(
+            helper_serial,
+            0xF30000 + helper_serial,
+            (
+                _Instruction(
+                    ida_hexrays.m_goto,
+                    0xF30000 + helper_serial,
+                    left=_Operand(
+                        ida_hexrays.mop_b,
+                        block_ref=old_fallthrough,
+                    ),
+                ),
+            ),
+            (old_fallthrough,),
+        )
+        helper.type = int(ida_hexrays.BLT_1WAY)
+        helper.flags = int(ida_hexrays.MBL_GOTO)
+        modifier.mba.append_block(helper)
+        block.succset._del(old_fallthrough)
+        block.succset.push_back(helper_serial)
+        old_fallthrough_block = modifier.mba.get_mblock(old_fallthrough)
+        old_fallthrough_block.predset._del(int(block.serial))
+        old_fallthrough_block.predset.push_back(helper_serial)
+        helper.predset.push_back(int(block.serial))
+        inserted_helpers.append(helper_serial)
+        return helper_serial
+
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "insert_nop_block_now",
+        _insert_fake_call_fallthrough_helper,
+    )
+    port = _direct_boundary_port(
+        source_block_ea=source_ea,
+        endpoint_block_ea=source_ea,
+        old_successor_eas=(dispatcher_ea,),
+        target_ea=target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        source_ea,
+        source,
+        ((source_ea, source_ea + 1), (target_ea, target_ea + 1)),
+        boundary_ports=(port,),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (source_ea,),
+        allow_raw_preopt_calls=True,
+    )
+
+    imported_source = destination.get_mblock(result[source_ea])
+    assert inserted_helpers
+    assert int(imported_source.tail.opcode) == int(ida_hexrays.m_call)
+    helper = destination.get_mblock(int(imported_source.succset[0]))
+    origins = dict(
+        detached_handler_island.imported_detached_snippet_instruction_origins(
+            destination
+        )
+    )
+    imported_target = next(
+        block
+        for block in destination.blocks
+        if block.head is not None
+        and origins.get(int(block.head.ea)) == target_ea
+    )
+    assert tuple(helper.succset) == (int(imported_target.serial),)
+    assert result.applied_boundary_ports[0].endpoint_block_ea == source_ea
+
+
+def test_import_boundary_port_restores_pruned_live_post_call_route(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    live_source_ea = 0x1000
+    call_ea = 0x1048
+    target_ea = 0x1100
+    source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+            _Block(
+                1,
+                live_source_ea,
+                (
+                    _Instruction(ida_hexrays.m_nop, live_source_ea),
+                    _Instruction(ida_hexrays.m_call, call_ea),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    def copy_block(mba, reference, destination_serial, _flags):
+        for block in mba.blocks[destination_serial:]:
+            block.serial += 1
+        copied = copy.deepcopy(reference)
+        copied.serial = int(destination_serial)
+        copied.owner = mba
+        mba.blocks.insert(int(destination_serial), copied)
+        return copied
+
+    monkeypatch.setattr(_MBA, "copy_block", copy_block, raising=False)
+    port = _direct_boundary_port(
+        source_block_ea=live_source_ea,
+        endpoint_block_ea=live_source_ea,
+        old_successor_eas=(),
+        target_ea=target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        delivery_mode="preserve_call",
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, target_ea + 1),),
+        boundary_ports=(port,),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+        allow_raw_preopt_calls=True,
+    )
+
+    live_source = destination.get_mblock(1)
+    assert any(
+        int(instruction.opcode) == int(ida_hexrays.m_call)
+        and int(instruction.ea) == call_ea
+        for instruction in live_source.instructions()
+    )
+    assert int(live_source.tail.opcode) == int(ida_hexrays.m_call)
+    (helper_serial,) = tuple(live_source.succset)
+    helper = destination.get_mblock(helper_serial)
+    assert int(helper.serial) == int(live_source.serial) + 1
+    assert tuple(helper.succset) == (result[target_ea],)
+    assert int(helper.tail.opcode) == int(ida_hexrays.m_goto)
+    assert result.applied_boundary_ports[0].endpoint_block_ea == live_source_ea
+
+
+def test_import_boundary_port_abstains_before_allocation_when_sibling_missing(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+
+    created = _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    first_source_ea = 0x1000
+    target_ea = 0x1100
+    second_source_ea = 0x1200
+    first_dispatcher_ea = 0x1300
+    second_dispatcher_ea = 0x1400
+    missing_target_ea = 0x1500
+    source = _MBA(
+        (
+            _Block(0, first_source_ea, (_Instruction(ida_hexrays.m_nop, first_source_ea),), (3,)),
+            _Block(1, target_ea, (_Instruction(ida_hexrays.m_nop, target_ea),)),
+            _Block(2, second_source_ea, (_Instruction(ida_hexrays.m_nop, second_source_ea),), (4,)),
+            _Block(3, first_dispatcher_ea, (_Instruction(ida_hexrays.m_nop, first_dispatcher_ea),)),
+            _Block(4, second_dispatcher_ea, (_Instruction(ida_hexrays.m_nop, second_dispatcher_ea),)),
+        )
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+    source.get_mblock(2).type = int(ida_hexrays.BLT_1WAY)
+    destination = _MBA(
+        (
+            _Block(0, function_ea, (_Instruction(ida_hexrays.m_nop, function_ea),)),
+            _Block(1, first_dispatcher_ea, (_Instruction(ida_hexrays.m_nop, first_dispatcher_ea),)),
+            _Block(2, second_dispatcher_ea, (_Instruction(ida_hexrays.m_nop, second_dispatcher_ea),)),
+        )
+    )
+    first_port = _direct_boundary_port(
+        source_block_ea=first_source_ea,
+        endpoint_block_ea=first_source_ea,
+        old_successor_eas=(first_dispatcher_ea,),
+        target_ea=target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+    missing_sibling = _direct_boundary_port(
+        source_block_ea=second_source_ea,
+        endpoint_block_ea=second_source_ea,
+        old_successor_eas=(second_dispatcher_ea,),
+        target_ea=missing_target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        first_source_ea,
+        source,
+        (
+            (first_source_ea, first_source_ea + 1),
+            (target_ea, target_ea + 1),
+            (second_source_ea, second_source_ea + 1),
+        ),
+        boundary_ports=(first_port, missing_sibling),
+    )
+    original_qty = destination.qty
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (first_source_ea,),
+    )
+
+    assert result == {}
+    assert created == []
+    assert destination.qty == original_qty
+    assert len(result.abstained_boundary_ports) == 2
+
+
 def test_allocates_distinct_in_range_eas_for_converging_imported_defs(
     monkeypatch,
 ) -> None:
@@ -2148,6 +4278,30 @@ def test_relocates_imported_root_after_original_head_is_eliminated(
     assert relocated.head is surviving_instruction
 
 
+def test_live_lookup_uses_exact_instruction_when_imported_start_overlaps():
+    source_entry_ea = 0x1000
+    predicate_ea = 0x1008
+    imported = _Block(
+        0,
+        source_entry_ea,
+        (_Instruction(ida_hexrays.m_jnz, 0xF10008),),
+    )
+    live = _Block(
+        1,
+        0x9000,
+        (_Instruction(ida_hexrays.m_jnz, predicate_ea),),
+    )
+    destination = _MBA((imported, live))
+
+    result = detached_handler_island.find_unique_live_block_by_ea(
+        destination,
+        source_entry_ea,
+        exact_instruction_ea=predicate_ea,
+    )
+
+    assert result is live
+
+
 def test_relocates_imported_root_from_surviving_owned_instruction_origin(
     monkeypatch,
 ) -> None:
@@ -2246,3 +4400,232 @@ def test_preserves_native_origin_for_imported_terminal_indirect_jump(
     assert detached_handler_island.imported_detached_snippet_terminal_origins(
         destination
     ) == ((int(imported.ea), native_exit_ea),)
+
+
+def test_resolver_cut_port_binds_exact_instruction_after_microblock_split(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+        make_resolver_cut_boundary_port,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    source_block_ea = 0x1000
+    split_block_ea = 0x1008
+    resolver_ea = 0x100E
+    live_target_ea = 0x2000
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_block_ea,
+                (_Instruction(ida_hexrays.m_call, source_block_ea),),
+                (1,),
+            ),
+            _Block(
+                1,
+                split_block_ea,
+                (_Instruction(ida_hexrays.m_ijmp, resolver_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+            _Block(
+                1,
+                live_target_ea,
+                (_Instruction(ida_hexrays.m_nop, live_target_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    port = make_resolver_cut_boundary_port(
+        source_block_ea=source_block_ea,
+        source_instruction_ea=resolver_ea,
+        target_ea=live_target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        provenance="static_fixpoint",
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        source_block_ea,
+        source,
+        ((source_block_ea, resolver_ea + 1),),
+        boundary_ports=(port,),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (source_block_ea,),
+        allow_raw_preopt_calls=True,
+    )
+
+    origins = dict(
+        detached_handler_island.imported_detached_snippet_instruction_origins(
+            destination
+        )
+    )
+    imported_cut = next(
+        block
+        for block in destination.blocks
+        if any(
+            origins.get(int(instruction.ea)) == resolver_ea
+            for instruction in block.instructions()
+        )
+    )
+    assert tuple(imported_cut.succset) == (1,)
+    assert int(imported_cut.tail.opcode) == int(ida_hexrays.m_goto)
+    assert len(result.applied_boundary_ports) == 1
+
+
+def test_capture_can_own_only_missing_blocks_from_a_full_function_mba(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xA000
+    missing_entry_ea = 0x1100
+    live_entry_ea = 0x2200
+    source = _MBA(
+        (
+            _Block(
+                0,
+                missing_entry_ea,
+                (_Instruction(ida_hexrays.m_nop, missing_entry_ea),),
+                (1,),
+            ),
+            _Block(
+                1,
+                live_entry_ea,
+                (_Instruction(ida_hexrays.m_nop, live_entry_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        missing_entry_ea,
+        source,
+        (
+            (missing_entry_ea, missing_entry_ea + 1),
+            (live_entry_ea, live_entry_ea + 1),
+        ),
+        owned_block_entry_eas=(missing_entry_ea,),
+    )
+    assert detached_handler_island.detached_snippet_template_block_eas(
+        function_ea,
+        missing_entry_ea,
+    ) == (missing_entry_ea,)
+
+
+def test_capture_drops_only_the_synthetic_exit_after_a_native_return(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    return_ea = 0x3300
+    source = _MBA(
+        (
+            _Block(
+                0,
+                return_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_goto,
+                        return_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_b,
+                            block_ref=1,
+                        ),
+                    ),
+                ),
+                (1,),
+            ),
+            _Block(1, 0xFFFFFFFFFFFFFFFF, ()),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        return_ea,
+        source,
+        ((return_ea, return_ea + 1),),
+    )
+    roots = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (return_ea,),
+        allow_raw_preopt_calls=True,
+    )
+    imported_return = destination.get_mblock(roots[return_ea])
+    assert int(imported_return.tail.opcode) == int(ida_hexrays.m_ret)
+    assert int(imported_return.type) == int(ida_hexrays.BLT_0WAY)
+    assert tuple(imported_return.succset) == ()
+
+
+def test_import_abstains_from_nonreturn_stop_template(monkeypatch) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    target_ea = 0x3300
+    source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_STOP)
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, target_ea + 1),),
+    )
+    original_qty = destination.qty
+
+    roots = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+        allow_raw_preopt_calls=True,
+    )
+
+    assert roots == {}
+    assert destination.qty == original_qty

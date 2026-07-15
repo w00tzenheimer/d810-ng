@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
 from d810.analyses.control_flow import detached_handler_island
 from d810.analyses.control_flow.detached_handler_island import (
     ConditionalHandlerBridgePlan,
@@ -15,6 +19,8 @@ from d810.analyses.control_flow.detached_handler_island import (
     DetachedSnippetReplacementPlan,
     DetachedSnippetTerminalEvidence,
     DetachedSnippetTerminalRoutePlan,
+    DetachedSnippetBoundaryPortOwner,
+    DetachedSnippetDirectBoundaryPort,
     DetachedRouteEvidence,
     DetachedSourcePath,
     plan_detached_handler_island,
@@ -93,6 +99,126 @@ def test_empty_external_block_uses_valid_native_start_ea() -> None:
         0xFFFFFFFFFFFFFFFF,
         (),
     ) is None
+
+
+def test_owned_ranges_include_empty_native_block_start() -> None:
+    ranges = ((0x40AF00, 0x40AFDF),)
+
+    assert detached_handler_island.block_intersects_owned_ranges(
+        0x40AFB5,
+        (),
+        ranges,
+    )
+    assert detached_handler_island.block_intersects_owned_ranges(
+        0xF1000000,
+        (0x40AFB5,),
+        ranges,
+    )
+    assert not detached_handler_island.block_intersects_owned_ranges(
+        0x40AFDF,
+        (),
+        ranges,
+    )
+
+
+def _direct_boundary_port(
+    *,
+    target_ea: int = 0x1400,
+    endpoint_block_ea: int = 0x1010,
+) -> DetachedSnippetDirectBoundaryPort:
+    return DetachedSnippetDirectBoundaryPort(
+        source_block_ea=0x1000,
+        source_instruction_ea=0x1008,
+        endpoint_block_ea=endpoint_block_ea,
+        old_successor_eas=(0x1200,),
+        target_ea=target_ea,
+        state_register=7,
+        state_constant=0x1234,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        delivery_mode="redirect_edge",
+        resolver_kind="unit_test",
+    )
+
+
+def test_boundary_port_template_records_deduplicate_exact_duplicates() -> None:
+    port = _direct_boundary_port()
+
+    normalized = detached_handler_island.normalize_detached_snippet_boundary_ports(
+        (port, port),
+        (),
+    )
+
+    assert normalized.direct == (port,)
+    assert normalized.conditional == ()
+
+
+def test_boundary_port_template_records_reject_conflicting_source() -> None:
+    with pytest.raises(ValueError, match="conflicting direct boundary port"):
+        detached_handler_island.normalize_detached_snippet_boundary_ports(
+            (_direct_boundary_port(), _direct_boundary_port(target_ea=0x1500)),
+            (),
+        )
+
+
+def test_boundary_port_template_records_keep_distinct_frontier_endpoints() -> None:
+    first = _direct_boundary_port(endpoint_block_ea=0x1010)
+    second = _direct_boundary_port(endpoint_block_ea=0x1020)
+
+    normalized = detached_handler_island.normalize_detached_snippet_boundary_ports(
+        (second, first),
+        (),
+    )
+
+    assert normalized.direct == (first, second)
+
+
+def test_boundary_port_template_records_keep_distinct_owner_bindings() -> None:
+    imported = _direct_boundary_port()
+    live = replace(
+        imported,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+    )
+
+    normalized = detached_handler_island.normalize_detached_snippet_boundary_ports(
+        (live, imported),
+        (),
+    )
+
+    assert normalized.direct == (imported, live)
+
+
+def test_boundary_port_template_records_reject_conflict_per_owner_binding() -> None:
+    imported = _direct_boundary_port()
+    conflicting = replace(imported, target_ea=0x1500)
+
+    with pytest.raises(ValueError, match="conflicting direct boundary port"):
+        detached_handler_island.normalize_detached_snippet_boundary_ports(
+            (imported, conflicting),
+            (),
+        )
+
+
+def test_resolver_cut_boundary_port_uses_no_synthetic_state_identity() -> None:
+    port = detached_handler_island.make_resolver_cut_boundary_port(
+        source_block_ea=0x40A7E5,
+        source_instruction_ea=0x40A7EF,
+        target_ea=0x40B6C0,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        provenance="static_fixpoint",
+    )
+
+    assert port.endpoint_block_ea == 0x40A7E5
+    assert port.old_successor_eas == ()
+    assert port.state_register is None
+    assert port.state_constant is None
+    assert port.source_owner == DetachedSnippetBoundaryPortOwner.IMPORTED
+    assert port.endpoint_owner == DetachedSnippetBoundaryPortOwner.IMPORTED
+    assert port.target_owner == DetachedSnippetBoundaryPortOwner.LIVE
+    assert port.delivery_mode == "terminal_goto"
 
 
 def test_live_handler_replacement_accepts_multiple_states_for_one_handler() -> None:

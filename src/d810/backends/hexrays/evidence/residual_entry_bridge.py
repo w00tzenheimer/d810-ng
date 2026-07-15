@@ -80,6 +80,15 @@ def _stack_identity(mop: object) -> tuple[int, int] | None:
     return int(mop.s.off), int(mop.size)
 
 
+def _block_native_entry_ea(block: object) -> int | None:
+    native_eas = {
+        int(insn.ea)
+        for insn in _instructions(block)
+        if int(insn.ea) > 0
+    }
+    return min(native_eas) if native_eas else None
+
+
 def _condition_code(opcode: int) -> int | None:
     for name, code in (("m_jz", 4), ("m_jnz", 5)):
         if opcode == _opcode(name):
@@ -203,6 +212,13 @@ def recognize_residual_entry_bridge(mba: object) -> ResidualEntryBridgeEvidence 
             continue
         if taken_value == fallthrough_value:
             continue
+        try:
+            canonical_predicate_stack_identity = (
+                int(mba.stkoff_vd2ida(int(predicate[0]))),
+                int(predicate[1]),
+            )
+        except (AttributeError, TypeError, ValueError):
+            canonical_predicate_stack_identity = None
         return ResidualEntryBridgeEvidence(
             predicate_ea=int(branch.ea),
             condition_code=code,
@@ -211,6 +227,191 @@ def recognize_residual_entry_bridge(mba: object) -> ResidualEntryBridgeEvidence 
             taken_state_constant=taken_value,
             fallthrough_state_constant=fallthrough_value,
             source_store_ea=taken_store_ea,
+            conditional_tail_ea=int(branch.ea),
+            canonical_predicate_stack_identity=(
+                canonical_predicate_stack_identity
+            ),
+        )
+    return None
+
+
+def recognize_preoptimized_residual_entry_bridge(
+    mba: object,
+) -> ResidualEntryBridgeEvidence | None:
+    """Recognize the pre-CFG conditional-move lowering, or abstain.
+
+    At ``hxe_preoptimized`` Hex-Rays has emitted basic blocks but has not yet
+    populated their successor sets.  An x86 conditional move therefore still
+    appears as ``setz predicate, 0, flag; jcnd [lnot] flag`` followed by one
+    fall-through overwrite and a shared stack store.  Resolve only that exact
+    linearized shape; any missing or conflicting identity abstains.
+    """
+    mop_d_type = _opcode("mop_d")
+    m_jcnd = _opcode("m_jcnd")
+    m_lnot = _opcode("m_lnot")
+    m_setz = _opcode("m_setz")
+    m_goto = _opcode("m_goto")
+    terminal_opcodes = {
+        opcode
+        for opcode in (
+            _opcode("m_jcnd"),
+            _opcode("m_ret"),
+            _opcode("m_ijmp"),
+            _opcode("m_jtbl"),
+        )
+        if opcode is not None
+    }
+
+    def _target_serial(target: object) -> int | None:
+        if int(target.t) == _opcode("mop_b"):
+            return int(target.b) if target.b is not None else None
+        if int(target.t) != _opcode("mop_v"):
+            return None
+        target_ea = int(target.g)
+        matches: list[int] = []
+        for candidate_serial in range(int(mba.qty)):
+            candidate = mba.get_mblock(candidate_serial)
+            if candidate is None:
+                continue
+            if int(candidate.start) == target_ea:
+                matches.append(candidate_serial)
+        unique = tuple(dict.fromkeys(matches))
+        return unique[0] if len(unique) == 1 else None
+
+    def _linear_state_store(
+        start_serial: int,
+        defaults: dict[int, int],
+    ) -> tuple[tuple[int, int], int, int] | None:
+        values = dict(defaults)
+        serial = int(start_serial)
+        seen: set[int] = set()
+        for _hop in range(3):
+            if serial in seen or not 0 <= serial < int(mba.qty):
+                return None
+            seen.add(serial)
+            block = mba.get_mblock(serial)
+            if block is None:
+                return None
+            instructions = _instructions(block)
+            for insn in instructions:
+                opcode = int(insn.opcode)
+                if opcode == _opcode("m_mov"):
+                    source = _register(insn.l)
+                    destination = _stack_identity(insn.d)
+                    if (
+                        source is not None
+                        and destination is not None
+                        and source in values
+                    ):
+                        return destination, values[source], int(insn.ea)
+                    _apply_moves((insn,), values)
+                    continue
+                destination_register = _register(insn.d)
+                if destination_register is not None:
+                    values.pop(destination_register, None)
+            tail = instructions[-1] if instructions else None
+            if tail is not None and int(tail.opcode) == m_goto:
+                target_serial = _target_serial(tail.d)
+                if target_serial is None:
+                    return None
+                serial = target_serial
+                continue
+            if tail is not None and int(tail.opcode) in terminal_opcodes:
+                return None
+            serial += 1
+        return None
+
+    try:
+        blocks = tuple(mba.get_mblock(index) for index in range(int(mba.qty)))
+    except Exception:
+        return None
+    for serial, block in enumerate(blocks):
+        if block is None:
+            continue
+        instructions = _instructions(block)
+        branch = instructions[-1] if instructions else None
+        if branch is None or int(branch.opcode) != m_jcnd:
+            continue
+        flag_register = _register(branch.l)
+        inverted = False
+        if flag_register is None and int(branch.l.t) == mop_d_type:
+            nested = branch.l.d
+            if int(nested.opcode) != m_lnot:
+                continue
+            flag_register = _register(nested.l)
+            inverted = True
+        if flag_register is None:
+            continue
+        predicate: tuple[int, int] | None = None
+        predicate_ea: int | None = None
+        for insn in reversed(instructions[:-1]):
+            if _register(insn.d) != flag_register:
+                continue
+            if int(insn.opcode) != m_setz or _immediate(insn.r) != 0:
+                break
+            predicate = _stack_identity(insn.l)
+            if predicate is not None:
+                predicate_ea = int(insn.ea)
+            break
+        if predicate is None or predicate_ea is None:
+            continue
+        defaults: dict[int, int] = {}
+        _apply_moves(instructions[:-1], defaults)
+        taken_serial = _target_serial(branch.d)
+        if taken_serial is None:
+            continue
+        fallthrough_serial = int(serial) + 1
+        if taken_serial == fallthrough_serial:
+            continue
+        taken_store = _linear_state_store(taken_serial, defaults)
+        fallthrough_store = _linear_state_store(fallthrough_serial, defaults)
+        if taken_store is None or fallthrough_store is None:
+            continue
+        taken_cell, taken_value, taken_store_ea = taken_store
+        fallthrough_cell, fallthrough_value, fallthrough_store_ea = (
+            fallthrough_store
+        )
+        if (
+            taken_cell != fallthrough_cell
+            or taken_store_ea != fallthrough_store_ea
+            or taken_value == fallthrough_value
+        ):
+            continue
+        source_entry_ea = _block_native_entry_ea(block)
+        taken_entry_ea = _block_native_entry_ea(blocks[taken_serial])
+        fallthrough_entry_ea = _block_native_entry_ea(
+            blocks[fallthrough_serial]
+        )
+        try:
+            canonical_stack_cell_identity = (
+                int(mba.stkoff_vd2ida(int(taken_cell[0]))),
+                int(taken_cell[1]),
+            )
+        except (AttributeError, TypeError, ValueError):
+            canonical_stack_cell_identity = None
+        try:
+            canonical_predicate_stack_identity = (
+                int(mba.stkoff_vd2ida(int(predicate[0]))),
+                int(predicate[1]),
+            )
+        except (AttributeError, TypeError, ValueError):
+            canonical_predicate_stack_identity = None
+        return ResidualEntryBridgeEvidence(
+            predicate_ea=predicate_ea,
+            condition_code=5 if inverted else 4,
+            predicate_stack_identity=predicate,
+            stack_cell_identity=taken_cell,
+            taken_state_constant=taken_value,
+            fallthrough_state_constant=fallthrough_value,
+            source_store_ea=taken_store_ea,
+            canonical_stack_cell_identity=canonical_stack_cell_identity,
+            predicate_block_ea=source_entry_ea,
+            taken_arm_entry_ea=taken_entry_ea,
+            fallthrough_arm_entry_ea=fallthrough_entry_ea,
+            conditional_tail_ea=int(branch.ea),
+            canonical_predicate_stack_identity=(
+                canonical_predicate_stack_identity
+            ),
         )
     return None
 
@@ -552,6 +753,7 @@ __all__ = [
     "ConditionalHandlerBridgeEvidence",
     "ResidualEntryBridgeEvidence",
     "recognize_residual_entry_bridge",
+    "recognize_preoptimized_residual_entry_bridge",
     "recover_initial_state_write",
     "recover_state_routing_nodes",
     "predicate_arm_reaches_ea",

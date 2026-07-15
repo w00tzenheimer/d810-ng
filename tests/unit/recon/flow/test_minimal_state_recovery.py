@@ -159,13 +159,18 @@ def _store(ea: int, src: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
     )
 
 
-def _xor(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
+def _xor(
+    ea: int,
+    left: MopSnapshot,
+    right: MopSnapshot,
+    dst: MopSnapshot,
+) -> InsnSnapshot:
     return InsnSnapshot(
         opcode=_OP_XOR,
         ea=ea,
         operands=(),
-        l=l,
-        r=r,
+        l=left,
+        r=right,
         d=dst,
         kind=InsnKind.UNKNOWN,
         value_op_kind=ValueOpKind.XOR,
@@ -190,26 +195,36 @@ _OP_AND = 21  # m_and (portable evaluator default)
 _OP_OR = 22   # m_or  (portable evaluator default)
 
 
-def _and(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
+def _and(
+    ea: int,
+    left: MopSnapshot,
+    right: MopSnapshot,
+    dst: MopSnapshot,
+) -> InsnSnapshot:
     return InsnSnapshot(
         opcode=_OP_AND,
         ea=ea,
         operands=(),
-        l=l,
-        r=r,
+        l=left,
+        r=right,
         d=dst,
         kind=InsnKind.AND,
         value_op_kind=ValueOpKind.AND,
     )
 
 
-def _or(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
+def _or(
+    ea: int,
+    left: MopSnapshot,
+    right: MopSnapshot,
+    dst: MopSnapshot,
+) -> InsnSnapshot:
     return InsnSnapshot(
         opcode=_OP_OR,
         ea=ea,
         operands=(),
-        l=l,
-        r=r,
+        l=left,
+        r=right,
         d=dst,
         kind=InsnKind.UNKNOWN,
         value_op_kind=ValueOpKind.OR,
@@ -1248,6 +1263,38 @@ def test_partitioned_fixpoint_multi_entry_recovers_nonpredecessor_writer(_seam) 
     assert edge.target_handler == 20
     assert edge.proof is not None
     assert edge.proof.kind == "multi_entry_global_fold"
+    assert not any(edge.write_block == 11 for edge in edges)
+
+
+def test_partitioned_fixpoint_skips_dispatcher_region_predecessors(_seam) -> None:
+    """Router back-edges are not handler state transitions."""
+    fg = FlowGraph(
+        blocks={
+            0: _blk(0, (10,), (), ()),
+            2: _blk(2, (20,), (3, 10), ()),
+            3: _blk(3, (2,), (20,), ()),
+            10: _blk(
+                10,
+                (2,),
+                (0,),
+                (_mov(0x1010, _num(0x20), _stk(_STATE_OFF)),),
+            ),
+            20: _blk(20, (3,), (2,), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _dispatcher({0x20: 20}, exit_block=99)
+
+    edges = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        disp,
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+        dispatcher_region_serials=frozenset({2, 3}),
+    )
+
+    assert [(edge.write_block, edge.target_handler) for edge in edges] == [(10, 20)]
 
 
 def test_multi_entry_scan_does_not_collapse_partitioned_predecessors(_seam) -> None:

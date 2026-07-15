@@ -17,6 +17,12 @@ class EntryBridgeEvidence:
     taken_state_constant: int
     fallthrough_state_constant: int
     source_store_ea: int
+    canonical_stack_cell_identity: tuple[int, int] | None = None
+    predicate_block_ea: int | None = None
+    taken_arm_entry_ea: int | None = None
+    fallthrough_arm_entry_ea: int | None = None
+    conditional_tail_ea: int | None = None
+    canonical_predicate_stack_identity: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -144,6 +144,39 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             )
         return 0
 
+    def preoptimized(self, mba: ida_hexrays.mbl_array_t) -> "int":
+        """Run profile-gated mutation before local and call analysis."""
+        decision: dict[str, object] = {"request_redo": False}
+        try:
+            self.callback(
+                DecompilationEvent.HEXRAYS_PREOPT_READY,
+                function_ea=int(mba.entry_ea),
+                mba=mba,
+                decision=decision,
+            )
+        except Exception:
+            main_logger.debug(
+                "Hex-Rays PREOPT preanalysis event failed for 0x%X",
+                int(mba.entry_ea),
+                exc_info=True,
+            )
+            return 0
+        if bool(decision.get("request_redo")):
+            main_logger.warning(
+                "Hex-Rays PREOPT preanalysis requested an unsupported "
+                "maturity restart for 0x%X: %s; continuing into local "
+                "optimization",
+                int(mba.entry_ea),
+                decision.get("reason", "unspecified"),
+            )
+        elif bool(decision.get("microcode_modified")):
+            main_logger.info(
+                "Hex-Rays PREOPT preanalysis modified microcode for 0x%X: %s",
+                int(mba.entry_ea),
+                decision.get("details", {}),
+            )
+        return 0
+
     def prolog(
         self, mba: ida_hexrays.mbl_array_t, fc, reachable_blocks, decomp_flags
     ) -> "int":

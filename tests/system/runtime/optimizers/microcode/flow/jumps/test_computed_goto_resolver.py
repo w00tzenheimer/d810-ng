@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 from types import ModuleType, SimpleNamespace
 
+from d810.core.maturity_labels import IDA_MMAT_LOCOPT, IDA_MMAT_PREOPTIMIZED
 from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     ComputedGotoResolution,
     _ConcreteHandlerStateWrite,
@@ -71,6 +72,7 @@ from d810.analyses.control_flow.call_abi import (
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
+    TerminalReturnCarrierRequest,
 )
 from d810.analyses.control_flow.semantic_transition import StateWriteAnchor
 from d810.capabilities.dispatcher import RouterKind
@@ -874,7 +876,10 @@ def test_prepare_detached_snippets_publishes_static_handler_entry_routes(
         "get_terminal_return_carrier_requests",
         lambda _function_ea: (),
     )
-    monkeypatch.setitem(sys.modules, "ida_hexrays", ModuleType("ida_hexrays"))
+    fake_hexrays = ModuleType("ida_hexrays")
+    fake_hexrays.MMAT_PREOPTIMIZED = IDA_MMAT_PREOPTIMIZED
+    fake_hexrays.MMAT_LOCOPT = IDA_MMAT_LOCOPT
+    monkeypatch.setitem(sys.modules, "ida_hexrays", fake_hexrays)
     monkeypatch.setitem(sys.modules, "idaapi", ModuleType("idaapi"))
     mutation_module = ModuleType(
         "d810.hexrays.mutation.detached_handler_island"
@@ -907,6 +912,44 @@ def test_prepare_detached_snippets_publishes_static_handler_entry_routes(
     assert computed_goto_resolver.prepare_detached_handler_snippets(function_ea) == 0
     assert recorded == [(function_ea, (leaf, route))]
     assert planned == [(leaf, route)]
+
+
+def test_prepare_terminal_return_carriers_is_independent_of_materialization(
+    monkeypatch,
+) -> None:
+    function_ea = 0x40A560
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=0x40C7E5,
+        terminal_target_ea=0x40C898,
+        state_var_reg=20,
+        state_constant=0x19A7218A,
+    )
+    captured: list[tuple[int, tuple[TerminalReturnCarrierRequest, ...]]] = []
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "get_terminal_return_carrier_requests",
+        lambda _function_ea: (request,),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_capture_terminal_return_carrier_requests",
+        lambda key, requests: captured.append((key, requests)) or 1,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_SNIPPET_CAPTURE_ACTIVE",
+        False,
+    )
+
+    assert (
+        computed_goto_resolver.prepare_terminal_return_carrier_templates(
+            function_ea
+        )
+        == 1
+    )
+    assert captured == [(function_ea, (request,))]
 
 
 def test_detached_static_terminal_transfers_seed_each_island_from_function_context(
@@ -2559,6 +2602,7 @@ def test_validated_setcc_target_survives_live_condition_chain_snapshot_and_lower
     class _DispatchMap:
         router_kind = RouterKind.CONDITION_CHAIN
         dispatcher_entry_block = 124
+        dispatcher_blocks = frozenset({124, 129, 130})
         rows = (
             _Row(state, 203, 129),
             _Row(unrelated_state, 204, 130),
@@ -2598,6 +2642,12 @@ def test_validated_setcc_target_survives_live_condition_chain_snapshot_and_lower
     assert tuple(
         transfer.selector_state_constant for transfer in live_rows
     ) == (state, unrelated_state)
+    assert {
+        transfer.dispatcher_entry_ea for transfer in live_rows
+    } == {0x40A5F0}
+    assert {
+        transfer.dispatcher_router_eas for transfer in live_rows
+    } == {(0x40A5F0, 0x40B32C, 0x40C180)}
     condition_rows = tuple(
         transfer
         for transfer in snapshot_evidence
@@ -2606,6 +2656,7 @@ def test_validated_setcc_target_survives_live_condition_chain_snapshot_and_lower
     assert tuple(
         transfer.selector_state_constant for transfer in condition_rows
     ) == (unrelated_state,)
+    assert condition_rows[0].dispatcher_entry_ea == 0x40A5F0
     assert condition_rows[0].target_eas == (0x40C1A0,)
 
     routes = _build_materialized_state_routes(
@@ -3981,6 +4032,80 @@ def test_residual_state_route_evidence_keeps_unpatchable_target_ea() -> None:
         state_var_reg=20,
         existing_transfers=(evidence,),
     ) == ()
+
+
+def test_residual_state_route_evidence_preserves_distinct_same_state_sources() -> None:
+    state = 0x2100AFDD
+    target_ea = 0x40AF00
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, 0x40C6DA, (0x40C6DA,)),
+            20: _block(20, 0x40BB3D, (0x40BB49,)),
+        },
+        entry_serial=10,
+        func_ea=0x40A560,
+    )
+
+    evidence = _build_residual_state_route_evidence(
+        graph,
+        (
+            (10, state, target_ea),
+            (20, state, target_ea),
+        ),
+        state_write_sites={
+            (10, state): 0x40C6DA,
+            (20, state): 0x40BB49,
+        },
+        state_var_reg=20,
+        existing_transfers=(),
+    )
+
+    assert tuple(
+        (row.source_block_ea, row.source_jmp_ea)
+        for row in evidence
+    ) == (
+        (0x40BB3D, 0x40BB49),
+        (0x40C6DA, 0x40C6DA),
+    )
+
+
+def test_existing_residual_evidence_suppresses_only_the_exact_source() -> None:
+    state = 0x2100AFDD
+    target_ea = 0x40AF00
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, 0x40C6DA, (0x40C6DA,)),
+            20: _block(20, 0x40BB3D, (0x40BB49,)),
+        },
+        entry_serial=10,
+        func_ea=0x40A560,
+    )
+    existing = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40C6DA,
+        source_block_ea=0x40C6DA,
+        materialized_anchor_eas=(),
+        target_eas=(target_ea,),
+        selector_state_var_reg=20,
+        selector_state_constant=state,
+        resolver_kind="residual_state_route_evidence",
+    )
+
+    (evidence,) = _build_residual_state_route_evidence(
+        graph,
+        (
+            (10, state, target_ea),
+            (20, state, target_ea),
+        ),
+        state_write_sites={
+            (10, state): 0x40C6DA,
+            (20, state): 0x40BB49,
+        },
+        state_var_reg=20,
+        existing_transfers=(existing,),
+    )
+
+    assert evidence.source_block_ea == 0x40BB3D
+    assert evidence.source_jmp_ea == 0x40BB49
 
 
 def test_plan_misrouted_exact_state_route_outranks_coarse_bst_interval() -> None:

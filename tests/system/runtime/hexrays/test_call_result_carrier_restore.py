@@ -1150,8 +1150,12 @@ def test_calls_missing_import_ignores_stale_evidence_when_live_delivery_exists(
         target_eas: tuple[int, ...],
         *,
         expected_template_maturity: int | None,
+        allow_raw_preopt_calls: bool,
+        import_native_preopt_ranges: bool,
     ) -> dict[int, int]:
         assert expected_template_maturity == int(ida_hexrays.MMAT_LOCOPT)
+        assert not allow_raw_preopt_calls
+        assert not import_native_preopt_ranges
         imported.append(target_eas)
         return {target_ea: 3}
 
@@ -1375,6 +1379,29 @@ def test_locopt_hook_continues_after_preanalysis_modifies_microcode() -> None:
 
     assert HexraysDecompilationHook.locopt(hook, mba) == 0
     assert events == [DecompilationEvent.HEXRAYS_LOCOPT_READY]
+
+
+def test_preoptimized_hook_dispatches_live_mba_before_locopt() -> None:
+    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+    from d810.hexrays.lifecycle import DecompilationEvent
+
+    mba = SimpleNamespace(entry_ea=0x40A560)
+    events: list[object] = []
+
+    def callback(event: object, **kwargs: object) -> None:
+        assert event is DecompilationEvent.HEXRAYS_PREOPT_READY
+        assert kwargs["function_ea"] == 0x40A560
+        assert kwargs["mba"] is mba
+        decision = kwargs["decision"]
+        assert decision == {"request_redo": False}
+        decision["microcode_modified"] = True
+        decision["details"] = {"terminal_return_carriers": 1}
+        events.append(event)
+
+    hook = SimpleNamespace(callback=callback)
+
+    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
+    assert events == [DecompilationEvent.HEXRAYS_PREOPT_READY]
 
 
 def test_island_rule_materializes_semantic_island_before_other_bridges(
