@@ -196,6 +196,11 @@ def test_manager_owns_recipe_services_and_state_exposes_only_facades() -> None:
     for method_name in (
         "get_workbench_recipe_catalog",
         "create_workbench_recipe_draft",
+        "add_workbench_recipe_pass",
+        "remove_workbench_recipe_pass",
+        "set_workbench_recipe_pass_enabled",
+        "reorder_workbench_recipe_pass",
+        "replace_workbench_recipe_pass_options",
         "validate_workbench_recipe",
         "save_workbench_function_recipe",
         "clear_workbench_function_recipe",
