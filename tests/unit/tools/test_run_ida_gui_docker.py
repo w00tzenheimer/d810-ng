@@ -10,6 +10,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 LAUNCHER = REPO_ROOT / "tools" / "scripts" / "run_ida_gui_docker.sh"
+CONNECTOR = REPO_ROOT / "tools" / "scripts" / "ida_gui_connect.py"
 GUI_IMAGE = "test-gui-image"
 GUI_RUNTIME_IMAGE = "idapro-9.3-speedups:x11-arm64"
 GUI_RUNTIME_LABEL = "x11-dev-emulation-z3-v1"
@@ -17,7 +18,15 @@ WORKTREE_NAME = "truthful-config-v2-project-ui"
 
 
 def _write_checkout(path: Path) -> None:
-    (path / "src").mkdir(parents=True, exist_ok=True)
+    (path / "src" / "d810" / "ui").mkdir(parents=True, exist_ok=True)
+    (path / "src" / "d810" / "__init__.py").write_text("", encoding="utf-8")
+    (path / "src" / "d810" / "ui" / "__init__.py").write_text("", encoding="utf-8")
+    (path / "src" / "d810" / "ui" / "gui_automation_logic.py").write_text(
+        (REPO_ROOT / "src" / "d810" / "ui" / "gui_automation_logic.py").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
     (path / "ida-plugin.json").write_text(
         '{"plugin": {"entryPoint": "src/d810ng.py"}}\n',
         encoding="utf-8",
@@ -26,6 +35,10 @@ def _write_checkout(path: Path) -> None:
         "def PLUGIN_ENTRY():\n    return None\n",
         encoding="utf-8",
     )
+    if CONNECTOR.is_file():
+        connector = path / "tools" / "scripts" / CONNECTOR.name
+        connector.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(CONNECTOR, connector)
 
 
 def _parse_docker_calls(path: Path) -> list[list[str]]:
@@ -396,6 +409,126 @@ def test_mcp_missing_plugin_source_fails_before_docker(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert f"MCP plugin source not found: {missing}" in result.stderr
     assert calls == []
+
+
+def test_connect_requires_a_closed_named_action_and_rejects_raw_ida_arguments(
+    tmp_path: Path,
+) -> None:
+    missing_action, calls, _paths = _run(tmp_path / "missing", "--connect")
+    raw_arguments, raw_calls, _paths = _run(
+        tmp_path / "raw",
+        "--connect",
+        "--open-config",
+        "--",
+        "-A",
+    )
+
+    assert missing_action.returncode != 0
+    assert (
+        "--connect requires --open-config or --open-workbench" in missing_action.stderr
+    )
+    assert calls == []
+    assert raw_arguments.returncode != 0
+    assert "--connect does not accept IDA arguments after --" in raw_arguments.stderr
+    assert raw_calls == []
+
+
+@pytest.mark.parametrize("flag", ("--mcp", "--mcp-port"))
+def test_connect_rejects_fresh_launch_mcp_flags(tmp_path: Path, flag: str) -> None:
+    args = ["--connect", "--open-config", flag]
+    if flag == "--mcp-port":
+        args.append("14444")
+    result, calls, _paths = _run(tmp_path, *args)
+
+    assert result.returncode != 0
+    assert "cannot be used with --connect" in result.stderr
+    assert calls == []
+
+
+def test_mcp_endpoint_is_connect_only_and_may_be_specified_once(tmp_path: Path) -> None:
+    launch, calls, _paths = _run(
+        tmp_path / "launch",
+        "--mcp-endpoint",
+        "http://127.0.0.1:14444/mcp",
+        "--open-config",
+    )
+    duplicate, duplicate_calls, _paths = _run(
+        tmp_path / "duplicate",
+        "--connect",
+        "--open-config",
+        "--mcp-endpoint",
+        "http://127.0.0.1:13337/mcp",
+        "--mcp-endpoint",
+        "http://localhost:14444/mcp",
+    )
+
+    assert launch.returncode != 0
+    assert "--mcp-endpoint requires --connect" in launch.stderr
+    assert calls == []
+    assert duplicate.returncode != 0
+    assert "--mcp-endpoint may be specified only once" in duplicate.stderr
+    assert duplicate_calls == []
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    (
+        "https://127.0.0.1:13337/mcp",
+        "http://192.0.2.1:13337/mcp",
+        "http://user@localhost:13337/mcp",
+        "http://localhost:13337/mcp?ext=dbg",
+        "http://localhost:13337/mcp#fragment",
+        "http://localhost:13337/sse",
+    ),
+)
+def test_connect_rejects_unsafe_mcp_endpoints_before_docker(
+    tmp_path: Path,
+    endpoint: str,
+) -> None:
+    result, calls, _paths = _run(
+        tmp_path,
+        "--connect",
+        "--open-config",
+        "--mcp-endpoint",
+        endpoint,
+    )
+
+    assert result.returncode != 0
+    assert "loopback HTTP" in result.stderr
+    assert calls == []
+
+
+def test_connect_bypasses_xquartz_docker_ida_state_mcp_source_and_sample_copy(
+    tmp_path: Path,
+) -> None:
+    missing_ida_user = tmp_path / "missing-ida-user"
+    missing_mcp_source = tmp_path / "missing-mcp-source"
+    result, calls, paths = _run(
+        tmp_path,
+        "-w",
+        WORKTREE_NAME,
+        "--connect",
+        "--open-workbench",
+        "--function",
+        "namespace::target",
+        "--mcp-endpoint",
+        "http://127.0.0.1:1/mcp",
+        extra_env={
+            "MOCK_XHOST_FAIL": "1",
+            "MOCK_IMAGE_EXISTS": "0",
+            "D810_IDA_USER_DIR": str(missing_ida_user),
+            "D810_MCP_PLUGIN_DIR": str(missing_mcp_source),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "MCP request failed" in result.stderr
+    assert "xhost" not in result.stderr.lower()
+    assert str(missing_ida_user) not in result.stderr
+    assert str(missing_mcp_source) not in result.stderr
+    assert calls == []
+    assert not (paths["worktree"] / ".tmp" / "ida-gui").exists()
+    assert list(paths["worktree"].rglob("*.i64")) == []
 
 
 def test_default_image_is_the_baked_d810_x11_runtime(tmp_path: Path) -> None:
