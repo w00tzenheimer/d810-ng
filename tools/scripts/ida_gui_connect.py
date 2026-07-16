@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime
+import http.client
+import ipaddress
 import json
 import os
 import pathlib
@@ -13,10 +15,9 @@ import secrets
 import socket
 import sys
 import tempfile
-import urllib.error
+import time
 import urllib.parse
-import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from d810.ui import gui_automation_logic as gui_logic
 
@@ -72,39 +73,28 @@ class McpClientError(RuntimeError):
     """The fixed MCP exchange failed before a typed result was available."""
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(
-        self,
-        req: urllib.request.Request,
-        fp: object,
-        code: int,
-        msg: str,
-        headers: object,
-        newurl: str,
-    ) -> None:
-        del req, fp, code, msg, headers, newurl
-        return None
+_ENDPOINT_ERROR = "MCP endpoint must use loopback HTTP and the exact /mcp path"
+_AddressInfo = tuple[object, object, object, object, tuple[object, ...]]
+_Resolver = Callable[..., Sequence[_AddressInfo]]
+_ConnectionFactory = Callable[..., http.client.HTTPConnection]
+_Clock = Callable[[], float]
 
 
-_DIRECT_OPENER = urllib.request.build_opener(
-    urllib.request.ProxyHandler({}),
-    _NoRedirect(),
-)
-
-
-def validate_endpoint(endpoint: str) -> str:
-    """Accept only canonical HTTP loopback authorities and the exact MCP path."""
+def _parse_endpoint(endpoint: str) -> urllib.parse.SplitResult:
     if type(endpoint) is not str:
         raise TypeError("MCP endpoint must be a string")
+    if any(ord(character) < 32 or ord(character) == 127 for character in endpoint):
+        raise ValueError(_ENDPOINT_ERROR)
     try:
         parsed = urllib.parse.urlsplit(endpoint)
         port = parsed.port
-    except ValueError as exc:
-        raise ValueError(
-            "MCP endpoint must use loopback HTTP and the exact /mcp path"
-        ) from exc
+        host = parsed.hostname
+        canonical = urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)
+        )
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError(_ENDPOINT_ERROR) from exc
 
-    host = parsed.hostname
     expected_authority = ""
     if host in ("127.0.0.1", "localhost"):
         expected_authority = host if port is None else f"{host}:{port}"
@@ -112,7 +102,8 @@ def validate_endpoint(endpoint: str) -> str:
         expected_authority = "[::1]" if port is None else f"[::1]:{port}"
 
     if (
-        parsed.scheme != "http"
+        endpoint != canonical
+        or parsed.scheme != "http"
         or not expected_authority
         or parsed.netloc != expected_authority
         or parsed.username is not None
@@ -122,8 +113,69 @@ def validate_endpoint(endpoint: str) -> str:
         or parsed.fragment
         or (port is not None and not 1 <= port <= 65535)
     ):
-        raise ValueError("MCP endpoint must use loopback HTTP and the exact /mcp path")
+        raise ValueError(_ENDPOINT_ERROR)
+    return parsed
+
+
+def validate_endpoint(endpoint: str) -> str:
+    """Accept only canonical HTTP loopback authorities and the exact MCP path."""
+    _parse_endpoint(endpoint)
     return endpoint
+
+
+def resolve_endpoint(
+    endpoint: str,
+    *,
+    resolver: _Resolver = socket.getaddrinfo,
+) -> str:
+    """Pin a localhost endpoint once and return a canonical numeric URL."""
+    parsed = _parse_endpoint(endpoint)
+    host = parsed.hostname
+    if host is None:
+        raise McpClientError("MCP endpoint has no host")
+    try:
+        numeric = ipaddress.ip_address(host)
+    except ValueError:
+        numeric = None
+    if numeric is not None:
+        if not numeric.is_loopback:
+            raise McpClientError("MCP endpoint must resolve only to loopback addresses")
+    else:
+        if host != "localhost":
+            raise McpClientError("MCP endpoint host is not an approved loopback")
+        port = parsed.port if parsed.port is not None else 80
+        try:
+            answers = resolver(host, port, type=socket.SOCK_STREAM)
+            candidates: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+            for answer in answers:
+                family = answer[0]
+                raw_address = answer[4][0]
+                if type(raw_address) is not str or "%" in raw_address:
+                    raise ValueError("non-canonical address")
+                address = ipaddress.ip_address(raw_address)
+                if family == socket.AF_INET and address.version != 4:
+                    raise ValueError("address family mismatch")
+                if family == socket.AF_INET6 and address.version != 6:
+                    raise ValueError("address family mismatch")
+                if family not in (socket.AF_INET, socket.AF_INET6):
+                    raise ValueError("unsupported address family")
+                if not address.is_loopback:
+                    raise McpClientError(
+                        "MCP endpoint must resolve only to loopback addresses"
+                    )
+                candidates.add(address)
+        except McpClientError:
+            raise
+        except (IndexError, OSError, TypeError, ValueError) as exc:
+            raise McpClientError(f"MCP endpoint resolution failed: {exc}") from exc
+        if not candidates:
+            raise McpClientError("MCP endpoint resolution returned no addresses")
+        numeric = min(candidates, key=lambda value: (value.version, int(value)))
+
+    authority = f"[{numeric}]" if numeric.version == 6 else str(numeric)
+    if parsed.port is not None:
+        authority = f"{authority}:{parsed.port}"
+    return urllib.parse.urlunsplit(("http", authority, "/mcp", "", ""))
 
 
 def _request_document(request: gui_logic.GuiAutomationRequest) -> dict[str, object]:
@@ -181,6 +233,8 @@ def _post_json(
     document: dict[str, object],
     *,
     timeout: float,
+    connection_factory: _ConnectionFactory = http.client.HTTPConnection,
+    clock: _Clock = time.monotonic,
 ) -> bytes:
     method = document["method"]
     body = json.dumps(
@@ -189,33 +243,89 @@ def _post_json(
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-    request = urllib.request.Request(
-        endpoint,
-        data=body,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
     try:
-        with _DIRECT_OPENER.open(request, timeout=timeout) as response:
-            status = response.getcode()
-            content = response.read(MAX_RESPONSE_BYTES + 1)
-    except urllib.error.HTTPError as exc:
-        raise McpClientError(f"MCP {method} failed with HTTP {exc.code}") from exc
+        parsed = _parse_endpoint(endpoint)
+        host = parsed.hostname
+        if host is None or ipaddress.ip_address(host).is_loopback is not True:
+            raise ValueError("transport endpoint is not numeric loopback")
+        port = parsed.port if parsed.port is not None else 80
+    except (TypeError, ValueError) as exc:
+        raise McpClientError(f"MCP {method} transport URL is invalid: {exc}") from exc
+
+    deadline = clock() + timeout
+    connection: http.client.HTTPConnection | None = None
+    response: http.client.HTTPResponse | None = None
+
+    def set_remaining_timeout(transport: socket.socket) -> None:
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise McpClientError(f"MCP {method} timed out")
+        transport.settimeout(remaining)
+
+    try:
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise McpClientError(f"MCP {method} timed out")
+        connection = connection_factory(
+            host,
+            port,
+            timeout=remaining,
+        )
+        connection.connect()
+        transport = connection.sock
+        if transport is None:
+            raise McpClientError(f"MCP request failed during {method}: no socket")
+
+        set_remaining_timeout(transport)
+        connection.request(
+            "POST",
+            parsed.path,
+            body=body,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+        set_remaining_timeout(transport)
+        response = connection.getresponse()
+        set_remaining_timeout(transport)
+        status = response.status
+        if status != 200:
+            raise McpClientError(f"MCP {method} failed with HTTP {status}")
+
+        content_parts: list[bytes] = []
+        content_size = 0
+        while not response.isclosed():
+            set_remaining_timeout(transport)
+            chunk = response.read1(
+                min(64 * 1024, MAX_RESPONSE_BYTES + 1 - content_size)
+            )
+            if clock() >= deadline:
+                raise McpClientError(f"MCP {method} timed out")
+            if not chunk:
+                break
+            content_parts.append(chunk)
+            content_size += len(chunk)
+            if content_size > MAX_RESPONSE_BYTES:
+                raise McpClientError(f"MCP {method} response exceeds size limit")
+        return b"".join(content_parts)
+    except McpClientError:
+        raise
     except (TimeoutError, socket.timeout) as exc:
         raise McpClientError(f"MCP {method} timed out") from exc
-    except (urllib.error.URLError, OSError) as exc:
-        reason = getattr(exc, "reason", exc)
-        if isinstance(reason, (TimeoutError, socket.timeout)):
-            raise McpClientError(f"MCP {method} timed out") from exc
-        raise McpClientError(f"MCP request failed during {method}: {reason}") from exc
-    if status != 200:
-        raise McpClientError(f"MCP {method} failed with HTTP {status}")
-    if len(content) > MAX_RESPONSE_BYTES:
-        raise McpClientError(f"MCP {method} response exceeds size limit")
-    return content
+    except (http.client.HTTPException, OSError, UnicodeError, ValueError) as exc:
+        raise McpClientError(f"MCP request failed during {method}: {exc}") from exc
+    finally:
+        if response is not None:
+            try:
+                response.close()
+            except OSError:
+                pass
+        if connection is not None:
+            try:
+                connection.close()
+            except OSError:
+                pass
 
 
 def _rpc_call(
@@ -225,6 +335,8 @@ def _rpc_call(
     *,
     params: dict[str, object] | None,
     timeout: float,
+    connection_factory: _ConnectionFactory = http.client.HTTPConnection,
+    clock: _Clock = time.monotonic,
 ) -> object:
     document: dict[str, object] = {
         "jsonrpc": "2.0",
@@ -233,11 +345,22 @@ def _rpc_call(
     }
     if params is not None:
         document["params"] = params
-    raw_response = _post_json(endpoint, document, timeout=timeout)
+    raw_response = _post_json(
+        endpoint,
+        document,
+        timeout=timeout,
+        connection_factory=connection_factory,
+        clock=clock,
+    )
     response = _load_json(raw_response, f"MCP {method} response")
     if not isinstance(response, dict):
         raise McpClientError(f"MCP {method} response must be a JSON object")
-    if response.get("jsonrpc") != "2.0" or response.get("id") != request_id:
+    response_id = response.get("id")
+    if (
+        response.get("jsonrpc") != "2.0"
+        or type(response_id) is not int
+        or response_id != request_id
+    ):
         raise McpClientError(f"MCP {method} response has invalid JSON-RPC identity")
     if "error" in response:
         error = response["error"]
@@ -258,6 +381,19 @@ def _require_exact_fields(
 ) -> None:
     if set(document) != expected:
         raise McpClientError(f"{description} fields do not match the strict contract")
+
+
+def _require_status_error_invariant(
+    status: str,
+    error: str | None,
+    description: str,
+) -> None:
+    if status == "pending":
+        raise McpClientError(f"{description} is not terminal")
+    if status == "succeeded" and error is not None:
+        raise McpClientError(f"{description} violates the status/error invariant")
+    if status in ("failed", "timed_out") and not error:
+        raise McpClientError(f"{description} violates the status/error invariant")
 
 
 def _command_result(document: object) -> gui_logic.GuiCommandResult:
@@ -286,8 +422,7 @@ def _command_result(document: object) -> gui_logic.GuiCommandResult:
         )
     except (TypeError, ValueError) as exc:
         raise McpClientError(f"MCP command result is invalid: {exc}") from exc
-    if result.status == "pending":
-        raise McpClientError("MCP command result is not terminal")
+    _require_status_error_invariant(result.status, result.error, "MCP command result")
     return result
 
 
@@ -326,7 +461,12 @@ def _automation_result(
         if "failed" in statuses
         else "timed_out" if "timed_out" in statuses else "succeeded"
     )
-    if result.status != expected_status or result.status == "pending":
+    _require_status_error_invariant(
+        result.status,
+        result.error,
+        "MCP automation result",
+    )
+    if result.status != expected_status:
         raise McpClientError("MCP automation result status is inconsistent")
     return result
 
@@ -405,6 +545,9 @@ def connect_named_commands(
     worktree: pathlib.Path | str,
     audit_dir: pathlib.Path | str,
     http_timeout: float = HTTP_TIMEOUT_SECONDS,
+    resolver: _Resolver = socket.getaddrinfo,
+    connection_factory: _ConnectionFactory = http.client.HTTPConnection,
+    clock: _Clock = time.monotonic,
 ) -> tuple[gui_logic.GuiAutomationResult, pathlib.Path]:
     """Perform the fixed one-shot exchange and atomically publish its audit."""
     _request_document(request)
@@ -418,9 +561,10 @@ def connect_named_commands(
     expected_audit_dir = resolved_worktree / ".tmp" / "ida-gui"
     if resolved_audit_dir != expected_audit_dir:
         raise ValueError("audit directory must be the worktree .tmp/ida-gui path")
+    transport_endpoint = resolve_endpoint(endpoint, resolver=resolver)
 
     initialize = _rpc_call(
-        endpoint,
+        transport_endpoint,
         1,
         "initialize",
         params={
@@ -429,22 +573,26 @@ def connect_named_commands(
             "clientInfo": {"name": "d810-gui-connect", "version": "1"},
         },
         timeout=float(http_timeout),
+        connection_factory=connection_factory,
+        clock=clock,
     )
     if not isinstance(initialize, dict):
         raise McpClientError("MCP initialize result must be a JSON object")
     if initialize.get("protocolVersion") != MCP_PROTOCOL_VERSION:
         raise McpClientError("MCP initialize returned an unsupported protocol")
     ping = _rpc_call(
-        endpoint,
+        transport_endpoint,
         2,
         "ping",
         params=None,
         timeout=float(http_timeout),
+        connection_factory=connection_factory,
+        clock=clock,
     )
     if ping != {}:
         raise McpClientError("MCP ping result must be an empty JSON object")
     response = _rpc_call(
-        endpoint,
+        transport_endpoint,
         3,
         "tools/call",
         params={
@@ -452,6 +600,8 @@ def connect_named_commands(
             "arguments": {"code": build_remote_code(request)},
         },
         timeout=float(http_timeout),
+        connection_factory=connection_factory,
+        clock=clock,
     )
     result = _tool_result(request, response)
     context = {
