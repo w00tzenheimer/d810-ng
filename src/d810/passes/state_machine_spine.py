@@ -212,11 +212,13 @@ def state_machine_pass_spec(
 
 def register_state_machine_passes(registry: PassRegistry) -> PassRegistry:
     """Register the canonical state-machine CFF pass factories."""
-    registry.register("recover_dispatcher", RecoverDispatcher)
-    registry.register("recover_state_transitions", RecoverStateTransitions)
-    registry.register("plan_semantic_regions", PlanSemanticRegions)
-    registry.register("lower_state_machine", LowerStateMachine)
-    registry.register("cleanup_residual_dispatcher", CleanupResidualDispatcher)
+    for spec in standard_state_machine_passes():
+        registry.register(
+            spec.pass_id,
+            spec.pass_factory,
+            config_template=spec.config,
+            transforms=(spec.pass_factory.__name__,),
+        )
     return registry
 
 

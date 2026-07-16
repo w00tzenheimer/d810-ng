@@ -114,7 +114,16 @@ def build_legacy_flow_rule_pass(config: PipelineConfig) -> LegacyFlowRuleAdapter
 def register_legacy_flow_rule_passes(registry: PassRegistry) -> PassRegistry:
     """Register the simple config-aware legacy flow-rule adapter pass ids."""
     for pass_id in sorted(_SIMPLE_FLOW_RULE_PASS_IDS):
-        registry.register_configured(pass_id, build_legacy_flow_rule_pass)
+        legacy_rule = _SIMPLE_FLOW_RULE_PASS_IDS[pass_id]
+        registry.register_configured(
+            pass_id,
+            build_legacy_flow_rule_pass,
+            config_template=PipelineConfig(
+                pass_id=pass_id,
+                options={"legacy_rule": legacy_rule},
+            ),
+            transforms=(legacy_rule,),
+        )
     return registry
 
 

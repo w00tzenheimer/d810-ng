@@ -107,6 +107,11 @@ def register_cleanup_family_adapter_passes(registry: PassRegistry) -> PassRegist
     registry.register_configured(
         SIMPLE_FLATTENING_CLEANUP_PASS_ID,
         build_cleanup_family_adapter_pass,
+        config_template=PipelineConfig(
+            pass_id=SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+            options={"legacy_rule": SIMPLE_FLATTENING_CLEANUP_RULE},
+        ),
+        transforms=(SIMPLE_FLATTENING_CLEANUP_RULE,),
     )
     return registry
 

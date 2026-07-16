@@ -110,3 +110,22 @@ def test_module_pass_manager_exposes_default_operational_registry():
         "global-constant-inliner",
         "jump-fixer",
     ]
+
+
+def test_operational_registry_catalog_templates_all_build_and_explain_transforms():
+    registry = operational_config_v2_pass_registry()
+
+    assert registry.registered_pass_ids() == tuple(
+        sorted(registry.registered_pass_ids())
+    )
+    specs = tuple(
+        registry.build_spec(registry.config_template_for(pass_id))
+        for pass_id in registry.registered_pass_ids()
+    )
+
+    assert tuple(spec.pass_id for spec in specs) == registry.registered_pass_ids()
+    assert registry.transforms_for("jump-fixer") == ("JumpFixer",)
+    assert registry.transforms_for("recover_dispatcher") == ("RecoverDispatcher",)
+    assert registry.config_template_for("simple-flattening-cleanup-unflattener").options[
+        "legacy_rule"
+    ] == "SimpleFlatteningCleanupUnflattener"
