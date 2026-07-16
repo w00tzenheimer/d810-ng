@@ -22,7 +22,8 @@ The launcher supports these host environment overrides:
 
 - `D810_REPO_ROOT`: canonical checkout containing `.worktrees` and local sample databases.
 - `D810_WORKTREE_ROOT`: worktree directory relative to the canonical checkout; default `.worktrees`.
-- `D810_GUI_DOCKER_IMAGE`: GUI image; default `idapro-9.3:x11-arm64`.
+- `D810_GUI_DOCKER_IMAGE`: dependency-complete GUI image; default
+  `idapro-9.3-speedups:x11-arm64`.
 - `D810_DOCKER_MEMORY`: Docker memory limit; default `4g`, matching the system-test runner.
 - `D810_IDA_USER_DIR`: persistent host IDA user directory; default `$HOME/.idapro`.
 - `D810_GUI_DISPLAY`: container X11 display; default `host.docker.internal:0`.
@@ -56,7 +57,7 @@ Before launch, the script:
 4. Requires `/opt/X11/bin/xhost` and treats a successful `xhost` query as the XQuartz readiness signal. It does not rely on the application process name because the active server process is `Xquartz`/`X11.bin`, not `XQuartz`.
 5. Requires access control to contain `INET:localhost` or `INET6:localhost`. On failure it prints the exact recovery commands `open -a XQuartz` and `/opt/X11/bin/xhost +localhost`; it never broadens access with unrestricted `xhost +`.
 
-The container runs in the foreground with `--rm`, `--memory`, `-w /work`, `MODE=x11`, `DISPLAY`, `LIBGL_ALWAYS_SOFTWARE=1`, and `PYTHONPATH=/root/.idapro/plugins/d810/src:/app/ida/python`, using `/app/ida/entrypoint.sh` as its explicit entrypoint. The explicit Python path prevents a host editable install or unrelated checkout from shadowing the worktree selected by `-w`. The launcher also accepts the system runner's `-l`, `--enable-debug-logging`, `--enable-diag-snapshot`, and `--disable-fact-lifecycle` options and forwards non-wrapper `D810_*` environment variables. Ctrl-C terminates the GUI container. The existing CLI image and host plugin symlink are unchanged.
+The container runs in the foreground with `--rm`, `--memory`, `-w /work`, `MODE=x11`, `DISPLAY`, `LIBGL_ALWAYS_SOFTWARE=1`, and `PYTHONPATH=/root/.idapro/plugins/d810/src:/app/ida/python`, using `/app/ida/entrypoint.sh` as its explicit entrypoint. The explicit Python path prevents a host editable install or unrelated checkout from shadowing the worktree selected by `-w`. Before launch, the image must expose `org.d810.gui-runtime=x11-dev-emulation-z3-v1`; this proves that the X11 image includes the same virtualenv dependencies and isolated Z3 speedups layer as the test runtime. The launcher also accepts the system runner's `-l`, `--enable-debug-logging`, `--enable-diag-snapshot`, and `--disable-fact-lifecycle` options and forwards non-wrapper `D810_*` environment variables. Ctrl-C terminates the GUI container. The existing CLI image and host plugin symlink are unchanged.
 
 ## Error Handling
 
@@ -79,7 +80,7 @@ Invalid options, missing option values, invalid paths, unavailable XQuartz, miss
 - XQuartz unavailable and localhost-not-authorized failures;
 - help output that documents paths, state reuse, and sample paths.
 
-After the mocked tests pass, live acceptance launches `idapro-9.3:x11-arm64` with `-w truthful-config-v2-project-ui` and a copied `libobfuscated.dll.2026-06-03.i64`. Acceptance requires the visible IDA GUI to open the `/work/.tmp/ida-gui/` copy, load D810 0.6.6 from the selected worktree, expose the existing D810 configuration/log storage, and leave the canonical source hash unchanged. The live run is terminated after inspection.
+After the mocked tests pass, live acceptance launches `idapro-9.3-speedups:x11-arm64` with `-w truthful-config-v2-project-ui` and a copied `libobfuscated.dll.2026-06-03.i64`. Acceptance requires the visible IDA GUI to open the `/work/.tmp/ida-gui/` copy, load D810 0.6.6 from the selected worktree with isolated Z3 available, expose the existing D810 configuration/log storage, and leave the canonical source hash unchanged. The live run is terminated after inspection.
 
 ## Non-Goals
 

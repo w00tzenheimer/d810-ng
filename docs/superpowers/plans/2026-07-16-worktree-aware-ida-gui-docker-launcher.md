@@ -4,7 +4,7 @@
 
 **Goal:** Add a tested macOS launcher that runs the ARM64 IDA 9.3 GUI against a selected D810 worktree and a persistent host IDA user directory.
 
-**Architecture:** A standalone Bash script resolves the canonical repository and optional `-w` checkout, validates XQuartz and the GUI image, then constructs one array-backed `docker run`. A pytest subprocess harness replaces Docker and `xhost` with deterministic fakes so path, mount, validation, and argument behavior are unit-testable without opening Qt.
+**Architecture:** A standalone Bash script resolves the canonical repository and optional `-w` checkout, validates XQuartz and a labeled dependency-complete GUI image, then constructs one array-backed `docker run`. A pytest subprocess harness replaces Docker and `xhost` with deterministic fakes so path, mount, validation, and argument behavior are unit-testable without opening Qt.
 
 **Tech Stack:** Bash 3.2-compatible arrays, Docker Desktop, XQuartz, pytest, Python `subprocess` and `pathlib`.
 
@@ -18,7 +18,9 @@ The final safety contract also mounts canonical `samples/bins` read-only and cop
 
 - Implement on `diff/truthful-config-v2-project-ui` in `/Users/mahmoud/src/idapro/d810/.worktrees/truthful-config-v2-project-ui`.
 - Track the work under existing ticket `d81-kcin`.
-- Default image is exactly `idapro-9.3:x11-arm64`; do not retag or modify `idapro-9.3:latest`.
+- Default image is exactly `idapro-9.3-speedups:x11-arm64`, built from
+  `idapro-9.3:x11-arm64` with the test-runtime dependency and isolated-Z3
+  installation. Do not retag or modify `idapro-9.3:latest`.
 - Default display is exactly `host.docker.internal:0`.
 - Preserve localhost-only XQuartz authorization; never run unrestricted `xhost +`.
 - Keep the root checkout and host `~/.idapro/plugins/d810` symlink unchanged.
@@ -202,7 +204,7 @@ git commit -m "feat(gui): add worktree-aware IDA Docker launcher"
 - Modify: `.tickets/d81-kcin.md`
 
 **Interfaces:**
-- Consumes: the launcher from Task 2, active XQuartz localhost authorization, `idapro-9.3:x11-arm64`, worktree `truthful-config-v2-project-ui`, and `/samples/bins/libobfuscated.dylib.i64`.
+- Consumes: the launcher from Task 2, active XQuartz localhost authorization, `idapro-9.3-speedups:x11-arm64`, worktree `truthful-config-v2-project-ui`, and `/samples/bins/libobfuscated.dll.2026-06-03.i64`.
 - Produces: visible IDA/D810 acceptance evidence recorded on ticket `d81-kcin`.
 
 - [ ] **Step 1: Verify the host preconditions**
@@ -211,7 +213,8 @@ Run:
 
 ```bash
 /opt/X11/bin/xhost
-docker image inspect idapro-9.3:x11-arm64 --format '{{.Id}} {{.Architecture}}'
+docker image inspect idapro-9.3-speedups:x11-arm64 \
+  --format '{{.Id}} {{.Architecture}} {{index .Config.Labels "org.d810.gui-runtime"}}'
 ```
 
 Expected: `INET:localhost` or `INET6:localhost`, and an `arm64` image.

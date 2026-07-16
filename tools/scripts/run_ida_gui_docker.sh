@@ -25,7 +25,8 @@ Environment:
                          Defaults to the checkout owning the common Git dir.
   D810_WORKTREE_ROOT     Worktree directory below the repository root.
                          Default: .worktrees
-  D810_GUI_DOCKER_IMAGE  GUI image. Default: idapro-9.3:x11-arm64
+  D810_GUI_DOCKER_IMAGE  D810 GUI runtime image. Default:
+                         idapro-9.3-speedups:x11-arm64
   D810_DOCKER_MEMORY     Container memory limit. Default: 4g
   D810_IDA_USER_DIR      Host root for portable D810 config and logs.
                          Default: $HOME/.idapro
@@ -42,6 +43,12 @@ Mounts:
   D810_REPO_ROOT/samples/bins   -> /samples/bins read-only (when present)
 
 Safety:
+  The GUI image must carry org.d810.gui-runtime=x11-dev-emulation-z3-v1.
+  Build the default image with:
+    docker build -f docker/Dockerfile.test-runtime \
+      --build-arg IDA_IMAGE=idapro-9.3:x11-arm64 \
+      --build-arg D810_GUI_RUNTIME_LABEL=x11-dev-emulation-z3-v1 \
+      -t idapro-9.3-speedups:x11-arm64 .
   A /samples/bins/*.i64 argument is copied to the selected checkout's
   .tmp/ida-gui directory. IDA opens the /work copy and cannot modify the source.
 
@@ -173,7 +180,10 @@ fi
 [ -f "$WORK_DIR/src/d810ng.py" ] \
   || fail "selected checkout has no src/d810ng.py: $WORK_DIR"
 
-DOCKER_IMAGE="${D810_GUI_DOCKER_IMAGE-idapro-9.3:x11-arm64}"
+DEFAULT_GUI_DOCKER_IMAGE="idapro-9.3-speedups:x11-arm64"
+GUI_RUNTIME_LABEL_KEY="org.d810.gui-runtime"
+GUI_RUNTIME_LABEL_VALUE="x11-dev-emulation-z3-v1"
+DOCKER_IMAGE="${D810_GUI_DOCKER_IMAGE-$DEFAULT_GUI_DOCKER_IMAGE}"
 DOCKER_MEMORY="${D810_DOCKER_MEMORY-4g}"
 GUI_DISPLAY="${D810_GUI_DISPLAY-host.docker.internal:0}"
 IDA_USER_PATH="${D810_IDA_USER_DIR-$HOME/.idapro}"
@@ -241,8 +251,16 @@ if ! printf '%s\n' "$XHOST_OUTPUT" | grep -Eq '^(INET|INET6):localhost$'; then
 fi
 
 command -v docker >/dev/null 2>&1 || fail "docker not found in PATH"
-docker image inspect "$DOCKER_IMAGE" >/dev/null 2>&1 \
-  || fail "Docker GUI image not found: $DOCKER_IMAGE"
+if ! GUI_RUNTIME_LABEL="$(
+  docker image inspect \
+    --format "{{ index .Config.Labels \"$GUI_RUNTIME_LABEL_KEY\" }}" \
+    "$DOCKER_IMAGE" 2>/dev/null
+)"; then
+  fail "Docker GUI image not found: $DOCKER_IMAGE"
+fi
+if [ "$GUI_RUNTIME_LABEL" != "$GUI_RUNTIME_LABEL_VALUE" ]; then
+  fail "Docker image $DOCKER_IMAGE is not a D810 GUI runtime; expected $GUI_RUNTIME_LABEL_KEY=$GUI_RUNTIME_LABEL_VALUE. Build it with the command shown by --help."
+fi
 
 SAMPLES_DIR="$REPO_ROOT/samples/bins"
 if [ -d "$SAMPLES_DIR" ]; then
@@ -303,6 +321,7 @@ done
 
 printf '%s plan:\n' "$0"
 printf '  image:     %s\n' "$DOCKER_IMAGE"
+printf '  runtime:   %s=%s\n' "$GUI_RUNTIME_LABEL_KEY" "$GUI_RUNTIME_LABEL"
 printf '  memory:    %s\n' "$DOCKER_MEMORY"
 printf '  checkout:  %s\n' "$WORK_DIR"
 printf '  plugin:    %s -> /root/.idapro/plugins/d810\n' "$WORK_DIR"
