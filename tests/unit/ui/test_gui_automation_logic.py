@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import enum
 import importlib
 import json
 from collections.abc import Mapping
@@ -199,14 +200,14 @@ def test_unknown_commands_and_statuses_fail_closed() -> None:
 
 
 def _assert_json_native(value: object) -> None:
-    if value is None or isinstance(value, (bool, int, float, str)):
+    if value is None or type(value) in (bool, int, float, str):
         return
-    if isinstance(value, Mapping):
+    if type(value) is dict:
         assert all(isinstance(key, str) for key in value)
         for item in value.values():
             _assert_json_native(item)
         return
-    assert isinstance(value, list), f"non-JSON-native value: {value!r}"
+    assert type(value) is list, f"non-JSON-native value: {value!r}"
     for item in value:
         _assert_json_native(item)
 
@@ -319,6 +320,69 @@ def test_audit_document_preserves_timed_out_status_and_nested_json_details() -> 
         "visible": False,
     }
     _assert_json_native(document)
+
+
+class _PlainAuditValue(enum.Enum):
+    CONFIG = "config"
+
+
+class _StringAuditValue(str, enum.Enum):
+    CONFIG = "config"
+
+
+def _audit_with_details(logic: ModuleType, details: Mapping[str, object]) -> object:
+    request = _request(logic, commands=(logic.GuiCommand.OPEN_CONFIG,))
+    command = _command_result(logic, details=details)
+    result = logic.GuiAutomationResult(
+        request_id=request.request_id,
+        completed_at_utc="2026-07-16T18:30:01Z",
+        commands=(command,),
+        status="succeeded",
+        error=None,
+    )
+    return logic.audit_document(
+        request,
+        result,
+        {
+            "mode": "launch",
+            "worktree": "/work",
+            "idb": {"path": "/work/sample.i64", "sha256": "hex-digest"},
+            "mcp_endpoint": None,
+        },
+    )
+
+
+def test_audit_normalizes_string_backed_enums_to_builtin_strings() -> None:
+    logic = _logic()
+
+    document = _audit_with_details(logic, {"label": _StringAuditValue.CONFIG})
+
+    label = document["commands"][0]["details"]["label"]
+    assert type(label) is str
+    assert label == "config"
+
+
+def test_audit_normalizes_plain_enums_and_strictly_serializes() -> None:
+    logic = _logic()
+
+    document = _audit_with_details(
+        logic,
+        {"nested": [{"label": _PlainAuditValue.CONFIG}]},
+    )
+
+    _assert_json_native(document)
+    assert json.loads(json.dumps(document, allow_nan=False)) == document
+
+
+@pytest.mark.parametrize("value", (float("nan"), float("inf"), float("-inf")))
+def test_json_native_rejects_non_finite_floats(value: float) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        _logic()._json_native(value)
+
+
+def test_json_native_rejects_non_string_mapping_keys() -> None:
+    with pytest.raises(TypeError, match="keys must be strings"):
+        _logic()._json_native({1: "not allowed"})
 
 
 def test_gui_automation_logic_has_no_ida_qt_sqlite_docker_or_mcp_imports() -> None:

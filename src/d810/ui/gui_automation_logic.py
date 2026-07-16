@@ -70,6 +70,8 @@ def _command(value: object) -> GuiCommand:
 
 
 def _freeze_json(value: object) -> object:
+    if isinstance(value, enum.Enum):
+        return _freeze_json(value.value)
     if value is None or isinstance(value, (bool, str, int)):
         return value
     if isinstance(value, float):
@@ -79,7 +81,7 @@ def _freeze_json(value: object) -> object:
     if isinstance(value, Mapping):
         frozen: dict[str, object] = {}
         for key, item in value.items():
-            if not isinstance(key, str):
+            if type(key) is not str:
                 raise TypeError("JSON object keys must be strings")
             frozen[key] = _freeze_json(item)
         return MappingProxyType(frozen)
@@ -89,10 +91,21 @@ def _freeze_json(value: object) -> object:
 
 
 def _json_native(value: object) -> object:
-    if value is None or isinstance(value, (bool, str, int, float)):
+    if isinstance(value, enum.Enum):
+        return _json_native(value.value)
+    if value is None or isinstance(value, (bool, str, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("JSON numbers must be finite")
         return value
     if isinstance(value, Mapping):
-        return {key: _json_native(item) for key, item in value.items()}
+        native: dict[str, object] = {}
+        for key, item in value.items():
+            if type(key) is not str:
+                raise TypeError("JSON object keys must be strings")
+            native[key] = _json_native(item)
+        return native
     if isinstance(value, tuple):
         return [_json_native(item) for item in value]
     raise TypeError(f"value is not JSON-native: {value!r}")
