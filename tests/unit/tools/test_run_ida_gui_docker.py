@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -173,6 +174,26 @@ def _assert_pair(args: list[str], flag: str, value: str) -> None:
     ), (flag, value, args)
 
 
+def _automation_request(worktree: Path) -> tuple[Path, dict[str, object]]:
+    request_paths = list(
+        (worktree / ".tmp" / "ida-gui").glob("automation-request-*.json")
+    )
+    assert len(request_paths) == 1, request_paths
+    request_path = request_paths[0]
+    return request_path, json.loads(request_path.read_text(encoding="utf-8"))
+
+
+def _automation_environment(run: list[str]) -> str:
+    prefix = "D810_GUI_AUTOMATION_REQUEST="
+    values = [
+        run[index + 1]
+        for index, value in enumerate(run[:-1])
+        if value == "-e" and run[index + 1].startswith(prefix)
+    ]
+    assert len(values) == 1, values
+    return values[0].removeprefix(prefix)
+
+
 def test_default_launch_mounts_root_checkout_portable_d810_state_and_samples(
     tmp_path: Path,
 ) -> None:
@@ -269,6 +290,181 @@ def test_worktree_launch_copies_sample_database_and_preserves_other_ida_argument
         "-A",
         f"/work/.tmp/ida-gui/{copies[0].name}",
     ]
+
+
+def test_open_config_writes_exact_request_and_injects_only_named_bootstrap(
+    tmp_path: Path,
+) -> None:
+    result, calls, paths = _run(
+        tmp_path,
+        "-w",
+        WORKTREE_NAME,
+        "--open-config",
+    )
+
+    assert result.returncode == 0, result.stderr
+    request_path, document = _automation_request(paths["worktree"])
+    request = document["request"]
+    assert set(document) == {"request", "context"}
+    assert set(request) == {
+        "request_id",
+        "created_at_utc",
+        "commands",
+        "function_selector",
+        "timeout_seconds",
+    }
+    assert request_path.name == (f"automation-request-{request['request_id']}.json")
+    assert request["created_at_utc"].endswith("Z")
+    assert request["commands"] == ["open-config"]
+    assert request["function_selector"] is None
+    assert request["timeout_seconds"] == 30.0
+    assert document["context"] == {
+        "mode": "launch",
+        "worktree": "/work",
+        "idb": {"path": None, "sha256": None},
+        "mcp_endpoint": None,
+    }
+    run = calls[-1]
+    assert _automation_environment(run) == (f"/work/.tmp/ida-gui/{request_path.name}")
+    image_index = run.index(GUI_IMAGE)
+    assert run[image_index + 1 :] == ["-S/work/tools/scripts/ida_gui_bootstrap.py"]
+    assert list(request_path.parent.glob("*.tmp")) == []
+
+
+def test_open_workbench_validates_function_and_records_copied_idb_context(
+    tmp_path: Path,
+) -> None:
+    result, calls, paths = _run(
+        tmp_path,
+        "-w",
+        WORKTREE_NAME,
+        "--open-workbench",
+        "--function",
+        "0x401000",
+        "--",
+        "-A",
+        "/samples/bins/database with space.i64",
+    )
+
+    assert result.returncode == 0, result.stderr
+    request_path, document = _automation_request(paths["worktree"])
+    request = document["request"]
+    assert request["commands"] == ["open-workbench"]
+    assert request["function_selector"] == 0x401000
+    copies = list((paths["worktree"] / ".tmp" / "ida-gui").glob("*.i64"))
+    assert len(copies) == 1
+    assert document["context"] == {
+        "mode": "launch",
+        "worktree": "/work",
+        "idb": {
+            "path": f"/work/.tmp/ida-gui/{copies[0].name}",
+            "sha256": hashlib.sha256(b"sample").hexdigest(),
+        },
+        "mcp_endpoint": None,
+    }
+    run = calls[-1]
+    assert _automation_environment(run).endswith(request_path.name)
+    image_index = run.index(GUI_IMAGE)
+    assert run[image_index + 1 :] == [
+        "-S/work/tools/scripts/ida_gui_bootstrap.py",
+        "-A",
+        f"/work/.tmp/ida-gui/{copies[0].name}",
+    ]
+
+
+def test_both_named_flags_are_config_first_and_preserve_post_boundary_arguments(
+    tmp_path: Path,
+) -> None:
+    result, calls, paths = _run(
+        tmp_path,
+        "--open-workbench",
+        "--function",
+        "target",
+        "--open-config",
+        "--",
+        "--open-config",
+        "--function",
+        "ida-owned-value",
+    )
+
+    assert result.returncode == 0, result.stderr
+    _request_path, document = _automation_request(paths["repo"])
+    assert document["request"]["commands"] == [
+        "open-config",
+        "open-workbench",
+    ]
+    assert document["request"]["function_selector"] == "target"
+    run = calls[-1]
+    image_index = run.index(GUI_IMAGE)
+    assert run[image_index + 1 :] == [
+        "-S/work/tools/scripts/ida_gui_bootstrap.py",
+        "--open-config",
+        "--function",
+        "ida-owned-value",
+    ]
+
+
+def test_plain_launch_writes_no_request_and_preserves_caller_script_argument(
+    tmp_path: Path,
+) -> None:
+    result, calls, paths = _run(
+        tmp_path,
+        "--",
+        "-S/work/caller.py",
+        "--open-workbench",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not (paths["repo"] / ".tmp" / "ida-gui").exists()
+    run = calls[-1]
+    assert not any(value.startswith("D810_GUI_AUTOMATION_REQUEST=") for value in run)
+    image_index = run.index(GUI_IMAGE)
+    assert run[image_index + 1 :] == [
+        "-S/work/caller.py",
+        "--open-workbench",
+    ]
+
+
+def test_function_without_workbench_is_rejected_as_an_empty_named_request(
+    tmp_path: Path,
+) -> None:
+    result, calls, _paths = _run(tmp_path, "--function", "target")
+
+    assert result.returncode != 0
+    assert "--function requires --open-workbench" in result.stderr
+    assert calls == []
+
+
+@pytest.mark.parametrize("selector", ("", "target()", "0x401000 + 4"))
+def test_workbench_rejects_invalid_function_selectors(
+    tmp_path: Path,
+    selector: str,
+) -> None:
+    result, calls, _paths = _run(
+        tmp_path,
+        "--open-workbench",
+        "--function",
+        selector,
+    )
+
+    assert result.returncode != 0
+    assert "function selector" in result.stderr
+    assert not any(call[:2] == ["run", "--rm"] for call in calls)
+
+
+def test_named_startup_rejects_a_conflicting_caller_script_argument(
+    tmp_path: Path,
+) -> None:
+    result, calls, _paths = _run(
+        tmp_path,
+        "--open-config",
+        "--",
+        "-S/work/caller.py",
+    )
+
+    assert result.returncode != 0
+    assert "conflicting IDA -S" in result.stderr
+    assert not any(call[:2] == ["run", "--rm"] for call in calls)
 
 
 def test_system_runner_compatible_runtime_options_are_forwarded(tmp_path: Path) -> None:
@@ -384,6 +580,9 @@ def test_help_documents_worktrees_state_and_sample_mount(tmp_path: Path) -> None
     assert "--enable-debug-logging" in result.stdout
     assert "--enable-diag-snapshot" in result.stdout
     assert "--disable-fact-lifecycle" in result.stdout
+    assert "--open-config" in result.stdout
+    assert "--open-workbench" in result.stdout
+    assert "--function" in result.stdout
     assert "copy" in result.stdout.lower()
     assert "/samples/bins" in result.stdout
     assert calls == []

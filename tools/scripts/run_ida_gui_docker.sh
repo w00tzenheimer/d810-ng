@@ -17,6 +17,9 @@ Options:
                        Set D810_DIAG_SNAPSHOT=1 in the container.
   --disable-fact-lifecycle
                        Set D810_FACT_LIFECYCLE=0 in the container.
+  --open-config        Open and focus the D-810 Configuration dock at startup.
+  --open-workbench     Open and focus the D810 workbench at startup.
+  --function FUNCTION  Exact function name or integer EA for the workbench.
   -h, --help           Show this help.
   --                   Pass all remaining arguments to IDA unchanged.
 
@@ -90,7 +93,12 @@ MOUNT_LOGS_COMPAT=""
 ENABLE_DEBUG_LOGGING=""
 ENABLE_DIAG_SNAPSHOT=""
 DISABLE_FACT_LIFECYCLE=""
+OPEN_CONFIG=""
+OPEN_WORKBENCH=""
+FUNCTION_SET=""
+FUNCTION_VALUE=""
 IDA_ARGS=()
+unset D810_GUI_AUTOMATION_REQUEST
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -w|--worktree)
@@ -117,6 +125,20 @@ while [ "$#" -gt 0 ]; do
       DISABLE_FACT_LIFECYCLE=1
       shift
       ;;
+    --open-config)
+      OPEN_CONFIG=1
+      shift
+      ;;
+    --open-workbench)
+      OPEN_WORKBENCH=1
+      shift
+      ;;
+    --function)
+      [ "$#" -ge 2 ] || fail "$1 requires a function name or EA"
+      FUNCTION_SET=1
+      FUNCTION_VALUE="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -131,6 +153,21 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+NAMED_AUTOMATION=""
+if [ -n "$OPEN_CONFIG" ] || [ -n "$OPEN_WORKBENCH" ]; then
+  NAMED_AUTOMATION=1
+fi
+if [ -n "$FUNCTION_SET" ] && [ -z "$OPEN_WORKBENCH" ]; then
+  fail "--function requires --open-workbench"
+fi
+if [ -n "$NAMED_AUTOMATION" ] && [ "${#IDA_ARGS[@]}" -gt 0 ]; then
+  for IDA_ARG in "${IDA_ARGS[@]}"; do
+    case "$IDA_ARG" in
+      -S*) fail "conflicting IDA -S argument with named startup automation: $IDA_ARG" ;;
+    esac
+  done
+fi
 
 if [ "${D810_REPO_ROOT+x}" = x ]; then
   [ -n "$D810_REPO_ROOT" ] || fail "D810_REPO_ROOT is set but empty"
@@ -268,6 +305,7 @@ if [ -d "$SAMPLES_DIR" ]; then
 fi
 
 IDA_DATABASE_COPY=""
+IDA_DATABASE_CONTAINER_PATH=""
 if [ "${#IDA_ARGS[@]}" -gt 0 ]; then
   for IDA_ARG_INDEX in "${!IDA_ARGS[@]}"; do
     case "${IDA_ARGS[$IDA_ARG_INDEX]}" in
@@ -290,11 +328,114 @@ if [ "${#IDA_ARGS[@]}" -gt 0 ]; then
       cp -p "$SAMPLE_SOURCE" "$IDA_DATABASE_COPY"
       cmp -s "$SAMPLE_SOURCE" "$IDA_DATABASE_COPY" \
         || fail "sample database copy verification failed: $SAMPLE_SOURCE"
-      IDA_ARGS[$IDA_ARG_INDEX]="/work/.tmp/ida-gui/$(basename "$IDA_DATABASE_COPY")"
+      IDA_DATABASE_CONTAINER_PATH="/work/.tmp/ida-gui/$(basename "$IDA_DATABASE_COPY")"
+      IDA_ARGS[$IDA_ARG_INDEX]="$IDA_DATABASE_CONTAINER_PATH"
       break
       ;;
     esac
   done
+fi
+
+if [ -n "$NAMED_AUTOMATION" ]; then
+  command -v python3 >/dev/null 2>&1 \
+    || fail "python3 is required for named GUI startup automation"
+  AUTOMATION_DIR="$WORK_DIR/.tmp/ida-gui"
+  mkdir -p "$AUTOMATION_DIR"
+  D810_GUI_AUTOMATION_REQUEST="$(
+    PYTHONPATH="$WORK_DIR/src${PYTHONPATH:+:$PYTHONPATH}" python3 - \
+      "$AUTOMATION_DIR" \
+      "$OPEN_CONFIG" \
+      "$OPEN_WORKBENCH" \
+      "$FUNCTION_SET" \
+      "$FUNCTION_VALUE" \
+      "$IDA_DATABASE_COPY" \
+      "$IDA_DATABASE_CONTAINER_PATH" <<'PY'
+import datetime
+import hashlib
+import json
+import os
+import pathlib
+import secrets
+import sys
+import tempfile
+
+from d810.ui.gui_automation_logic import (
+    GuiAutomationRequest,
+    ordered_commands,
+    parse_function_selector,
+)
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with pathlib.Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+automation_dir = pathlib.Path(sys.argv[1])
+open_config = sys.argv[2] == "1"
+open_workbench = sys.argv[3] == "1"
+selector = parse_function_selector(sys.argv[5] if sys.argv[4] == "1" else None)
+database_host_path = sys.argv[6]
+database_container_path = sys.argv[7]
+request_id = secrets.token_hex(16)
+created_at_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
+created_at_utc = created_at_utc.replace("+00:00", "Z")
+request = GuiAutomationRequest(
+    request_id=request_id,
+    created_at_utc=created_at_utc,
+    commands=ordered_commands(open_config, open_workbench),
+    function_selector=selector,
+    timeout_seconds=30.0,
+)
+document = {
+    "request": {
+        "request_id": request.request_id,
+        "created_at_utc": request.created_at_utc,
+        "commands": [command.value for command in request.commands],
+        "function_selector": request.function_selector,
+        "timeout_seconds": request.timeout_seconds,
+    },
+    "context": {
+        "mode": "launch",
+        "worktree": "/work",
+        "idb": {
+            "path": database_container_path or None,
+            "sha256": (
+                sha256_file(database_host_path) if database_host_path else None
+            ),
+        },
+        "mcp_endpoint": None,
+    },
+}
+destination = automation_dir / f"automation-request-{request.request_id}.json"
+temporary = tempfile.NamedTemporaryFile(
+    mode="w",
+    encoding="utf-8",
+    dir=automation_dir,
+    prefix=f".{destination.name}.",
+    suffix=".tmp",
+    delete=False,
+)
+temporary_path = pathlib.Path(temporary.name)
+try:
+    with temporary:
+        json.dump(document, temporary, allow_nan=False, sort_keys=True)
+        temporary.write("\n")
+        temporary.flush()
+        os.fsync(temporary.fileno())
+    os.replace(temporary_path, destination)
+except Exception:
+    temporary.close()
+    temporary_path.unlink(missing_ok=True)
+    raise
+print(f"/work/.tmp/ida-gui/{destination.name}")
+PY
+  )"
+  export D810_GUI_AUTOMATION_REQUEST
+  IDA_ARGS=( -S/work/tools/scripts/ida_gui_bootstrap.py "${IDA_ARGS[@]}" )
 fi
 
 if [ -n "$ENABLE_DEBUG_LOGGING" ]; then
