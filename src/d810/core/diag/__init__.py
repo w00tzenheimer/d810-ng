@@ -341,6 +341,15 @@ def close_diag_session() -> None:
     _current_func_ea = None
 
 
+def get_active_diag_path() -> str | None:
+    """Return only the current capture path; never reopen or create a DB."""
+
+    if _current_db is None:
+        return None
+    database = getattr(_current_db, "database", None)
+    return str(database) if database else None
+
+
 def get_diag_db(func_ea: int = 0, log_dir: str | None = None) -> SqliteDatabase | None:
     """Return the current session's diag **peewee db** (or None if disabled).
 
@@ -392,8 +401,10 @@ def get_diag_conn(
 # layer as ``core.diag``, so this back-edge is allowed.
 from d810.core.observability import (
     register_diag_conn_provider as _register_diag_conn_provider,
+    register_diag_path_provider as _register_diag_path_provider,
     register_diag_session_handlers as _register_diag_session_handlers,
 )
 
 _register_diag_session_handlers(open_diag_session, close_diag_session)
 _register_diag_conn_provider(get_diag_conn)
+_register_diag_path_provider(get_active_diag_path)
