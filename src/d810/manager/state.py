@@ -39,9 +39,12 @@ from d810.manager.project_runtime import (
     save_legacy_project as save_legacy_project_command,
 )
 from d810.manager.workbench_models import (
+    BaselineRef,
+    D810OutputRef,
     DeobfuscationWorkbenchSnapshot,
     WorkbenchCommandRequest,
     WorkbenchCommandResult,
+    WorkbenchComparisonSnapshot,
 )
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
@@ -49,6 +52,7 @@ from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
 
 if TYPE_CHECKING:
     from d810.manager import D810Manager
+    from d810.manager.workbench_comparison import ComparisonIdentity
     from d810.ui.ida_ui import D810GUI
 
 logger = getLogger("D810")
@@ -277,6 +281,26 @@ class D810State(metaclass=SingletonMeta):
             runtime_project=runtime_project,
             facts=facts,
         )
+
+    def capture_workbench_baseline(
+        self,
+        identity: ComparisonIdentity,
+        pseudocode: str,
+    ) -> BaselineRef:
+        return self.manager.capture_workbench_baseline(identity, pseudocode)
+
+    def capture_workbench_d810_output(
+        self,
+        identity: ComparisonIdentity,
+        pseudocode: str,
+    ) -> D810OutputRef:
+        return self.manager.capture_workbench_d810_output(identity, pseudocode)
+
+    def get_workbench_comparison(
+        self,
+        identity: ComparisonIdentity,
+    ) -> WorkbenchComparisonSnapshot:
+        return self.manager.get_workbench_comparison(identity)
 
     def execute_workbench_analyze(
         self,

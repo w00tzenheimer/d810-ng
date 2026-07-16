@@ -424,6 +424,42 @@ def test_collection_failure_is_reported_without_hiding_other_sections(
     assert snapshot.collection_errors == ("attack: recon store is locked",)
 
 
+def test_collect_uses_manager_owned_comparison_refs_by_default(tmp_path: Path) -> None:
+    from d810.manager.workbench_comparison import (
+        ComparisonIdentity,
+        WorkbenchComparisonService,
+    )
+
+    project_snapshot, runtime_project = _project_context(tmp_path)
+    manager = _manager(tmp_path)
+    comparison_service = WorkbenchComparisonService(clock=lambda: 10.0)
+    identity = ComparisonIdentity(
+        function_ea=0x401000,
+        function_fingerprint="sha256:abc",
+        decompilation_generation=1,
+        idb_identity="idb:sample",
+        type_generation="types:1",
+        hexrays_version="9.2",
+        runtime_path=str(project_snapshot.runtime.path),
+        runtime_pass_ids=tuple(project_snapshot.effective_pass_ids),
+        runtime_generation=1,
+    )
+    baseline = comparison_service.capture_baseline(identity, "native\n")
+    output = comparison_service.capture_d810_output(identity, "d810\n")
+    manager.comparison_service = comparison_service
+
+    snapshot = _service(manager).collect(
+        function_ea=0x401000,
+        function_name="target",
+        function_fingerprint="sha256:abc",
+        project_snapshot=project_snapshot,
+        runtime_project=runtime_project,
+    )
+
+    assert snapshot.baseline == baseline
+    assert snapshot.latest_output == output
+
+
 def test_manager_owns_service_and_exposes_read_only_recon_facades() -> None:
     manager_path = _ROOT / "src" / "d810" / "manager" / "manager.py"
 
@@ -438,6 +474,17 @@ def test_manager_owns_service_and_exposes_read_only_recon_facades() -> None:
     )
     assert "get_func_reports" in _call_names(
         _method(manager_path, "D810Manager", "get_recon_outcome_reports")
+    )
+    post_init_calls = _call_names(_method(manager_path, "D810Manager", "__post_init__"))
+    assert "WorkbenchComparisonService" in post_init_calls
+    assert "capture_baseline" in _call_names(
+        _method(manager_path, "D810Manager", "capture_workbench_baseline")
+    )
+    assert "capture_d810_output" in _call_names(
+        _method(manager_path, "D810Manager", "capture_workbench_d810_output")
+    )
+    assert "compare" in _call_names(
+        _method(manager_path, "D810Manager", "get_workbench_comparison")
     )
 
 
@@ -455,6 +502,16 @@ def test_state_facade_supplies_current_runtime_context_without_parsing() -> None
     }
     assert "current_project_runtime_snapshot" in attributes
     assert "current_runtime_project" in attributes
+
+    assert "capture_workbench_baseline" in _call_names(
+        _method(state_path, "D810State", "capture_workbench_baseline")
+    )
+    assert "capture_workbench_d810_output" in _call_names(
+        _method(state_path, "D810State", "capture_workbench_d810_output")
+    )
+    assert "get_workbench_comparison" in _call_names(
+        _method(state_path, "D810State", "get_workbench_comparison")
+    )
 
 
 def _request(snapshot: object, command: str) -> WorkbenchCommandRequest:
