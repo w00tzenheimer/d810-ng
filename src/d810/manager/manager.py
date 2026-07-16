@@ -288,6 +288,44 @@ class D810Manager:
     ) -> RecipeValidation:
         return self.recipe_service.validate(draft, facts=facts)
 
+    def add_workbench_recipe_pass(
+        self,
+        draft: PipelineRecipeDraft,
+        pass_id: str,
+    ) -> PipelineRecipeDraft:
+        return self.recipe_service.add_pass(draft, pass_id)
+
+    def remove_workbench_recipe_pass(
+        self,
+        draft: PipelineRecipeDraft,
+        item_id: str,
+    ) -> PipelineRecipeDraft:
+        return self.recipe_service.remove_pass(draft, item_id)
+
+    def set_workbench_recipe_pass_enabled(
+        self,
+        draft: PipelineRecipeDraft,
+        item_id: str,
+        enabled: bool,
+    ) -> PipelineRecipeDraft:
+        return self.recipe_service.set_enabled(draft, item_id, enabled)
+
+    def reorder_workbench_recipe_pass(
+        self,
+        draft: PipelineRecipeDraft,
+        item_id: str,
+        new_index: int,
+    ) -> PipelineRecipeDraft:
+        return self.recipe_service.reorder_pass(draft, item_id, new_index)
+
+    def replace_workbench_recipe_pass_options(
+        self,
+        draft: PipelineRecipeDraft,
+        item_id: str,
+        options: typing.Mapping[str, object],
+    ) -> PipelineRecipeDraft:
+        return self.recipe_service.replace_options(draft, item_id, options)
+
     def get_workbench_function_recipe(
         self,
         function_ea: int,
