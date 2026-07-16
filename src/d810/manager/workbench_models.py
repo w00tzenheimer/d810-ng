@@ -53,6 +53,7 @@ class RuntimeConfigRef:
     routed: bool
     hook_mode: str | None
     pass_ids: tuple[str, ...]
+    recipe_scope: str = "project"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

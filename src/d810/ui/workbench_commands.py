@@ -117,6 +117,16 @@ class WorkbenchCommandAdapter:
             current_cfunc=cfunc,
         )
 
+    def recipe(self, snapshot: object) -> object:
+        from d810.ui.workbench_recipe_commands import WorkbenchRecipeAdapter
+
+        return WorkbenchRecipeAdapter(
+            self._state,
+            self._idaapi,
+            self._action_context(),
+            snapshot,
+        )
+
     def deobfuscate(
         self,
         request: WorkbenchCommandRequest,

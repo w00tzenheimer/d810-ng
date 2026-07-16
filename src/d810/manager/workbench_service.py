@@ -151,13 +151,19 @@ def _inference_applies(
 ) -> bool:
     if inference is None:
         return False
-    target_eas = frozenset(int(value) for value in getattr(inference, "target_func_eas", ()))
+    target_eas = frozenset(
+        int(value) for value in getattr(inference, "target_func_eas", ())
+    )
     if target_eas and int(function_ea) not in target_eas:
         return False
-    target_any = frozenset(str(value) for value in getattr(inference, "target_tags_any", ()))
+    target_any = frozenset(
+        str(value) for value in getattr(inference, "target_tags_any", ())
+    )
     if target_any and target_any.isdisjoint(tags):
         return False
-    target_all = frozenset(str(value) for value in getattr(inference, "target_tags_all", ()))
+    target_all = frozenset(
+        str(value) for value in getattr(inference, "target_tags_all", ())
+    )
     if target_all and not target_all.issubset(tags):
         return False
     return True
@@ -184,13 +190,15 @@ class WorkbenchService:
         facts: object | None = None,
         baseline: BaselineRef | None = None,
         latest_output: D810OutputRef | None = None,
+        runtime_scope: str = "project",
+        initial_errors: tuple[str, ...] = (),
     ) -> DeobfuscationWorkbenchSnapshot:
         """Collect one generation without executing passes or mutating state."""
         self._generation += 1
         generation = self._generation
         self._latest_function_ea = int(function_ea)
         self._latest_function_fingerprint = function_fingerprint
-        errors: list[str] = []
+        errors = list(initial_errors)
 
         runtime = RuntimeConfigRef(
             source_name=project_snapshot.source.basename,
@@ -201,6 +209,7 @@ class WorkbenchService:
             routed=project_snapshot.routed,
             hook_mode=project_snapshot.hook_mode,
             pass_ids=tuple(project_snapshot.effective_pass_ids),
+            recipe_scope=str(runtime_scope),
         )
 
         try:
@@ -538,8 +547,7 @@ class WorkbenchService:
             selection_mode="recon-hints",
             confidence=float(getattr(hints, "confidence", 0.0)),
             recommended_inferences=tuple(
-                str(value)
-                for value in getattr(hints, "recommended_inferences", ())
+                str(value) for value in getattr(hints, "recommended_inferences", ())
             ),
             suppressed_rules=tuple(
                 str(value) for value in getattr(hints, "suppress_rules", ())
@@ -573,7 +581,9 @@ class WorkbenchService:
         project_snapshot: ProjectRuntimeSnapshot,
     ) -> RuleScopeSummary:
         override_loader = getattr(self._manager, "get_function_rule_override", None)
-        override = override_loader(int(function_ea)) if callable(override_loader) else None
+        override = (
+            override_loader(int(function_ea)) if callable(override_loader) else None
+        )
         tag_loader = getattr(self._manager, "get_function_tags", None)
         tags = set(tag_loader(int(function_ea)) if callable(tag_loader) else ())
         if override is not None:

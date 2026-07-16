@@ -77,7 +77,11 @@ from d810.manager.config_v2_edit_models import (
 )
 from d810.manager.config_v2_editing import ConfigV2EditingService
 from d810.manager.function_recipe_runtime import (
+    FunctionRecipePersistenceError,
     FunctionRecipeRuntime,
+)
+from d810.manager.function_recipe_activation import (
+    select_workbench_recipe_projection,
 )
 from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
 from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
@@ -104,6 +108,7 @@ from d810.manager.workbench_recipe_models import (
     RecipeCommandResult,
 )
 from d810.manager.workbench_recipe_commands import WorkbenchRecipeCommandService
+from d810.manager.workbench_recipe_analysis import collect_recipe_preflight_facts
 from d810.manager.workbench_recipe_service import RecipeService
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
@@ -132,6 +137,7 @@ def maybe_run_tail_distinct(mba: typing.Any) -> None:
     from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
         maybe_run_tail_distinct as _impl,
     )
+
     _impl(mba)
 
 
@@ -176,7 +182,9 @@ class D810Manager:
     rule_scope_service: RuleScopeService = dataclasses.field(
         default_factory=RuleScopeService
     )
-    block_pass_scheduler: PassScheduler = dataclasses.field(default_factory=PassScheduler)
+    block_pass_scheduler: PassScheduler = dataclasses.field(
+        default_factory=PassScheduler
+    )
     instruction_pass_scheduler: PassScheduler = dataclasses.field(
         default_factory=PassScheduler
     )
@@ -185,7 +193,9 @@ class D810Manager:
     comparison_service: WorkbenchComparisonService = dataclasses.field(init=False)
     recipe_service: RecipeService = dataclasses.field(init=False)
     function_recipe_runtime: FunctionRecipeRuntime = dataclasses.field(init=False)
-    recipe_command_service: WorkbenchRecipeCommandService = dataclasses.field(init=False)
+    recipe_command_service: WorkbenchRecipeCommandService = dataclasses.field(
+        init=False
+    )
     workbench_service: WorkbenchService = dataclasses.field(init=False)
     diagnostic_inventory_service: DiagnosticInventoryService = dataclasses.field(
         init=False
@@ -200,10 +210,12 @@ class D810Manager:
     _recon_phase: typing.Any = dataclasses.field(default=None, init=False)
     _recon_runtime: typing.Any = dataclasses.field(default=None, init=False)
     _recon_bundle: typing.Any = dataclasses.field(default=None, init=False)
-    _flowgraph_ready_subscriber: typing.Any = dataclasses.field(default=None, init=False)
+    _flowgraph_ready_subscriber: typing.Any = dataclasses.field(
+        default=None, init=False
+    )
     _post_d810_runtime: typing.Any = dataclasses.field(default=None, init=False)
-    _function_analysis_priors: dict[str, FunctionAnalysisPriors] = (
-        dataclasses.field(default_factory=dict, init=False)
+    _function_analysis_priors: dict[str, FunctionAnalysisPriors] = dataclasses.field(
+        default_factory=dict, init=False
     )
 
     def __post_init__(self) -> None:
@@ -390,9 +402,7 @@ class D810Manager:
         pass_index: int,
         new_index: int,
     ) -> ConfigV2ProjectDraft:
-        return self.config_v2_editing_service.reorder_pass(
-            draft, pass_index, new_index
-        )
+        return self.config_v2_editing_service.reorder_pass(draft, pass_index, new_index)
 
     def set_config_v2_pass_rules(
         self,
@@ -471,6 +481,16 @@ class D810Manager:
         snapshot: DeobfuscationWorkbenchSnapshot,
         runtime_project: object,
     ) -> PipelineRecipeDraft:
+        override = self.get_workbench_function_recipe(snapshot.function.ea)
+        if override is not None:
+            return self.recipe_service.create_draft_from_override(
+                override,
+                function_ea=snapshot.function.ea,
+                function_fingerprint=snapshot.function.fingerprint,
+                workbench_generation=snapshot.generation,
+                source_path=snapshot.runtime.source_path,
+                runtime_path=snapshot.runtime.runtime_path,
+            )
         return self.recipe_service.create_draft(
             function_ea=snapshot.function.ea,
             function_fingerprint=snapshot.function.fingerprint,
@@ -478,6 +498,27 @@ class D810Manager:
             source_path=snapshot.runtime.source_path,
             runtime_path=snapshot.runtime.runtime_path,
             configs=pipeline_configs_from_project_config(runtime_project),
+        )
+
+    def create_saved_workbench_recipe_draft(
+        self,
+        *,
+        function_ea: int,
+        function_fingerprint: str | None,
+        workbench_generation: int,
+        source_path: str,
+        runtime_path: str,
+    ) -> PipelineRecipeDraft | None:
+        override = self.get_workbench_function_recipe(function_ea)
+        if override is None:
+            return None
+        return self.recipe_service.create_draft_from_override(
+            override,
+            function_ea=function_ea,
+            function_fingerprint=function_fingerprint,
+            workbench_generation=workbench_generation,
+            source_path=source_path,
+            runtime_path=runtime_path,
         )
 
     def validate_workbench_recipe(
@@ -588,6 +629,24 @@ class D810Manager:
         latest_output: D810OutputRef | None = None,
     ) -> DeobfuscationWorkbenchSnapshot:
         """Collect one immutable read-only workbench snapshot."""
+        runtime_scope = "project"
+        initial_errors: tuple[str, ...] = ()
+        try:
+            override = self.function_recipe_runtime.get(function_ea)
+            selection = select_workbench_recipe_projection(
+                runtime_project,
+                project_snapshot,
+                override,
+                function_ea=function_ea,
+                function_fingerprint=function_fingerprint,
+            )
+            runtime_project = selection.runtime_project
+            project_snapshot = selection.project_snapshot
+            runtime_scope = selection.recipe_scope
+            initial_errors = selection.errors
+        except FunctionRecipePersistenceError as exc:
+            runtime_scope = "function-recipe-blocked"
+            initial_errors = (f"function recipe: {exc}",)
         return self.workbench_service.collect(
             function_ea=function_ea,
             function_name=function_name,
@@ -597,6 +656,8 @@ class D810Manager:
             facts=facts,
             baseline=baseline,
             latest_output=latest_output,
+            runtime_scope=runtime_scope,
+            initial_errors=initial_errors,
         )
 
     def analyze_workbench_function(
@@ -614,6 +675,21 @@ class D810Manager:
             target,
             provider_phase,
             persist_hints=True,
+        )
+
+    def analyze_workbench_recipe(
+        self,
+        *,
+        function_ea: int,
+        target: object,
+        provider_phase: object,
+    ) -> object:
+        """Capture mutation-free live facts for Recipe Composer preflight."""
+        return collect_recipe_preflight_facts(
+            self._recon_runtime,
+            function_ea=function_ea,
+            target=target,
+            provider_phase=provider_phase,
         )
 
     def configure(self, **kwargs):
@@ -641,11 +717,7 @@ class D810Manager:
             except TypeError:
                 items = (value,)
         return tuple(
-            dict.fromkeys(
-                str(item).strip()
-                for item in items
-                if str(item).strip()
-            )
+            dict.fromkeys(str(item).strip() for item in items if str(item).strip())
         )
 
     def _load_recon_fact_profile_modules(self) -> None:
@@ -835,7 +907,9 @@ class D810Manager:
         self.rule_scope_service.set_active_inference(
             self.rule_scope_runtime.active_rule_inference
         )
-        self.rule_scope_service.register_inference("unflattening", unflattening_inference)
+        self.rule_scope_service.register_inference(
+            "unflattening", unflattening_inference
+        )
 
         # Instantiate core manager classes from registry
         self.instruction_optimizer = InstructionOptimizerManager(

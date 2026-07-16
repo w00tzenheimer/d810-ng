@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from d810.manager.workbench_recipe_models import RecipePass
+from d810.manager.workbench_recipe_models import FunctionPipelineOverride, RecipePass
 from d810.manager.workbench_recipe_service import RecipeEditError, RecipeService
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfig
@@ -71,8 +71,9 @@ def test_catalog_is_sorted_but_draft_keeps_effective_execution_order() -> None:
     assert tuple(entry.pass_id for entry in catalog) == tuple(
         sorted(entry.pass_id for entry in catalog)
     )
-    assert next(entry for entry in catalog if entry.pass_id == "jump-fixer").transforms \
-        == ("JumpFixer",)
+    assert next(
+        entry for entry in catalog if entry.pass_id == "jump-fixer"
+    ).transforms == ("JumpFixer",)
     assert tuple(item.pass_id for item in draft.passes) == (
         "jump-fixer",
         "recover_dispatcher",
@@ -121,7 +122,9 @@ def test_edit_rejects_unknown_pass_item_and_undeclared_options() -> None:
         service.add_pass(draft, "not-registered")
     with pytest.raises(RecipeEditError, match="draft item"):
         service.remove_pass(draft, "missing-item")
-    recover = next(item for item in draft.passes if item.pass_id == "recover_dispatcher")
+    recover = next(
+        item for item in draft.passes if item.pass_id == "recover_dispatcher"
+    )
     with pytest.raises(RecipeEditError, match="does not declare structured options"):
         service.replace_options(draft, recover.item_id, {"guess": True})
 
@@ -194,7 +197,9 @@ def test_validation_blocks_tampered_unknown_and_invalid_config_payloads() -> Non
     unknown = dataclasses.replace(
         draft,
         passes=(
-            RecipePass("unknown", "not-registered", True, '{"pass_id":"not-registered"}'),
+            RecipePass(
+                "unknown", "not-registered", True, '{"pass_id":"not-registered"}'
+            ),
         ),
     )
     jump = draft.passes[0]
@@ -220,7 +225,9 @@ def test_validation_blocks_tampered_unknown_and_invalid_config_payloads() -> Non
     assert invalid_validation.diagnostics[0].code == "invalid-pass-config"
 
 
-def test_complete_recipe_serialization_is_canonical_and_excludes_disabled_items() -> None:
+def test_complete_recipe_serialization_is_canonical_and_excludes_disabled_items() -> (
+    None
+):
     service = _service()
     draft = _draft(service)
     disabled = service.set_enabled(draft, draft.passes[1].item_id, False)
@@ -232,3 +239,95 @@ def test_complete_recipe_serialization_is_canonical_and_excludes_disabled_items(
     payload = json.loads(first)
     assert [item["pass_id"] for item in payload] == ["jump-fixer"]
     assert first.endswith("\n")
+
+
+def test_serialized_recipe_round_trip_revalidates_registered_configs() -> None:
+    service = _service()
+    draft = _draft(service)
+
+    serialized = service.serialize_enabled_configs(draft)
+    configs = service.deserialize_configs(serialized)
+
+    assert tuple(config.pass_id for config in configs) == (
+        "jump-fixer",
+        "recover_dispatcher",
+    )
+
+
+def test_serialized_recipe_rejects_unknown_passes_and_non_list_payloads() -> None:
+    service = _service()
+
+    with pytest.raises(RecipeEditError, match="sequence"):
+        service.deserialize_configs('{"pass_id":"jump-fixer"}')
+    with pytest.raises(RecipeEditError, match="not-registered"):
+        service.deserialize_configs('[{"pass_id":"not-registered"}]')
+
+
+def test_saved_function_recipe_seeds_effective_draft_after_identity_revalidation() -> (
+    None
+):
+    service = _service()
+    original = _draft(service)
+    override = FunctionPipelineOverride(
+        schema_version=1,
+        function_ea=0x401000,
+        function_fingerprint="sha256:abc",
+        source_path="/source.json",
+        runtime_path="/runtime.json",
+        pass_configs_json=service.serialize_enabled_configs(original),
+        updated_at=1.0,
+    )
+
+    draft = service.create_draft_from_override(
+        override,
+        function_ea=0x401000,
+        function_fingerprint="sha256:abc",
+        workbench_generation=9,
+        source_path="/source.json",
+        runtime_path="/runtime.json",
+    )
+
+    assert draft.workbench_generation == 9
+    assert tuple(item.pass_id for item in draft.passes) == (
+        "jump-fixer",
+        "recover_dispatcher",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("function_ea", 0x402000, "different function"),
+        ("function_fingerprint", "sha256:def", "fingerprint"),
+        ("source_path", "/other-source.json", "source project"),
+        ("runtime_path", "/other-runtime.json", "runtime project"),
+    ),
+)
+def test_saved_function_recipe_stale_identity_is_rejected(
+    field, value, message
+) -> None:
+    service = _service()
+    original = _draft(service)
+    values = {
+        "function_ea": 0x401000,
+        "function_fingerprint": "sha256:abc",
+        "source_path": "/source.json",
+        "runtime_path": "/runtime.json",
+    }
+    values[field] = value
+    override = FunctionPipelineOverride(
+        schema_version=1,
+        function_ea=0x401000,
+        function_fingerprint="sha256:abc",
+        source_path="/source.json",
+        runtime_path="/runtime.json",
+        pass_configs_json=service.serialize_enabled_configs(original),
+        updated_at=1.0,
+    )
+
+    with pytest.raises(RecipeEditError, match=message):
+        service.create_draft_from_override(
+            override,
+            workbench_generation=9,
+            **values,
+        )

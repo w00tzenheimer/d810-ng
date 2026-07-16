@@ -1,4 +1,5 @@
 """AnalysisManager — LLVM-style lazy caching + PreservedAnalyses invalidation."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.dispatcher_discovery_facts import (
@@ -160,9 +161,7 @@ def test_set_input_facts_replaces_active_observations():
         input_facts=type("_Facts", (), {"active_observations": ("old",)})(),
     )
 
-    am.set_input_facts(
-        type("_Facts", (), {"active_observations": ("new",)})()
-    )
+    am.set_input_facts(type("_Facts", (), {"active_observations": ("new",)})())
 
     assert am.active_observations == ("new",)
 
@@ -465,6 +464,28 @@ def test_evidence_store_reads_state_write_contract_token_from_live_observation()
     assert not am.has_evidence("dispatcher_predicates")
 
 
+def test_state_transition_anchor_is_known_branch_target_contract_evidence():
+    observation = type(
+        "_Obs",
+        (),
+        {
+            "kind": "StateTransitionAnchorFact",
+            "payload": {
+                "source_block_serial": 3,
+                "successor_block_serial": 7,
+            },
+            "evidence": ("goto @7",),
+        },
+    )()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    assert am.has_evidence("ir.branch_target")
+    assert am.get_evidence("branch_targets") == (observation,)
+
+
 def test_invalidate_to_clears_published_evidence_for_new_epoch():
     am = AnalysisManager(graph="G0")
     am.put_evidence("branch_targets", object())
@@ -489,9 +510,7 @@ def test_invalidate_to_hides_live_observation_evidence_until_fresh_input_facts()
     )()
     am = AnalysisManager(
         graph="G0",
-        input_facts=type(
-            "_Facts", (), {"active_observations": (stale_observation,)}
-        )(),
+        input_facts=type("_Facts", (), {"active_observations": (stale_observation,)})(),
     )
 
     assert am.get_evidence("branch_targets") == (stale_observation,)
@@ -515,9 +534,7 @@ def test_put_evidence_after_epoch_invalidation_is_visible_without_stale_observat
     )()
     am = AnalysisManager(
         graph="G0",
-        input_facts=type(
-            "_Facts", (), {"active_observations": (stale_observation,)}
-        )(),
+        input_facts=type("_Facts", (), {"active_observations": (stale_observation,)})(),
     )
 
     am.invalidate_to("G1", PreservedAnalyses.none())
@@ -675,9 +692,7 @@ def test_new_published_fact_visible_after_live_observation_masking():
     stale_observation = type("_Obs", (), {"kind": "stale_cfg_shape"})()
     am = AnalysisManager(
         graph="G0",
-        input_facts=type(
-            "_Facts", (), {"active_observations": (stale_observation,)}
-        )(),
+        input_facts=type("_Facts", (), {"active_observations": (stale_observation,)})(),
     )
 
     am.invalidate_contract(

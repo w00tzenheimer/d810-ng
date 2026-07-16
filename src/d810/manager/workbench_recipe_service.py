@@ -7,6 +7,7 @@ import json
 from collections.abc import Mapping, Sequence
 
 from d810.manager.workbench_recipe_models import (
+    FunctionPipelineOverride,
     PassCatalogEntry,
     PipelineRecipeDraft,
     RecipeDiagnostic,
@@ -127,7 +128,12 @@ class RecipeService:
         for ordinal, config in enumerate(configs):
             try:
                 self._registry.build_spec(config)
-            except (PassRegistryError, PipelineConfigError, TypeError, ValueError) as exc:
+            except (
+                PassRegistryError,
+                PipelineConfigError,
+                TypeError,
+                ValueError,
+            ) as exc:
                 raise RecipeEditError(
                     f"effective pipeline pass {config.pass_id!r} is not buildable: {exc}"
                 ) from exc
@@ -149,6 +155,38 @@ class RecipeService:
             source_path=str(source_path),
             runtime_path=str(runtime_path),
             passes=tuple(recipe_passes),
+        )
+
+    def create_draft_from_override(
+        self,
+        override: FunctionPipelineOverride,
+        *,
+        function_ea: int,
+        function_fingerprint: str | None,
+        workbench_generation: int,
+        source_path: str,
+        runtime_path: str,
+    ) -> PipelineRecipeDraft:
+        """Revalidate and materialize the saved effective function recipe."""
+        if int(override.schema_version) != RECIPE_SCHEMA_VERSION:
+            raise RecipeEditError(
+                f"unsupported function recipe schema {override.schema_version}"
+            )
+        if int(override.function_ea) != int(function_ea):
+            raise RecipeEditError("saved recipe belongs to a different function")
+        if override.function_fingerprint != function_fingerprint:
+            raise RecipeEditError("saved recipe function fingerprint is stale")
+        if str(override.source_path) != str(source_path):
+            raise RecipeEditError("saved recipe source project is stale")
+        if str(override.runtime_path) != str(runtime_path):
+            raise RecipeEditError("saved recipe runtime project is stale")
+        return self.create_draft(
+            function_ea=function_ea,
+            function_fingerprint=function_fingerprint,
+            workbench_generation=workbench_generation,
+            source_path=source_path,
+            runtime_path=runtime_path,
+            configs=self.deserialize_configs(override.pass_configs_json),
         )
 
     @staticmethod
@@ -180,7 +218,9 @@ class RecipeService:
         except UnknownPassIdError as exc:
             raise RecipeEditError(f"unknown registered pass {pass_id!r}") from exc
         except (PassRegistryError, PipelineConfigError, TypeError, ValueError) as exc:
-            raise RecipeEditError(f"registered pass {pass_id!r} is not buildable: {exc}") from exc
+            raise RecipeEditError(
+                f"registered pass {pass_id!r} is not buildable: {exc}"
+            ) from exc
         used = {item.item_id for item in draft.passes}
         serial = draft.revision + len(draft.passes) + 1
         item_id = f"item-{serial}-{pass_id}"
@@ -189,7 +229,10 @@ class RecipeService:
             item_id = f"item-{serial}-{pass_id}"
         return self._replace_passes(
             draft,
-            (*draft.passes, RecipePass(item_id, pass_id, True, _canonical_json(config.to_dict()))),
+            (
+                *draft.passes,
+                RecipePass(item_id, pass_id, True, _canonical_json(config.to_dict())),
+            ),
         )
 
     def remove_pass(
@@ -249,7 +292,9 @@ class RecipeService:
             updated = PipelineConfig.from_dict(payload)
             self._registry.build_spec(updated)
         except (PassRegistryError, PipelineConfigError, TypeError, ValueError) as exc:
-            raise RecipeEditError(f"invalid options for {item.pass_id!r}: {exc}") from exc
+            raise RecipeEditError(
+                f"invalid options for {item.pass_id!r}: {exc}"
+            ) from exc
         passes = list(draft.passes)
         passes[index] = dataclasses.replace(
             item,
@@ -303,7 +348,13 @@ class RecipeService:
                     )
                 )
                 continue
-            except (json.JSONDecodeError, PassRegistryError, PipelineConfigError, TypeError, ValueError) as exc:
+            except (
+                json.JSONDecodeError,
+                PassRegistryError,
+                PipelineConfigError,
+                TypeError,
+                ValueError,
+            ) as exc:
                 diagnostics.append(
                     RecipeDiagnostic(
                         "invalid-pass-config",
@@ -332,7 +383,9 @@ class RecipeService:
             )
             manifest: object = []
         else:
-            preflight = preflight_pipeline_contract(enabled_specs, facts or _EmptyFacts())
+            preflight = preflight_pipeline_contract(
+                enabled_specs, facts or _EmptyFacts()
+            )
             manifest = pipeline_contract_preflight_manifest(enabled_specs, preflight)
             for (ordinal, item), result in zip(enabled_items, preflight.results):
                 for diagnostic in result.diagnostics:
@@ -378,6 +431,38 @@ class RecipeService:
         if not payload:
             raise RecipeEditError("recipe has no enabled registered passes")
         return _canonical_json(payload, trailing_newline=True)
+
+    def deserialize_configs(self, payload_json: str) -> tuple[PipelineConfig, ...]:
+        """Parse and revalidate a complete persisted recipe against the registry."""
+        try:
+            payload = json.loads(str(payload_json))
+        except json.JSONDecodeError as exc:
+            raise RecipeEditError(f"recipe JSON is invalid: {exc}") from exc
+        if not isinstance(payload, list):
+            raise RecipeEditError("persisted recipe must be a sequence of pass configs")
+        if not payload:
+            raise RecipeEditError("persisted recipe contains no pass configs")
+        configs: list[PipelineConfig] = []
+        for ordinal, item in enumerate(payload):
+            if not isinstance(item, Mapping):
+                raise RecipeEditError(
+                    f"persisted recipe pass {ordinal} must be an object"
+                )
+            try:
+                config = PipelineConfig.from_dict(item)
+                self._registry.build_spec(config)
+            except (
+                UnknownPassIdError,
+                PassRegistryError,
+                PipelineConfigError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                raise RecipeEditError(
+                    f"persisted recipe pass {ordinal} is invalid: {exc}"
+                ) from exc
+            configs.append(config)
+        return tuple(configs)
 
 
 __all__ = ["RECIPE_SCHEMA_VERSION", "RecipeEditError", "RecipeService"]
