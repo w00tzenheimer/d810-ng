@@ -79,6 +79,11 @@ function. The selector grammar accepts only exact names or integer EAs. Named
 fresh mode rejects caller `-S` scripts, and connect rejects all raw IDA
 arguments. Connect also rejects fresh-only `--mcp` and `--mcp-port`.
 
+Plain fresh arguments after `--` remain distinct Bash array elements. The one
+rewrite is `/samples/bins/*.i64`: the launcher copies and verifies it, then
+replaces that element with the `/work/.tmp/ida-gui/` copy. Named fresh rejects
+caller `-S*` elements, while connect rejects every post-`--` element.
+
 A fresh named request is written atomically at:
 
 ```text
@@ -125,6 +130,10 @@ Fresh named plans use exact generated paths. Connect reports a direct MCP
 request and the deterministic audit-path pattern; it must not claim a database
 copy, Docker/XQuartz work, or MCP startup.
 
+CLI- and path-derived plan values use Bash 3.2 `%q`, so control characters and
+newlines cannot create forged plan fields. Fixed mode and command labels remain
+plain text; ordinary selectors and loopback URLs remain human-readable.
+
 Help must document both modes, every named/MCP flag, all flag dependencies,
 loopback publication, request/audit paths, and the canonical DLL witness.
 
@@ -153,8 +162,10 @@ Task F proof from the full repository suite.
 
 Task F is automation and documentation only. It must not be described as new
 live GUI acceptance. Record the reproducible named `--open-config` command lane
-and the request/audit evidence boundary on `d81-kcin`, while leaving the ticket
-open for the worklist's remaining live observations.
+and the request/audit evidence boundary on `d81-kcin`. That ticket remains open
+specifically for a live named `--open-config` request/audit confirmation of
+Slice 0. Separate workbench, recipe, config-v2, and SQLite live lanes remain on
+their child tickets and are not `d81-kcin` completion criteria.
 
 Create one scoped Task F commit containing the launcher, its subprocess tests,
 the updated design and plan, and the ticket note. Keep this commit separate from

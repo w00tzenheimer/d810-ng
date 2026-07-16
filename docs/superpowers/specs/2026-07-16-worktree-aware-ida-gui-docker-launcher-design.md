@@ -39,7 +39,10 @@ The selection and named-action options are:
 - `--mcp-endpoint URL`: select the existing-session endpoint. It requires
   `--connect`, accepts only loopback HTTP `/mcp` URLs, and defaults to
   `http://127.0.0.1:13337/mcp`.
-- `--`: pass all remaining arguments to IDA unchanged in fresh mode.
+- `--`: end wrapper parsing. Plain fresh arguments remain separate array
+  elements except that `/samples/bins/*.i64` is copied, verified, and rewritten
+  to its `/work/.tmp/ida-gui/` copy. Named fresh rejects caller `-S*` arguments,
+  and connect rejects every post-`--` argument.
 
 `--open-config` always precedes `--open-workbench` when both are requested.
 `--function` is not a free-form Python hook, and named fresh automation rejects
@@ -103,6 +106,11 @@ stable plan with these fields in this order:
 The connect plan intentionally contains no Docker image/runtime/display, sample
 copy, MCP-start, or XQuartz claims.
 
+Every plan value derived from a CLI argument or filesystem path is rendered
+with Bash 3.2-compatible `%q`. This keeps each field on one physical output line
+and prevents control text from forging a second plan field. Ordinary selectors,
+loopback URLs, and paths without shell metacharacters remain directly readable.
+
 ## Worktree, State, and Sample Boundaries
 
 The selected checkout is mounted read-write at `/work` and
@@ -148,9 +156,11 @@ request/audit context, copy safety, loopback publication, complete help, and all
 four pre-action plans.
 
 Task F adds no live IDA run. Its evidence is subprocess and repository
-verification only. Earlier live acceptance established the base XQuartz lane;
-the ticket remains open until the worklist's remaining named GUI lanes are
-actually observed and recorded.
+verification only. Earlier live acceptance established the base XQuartz lane.
+`d81-kcin` remains open specifically for a live named `--open-config`
+request/audit confirmation of Slice 0. The separate workbench, recipe,
+config-v2, and SQLite live lanes belong to their child tickets, not
+`d81-kcin`.
 
 ## Non-Goals
 

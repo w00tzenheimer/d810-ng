@@ -36,7 +36,7 @@ Options:
   --mcp                Start the mounted MCP plugin for a named action.
   --mcp-port PORT      Loopback host port for MCP. Default: 13337.
   -h, --help           Show this help.
-  --                   Pass all remaining arguments to IDA unchanged.
+  --                   End wrapper parsing; see IDA argument boundary below.
 
 Environment:
   D810_REPO_ROOT         Canonical checkout containing linked worktrees.
@@ -77,6 +77,13 @@ MCP boundary:
   Fresh --mcp publishes only 127.0.0.1:HOST_PORT and keeps the container port
   fixed at 13337. --connect accepts only a loopback HTTP /mcp endpoint and
   defaults to http://127.0.0.1:13337/mcp.
+
+IDA argument boundary:
+  Plain fresh arguments after -- remain separate array elements.
+  /samples/bins/*.i64 is copied, verified, and rewritten
+  to its /work/.tmp/ida-gui/ copy.
+  Named fresh rejects caller -S* arguments after --.
+  Connect rejects every argument after --.
 
 Automation artifacts:
   A fresh named launch writes its immutable request below the selected checkout:
@@ -126,13 +133,13 @@ EOF
 print_pre_action_plan() {
   printf 'D810 GUI pre-action plan:\n'
   printf '  mode: %s\n' "$PLAN_MODE"
-  printf '  selected worktree: %s\n' "$WORK_DIR"
-  printf '  copied IDB: %s\n' "$PLAN_COPIED_IDB"
+  printf '  selected worktree: %q\n' "$WORK_DIR"
+  printf '  copied IDB: %q\n' "$PLAN_COPIED_IDB"
   printf '  ordered commands: %s\n' "$PLAN_COMMANDS"
-  printf '  function selector: %s\n' "$PLAN_FUNCTION_SELECTOR"
-  printf '  MCP endpoint: %s\n' "$PLAN_MCP_ENDPOINT"
-  printf '  request path: %s\n' "$PLAN_REQUEST_PATH"
-  printf '  audit path: %s\n\n' "$PLAN_AUDIT_PATH"
+  printf '  function selector: %q\n' "$PLAN_FUNCTION_SELECTOR"
+  printf '  MCP endpoint: %q\n' "$PLAN_MCP_ENDPOINT"
+  printf '  request path: %q\n' "$PLAN_REQUEST_PATH"
+  printf '  audit path: %q\n\n' "$PLAN_AUDIT_PATH"
 }
 
 canonical_dir() {
