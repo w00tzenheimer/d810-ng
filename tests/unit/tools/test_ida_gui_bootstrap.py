@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[3]
 BOOTSTRAP_PATH = ROOT / "tools" / "scripts" / "ida_gui_bootstrap.py"
@@ -62,11 +64,19 @@ class FakeTimerRuntime:
         self.dispatch_calls: list[object] = []
         self.dispatch_result = None
         self.dispatch_error: Exception | None = None
+        self.events: list[str] = []
+        self.mcp_running_value = False
+        self.mcp_running_error: Exception | None = None
+        self.mcp_running_calls = 0
+        self.mcp_start_error: Exception | None = None
+        self.mcp_start_calls = 0
         self.registration_error: Exception | None = None
         self.timer = object()
         self.register_result = self.timer
         self.runtime = bootstrap.BootstrapRuntime(
             plugin_loaded=self.plugin_loaded,
+            mcp_running=self.mcp_running,
+            start_mcp=self.start_mcp,
             dispatch=self.dispatch,
             register_timer=self.register_timer,
             monotonic=lambda: self.now,
@@ -77,11 +87,26 @@ class FakeTimerRuntime:
         return self.loaded
 
     def dispatch(self, request):
+        self.events.append("dispatch")
         self.dispatch_calls.append(request)
         if self.dispatch_error is not None:
             raise self.dispatch_error
         assert self.dispatch_result is not None
         return self.dispatch_result
+
+    def mcp_running(self) -> bool:
+        self.events.append("mcp-running")
+        self.mcp_running_calls += 1
+        if self.mcp_running_error is not None:
+            raise self.mcp_running_error
+        return self.mcp_running_value
+
+    def start_mcp(self) -> None:
+        self.events.append("mcp-start")
+        self.mcp_start_calls += 1
+        if self.mcp_start_error is not None:
+            raise self.mcp_start_error
+        self.mcp_running_value = True
 
     def register_timer(self, interval: int, callback):
         self.registered_intervals.append(interval)
@@ -101,6 +126,7 @@ def _request_document(
     *,
     commands: list[str] | None = None,
     selector: str | int | None = None,
+    mcp_endpoint: object = None,
 ) -> dict[str, object]:
     return {
         "request": {
@@ -117,7 +143,7 @@ def _request_document(
                 "path": "/work/.tmp/ida-gui/sample.i64",
                 "sha256": "abc123",
             },
-            "mcp_endpoint": None,
+            "mcp_endpoint": mcp_endpoint,
         },
     }
 
@@ -253,6 +279,160 @@ def test_polling_waits_for_loaded_plugin_then_dispatches_exactly_once() -> None:
     assert len(timer.dispatch_calls) == 1
     assert timer.unregistered == [timer.timer]
     assert session.finished is True
+
+
+def test_mcp_starts_once_after_readiness_and_before_named_dispatch() -> None:
+    bootstrap = _bootstrap()
+    session, timer, filesystem = _session(
+        bootstrap,
+        document=_request_document(
+            mcp_endpoint="http://127.0.0.1:13337/mcp",
+        ),
+    )
+    timer.dispatch_result = _result(bootstrap)
+
+    assert timer.fire() == bootstrap.POLL_INTERVAL_MS
+    assert timer.events == []
+    timer.loaded = True
+
+    assert timer.fire() == -1
+    assert timer.events == [
+        "mcp-running",
+        "mcp-start",
+        "mcp-running",
+        "dispatch",
+    ]
+    assert timer.mcp_start_calls == 1
+    assert len(timer.dispatch_calls) == 1
+    audit = _audit(filesystem)
+    assert audit["status"] == "succeeded"
+    assert audit["mcp_endpoint"] == "http://127.0.0.1:13337/mcp"
+
+    assert timer.fire() == -1
+    assert timer.mcp_start_calls == 1
+    assert len(timer.dispatch_calls) == 1
+    assert session.finished is True
+
+
+def test_already_running_mcp_is_reused_without_restart() -> None:
+    bootstrap = _bootstrap()
+    _session_object, timer, filesystem = _session(
+        bootstrap,
+        document=_request_document(
+            mcp_endpoint="http://127.0.0.1:14444/mcp",
+        ),
+    )
+    timer.mcp_running_value = True
+    timer.dispatch_result = _result(bootstrap)
+    timer.loaded = True
+
+    assert timer.fire() == -1
+
+    assert timer.events == ["mcp-running", "dispatch"]
+    assert timer.mcp_start_calls == 0
+    assert len(timer.dispatch_calls) == 1
+    assert _audit(filesystem)["mcp_endpoint"] == "http://127.0.0.1:14444/mcp"
+
+
+def test_live_running_probe_reuses_server_started_by_loaded_mcp_plugin() -> None:
+    bootstrap = _bootstrap()
+    loaded_package = ModuleType("ida_mcp")
+    loaded_package.MCP_SERVER = type("Server", (), {"_running": True})()
+    previous = bootstrap.sys.modules.get("ida_mcp")
+    bootstrap.sys.modules["ida_mcp"] = loaded_package
+    try:
+        assert bootstrap._live_mcp_running() is True
+    finally:
+        if previous is None:
+            bootstrap.sys.modules.pop("ida_mcp", None)
+        else:
+            bootstrap.sys.modules["ida_mcp"] = previous
+
+
+def test_mcp_start_exception_is_a_terminal_failure_without_dispatch() -> None:
+    bootstrap = _bootstrap()
+    session, timer, filesystem = _session(
+        bootstrap,
+        document=_request_document(
+            mcp_endpoint="http://127.0.0.1:13337/mcp",
+        ),
+    )
+    timer.mcp_start_error = RuntimeError("server initialization exploded")
+    timer.loaded = True
+
+    assert timer.fire() == -1
+
+    audit = _audit(filesystem)
+    assert audit["status"] == "failed"
+    assert audit["error"] == (
+        "bootstrap MCP startup failed: server initialization exploded"
+    )
+    assert audit["commands"][0]["status"] == "failed"
+    assert audit["mcp_endpoint"] == "http://127.0.0.1:13337/mcp"
+    assert timer.mcp_start_calls == 1
+    assert timer.dispatch_calls == []
+    assert timer.unregistered == [timer.timer]
+    assert session.finished is True
+
+
+def test_mcp_start_must_report_running_before_dispatch() -> None:
+    bootstrap = _bootstrap()
+    _session_object, timer, filesystem = _session(
+        bootstrap,
+        document=_request_document(
+            mcp_endpoint="http://127.0.0.1:13337/mcp",
+        ),
+    )
+
+    def start_without_server() -> None:
+        timer.events.append("mcp-start")
+        timer.mcp_start_calls += 1
+
+    timer.runtime.start_mcp = start_without_server
+    timer.loaded = True
+
+    assert timer.fire() == -1
+
+    audit = _audit(filesystem)
+    assert audit["status"] == "failed"
+    assert audit["error"] == (
+        "bootstrap MCP startup failed: MCP server did not report running"
+    )
+    assert timer.events == ["mcp-running", "mcp-start", "mcp-running"]
+    assert timer.dispatch_calls == []
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    (
+        True,
+        "https://127.0.0.1:13337/mcp",
+        "http://0.0.0.0:13337/mcp",
+        "http://127.0.0.1:80/mcp",
+        "http://127.0.0.1:65536/mcp",
+        "http://127.0.0.1:13337/config.html",
+    ),
+)
+def test_mcp_endpoint_intent_is_strictly_loopback_http(endpoint: object) -> None:
+    bootstrap = _bootstrap()
+
+    with pytest.raises((TypeError, ValueError), match="MCP endpoint"):
+        _session(
+            bootstrap,
+            document=_request_document(mcp_endpoint=endpoint),
+        )
+
+
+def test_live_mcp_path_uses_public_background_server_without_dialog_or_stop() -> None:
+    source = BOOTSTRAP_PATH.read_text(encoding="utf-8")
+
+    assert "PLUGIN_ENTRY" in source
+    assert ".init()" in source
+    assert ".start_server()" in source
+    assert "McpConfigDialog" not in source
+    assert "run_plugin" not in source
+    assert "stop_server" not in source
+    assert "unload_plugin" not in source
 
 
 def test_success_audit_uses_schema_v1_and_atomic_replace() -> None:
