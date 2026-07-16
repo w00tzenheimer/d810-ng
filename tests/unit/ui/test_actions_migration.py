@@ -132,6 +132,7 @@ def test_stats_compatibility_action_opens_evidence_focused_workbench(
             self._closed = False
             self.function_calls: list[tuple[int | None, str | None]] = []
             self.show_calls: list[str | None] = []
+            self.command_adapters: list[object] = []
             created.append(self)
 
         def set_function(self, func_ea, func_name) -> None:
@@ -140,6 +141,9 @@ def test_stats_compatibility_action_opens_evidence_focused_workbench(
         def show(self, focus_section=None) -> bool:
             self.show_calls.append(focus_section)
             return True
+
+        def set_command_adapter(self, adapter) -> None:
+            self.command_adapters.append(adapter)
 
     class LegacyPanel(FakePanel):
         pass
@@ -172,6 +176,11 @@ def test_stats_compatibility_action_opens_evidence_focused_workbench(
     assert type(first) is FakePanel
     assert first.function_calls == [(0x401000, "target")]
     assert first.show_calls == ["evidence"]
+    assert len(first.command_adapters) == 1
+    adapter = first.command_adapters[0]
+    assert adapter._state is state
+    assert adapter._idaapi is idaapi
+    assert adapter._ctx is ctx
 
     first._closed = True
     assert action.execute(ctx) == 1
