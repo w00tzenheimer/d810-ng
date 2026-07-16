@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import importlib.util
 import json
 from pathlib import Path
@@ -19,6 +20,7 @@ from d810.manager.workbench_models import (
     RuntimeConfigRef,
     SnapshotFreshness,
     StatisticsSummary,
+    WorkbenchCommandResult,
 )
 from d810.ui import workbench_logic as logic
 
@@ -167,20 +169,84 @@ def test_filter_is_case_insensitive_searches_status_and_preserves_order() -> Non
     assert empty == rows
 
 
-def test_slice_one_actions_explain_what_is_and_is_not_available() -> None:
+def test_current_started_snapshot_enables_scoped_slice_two_actions() -> None:
     states = {state.action_id: state for state in logic.action_states(_snapshot())}
 
     assert states["refresh"].enabled is True
     assert states["export"].enabled is True
-    for action_id in (
-        "analyze",
-        "deobfuscate",
-        "compare",
-        "recipe",
-        "diagnostics",
-    ):
+    assert states["analyze"].enabled is True
+    assert states["deobfuscate"].enabled is True
+    assert states["function_override"].enabled is True
+    for action_id in ("compare", "recipe", "diagnostics"):
         assert states[action_id].enabled is False
         assert states[action_id].reason
+
+
+def test_stale_snapshot_marks_pipeline_consumers_and_disables_scoped_actions() -> None:
+    snapshot = _snapshot()
+
+    stale = logic.stale_snapshot(snapshot)
+    states = {state.action_id: state for state in logic.action_states(stale)}
+
+    assert stale.freshness is SnapshotFreshness.STALE
+    assert tuple(stage.status for stage in stale.pipeline) == (
+        OutcomeStatus.STALE,
+        OutcomeStatus.STALE,
+    )
+    assert tuple(outcome.status for outcome in stale.consumers) == (
+        OutcomeStatus.STALE,
+    )
+    assert stale.pipeline[0].contract_json == snapshot.pipeline[0].contract_json
+    assert stale.artifacts == snapshot.artifacts
+    assert states["refresh"].enabled is True
+    assert states["export"].enabled is True
+    assert states["analyze"].enabled is False
+    assert states["deobfuscate"].enabled is False
+    assert states["function_override"].enabled is False
+
+
+def test_command_request_binds_current_function_identity() -> None:
+    snapshot = _snapshot()
+
+    request = logic.command_request(snapshot, "analyze")
+
+    assert request.command == "analyze"
+    assert request.function_ea == snapshot.function.ea
+    assert request.expected_generation == snapshot.generation
+    assert request.function_fingerprint == snapshot.function.fingerprint
+
+
+def test_command_completion_requires_exact_identity_and_acceptance() -> None:
+    snapshot = _snapshot()
+    result = WorkbenchCommandResult(
+        command="analyze",
+        function_ea=snapshot.function.ea,
+        requested_generation=snapshot.generation,
+        function_fingerprint=snapshot.function.fingerprint,
+        status=OutcomeStatus.READY,
+        succeeded=True,
+        accepted=True,
+        refresh_requested=True,
+        message="done",
+    )
+
+    assert logic.should_accept_command_result(snapshot, result) is True
+    assert logic.should_accept_command_result(
+        snapshot,
+        dataclasses.replace(result, accepted=False),
+    ) is False
+    assert logic.should_accept_command_result(
+        snapshot,
+        dataclasses.replace(result, function_ea=0x402000),
+    ) is False
+    assert logic.should_accept_command_result(
+        snapshot,
+        dataclasses.replace(result, requested_generation=3),
+    ) is False
+    assert logic.should_accept_command_result(
+        snapshot,
+        dataclasses.replace(result, function_fingerprint="sha256:other"),
+    ) is False
 
 
 def test_evidence_export_is_canonical_deterministic_json() -> None:
