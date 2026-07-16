@@ -62,3 +62,17 @@ effective passes, and 180 instruction / 6 block expanded rules without the
 callback traceback. Verification: 5906 unit tests passed, 29 skipped, 9
 unchanged contract-vocabulary warnings, and 162 subtests; ast-grep, all 13
 import contracts, and diff checks are clean.
+
+**2026-07-16T18:27:02Z**
+
+Persisted the complete live-session checkpoint and remaining GUI acceptance
+work in
+`docs/superpowers/plans/2026-07-16-d810-gui-session-worklist.md`. The approved
+automation contract supports both deterministic fresh-launch actions
+(`--open-config` and `--open-workbench`) and explicit control of an existing
+MCP-enabled IDA session with `--connect`. Fresh actions do not require MCP;
+fresh-session MCP is opt-in, and every Docker MCP publication is restricted to
+host loopback. The worklist also records the safe copied-DLL lane, Qt root
+cause and live proof, current ticket boundaries, structured audit schema,
+function-override reuse, and the remaining workbench/recipe/config-v2/SQLite
+live gates.
