@@ -82,7 +82,10 @@ from d810.manager.workbench_recipe_models import (
     PassCatalogEntry,
     PipelineRecipeDraft,
     RecipeValidation,
+    RecipeCommandRequest,
+    RecipeCommandResult,
 )
+from d810.manager.workbench_recipe_commands import WorkbenchRecipeCommandService
 from d810.manager.workbench_recipe_service import RecipeService
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
@@ -156,6 +159,7 @@ class D810Manager:
     comparison_service: WorkbenchComparisonService = dataclasses.field(init=False)
     recipe_service: RecipeService = dataclasses.field(init=False)
     function_recipe_runtime: FunctionRecipeRuntime = dataclasses.field(init=False)
+    recipe_command_service: WorkbenchRecipeCommandService = dataclasses.field(init=False)
     workbench_service: WorkbenchService = dataclasses.field(init=False)
     instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
@@ -190,6 +194,9 @@ class D810Manager:
             project_name_provider=lambda: str(self.config.get("project_name", "")),
         )
         self.workbench_service = WorkbenchService(self, registry=workbench_registry)
+        self.recipe_command_service = WorkbenchRecipeCommandService(
+            identity_is_current=self.workbench_service.recipe_request_is_current,
+        )
 
     @property
     def started(self):
@@ -301,6 +308,34 @@ class D810Manager:
 
     def clear_workbench_function_recipe(self, function_ea: int) -> bool:
         return self.function_recipe_runtime.clear(function_ea)
+
+    def execute_workbench_apply_recipe_once(
+        self,
+        request: RecipeCommandRequest,
+        draft: PipelineRecipeDraft,
+        validation: RecipeValidation,
+        *,
+        lifecycle: typing.Callable[[PipelineRecipeDraft], bool],
+    ) -> RecipeCommandResult:
+        return self.recipe_command_service.execute_apply_once(
+            request,
+            draft,
+            validation,
+            lifecycle=lifecycle,
+        )
+
+    def execute_workbench_save_function_recipe(
+        self,
+        request: RecipeCommandRequest,
+        draft: PipelineRecipeDraft,
+        validation: RecipeValidation,
+    ) -> RecipeCommandResult:
+        return self.recipe_command_service.execute_save(
+            request,
+            draft,
+            validation,
+            persistence=self.save_workbench_function_recipe,
+        )
 
     def get_workbench_snapshot(
         self,

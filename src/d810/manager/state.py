@@ -51,6 +51,8 @@ from d810.manager.workbench_recipe_models import (
     PassCatalogEntry,
     PipelineRecipeDraft,
     RecipeValidation,
+    RecipeCommandRequest,
+    RecipeCommandResult,
 )
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
@@ -343,6 +345,33 @@ class D810State(metaclass=SingletonMeta):
 
     def clear_workbench_function_recipe(self, function_ea: int) -> bool:
         return self.manager.clear_workbench_function_recipe(function_ea)
+
+    def execute_workbench_apply_recipe_once(
+        self,
+        request: RecipeCommandRequest,
+        draft: PipelineRecipeDraft,
+        validation: RecipeValidation,
+        *,
+        lifecycle: typing.Callable[[PipelineRecipeDraft], bool],
+    ) -> RecipeCommandResult:
+        return self.manager.execute_workbench_apply_recipe_once(
+            request,
+            draft,
+            validation,
+            lifecycle=lifecycle,
+        )
+
+    def execute_workbench_save_function_recipe(
+        self,
+        request: RecipeCommandRequest,
+        draft: PipelineRecipeDraft,
+        validation: RecipeValidation,
+    ) -> RecipeCommandResult:
+        return self.manager.execute_workbench_save_function_recipe(
+            request,
+            draft,
+            validation,
+        )
 
     def execute_workbench_analyze(
         self,

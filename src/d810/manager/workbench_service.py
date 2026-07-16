@@ -27,6 +27,7 @@ from d810.manager.workbench_models import (
     WorkbenchCommandResult,
     WorkbenchDiagnostic,
 )
+from d810.manager.workbench_recipe_models import RecipeCommandRequest
 from d810.passes.contract_manifest import (
     pipeline_contract_manifest,
     pipeline_contract_preflight_manifest,
@@ -404,6 +405,13 @@ class WorkbenchService:
     def _request_is_current(self, request: WorkbenchCommandRequest) -> bool:
         return (
             request.expected_generation == self._generation
+            and request.function_ea == self._latest_function_ea
+            and request.function_fingerprint == self._latest_function_fingerprint
+        )
+
+    def recipe_request_is_current(self, request: RecipeCommandRequest) -> bool:
+        return (
+            request.expected_workbench_generation == self._generation
             and request.function_ea == self._latest_function_ea
             and request.function_fingerprint == self._latest_function_fingerprint
         )

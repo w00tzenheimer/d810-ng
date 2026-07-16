@@ -186,6 +186,7 @@ def test_manager_owns_recipe_services_and_state_exposes_only_facades() -> None:
     post_init = _calls(_method(manager_path, "D810Manager", "__post_init__"))
     assert "RecipeService" in post_init
     assert "FunctionRecipeRuntime" in post_init
+    assert "WorkbenchRecipeCommandService" in post_init
     assert "serialize_enabled_configs" in _calls(
         _method(manager_path, "D810Manager", "save_workbench_function_recipe")
     )
@@ -198,5 +199,7 @@ def test_manager_owns_recipe_services_and_state_exposes_only_facades() -> None:
         "validate_workbench_recipe",
         "save_workbench_function_recipe",
         "clear_workbench_function_recipe",
+        "execute_workbench_apply_recipe_once",
+        "execute_workbench_save_function_recipe",
     ):
         assert method_name in _calls(_method(state_path, "D810State", method_name))
