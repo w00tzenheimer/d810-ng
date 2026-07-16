@@ -12,6 +12,7 @@ from d810.ui.workbench_logic import (
     WorkbenchSection,
     action_states,
     command_request,
+    comparison_view,
     detail_text,
     export_evidence_json,
     filter_workbench_rows,
@@ -62,6 +63,7 @@ if IDA_AVAILABLE:
             self._visible_rows: tuple[WorkbenchRow, ...] = ()
             self._row_by_key: dict[str, WorkbenchRow] = {}
             self._command_adapter: typing.Any = None
+            self._comparison_dialog: typing.Any = None
             self._pending_focus: WorkbenchSection | None = None
             self._closed = False
             self.parent: typing.Any = None
@@ -132,6 +134,7 @@ if IDA_AVAILABLE:
                     self._run_command(action_id)
 
                 button.clicked.connect(_dispatch)
+            self.action_buttons["compare"].clicked.connect(self._run_comparison)
 
         def OnCreate(self, form: typing.Any) -> None:
             self.parent = self.FormToPyQtWidget(form)
@@ -177,10 +180,14 @@ if IDA_AVAILABLE:
                     "analyze",
                     "deobfuscate",
                     "function_override",
+                    "compare",
                 ):
                     self.action_buttons[action_id].clicked.disconnect()
             except (RuntimeError, TypeError):
                 pass
+            if self._comparison_dialog is not None:
+                self._comparison_dialog.close()
+                self._comparison_dialog = None
             self.parent = None
 
         def close(self) -> None:
@@ -279,6 +286,36 @@ if IDA_AVAILABLE:
                 self.refresh()
             else:
                 self.detail.setPlainText(result.message)
+
+        def _run_comparison(self, checked: bool = False) -> None:
+            del checked
+            snapshot = self._snapshot
+            adapter = self._command_adapter
+            if snapshot is None or adapter is None:
+                return
+            compare = getattr(adapter, "compare", None)
+            if not callable(compare):
+                return
+            try:
+                view = comparison_view(compare(snapshot))
+            except Exception as exc:
+                logger.warning("Workbench comparison failed: %s", exc)
+                self.detail.setPlainText(f"Compare failed: {exc}")
+                return
+            self._show_comparison(view)
+
+        def _show_comparison(self, view: typing.Any) -> None:
+            from d810.ui.workbench_comparison_dialog import (
+                WorkbenchComparisonDialog,
+            )
+
+            if self._comparison_dialog is not None:
+                self._comparison_dialog.close()
+            dialog = WorkbenchComparisonDialog(view, parent=self.parent)
+            self._comparison_dialog = dialog
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
 
         def refresh(self) -> None:
             if self._func_ea is None:

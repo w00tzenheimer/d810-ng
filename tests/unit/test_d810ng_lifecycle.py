@@ -18,12 +18,14 @@ def _load_plugin_module(
     monkeypatch: pytest.MonkeyPatch,
     *,
     initially_loaded: bool,
+    initially_started: bool,
 ) -> tuple[ModuleType, list[str]]:
     events: list[str] = []
 
     class CoreState:
         def __init__(self) -> None:
             self.loaded = initially_loaded
+            self.manager = type("Manager", (), {"started": initially_started})()
 
         def is_loaded(self) -> bool:
             events.append("core-is-loaded")
@@ -32,6 +34,10 @@ def _load_plugin_module(
         def load(self) -> None:
             events.append("core-load")
             self.loaded = True
+
+        def start_d810(self) -> None:
+            events.append("core-start")
+            self.manager.started = True
 
     core = CoreState()
 
@@ -88,21 +94,34 @@ def _load_plugin_module(
 
 
 @pytest.mark.parametrize(
-    ("initially_loaded", "expected_events"),
+    ("initially_loaded", "initially_started", "expected_events"),
     (
-        (False, ["base-late-init", "core-is-loaded", "core-load"]),
-        (True, ["base-late-init", "core-is-loaded"]),
+        (
+            False,
+            False,
+            [
+                "base-late-init",
+                "core-is-loaded",
+                "core-load",
+                "core-is-loaded",
+                "core-start",
+            ],
+        ),
+        (True, False, ["base-late-init", "core-is-loaded", "core-start"]),
+        (True, True, ["base-late-init", "core-is-loaded"]),
     ),
 )
 def test_late_init_starts_core_exactly_when_needed(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     initially_loaded: bool,
+    initially_started: bool,
     expected_events: list[str],
 ) -> None:
     module, events = _load_plugin_module(
         monkeypatch,
         initially_loaded=initially_loaded,
+        initially_started=initially_started,
     )
 
     plugin = module.D810Plugin()

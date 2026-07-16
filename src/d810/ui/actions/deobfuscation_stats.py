@@ -90,6 +90,10 @@ class DeobfuscationStats(D810ActionHandler):
 
         # Show the workbench in its evidence-focused compatibility mode.
         try:
+            from d810.ui.workbench_comparison import (
+                compute_ida_function_fingerprint,
+                create_ida_comparison_adapter,
+            )
             from d810.ui.workbench_commands import WorkbenchCommandAdapter
             from d810.ui.workbench_panel import DeobfuscationWorkbenchPanel
 
@@ -103,10 +107,28 @@ class DeobfuscationStats(D810ActionHandler):
                 cls._panel = DeobfuscationWorkbenchPanel(self._state)
 
             # Update function context and retain the historical evidence focus.
-            cls._panel.set_command_adapter(
-                WorkbenchCommandAdapter(self._state, idaapi_shim, ctx)
+            comparison_adapter = create_ida_comparison_adapter(
+                state=self._state,
+                idaapi_shim=idaapi_shim,
             )
-            cls._panel.set_function(func_ea, func_name)
+            function_fingerprint = (
+                compute_ida_function_fingerprint(func, idaapi_shim)
+                if func is not None
+                else None
+            )
+            cls._panel.set_command_adapter(
+                WorkbenchCommandAdapter(
+                    self._state,
+                    idaapi_shim,
+                    ctx,
+                    comparison_adapter=comparison_adapter,
+                )
+            )
+            cls._panel.set_function(
+                func_ea,
+                func_name,
+                function_fingerprint,
+            )
             cls._panel.show(focus_section="evidence")
         except ImportError:
             # Fallback to simple message if IDA not available

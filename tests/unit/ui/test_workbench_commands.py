@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 from d810.manager.workbench_models import (
     OutcomeStatus,
     WorkbenchCommandRequest,
@@ -157,6 +159,50 @@ def test_analyze_rejects_widget_that_navigated_to_a_different_function() -> None
 
     assert result.status is OutcomeStatus.FAILED
     assert "different function" in result.message
+
+
+def test_compare_reacquires_current_cfunc_and_delegates_capture() -> None:
+    cfunc = SimpleNamespace(entry_ea=0x401000)
+    comparison = object()
+    snapshots: list[object] = []
+    comparison_adapter = SimpleNamespace(
+        capture=lambda snapshot, *, current_cfunc: (
+            snapshots.append((snapshot, current_cfunc)) or comparison
+        )
+    )
+    adapter = command_module.WorkbenchCommandAdapter(
+        SimpleNamespace(),
+        SimpleNamespace(get_widget_vdui=lambda widget: SimpleNamespace(cfunc=cfunc)),
+        SimpleNamespace(widget=object()),
+        comparison_adapter=comparison_adapter,
+    )
+    snapshot = SimpleNamespace(function=SimpleNamespace(ea=0x401000))
+
+    result = adapter.compare(snapshot)
+
+    assert result is comparison
+    assert snapshots == [(snapshot, cfunc)]
+
+
+def test_compare_rejects_pseudocode_widget_for_another_function() -> None:
+    comparison_adapter = SimpleNamespace(
+        capture=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("wrong function must not be captured")
+        )
+    )
+    adapter = command_module.WorkbenchCommandAdapter(
+        SimpleNamespace(),
+        SimpleNamespace(
+            get_widget_vdui=lambda widget: SimpleNamespace(
+                cfunc=SimpleNamespace(entry_ea=0x402000)
+            )
+        ),
+        SimpleNamespace(widget=object()),
+        comparison_adapter=comparison_adapter,
+    )
+
+    with pytest.raises(RuntimeError, match="different function"):
+        adapter.compare(SimpleNamespace(function=SimpleNamespace(ea=0x401000)))
 
 
 def test_deobfuscate_reuses_existing_action_exactly_once(monkeypatch) -> None:

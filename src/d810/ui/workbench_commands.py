@@ -35,7 +35,14 @@ def _failed_result(
 class WorkbenchCommandAdapter:
     """Translate one injected pseudocode context into manager commands."""
 
-    def __init__(self, state: object, idaapi_shim: object, ctx: object) -> None:
+    def __init__(
+        self,
+        state: object,
+        idaapi_shim: object,
+        ctx: object,
+        *,
+        comparison_adapter: object | None = None,
+    ) -> None:
         self._state = state
         self._idaapi = idaapi_shim
         self._ctx = ctx
@@ -44,6 +51,7 @@ class WorkbenchCommandAdapter:
         vdui = get_widget_vdui(original_widget) if callable(get_widget_vdui) else None
         stable_widget = getattr(vdui, "ct", None) if vdui is not None else None
         self._widget = original_widget if stable_widget is None else stable_widget
+        self._comparison_adapter = comparison_adapter
 
     def _current_vdui(self) -> object | None:
         get_widget_vdui = getattr(self._idaapi, "get_widget_vdui", None)
@@ -88,6 +96,25 @@ class WorkbenchCommandAdapter:
             request,
             target=target,
             provider_phase=provider_phase,
+        )
+
+    def compare(self, snapshot: object) -> object:
+        if self._comparison_adapter is None:
+            raise RuntimeError("Native comparison is not configured")
+        vdui = self._current_vdui()
+        cfunc = getattr(vdui, "cfunc", None) if vdui is not None else None
+        if cfunc is None:
+            raise RuntimeError("Comparison requires current D810 pseudocode")
+        function = getattr(snapshot, "function", None)
+        function_ea = getattr(function, "ea", None)
+        entry_ea = getattr(cfunc, "entry_ea", None)
+        if entry_ea is not None and int(entry_ea) != int(function_ea):
+            raise RuntimeError(
+                "Comparison pseudocode widget now shows a different function"
+            )
+        return self._comparison_adapter.capture(
+            snapshot,
+            current_cfunc=cfunc,
         )
 
     def deobfuscate(
