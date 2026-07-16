@@ -2,20 +2,59 @@
 from __future__ import annotations
 
 __all__ = [
+    "ArtifactRef",
+    "AttackSummary",
+    "BaselineRef",
+    "ConsumerOutcomeSnapshot",
+    "CountEntry",
     "D810_LOG_DIR_NAME",
     "D810Manager",
     "D810State",
+    "D810OutputRef",
+    "DeobfuscationWorkbenchSnapshot",
+    "FunctionRef",
+    "OutcomeStatus",
+    "PatchCountEntry",
+    "PipelineStageSnapshot",
     "ProjectConfigurationEditError",
     "ProjectConfigMode",
     "ProjectIdentitySnapshot",
     "ProjectRuntimeSnapshot",
+    "RuleScopeSummary",
     "RuleProjectionKind",
+    "RuntimeConfigRef",
+    "SnapshotFreshness",
+    "StatisticsSummary",
+    "WorkbenchDiagnostic",
     "d810_hooks_suppressed",
     "maybe_run_tail_distinct",
 ]
 
+_WORKBENCH_MODEL_NAMES = {
+    "ArtifactRef",
+    "AttackSummary",
+    "BaselineRef",
+    "ConsumerOutcomeSnapshot",
+    "CountEntry",
+    "D810OutputRef",
+    "DeobfuscationWorkbenchSnapshot",
+    "FunctionRef",
+    "OutcomeStatus",
+    "PatchCountEntry",
+    "PipelineStageSnapshot",
+    "RuleScopeSummary",
+    "RuntimeConfigRef",
+    "SnapshotFreshness",
+    "StatisticsSummary",
+    "WorkbenchDiagnostic",
+}
+
 
 def __getattr__(name: str):
+    if name in _WORKBENCH_MODEL_NAMES:
+        import d810.manager.workbench_models as workbench_models
+
+        return getattr(workbench_models, name)
     if name in {
         "ProjectConfigurationEditError",
         "ProjectConfigMode",
