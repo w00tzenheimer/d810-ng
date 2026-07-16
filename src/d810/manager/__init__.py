@@ -15,14 +15,22 @@ __all__ = [
     "D810OutputRef",
     "DeobfuscationWorkbenchSnapshot",
     "FunctionRef",
+    "FunctionPipelineOverride",
     "OutcomeStatus",
     "PatchCountEntry",
+    "PassCatalogEntry",
+    "PipelineRecipeDraft",
     "PipelineStageSnapshot",
     "ProjectConfigurationEditError",
     "ProjectConfigMode",
     "ProjectIdentitySnapshot",
     "ProjectRuntimeSnapshot",
     "RuleScopeSummary",
+    "RecipeCommandRequest",
+    "RecipeCommandResult",
+    "RecipeDiagnostic",
+    "RecipePass",
+    "RecipeValidation",
     "RuleProjectionKind",
     "RuntimeConfigRef",
     "SnapshotFreshness",
@@ -59,12 +67,27 @@ _WORKBENCH_MODEL_NAMES = {
     "WorkbenchDiagnostic",
 }
 
+_WORKBENCH_RECIPE_MODEL_NAMES = {
+    "FunctionPipelineOverride",
+    "PassCatalogEntry",
+    "PipelineRecipeDraft",
+    "RecipeCommandRequest",
+    "RecipeCommandResult",
+    "RecipeDiagnostic",
+    "RecipePass",
+    "RecipeValidation",
+}
+
 
 def __getattr__(name: str):
     if name in _WORKBENCH_MODEL_NAMES:
         import d810.manager.workbench_models as workbench_models
 
         return getattr(workbench_models, name)
+    if name in _WORKBENCH_RECIPE_MODEL_NAMES:
+        import d810.manager.workbench_recipe_models as recipe_models
+
+        return getattr(recipe_models, name)
     if name in {
         "ProjectConfigurationEditError",
         "ProjectConfigMode",
