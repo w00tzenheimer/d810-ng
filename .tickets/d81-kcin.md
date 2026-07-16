@@ -76,3 +76,23 @@ host loopback. The worklist also records the safe copied-DLL lane, Qt root
 cause and live proof, current ticket boundaries, structured audit schema,
 function-override reuse, and the remaining workbench/recipe/config-v2/SQLite
 live gates.
+
+**2026-07-16T21:00:40Z**
+
+Task F made the launcher help and pre-action plan match the shipped fresh and
+existing-session contracts. The reproducible named configuration lane is:
+
+```bash
+D810_REPO_ROOT=/Users/mahmoud/src/idapro/d810 \
+  ./.worktrees/truthful-config-v2-project-ui/tools/scripts/run_ida_gui_docker.sh \
+  -w truthful-config-v2-project-ui \
+  --open-config -- /samples/bins/libobfuscated.dll.i64
+```
+
+Before Docker starts, the plan names the selected worktree, copied IDB,
+`open-config` command, request path, and corresponding audit path. The immutable
+request is `.tmp/ida-gui/automation-request-<request-id>.json`; completed named
+automation publishes `.tmp/ida-gui/automation-<request-id>.json` under the same
+selected checkout. Task F proves this lane with subprocess tests only; it did
+not run IDA or add new live GUI acceptance. The ticket remains open for the
+worklist's explicit live lanes.
