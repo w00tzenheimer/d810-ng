@@ -112,6 +112,25 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             return None
         return decision["callinfo"]
 
+    def stkpnts(self, mba, stack_points):
+        """Let profile-scoped providers amend transient stack provenance."""
+        decision: dict[str, object] = {}
+        try:
+            self.callback(
+                DecompilationEvent.HEXRAYS_STKPNTS,
+                function_ea=int(mba.entry_ea),
+                mba=mba,
+                stack_points=stack_points,
+                decision=decision,
+            )
+        except Exception:
+            main_logger.debug(
+                "Hex-Rays stack-point preanalysis event failed for 0x%X",
+                int(mba.entry_ea),
+                exc_info=True,
+            )
+        return 0
+
     def locopt(self, mba: ida_hexrays.mbl_array_t) -> "int":
         """Run profile-gated mutation after LOCOPT and before call analysis."""
         decision: dict[str, object] = {"request_redo": False}
@@ -187,6 +206,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         main_logger.info("Starting decompilation of function %s", prologue)
         try:
             from d810.core.observability import open_observability_session
+
             # open_observability_session opens the diag session
             # (idempotent re-installation on re-decompilation) by
             # delegating to the registered backend; nothing here
@@ -228,13 +248,14 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             return ida_hexrays.MERR_LOOP
         return 0
 
-    def structural(self, ct: "control_graph_t") -> int:  # type: ignore
+    def structural(self, ct: ida_hexrays.control_graph_t) -> int:  # type: ignore
         """Structural analysis has been finished.
 
         @param ct: (control_graph_t *)"""
         main_logger.info("Structural analysis has been finished")
         try:
             from d810.core.observability import close_observability_session
+
             # close_observability_session unsubscribes event-handler
             # subscribers and closes the diag DB via the registered
             # backend; nothing here imports d810.core.diag.
@@ -244,7 +265,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         self.callback(DecompilationEvent.FINISHED)
         return 0
 
-    def func_printed(self, cfunc: "cfunc_t") -> int:
+    def func_printed(self, cfunc: ida_hexrays.cfunc_t) -> int:
         """Function text has been generated. Plugins may modify the text in cfunc_t::sv. However, it is too late to modify the ctree or microcode. The text uses regular color codes (see lines.hpp) COLOR_ADDR is used to store pointers to ctree items.
 
         @param cfunc: (cfunc_t *)"""

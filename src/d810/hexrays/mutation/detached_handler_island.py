@@ -1,13 +1,18 @@
 """Materialize a proven detached handler as a verifier-valid microcode island."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+import ida_bytes
+import ida_frame
 import ida_funcs
 import ida_hexrays
+import ida_idaapi
 import ida_range
+import ida_ua
 
-from d810.core.typing import Collection, Mapping
+from d810.core.typing import Callable, Collection, Mapping
 
 from d810.analyses.control_flow.detached_handler_island import (
     AppliedDetachedSnippetConditionalBoundaryPort,
@@ -60,11 +65,44 @@ def _normalize_template_ida_stkoff(
         else int(mba.frsize) + int(mba.frregs)
     )
     normalized = value + persistent_frame_size
-    return (
-        normalized
-        if persistent_frame_size > 0 and normalized >= 0
-        else value
-    )
+    return normalized if persistent_frame_size > 0 and normalized >= 0 else value
+
+
+def _native_instruction_stack_frame_offsets(
+    function_ea: int,
+    instruction_ea: int,
+) -> tuple[int, ...]:
+    """Return IDA-frame identities proven by one native instruction.
+
+    A detached explicit-range MBA can choose a different ``tmpstk_size`` from
+    the owning function.  Its ``mop_S`` VD offset is therefore not a stable
+    identity.  IDA's native stack-variable annotation, after resolver tail
+    ownership and SP facts have been established, is the stable coordinate.
+    """
+    function = ida_funcs.get_func(int(function_ea))
+    if function is None:
+        return ()
+    instruction = ida_ua.insn_t()
+    native_ea = int(instruction_ea)
+    if ida_ua.decode_insn(instruction, native_ea) <= 0:
+        return ()
+    flags = ida_bytes.get_flags(native_ea)
+    offsets: list[int] = []
+    for operand_index, operand in enumerate(instruction.ops):
+        if int(operand.type) == int(ida_ua.o_void):
+            break
+        if not ida_bytes.is_stkvar(flags, operand_index):
+            continue
+        frame_offset = int(
+            ida_frame.calc_stkvar_struc_offset(
+                function,
+                instruction,
+                operand_index,
+            )
+        )
+        if frame_offset != int(ida_idaapi.BADADDR):
+            offsets.append(frame_offset)
+    return tuple(dict.fromkeys(offsets))
 
 
 def _instructions(block: object) -> tuple[object, ...]:
@@ -94,8 +132,7 @@ def _blocks_containing_ea(mba: object, ea: int) -> tuple[object, ...]:
     for serial in range(int(mba.qty)):
         block = mba.get_mblock(serial)
         if int(block.start) == int(ea) or any(
-            int(instruction.ea) == int(ea)
-            for instruction in _instructions(block)
+            int(instruction.ea) == int(ea) for instruction in _instructions(block)
         ):
             matches.append(block)
     return tuple(matches)
@@ -118,9 +155,7 @@ def find_unique_live_block_by_ea(
             )
         )
         return matches[0] if len(matches) == 1 else None
-    imported_root = _IMPORTED_SNIPPET_ROOTS.get(
-        (stable_mba_identity(mba), int(ea))
-    )
+    imported_root = _IMPORTED_SNIPPET_ROOTS.get((stable_mba_identity(mba), int(ea)))
     if imported_root is not None:
         serial_hint = int(imported_root.serial_hint)
         if 0 <= serial_hint < int(mba.qty):
@@ -138,9 +173,7 @@ def find_unique_live_block_by_ea(
         identity = stable_mba_identity(mba)
         surviving_origins: list[tuple[int, int, object]] = []
         for imported_ea in imported_root.owned_instruction_eas:
-            native_ea = _IMPORTED_INSTRUCTION_ORIGINS.get(
-                (identity, int(imported_ea))
-            )
+            native_ea = _IMPORTED_INSTRUCTION_ORIGINS.get((identity, int(imported_ea)))
             if native_ea is None:
                 continue
             relocated = _blocks_containing_ea(mba, int(imported_ea))
@@ -285,6 +318,15 @@ class _AnalyzedCallReplacement:
 
 
 @dataclass(frozen=True, slots=True)
+class _AnalyzedCallResultDefinition:
+    call_ea: int
+    call_opcode: int
+    callee_ea: int | None
+    result_mreg: int
+    result_size: int
+
+
+@dataclass(frozen=True, slots=True)
 class CallResultCarrier:
     call_ea: int
     carrier_ea: int
@@ -396,6 +438,7 @@ class DetachedSnippetTemplate:
     boundary_ports: DetachedSnippetTemplateBoundaryPorts = (
         DetachedSnippetTemplateBoundaryPorts((), ())
     )
+    instruction_stack_vd_to_ida: tuple[tuple[int, int, int], ...] = ()
 
 
 @dataclass(slots=True)
@@ -408,6 +451,11 @@ class _ImportedSnippetRoot:
 
 
 _ANALYZED_CALL_TEMPLATES: dict[tuple[int, int], _CallTemplate] = {}
+_ANALYZED_CALL_RESULT_DEFINITIONS: dict[
+    tuple[int, int],
+    _AnalyzedCallResultDefinition,
+] = {}
+_ANALYZED_CALL_RESULT_DEFINITION_CONFLICTS: set[tuple[int, int]] = set()
 _DETACHED_SNIPPET_TEMPLATES: dict[
     tuple[int, int],
     DetachedSnippetTemplate,
@@ -416,9 +464,15 @@ _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES: dict[
     tuple[int, int],
     DetachedSnippetTemplate,
 ] = {}
+_DETACHED_CALLINFO_TEMPLATES: dict[tuple[int, int], object] = {}
+_DETACHED_CALLINFO_CONFLICTS: set[tuple[int, int]] = set()
 _DETACHED_SNIPPET_GENERATIONS: dict[int, int] = {}
 _IMPORTED_SNIPPET_ROOTS: dict[tuple[int, int], _ImportedSnippetRoot] = {}
 _IMPORTED_INSTRUCTION_ORIGINS: dict[tuple[int, int], int] = {}
+_LAST_IMPORTED_INSTRUCTION_ORIGINS: dict[
+    int,
+    tuple[tuple[int, int], ...],
+] = {}
 _IMPORTED_DIRECT_BOUNDARY_EVIDENCE: dict[
     int,
     tuple[AppliedDetachedSnippetDirectBoundaryPort, ...],
@@ -452,6 +506,20 @@ def imported_detached_snippet_instruction_origins(
             if int(mba_identity) == int(identity) and int(imported_ea) in live_eas
         )
     )
+
+
+def last_imported_detached_snippet_instruction_origins(
+    function_ea: int,
+) -> tuple[tuple[int, int], ...]:
+    """Return provenance published by the last successful PREOPT import.
+
+    ``hxe_stkpnts`` runs before the current MBA reaches ``hxe_preoptimized``,
+    so that callback cannot inspect imports which have not happened yet.  The
+    importer assigns deterministic fictitious EAs; retain the preceding
+    successful import's native ownership so the next transient stack-point
+    table can be populated before the same semantic closure is imported.
+    """
+    return _LAST_IMPORTED_INSTRUCTION_ORIGINS.get(int(function_ea), ())
 
 
 def imported_detached_snippet_terminal_origins(
@@ -498,17 +566,14 @@ def reconcile_imported_callinfo_with_live_native_calls(mba: object) -> int:
     for serial in range(int(mba.qty)):
         block = mba.get_mblock(serial)
         for instruction in _instructions(block):
-            if (
-                int(instruction.opcode) not in call_opcodes
-                or int(instruction.d.t) != int(ida_hexrays.mop_f)
-            ):
+            if int(instruction.opcode) not in call_opcodes or int(
+                instruction.d.t
+            ) != int(ida_hexrays.mop_f):
                 continue
             instruction_ea = int(instruction.ea)
             native_ea = origins.get(instruction_ea)
             if native_ea is None:
-                native_by_ea.setdefault(instruction_ea, []).append(
-                    (block, instruction)
-                )
+                native_by_ea.setdefault(instruction_ea, []).append((block, instruction))
             else:
                 imported.append((block, instruction, int(native_ea)))
 
@@ -641,9 +706,7 @@ def _resolve_template_root_aliases(
         for root_serial in roots
     }
     anchored_roots = {
-        int(serial)
-        for serial in anchored_by_root.values()
-        if serial is not None
+        int(serial) for serial in anchored_by_root.values() if serial is not None
     }
     if len(anchored_roots) != 1:
         return None
@@ -655,28 +718,19 @@ def _resolve_template_root_aliases(
         return None
 
     aliases = tuple(
-        int(root_serial)
-        for root_serial in roots
-        if int(root_serial) != anchored_root
+        int(root_serial) for root_serial in roots if int(root_serial) != anchored_root
     )
     if anchored_root not in roots:
-        return (
-            (anchored_root, ())
-            if len(roots) == 1
-            else None
-        )
+        return (anchored_root, ()) if len(roots) == 1 else None
     alias_set = set(aliases)
-    predecessors: dict[int, set[int]] = {
-        int(serial): set() for serial in included
-    }
+    predecessors: dict[int, set[int]] = {int(serial): set() for serial in included}
     for source_serial, block in included.items():
         for successor_serial in block.succset:
             successor = int(successor_serial)
             if successor in predecessors:
                 predecessors[successor].add(int(source_serial))
     if any(
-        included[alias].head is not None
-        or not predecessors[alias].issubset(alias_set)
+        included[alias].head is not None or not predecessors[alias].issubset(alias_set)
         for alias in aliases
     ):
         return None
@@ -687,10 +741,13 @@ def _split_nonterminal_raw_call_blocks(
     blocks: tuple[DetachedSnippetBlockTemplate, ...],
 ) -> tuple[DetachedSnippetBlockTemplate, ...] | None:
     """Give every nonterminal raw call its own verifier-valid block."""
-    next_serial = max(
-        (int(block.source_serial) for block in blocks),
-        default=-1,
-    ) + 1
+    next_serial = (
+        max(
+            (int(block.source_serial) for block in blocks),
+            default=-1,
+        )
+        + 1
+    )
     result: list[DetachedSnippetBlockTemplate] = []
     for block in blocks:
         split_after = tuple(
@@ -705,8 +762,7 @@ def _split_nonterminal_raw_call_blocks(
         starts = (0, *(index + 1 for index in split_after))
         ends = (*(index + 1 for index in split_after), len(block.instructions))
         chunks = tuple(
-            block.instructions[start:end]
-            for start, end in zip(starts, ends)
+            block.instructions[start:end] for start, end in zip(starts, ends)
         )
         chunk_serials = [int(block.source_serial)]
         for _chunk in chunks[1:]:
@@ -754,22 +810,16 @@ def _capture_template_boundary_ports(
     blocks: tuple[DetachedSnippetBlockTemplate, ...],
     boundary_ports: DetachedSnippetBoundaryPorts,
 ) -> DetachedSnippetTemplateBoundaryPorts | None:
-    blocks_by_serial = {
-        int(block.source_serial): block for block in blocks
-    }
+    blocks_by_serial = {int(block.source_serial): block for block in blocks}
     serials_by_ea: dict[int, list[int]] = {}
     serials_by_instruction_ea: dict[int, list[int]] = {}
     for block in blocks:
         serial = int(block.source_serial)
-        serials_by_ea.setdefault(
-            int(block.native_entry_ea), []
-        ).append(serial)
+        serials_by_ea.setdefault(int(block.native_entry_ea), []).append(serial)
         for instruction_ea in {
             int(instruction.ea) for instruction in block.instructions
         }:
-            serials_by_instruction_ea.setdefault(
-                int(instruction_ea), []
-            ).append(serial)
+            serials_by_instruction_ea.setdefault(int(instruction_ea), []).append(serial)
 
     def bound_serial(
         owner: DetachedSnippetBoundaryPortOwner,
@@ -831,9 +881,7 @@ def _capture_template_boundary_ports(
             if endpoint_serial is None
             else {
                 int(serial)
-                for serial in blocks_by_serial[
-                    int(endpoint_serial)
-                ].successor_serials
+                for serial in blocks_by_serial[int(endpoint_serial)].successor_serials
             }
         )
         old_successor_serials: list[int | None] = []
@@ -851,14 +899,10 @@ def _capture_template_boundary_ports(
                 continue
             matches = tuple(
                 int(serial)
-                for serial in serials_by_ea.get(
-                    int(old_successor_ea), ()
-                )
+                for serial in serials_by_ea.get(int(old_successor_ea), ())
                 if int(serial) in endpoint_successor_serials
             )
-            old_successor_serials.append(
-                int(matches[0]) if len(matches) == 1 else None
-            )
+            old_successor_serials.append(int(matches[0]) if len(matches) == 1 else None)
         direct.append(
             DetachedSnippetTemplateDirectBoundaryPort(
                 port=port,
@@ -917,8 +961,7 @@ def _capture_template_boundary_ports(
 def _normalize_capture_boundary_ports(
     boundary_ports: DetachedSnippetBoundaryPorts
     | tuple[
-        DetachedSnippetDirectBoundaryPort
-        | DetachedSnippetConditionalBoundaryPort,
+        DetachedSnippetDirectBoundaryPort | DetachedSnippetConditionalBoundaryPort,
         ...,
     ],
 ) -> DetachedSnippetBoundaryPorts | None:
@@ -995,8 +1038,7 @@ def _capture_detached_snippet_template(
             "reason=non_unique_root roots=%s",
             int(target_ea),
             tuple(
-                "blk%d@0x%X"
-                % (int(serial), int(included[serial].start))
+                "blk%d@0x%X" % (int(serial), int(included[serial].start))
                 for serial in roots
             ),
         )
@@ -1006,12 +1048,12 @@ def _capture_detached_snippet_template(
         del included[int(alias_serial)]
 
     stack_map: dict[int, int] = {}
-    stable_stack_map: dict[int, int] = {}
+    instruction_stack_map: dict[tuple[int, int], int] = {}
+    stable_identities_by_vd: dict[int, set[int]] = {}
     templates: list[DetachedSnippetBlockTemplate] = []
     for serial, block in sorted(included.items()):
         instructions = tuple(
-            ida_hexrays.minsn_t(instruction)
-            for instruction in _instructions(block)
+            ida_hexrays.minsn_t(instruction) for instruction in _instructions(block)
         )
         for instruction in instructions:
             if int(instruction.opcode) in (
@@ -1035,15 +1077,34 @@ def _capture_detached_snippet_template(
                     ),
                 )
         for instruction in instructions:
-            for operand in _instruction_operands(instruction):
-                if int(operand.t) != int(ida_hexrays.mop_S):
-                    continue
+            stack_operands = tuple(
+                operand
+                for operand in _instruction_operands(instruction)
+                if int(operand.t) == int(ida_hexrays.mop_S)
+            )
+            source_vd_offsets = tuple(
+                dict.fromkeys(int(operand.s.off) for operand in stack_operands)
+            )
+            native_frame_offsets = _native_instruction_stack_frame_offsets(
+                int(function_ea),
+                int(instruction.ea),
+            )
+            native_frame_identity = (
+                int(native_frame_offsets[0])
+                if len(source_vd_offsets) == 1 and len(native_frame_offsets) == 1
+                else None
+            )
+            for operand in stack_operands:
                 vd_offset = int(operand.s.off)
                 ida_offset = int(mba.stkoff_vd2ida(vd_offset))
-                stable_ida_offset = _normalize_template_ida_stkoff(
-                    int(function_ea),
-                    mba,
-                    ida_offset,
+                stable_ida_offset = (
+                    native_frame_identity
+                    if native_frame_identity is not None
+                    else _normalize_template_ida_stkoff(
+                        int(function_ea),
+                        mba,
+                        ida_offset,
+                    )
                 )
                 previous = stack_map.setdefault(vd_offset, ida_offset)
                 if previous != ida_offset:
@@ -1060,23 +1121,33 @@ def _capture_detached_snippet_template(
                     )
                     return False
                 if stable_ida_offset >= 0:
-                    previous_stable = stable_stack_map.setdefault(
+                    instruction_stack_key = (
+                        int(instruction.ea),
                         vd_offset,
+                    )
+                    previous_stable = instruction_stack_map.setdefault(
+                        instruction_stack_key,
                         stable_ida_offset,
                     )
                     if previous_stable != stable_ida_offset:
                         logger.info(
                             "detached snippet capture abstained: target=0x%X "
-                            "blk%d@0x%X reason=unstable_stable_stack_mapping "
+                            "blk%d@0x%X instruction_ea=0x%X "
+                            "reason=unstable_instruction_stack_mapping "
                             "vd=%d previous=%d current=%d",
                             int(target_ea),
                             int(block.serial),
                             int(block.start),
+                            int(instruction.ea),
                             vd_offset,
                             previous_stable,
                             stable_ida_offset,
                         )
                         return False
+                    stable_identities_by_vd.setdefault(
+                        vd_offset,
+                        set(),
+                    ).add(stable_ida_offset)
 
         internal_successors: list[int] = []
         external_successors: list[int] = []
@@ -1132,18 +1203,9 @@ def _capture_detached_snippet_template(
                         )
                     ),
                     int(block.type),
-                    (
-                        "missing"
-                        if block.tail is None
-                        else str(int(block.tail.opcode))
-                    ),
-                    (
-                        "missing"
-                        if block.tail is None
-                        else "0x%X" % int(block.tail.ea)
-                    ),
-                    successor_block is not None
-                    and successor_block.head is None,
+                    ("missing" if block.tail is None else str(int(block.tail.opcode))),
+                    ("missing" if block.tail is None else "0x%X" % int(block.tail.ea)),
+                    successor_block is not None and successor_block.head is None,
                 )
                 return False
             internal_successors.append(successor)
@@ -1217,24 +1279,35 @@ def _capture_detached_snippet_template(
     )
     if template_boundary_ports is None:
         return False
-    template_cache[(int(function_ea), int(target_ea))] = (
-        DetachedSnippetTemplate(
-            function_ea=int(function_ea),
-            target_ea=int(target_ea),
-            maturity=int(mba.maturity),
-            root_source_serial=int(root_source_serial),
-            blocks=normalized_templates,
-            stack_vd_to_ida=tuple(sorted(stack_map.items())),
-            owned_ranges=normalized_ranges,
-            call_result_carriers=call_result_carriers,
-            stable_stack_vd_to_ida=tuple(sorted(stable_stack_map.items())),
-            boundary_ports=template_boundary_ports,
-        )
+    template_cache[(int(function_ea), int(target_ea))] = DetachedSnippetTemplate(
+        function_ea=int(function_ea),
+        target_ea=int(target_ea),
+        maturity=int(mba.maturity),
+        root_source_serial=int(root_source_serial),
+        blocks=normalized_templates,
+        stack_vd_to_ida=tuple(sorted(stack_map.items())),
+        owned_ranges=normalized_ranges,
+        call_result_carriers=call_result_carriers,
+        stable_stack_vd_to_ida=tuple(
+            sorted(
+                (source_vd, next(iter(ida_offsets)))
+                for source_vd, ida_offsets in stable_identities_by_vd.items()
+                if len(ida_offsets) == 1
+            )
+        ),
+        boundary_ports=template_boundary_ports,
+        instruction_stack_vd_to_ida=tuple(
+            sorted(
+                (instruction_ea, source_vd, ida_offset)
+                for (
+                    instruction_ea,
+                    source_vd,
+                ), ida_offset in instruction_stack_map.items()
+            )
+        ),
     )
     key = int(function_ea)
-    _DETACHED_SNIPPET_GENERATIONS[key] = (
-        _DETACHED_SNIPPET_GENERATIONS.get(key, 0) + 1
-    )
+    _DETACHED_SNIPPET_GENERATIONS[key] = _DETACHED_SNIPPET_GENERATIONS.get(key, 0) + 1
     return True
 
 
@@ -1246,16 +1319,13 @@ def capture_detached_snippet_template(
     *,
     boundary_ports: DetachedSnippetBoundaryPorts
     | tuple[
-        DetachedSnippetDirectBoundaryPort
-        | DetachedSnippetConditionalBoundaryPort,
+        DetachedSnippetDirectBoundaryPort | DetachedSnippetConditionalBoundaryPort,
         ...,
     ] = (),
     owned_block_entry_eas: Collection[int] | None = None,
 ) -> bool:
     """Cache one LOCOPT template used for missing detached handlers."""
-    normalized_boundary_ports = _normalize_capture_boundary_ports(
-        boundary_ports
-    )
+    normalized_boundary_ports = _normalize_capture_boundary_ports(boundary_ports)
     if normalized_boundary_ports is None:
         return False
     return _capture_detached_snippet_template(
@@ -1277,16 +1347,13 @@ def capture_detached_replacement_snippet_template(
     *,
     boundary_ports: DetachedSnippetBoundaryPorts
     | tuple[
-        DetachedSnippetDirectBoundaryPort
-        | DetachedSnippetConditionalBoundaryPort,
+        DetachedSnippetDirectBoundaryPort | DetachedSnippetConditionalBoundaryPort,
         ...,
     ] = (),
     owned_block_entry_eas: Collection[int] | None = None,
 ) -> bool:
     """Cache one CALLS template whose detached conditional arm must survive."""
-    normalized_boundary_ports = _normalize_capture_boundary_ports(
-        boundary_ports
-    )
+    normalized_boundary_ports = _normalize_capture_boundary_ports(boundary_ports)
     if normalized_boundary_ports is None:
         return False
     return _capture_detached_snippet_template(
@@ -1326,14 +1393,10 @@ def detached_snippet_template_block_eas(
     target_ea: int,
 ) -> tuple[int, ...]:
     """Return stable native anchors for every owned block in one template."""
-    template = _DETACHED_SNIPPET_TEMPLATES.get(
-        (int(function_ea), int(target_ea))
-    )
+    template = _DETACHED_SNIPPET_TEMPLATES.get((int(function_ea), int(target_ea)))
     if template is None:
         return ()
-    return tuple(
-        sorted({int(block.native_entry_ea) for block in template.blocks})
-    )
+    return tuple(sorted({int(block.native_entry_ea) for block in template.blocks}))
 
 
 def detached_snippet_template_stack_map(
@@ -1341,10 +1404,21 @@ def detached_snippet_template_stack_map(
     target_ea: int,
 ) -> tuple[tuple[int, int], ...]:
     """Return snippet VD -> stable IDA-frame stack identities for diagnostics."""
-    template = _DETACHED_SNIPPET_TEMPLATES.get(
-        (int(function_ea), int(target_ea))
-    )
+    template = _DETACHED_SNIPPET_TEMPLATES.get((int(function_ea), int(target_ea)))
     return () if template is None else template.stack_vd_to_ida
+
+
+def detached_callinfo_template_eas(function_ea: int) -> tuple[int, ...]:
+    """Return native call EAs with unique route-scoped CALLS authority."""
+    function_key = int(function_ea)
+    return tuple(
+        sorted(
+            call_ea
+            for profile_ea, call_ea in _DETACHED_CALLINFO_TEMPLATES
+            if int(profile_ea) == function_key
+            and (function_key, int(call_ea)) not in _DETACHED_CALLINFO_CONFLICTS
+        )
+    )
 
 
 def _instruction_tree(instruction: object) -> tuple[object, ...]:
@@ -1358,6 +1432,421 @@ def _instruction_tree(instruction: object) -> tuple[object, ...]:
             if int(operand.t) == int(ida_hexrays.mop_d):
                 pending.append(operand.d)
     return tuple(result)
+
+
+_MBA_INDEPENDENT_CALLINFO_OPERAND_TYPES = frozenset(
+    {
+        int(ida_hexrays.mop_z),
+        int(ida_hexrays.mop_n),
+        int(ida_hexrays.mop_v),
+        int(ida_hexrays.mop_d),
+    }
+)
+
+
+def _callinfo_argument_is_mba_independent(argument: object) -> bool:
+    """Accept only expressions whose copied operands own no source MBA state."""
+    return all(
+        int(operand.t) in _MBA_INDEPENDENT_CALLINFO_OPERAND_TYPES
+        for operand in _walk_operand_tree(argument)
+    )
+
+
+def _callinfo_stack_span(callinfo: object) -> int | None:
+    span = int(callinfo.stkargs_top) - int(callinfo.call_spd)
+    return span if span >= 0 else None
+
+
+def _callinfo_templates_equivalent(first: object, second: object) -> bool:
+    if int(first.opcode) != int(second.opcode):
+        return False
+    if not first.l.equal_mops(second.l, int(ida_hexrays.EQ_IGNSIZE)):
+        return False
+    if not first.d.equal_mops(second.d, int(ida_hexrays.EQ_IGNSIZE)):
+        return False
+    return _callinfo_stack_span(first.d.f) == _callinfo_stack_span(second.d.f)
+
+
+def capture_detached_callinfo_templates(
+    function_ea: int,
+    calls_mba: object,
+) -> tuple[int, ...]:
+    """Merge route-scoped CALLS authority by exact native call EA.
+
+    No CALLS topology is imported.  Each retained instruction is a deep clone
+    whose arguments are composed only from constants, globals, and nested pure
+    expressions.  Source-MBA stack/local/register operands abstain because
+    their storage identity is not portable across an isolated snippet MBA.
+    Conflicting observations permanently suppress that call EA for the cache
+    epoch instead of selecting one route arbitrarily.
+    """
+    if int(calls_mba.maturity) != int(ida_hexrays.MMAT_CALLS):
+        return ()
+    function_key = int(function_ea)
+    captured: set[int] = set()
+    observed: set[int] = set()
+    call_opcodes = {
+        int(ida_hexrays.m_call),
+        int(ida_hexrays.m_icall),
+    }
+    for serial in range(int(calls_mba.qty)):
+        block = calls_mba.get_mblock(serial)
+        for owner in _instructions(block):
+            for instruction in _instruction_tree(owner):
+                if (
+                    int(instruction.opcode) not in call_opcodes
+                    or int(instruction.d.t) != int(ida_hexrays.mop_f)
+                    or _callinfo_stack_span(instruction.d.f) is None
+                    or not all(
+                        _callinfo_argument_is_mba_independent(argument)
+                        for argument in instruction.d.f.args
+                    )
+                ):
+                    continue
+                call_ea = int(instruction.ea)
+                key = (function_key, call_ea)
+                if call_ea in observed:
+                    _DETACHED_CALLINFO_TEMPLATES.pop(key, None)
+                    _DETACHED_CALLINFO_CONFLICTS.add(key)
+                    captured.discard(call_ea)
+                    continue
+                observed.add(call_ea)
+                if key in _DETACHED_CALLINFO_CONFLICTS:
+                    continue
+                candidate = ida_hexrays.minsn_t(instruction)
+                existing = _DETACHED_CALLINFO_TEMPLATES.get(key)
+                if existing is not None and not _callinfo_templates_equivalent(
+                    existing,
+                    candidate,
+                ):
+                    _DETACHED_CALLINFO_TEMPLATES.pop(key, None)
+                    _DETACHED_CALLINFO_CONFLICTS.add(key)
+                    captured.discard(call_ea)
+                    logger.info(
+                        "detached callinfo template abstained: func=0x%X "
+                        "call=0x%X reason=conflicting_route_templates",
+                        function_key,
+                        call_ea,
+                    )
+                    continue
+                if existing is None:
+                    _DETACHED_CALLINFO_TEMPLATES[key] = candidate
+                captured.add(call_ea)
+    return tuple(sorted(captured))
+
+
+def prepare_detached_callinfo_template(
+    function_ea: int,
+    native_call_ea: int,
+    raw_call: object,
+    destination_mba: object,
+    *,
+    copy_callinfo: Callable[[object, object], bool],
+) -> object | None:
+    """Clone one exact route CALLS template into the destination stack space."""
+    key = (int(function_ea), int(native_call_ea))
+    if key in _DETACHED_CALLINFO_CONFLICTS:
+        return None
+    template = _DETACHED_CALLINFO_TEMPLATES.get(key)
+    if template is None:
+        return None
+    if int(raw_call.opcode) != int(template.opcode) or not raw_call.l.equal_mops(
+        template.l,
+        int(ida_hexrays.EQ_IGNSIZE),
+    ):
+        return None
+    source_callinfo = template.d.f
+    stack_span = _callinfo_stack_span(source_callinfo)
+    if stack_span is None:
+        return None
+    prepared = ida_hexrays.mcallinfo_t()
+    try:
+        copied = bool(copy_callinfo(prepared, source_callinfo))
+    except Exception:
+        logger.debug(
+            "detached callinfo copy failed: func=0x%X call=0x%X",
+            int(function_ea),
+            int(native_call_ea),
+            exc_info=True,
+        )
+        return None
+    if not copied or len(prepared.args) != len(source_callinfo.args):
+        return None
+    # Hex-Rays stack coordinates are nonnegative VD offsets.  Native IDA
+    # stack offset zero maps to ``tmpstk_size`` in that coordinate system;
+    # preserve the analyzed outgoing-argument span relative to that top.
+    destination_top = int(destination_mba.stkoff_ida2vd(0))
+    prepared.stkargs_top = destination_top
+    prepared.call_spd = destination_top - int(stack_span)
+    return prepared
+
+
+@dataclass(frozen=True, slots=True)
+class DetachedCallCompanionValidation:
+    """Native-EA proof that PREOPT and CALLS call sites correspond exactly."""
+
+    accepted: bool
+    call_eas: tuple[int, ...] = ()
+    reason: str | None = None
+    mismatch_ea: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DetachedSnippetCompanionCaptureResult:
+    """Atomic publication result for one PREOPT/CALLS template pair."""
+
+    captured: bool
+    replacement_required: bool
+    call_eas: tuple[int, ...] = ()
+    reason: str | None = None
+    mismatch_ea: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _DetachedCallSignature:
+    opcode: int
+    direct_callee_ea: int | None
+    has_arglist: bool
+
+
+def _detached_call_signatures(
+    mba: object,
+) -> tuple[dict[int, _DetachedCallSignature], int | None]:
+    signatures: dict[int, _DetachedCallSignature] = {}
+    call_opcodes = {
+        int(ida_hexrays.m_call),
+        int(ida_hexrays.m_icall),
+    }
+    for serial in range(int(mba.qty)):
+        block = mba.get_mblock(serial)
+        for owner in _instructions(block):
+            for instruction in _instruction_tree(owner):
+                opcode = int(instruction.opcode)
+                if opcode not in call_opcodes:
+                    continue
+                call_ea = int(instruction.ea)
+                if call_ea in signatures:
+                    return signatures, call_ea
+                signatures[call_ea] = _DetachedCallSignature(
+                    opcode=opcode,
+                    direct_callee_ea=(
+                        int(instruction.l.g)
+                        if opcode == int(ida_hexrays.m_call)
+                        and int(instruction.l.t) == int(ida_hexrays.mop_v)
+                        else None
+                    ),
+                    has_arglist=(int(instruction.d.t) == int(ida_hexrays.mop_f)),
+                )
+    return signatures, None
+
+
+def validate_detached_call_companion(
+    preopt_mba: object,
+    calls_mba: object,
+) -> DetachedCallCompanionValidation:
+    """Match complete CALLS authority to raw PREOPT calls by native EA."""
+    if int(preopt_mba.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED):
+        return DetachedCallCompanionValidation(
+            accepted=False,
+            reason="preopt_maturity_mismatch",
+        )
+    if int(calls_mba.maturity) != int(ida_hexrays.MMAT_CALLS):
+        return DetachedCallCompanionValidation(
+            accepted=False,
+            reason="calls_maturity_mismatch",
+        )
+
+    preopt, duplicate_ea = _detached_call_signatures(preopt_mba)
+    if duplicate_ea is not None:
+        return DetachedCallCompanionValidation(
+            accepted=False,
+            call_eas=tuple(sorted(preopt)),
+            reason="preopt_duplicate_call_ea",
+            mismatch_ea=int(duplicate_ea),
+        )
+    calls, duplicate_ea = _detached_call_signatures(calls_mba)
+    if duplicate_ea is not None:
+        return DetachedCallCompanionValidation(
+            accepted=False,
+            call_eas=tuple(sorted(preopt)),
+            reason="calls_duplicate_call_ea",
+            mismatch_ea=int(duplicate_ea),
+        )
+
+    preopt_eas = frozenset(preopt)
+    calls_eas = frozenset(calls)
+    if preopt_eas != calls_eas:
+        return DetachedCallCompanionValidation(
+            accepted=False,
+            call_eas=tuple(sorted(preopt_eas)),
+            reason="call_ea_set_mismatch",
+            mismatch_ea=min(preopt_eas.symmetric_difference(calls_eas)),
+        )
+
+    for call_ea in sorted(preopt_eas):
+        raw = preopt[call_ea]
+        analyzed = calls[call_ea]
+        if raw.opcode != analyzed.opcode:
+            return DetachedCallCompanionValidation(
+                accepted=False,
+                call_eas=tuple(sorted(preopt_eas)),
+                reason="call_opcode_mismatch",
+                mismatch_ea=int(call_ea),
+            )
+        if raw.direct_callee_ea != analyzed.direct_callee_ea:
+            return DetachedCallCompanionValidation(
+                accepted=False,
+                call_eas=tuple(sorted(preopt_eas)),
+                reason="direct_callee_mismatch",
+                mismatch_ea=int(call_ea),
+            )
+        if not analyzed.has_arglist:
+            return DetachedCallCompanionValidation(
+                accepted=False,
+                call_eas=tuple(sorted(preopt_eas)),
+                reason="analyzed_arglist_missing",
+                mismatch_ea=int(call_ea),
+            )
+    return DetachedCallCompanionValidation(
+        accepted=True,
+        call_eas=tuple(sorted(preopt_eas)),
+    )
+
+
+def capture_detached_snippet_companion_templates(
+    function_ea: int,
+    target_ea: int,
+    preopt_mba: object,
+    calls_mba: object | None,
+    ranges: tuple[tuple[int, int], ...],
+    *,
+    boundary_ports: DetachedSnippetBoundaryPorts
+    | tuple[
+        DetachedSnippetDirectBoundaryPort | DetachedSnippetConditionalBoundaryPort,
+        ...,
+    ] = (),
+    owned_block_entry_eas: Collection[int] | None = None,
+) -> DetachedSnippetCompanionCaptureResult:
+    """Publish a PREOPT template and its exact analyzed-call companion."""
+    preopt_calls, duplicate_ea = _detached_call_signatures(preopt_mba)
+    call_eas = tuple(sorted(preopt_calls))
+    if int(preopt_mba.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED):
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=bool(call_eas),
+            call_eas=call_eas,
+            reason="preopt_maturity_mismatch",
+        )
+    if duplicate_ea is not None:
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=True,
+            call_eas=call_eas,
+            reason="preopt_duplicate_call_ea",
+            mismatch_ea=int(duplicate_ea),
+        )
+    if calls_mba is None and call_eas:
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=True,
+            call_eas=call_eas,
+            reason="calls_companion_missing",
+            mismatch_ea=int(call_eas[0]),
+        )
+    if calls_mba is not None:
+        validation = validate_detached_call_companion(preopt_mba, calls_mba)
+        if not validation.accepted:
+            logger.info(
+                "detached call companion capture abstained: func=0x%X "
+                "target=0x%X calls=%s mismatch=%s reason=%s",
+                int(function_ea),
+                int(target_ea),
+                [hex(ea) for ea in validation.call_eas],
+                (
+                    None
+                    if validation.mismatch_ea is None
+                    else hex(int(validation.mismatch_ea))
+                ),
+                validation.reason,
+            )
+            return DetachedSnippetCompanionCaptureResult(
+                captured=False,
+                replacement_required=bool(call_eas),
+                call_eas=validation.call_eas,
+                reason=validation.reason,
+                mismatch_ea=validation.mismatch_ea,
+            )
+
+    key = (int(function_ea), int(target_ea))
+    missing = object()
+    old_primary = _DETACHED_SNIPPET_TEMPLATES.get(key, missing)
+    old_replacement = _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES.get(key, missing)
+    old_generation = _DETACHED_SNIPPET_GENERATIONS.get(
+        int(function_ea),
+        missing,
+    )
+
+    def restore() -> None:
+        for cache, previous in (
+            (_DETACHED_SNIPPET_TEMPLATES, old_primary),
+            (_DETACHED_REPLACEMENT_SNIPPET_TEMPLATES, old_replacement),
+        ):
+            if previous is missing:
+                cache.pop(key, None)
+            else:
+                cache[key] = previous
+        if old_generation is missing:
+            _DETACHED_SNIPPET_GENERATIONS.pop(int(function_ea), None)
+        else:
+            _DETACHED_SNIPPET_GENERATIONS[int(function_ea)] = int(old_generation)
+
+    replacement_required = bool(call_eas)
+    if replacement_required:
+        assert calls_mba is not None
+        if not capture_detached_replacement_snippet_template(
+            int(function_ea),
+            int(target_ea),
+            calls_mba,
+            ranges,
+        ):
+            restore()
+            return DetachedSnippetCompanionCaptureResult(
+                captured=False,
+                replacement_required=True,
+                call_eas=call_eas,
+                reason="replacement_capture_failed",
+            )
+    if not capture_detached_snippet_template(
+        int(function_ea),
+        int(target_ea),
+        preopt_mba,
+        ranges,
+        boundary_ports=boundary_ports,
+        owned_block_entry_eas=owned_block_entry_eas,
+    ):
+        restore()
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=replacement_required,
+            call_eas=call_eas,
+            reason="primary_capture_failed",
+        )
+
+    previous_generation = 0 if old_generation is missing else int(old_generation)
+    _DETACHED_SNIPPET_GENERATIONS[int(function_ea)] = previous_generation + 1
+    logger.info(
+        "detached call companion captured: func=0x%X target=0x%X "
+        "calls=%s replacement=%s",
+        int(function_ea),
+        int(target_ea),
+        [hex(ea) for ea in call_eas],
+        replacement_required,
+    )
+    return DetachedSnippetCompanionCaptureResult(
+        captured=True,
+        replacement_required=replacement_required,
+        call_eas=call_eas,
+    )
 
 
 def _analyzed_replacement_calls_by_ea(
@@ -1381,14 +1870,10 @@ def _analyzed_replacement_calls_by_ea(
     for block in template.blocks:
         for instruction in block.instructions:
             for nested in _instruction_tree(instruction):
-                if (
-                    int(nested.opcode)
-                    not in (
-                        int(ida_hexrays.m_call),
-                        int(ida_hexrays.m_icall),
-                    )
-                    or int(nested.d.t) != int(ida_hexrays.mop_f)
-                ):
+                if int(nested.opcode) not in (
+                    int(ida_hexrays.m_call),
+                    int(ida_hexrays.m_icall),
+                ) or int(nested.d.t) != int(ida_hexrays.mop_f):
                     continue
                 replacement = nested
                 if (
@@ -1471,22 +1956,16 @@ def detached_snippet_requires_analyzed_calls(
     block, at which point verify.cpp requires every call destination to be a
     real ``mop_f`` argument list (INTERR 50824).
     """
-    template = _DETACHED_SNIPPET_TEMPLATES.get(
-        (int(function_ea), int(target_ea))
-    )
+    template = _DETACHED_SNIPPET_TEMPLATES.get((int(function_ea), int(target_ea)))
     if template is None:
         return False
     for block in template.blocks:
         for instruction in block.instructions:
             for nested in _instruction_tree(instruction):
-                if (
-                    int(nested.opcode)
-                    in (
-                        int(ida_hexrays.m_call),
-                        int(ida_hexrays.m_icall),
-                    )
-                    and int(nested.d.t) != int(ida_hexrays.mop_f)
-                ):
+                if int(nested.opcode) in (
+                    int(ida_hexrays.m_call),
+                    int(ida_hexrays.m_icall),
+                ) and int(nested.d.t) != int(ida_hexrays.mop_f):
                     return True
     return False
 
@@ -1543,11 +2022,7 @@ def _detached_snippet_conditional_evidence_from_template(
                 hex(int(tail.ea)),
                 int(tail.opcode),
                 int(tail.d.t),
-                (
-                    int(tail.d.b)
-                    if int(tail.d.t) == int(ida_hexrays.mop_b)
-                    else None
-                ),
+                (int(tail.d.b) if int(tail.d.t) == int(ida_hexrays.mop_b) else None),
             )
         )
         if (
@@ -1572,10 +2047,7 @@ def _detached_snippet_conditional_evidence_from_template(
             successor_eas.append(int(successor_ea))
         if (
             len(successor_eas) == 2
-            and sum(
-                _ea_in_ranges(ea, detached_ranges) for ea in successor_eas
-            )
-            == 1
+            and sum(_ea_in_ranges(ea, detached_ranges) for ea in successor_eas) == 1
         ):
             conditional_rows.append(
                 (
@@ -1613,9 +2085,7 @@ def _detached_snippet_conditional_evidence_from_template(
         if source_serial in distance_by_serial
     )
     nearest_distance = (
-        min(row[0] for row in candidate_distances)
-        if candidate_distances
-        else None
+        min(row[0] for row in candidate_distances) if candidate_distances else None
     )
     nearest_rows = tuple(
         row
@@ -1682,9 +2152,7 @@ def detached_snippet_conditional_evidence(
     target_ea: int,
 ) -> DetachedSnippetReplacementEvidence | None:
     """Summarize one regular LOCOPT template's exact conditional topology."""
-    template = _DETACHED_SNIPPET_TEMPLATES.get(
-        (int(function_ea), int(target_ea))
-    )
+    template = _DETACHED_SNIPPET_TEMPLATES.get((int(function_ea), int(target_ea)))
     if template is None:
         return None
     return _detached_snippet_conditional_evidence_from_template(
@@ -1703,15 +2171,13 @@ def _template_last_immediate_state_write(
 ) -> int | None:
     state = inherited_state
     for instruction in instructions:
-        if (
-            int(instruction.d.t) != int(ida_hexrays.mop_r)
-            or int(instruction.d.r) != int(state_register)
-        ):
+        if int(instruction.d.t) != int(ida_hexrays.mop_r) or int(
+            instruction.d.r
+        ) != int(state_register):
             continue
-        if (
-            int(instruction.opcode) != int(ida_hexrays.m_mov)
-            or int(instruction.l.t) != int(ida_hexrays.mop_n)
-        ):
+        if int(instruction.opcode) != int(ida_hexrays.m_mov) or int(
+            instruction.l.t
+        ) != int(ida_hexrays.mop_n):
             return None
         state = int(instruction.l.nnn.value) & 0xFFFFFFFF
     return state
@@ -1833,9 +2299,8 @@ def _template_cross_maturity_arm_states(
     conditional_target_eas: tuple[int, int],
 ) -> tuple[int, int] | None:
     """Join a suppressed predicate to LOCOPT arm-local state writes."""
-    if (
-        len(conditional_target_eas) != 2
-        or int(conditional_target_eas[0]) == int(conditional_target_eas[1])
+    if len(conditional_target_eas) != 2 or int(conditional_target_eas[0]) == int(
+        conditional_target_eas[1]
     ):
         return None
     branch_range = _template_owned_range_for_ea(
@@ -1896,9 +2361,7 @@ def detached_snippet_replacement_arm_states(
     dispatcher corridor.  The earlier LOCOPT template retains that write.  The
     branch identity and successor ordering must still be exact and unambiguous.
     """
-    template = _DETACHED_SNIPPET_TEMPLATES.get(
-        (int(function_ea), int(target_ea))
-    )
+    template = _DETACHED_SNIPPET_TEMPLATES.get((int(function_ea), int(target_ea)))
     if template is None:
         return None
     candidates = tuple(
@@ -1971,15 +2434,16 @@ def detached_snippet_replacement_arm_states(
                     "blk%d@0x%X"
                     % (int(candidate.source_serial), int(candidate.native_entry_ea)),
                     tuple(int(serial) for serial in candidate.successor_serials),
-                    tuple(hex(int(instruction.ea)) for instruction in candidate.instructions),
+                    tuple(
+                        hex(int(instruction.ea))
+                        for instruction in candidate.instructions
+                    ),
                 )
                 for candidate in template.blocks
             ],
         )
         return None
-    blocks_by_serial = {
-        int(block.source_serial): block for block in template.blocks
-    }
+    blocks_by_serial = {int(block.source_serial): block for block in template.blocks}
     taken_serial = int(branch_block.instructions[-1].d.b)
     fallthrough_serials = tuple(
         int(serial)
@@ -2072,6 +2536,27 @@ def _stable_destination_stack_map(
     }
 
 
+def _instruction_destination_stack_map(
+    mba: object,
+    template: DetachedSnippetTemplate | None,
+    instruction_ea: int,
+) -> dict[int, int]:
+    """Map one native instruction's stack operands by owning-frame identity.
+
+    Detached explicit-range MBAs can reuse one VD offset before and after a
+    native stack-pointer adjustment.  The native instruction EA therefore
+    participates in the identity; a template-wide ``VD -> IDA`` map is only a
+    valid fallback when every occurrence agrees.
+    """
+    if template is None:
+        return {}
+    return {
+        int(source_vd): int(mba.stkoff_ida2vd(int(ida_offset)))
+        for native_ea, source_vd, ida_offset in template.instruction_stack_vd_to_ida
+        if int(native_ea) == int(instruction_ea)
+    }
+
+
 def _stack_map_with_positive_identity_overrides(
     fallback: dict[int, int],
     preferred: dict[int, int],
@@ -2122,9 +2607,7 @@ def _analyzed_destination_stack_map(
         if destination_vd is None:
             if raw_delta is None or analyzed_delta is None:
                 continue
-            equivalent_raw_vd = (
-                int(source_vd) + int(analyzed_delta) - int(raw_delta)
-            )
+            equivalent_raw_vd = int(source_vd) + int(analyzed_delta) - int(raw_delta)
             destination_vd = equivalent_raw_vd + live_vd_base
         result[int(source_vd)] = int(destination_vd)
     return result
@@ -2161,11 +2644,7 @@ def _boundary_port_binding_identity(
     """Return an identity stable across fresh SWIG block proxies."""
     return (
         binding.imported_key,
-        (
-            None
-            if binding.live_block is None
-            else int(binding.live_block.serial)
-        ),
+        (None if binding.live_block is None else int(binding.live_block.serial)),
     )
 
 
@@ -2301,9 +2780,8 @@ def _template_conditional_taken_ea(
     if not block.instructions:
         return None
     tail = block.instructions[-1]
-    if (
-        not ida_hexrays.is_mcode_jcond(int(tail.opcode))
-        or int(tail.d.t) != int(ida_hexrays.mop_b)
+    if not ida_hexrays.is_mcode_jcond(int(tail.opcode)) or int(tail.d.t) != int(
+        ida_hexrays.mop_b
     ):
         return None
     target_serial = int(tail.d.b)
@@ -2325,9 +2803,7 @@ def _live_successor_eas(mba: object, block: object) -> tuple[int, ...] | None:
     result: list[int] = []
     for successor_serial in block.succset:
         successor = mba.get_mblock(int(successor_serial))
-        successor_ea = (
-            None if successor is None else _unique_block_native_ea(successor)
-        )
+        successor_ea = None if successor is None else _unique_block_native_ea(successor)
         if successor_ea is None:
             return None
         result.append(int(successor_ea))
@@ -2369,14 +2845,12 @@ def _preflight_boundary_port_batch(
     selected: tuple[DetachedSnippetTemplate, ...],
 ) -> _BoundaryPortMutationBatch | None:
     imported_by_ea: dict[int, list[tuple[int, int]]] = {}
-    template_by_target = {
-        int(template.target_ea): template for template in selected
-    }
+    template_by_target = {int(template.target_ea): template for template in selected}
     for template in selected:
         for block in template.blocks:
-            imported_by_ea.setdefault(
-                int(block.native_entry_ea), []
-            ).append((int(template.target_ea), int(block.source_serial)))
+            imported_by_ea.setdefault(int(block.native_entry_ea), []).append(
+                (int(template.target_ea), int(block.source_serial))
+            )
 
     def bind(
         owner: DetachedSnippetBoundaryPortOwner,
@@ -2393,10 +2867,7 @@ def _preflight_boundary_port_batch(
             instruction_eas = (
                 ()
                 if block is None
-                else tuple(
-                    int(instruction.ea)
-                    for instruction in block.instructions
-                )
+                else tuple(int(instruction.ea) for instruction in block.instructions)
             )
             if block is None or (
                 int(block.native_entry_ea) != int(native_ea)
@@ -2464,8 +2935,7 @@ def _preflight_boundary_port_batch(
                     template_serial=record.source_serial,
                     exact_instruction_ea=port.source_instruction_ea,
                 )
-                if port.source_owner
-                == DetachedSnippetBoundaryPortOwner.IMPORTED
+                if port.source_owner == DetachedSnippetBoundaryPortOwner.IMPORTED
                 else (
                     _BoundaryPortBlockBinding(
                         native_ea=int(port.source_block_ea),
@@ -2489,8 +2959,7 @@ def _preflight_boundary_port_batch(
                 exact_instruction_ea=(
                     port.source_instruction_ea
                     if port.delivery_mode == "terminal_goto"
-                    and int(port.endpoint_block_ea)
-                    == int(port.source_block_ea)
+                    and int(port.endpoint_block_ea) == int(port.source_block_ea)
                     else None
                 ),
             )
@@ -2502,14 +2971,12 @@ def _preflight_boundary_port_batch(
             )
             old_successor_serials = (
                 record.old_successor_serials
-                if len(record.old_successor_serials)
-                == len(port.old_successor_eas)
+                if len(record.old_successor_serials) == len(port.old_successor_eas)
                 else (None,) * len(port.old_successor_eas)
             )
             explicit_old_owners = (
                 port.old_successor_owners
-                if len(port.old_successor_owners)
-                == len(port.old_successor_eas)
+                if len(port.old_successor_owners) == len(port.old_successor_eas)
                 else (None,) * len(port.old_successor_eas)
             )
             old_target_rows = tuple(
@@ -2521,9 +2988,7 @@ def _preflight_boundary_port_batch(
                             int(old_ea),
                             template=template,
                             template_serial=(
-                                int(old_serial)
-                                if old_serial is not None
-                                else None
+                                int(old_serial) if old_serial is not None else None
                             ),
                         )
                         if old_owner is not None
@@ -2546,15 +3011,9 @@ def _preflight_boundary_port_batch(
                 )
             )
             old_targets = tuple(
-                binding
-                for _, binding in old_target_rows
-                if binding is not None
+                binding for _, binding in old_target_rows if binding is not None
             )
-            if (
-                source is None
-                or endpoint is None
-                or target is None
-            ):
+            if source is None or endpoint is None or target is None:
                 logger.info(
                     "detached snippet boundary-port preflight abstained: "
                     "kind=direct source=0x%X instruction=0x%X "
@@ -2576,9 +3035,7 @@ def _preflight_boundary_port_batch(
                 )
                 return None
             if endpoint.imported_key is not None:
-                endpoint_template = template_by_target[
-                    int(endpoint.imported_key[0])
-                ]
+                endpoint_template = template_by_target[int(endpoint.imported_key[0])]
                 endpoint_block = _template_block_by_serial(
                     endpoint_template,
                     int(endpoint.imported_key[1]),
@@ -2618,9 +3075,8 @@ def _preflight_boundary_port_batch(
                 and bool(old_successors)
                 and port.delivery_mode == "redirect_edge"
             )
-            if (
-                not pruned_live_frontier
-                and len(old_targets) != len(port.old_successor_eas)
+            if not pruned_live_frontier and len(old_targets) != len(
+                port.old_successor_eas
             ):
                 logger.info(
                     "detached snippet boundary-port preflight abstained: "
@@ -2642,20 +3098,14 @@ def _preflight_boundary_port_batch(
                 successor_eas is None
                 or (
                     old_successors
-                    and not old_successors.issubset(
-                        {int(ea) for ea in successor_eas}
-                    )
+                    and not old_successors.issubset({int(ea) for ea in successor_eas})
                     and not pruned_live_frontier
                 )
                 or (
                     not old_successors
-                    and port.delivery_mode
-                    not in {"terminal_goto", "preserve_call"}
+                    and port.delivery_mode not in {"terminal_goto", "preserve_call"}
                 )
-                or (
-                    port.delivery_mode == "preserve_call"
-                    and not endpoint_tail_is_call
-                )
+                or (port.delivery_mode == "preserve_call" and not endpoint_tail_is_call)
             ):
                 logger.info(
                     "detached snippet boundary-port preflight abstained: "
@@ -2831,9 +3281,7 @@ def _preflight_boundary_port_batch(
                 )
                 return None
             if source.imported_key is not None:
-                source_template = template_by_target[
-                    int(source.imported_key[0])
-                ]
+                source_template = template_by_target[int(source.imported_key[0])]
                 source_block = _template_block_by_serial(
                     source_template,
                     int(source.imported_key[1]),
@@ -2869,9 +3317,7 @@ def _preflight_boundary_port_batch(
                 and source.live_block is not None
                 and successor_eas == ()
                 and source.live_block.tail is not None
-                and ida_hexrays.is_mcode_jcond(
-                    int(source.live_block.tail.opcode)
-                )
+                and ida_hexrays.is_mcode_jcond(int(source.live_block.tail.opcode))
                 and tail_ea == int(port.predicate_ea)
             )
             if (
@@ -3009,16 +3455,12 @@ def _preflight_boundary_port_batch(
             _DirectBoundaryPortMutation(
                 records=records,
                 endpoint=endpoint,
-                old_targets=tuple(
-                    old_by_ea[ea] for ea in sorted(old_by_ea)
-                ),
+                old_targets=tuple(old_by_ea[ea] for ea in sorted(old_by_ea)),
                 target=target,
             )
         )
     return _BoundaryPortMutationBatch(
-        direct=tuple(
-            sorted(direct, key=lambda row: int(row.endpoint.native_ea))
-        ),
+        direct=tuple(sorted(direct, key=lambda row: int(row.endpoint.native_ea))),
         conditional=tuple(
             sorted(
                 conditional,
@@ -3067,9 +3509,11 @@ def _preflight_imported_terminal_return_carriers(
         tuple[int, int, int],
         list[_TerminalReturnCarrierTemplate],
     ] = {}
-    for (owner_ea, _source_ea, _state), template in (
-        _TERMINAL_RETURN_CARRIER_TEMPLATES.items()
-    ):
+    for (
+        owner_ea,
+        _source_ea,
+        _state,
+    ), template in _TERMINAL_RETURN_CARRIER_TEMPLATES.items():
         if int(owner_ea) != int(function_ea):
             continue
         request = template.request
@@ -3131,9 +3575,7 @@ def _preflight_imported_terminal_return_carriers(
                 len(terminal_arms),
             )
             return None
-        terminal_target_ea, state_constant, owner, target_binding = (
-            terminal_arms[0]
-        )
+        terminal_target_ea, state_constant, owner, target_binding = terminal_arms[0]
         if (
             owner != DetachedSnippetBoundaryPortOwner.IMPORTED
             or target_binding.imported_key is None
@@ -3191,13 +3633,9 @@ def _preflight_imported_terminal_return_carriers(
             if int(instruction.opcode) == int(ida_hexrays.m_ret)
         )
         source_block = _resolve_boundary_port_block(mutation.source, created)
-        predecessor_serials = {
-            int(serial) for serial in target_block.predset
-        }
+        predecessor_serials = {int(serial) for serial in target_block.predset}
         allowed_predecessors = (
-            set()
-            if source_block is None
-            else {int(source_block.serial)}
+            set() if source_block is None else {int(source_block.serial)}
         )
         if (
             int(terminal_target_ea) not in target_native_origins
@@ -3206,8 +3644,7 @@ def _preflight_imported_terminal_return_carriers(
             or len(return_instructions) != 1
             or not target_instructions
             or target_block.tail is None
-            or int(target_instructions[-1].opcode)
-            != int(ida_hexrays.m_ret)
+            or int(target_instructions[-1].opcode) != int(ida_hexrays.m_ret)
             or int(target_block.tail.opcode) != int(ida_hexrays.m_ret)
             or any(
                 int(instruction.opcode) in closing_opcodes
@@ -3228,11 +3665,7 @@ def _preflight_imported_terminal_return_carriers(
                 int(target_block.type),
                 int(target_block.nsucc()),
                 len(return_instructions),
-                (
-                    None
-                    if target_block.tail is None
-                    else int(target_block.tail.opcode)
-                ),
+                (None if target_block.tail is None else int(target_block.tail.opcode)),
             )
             return None
         return_writes = tuple(
@@ -3241,12 +3674,9 @@ def _preflight_imported_terminal_return_carriers(
             if int(instruction.d.t) == int(ida_hexrays.mop_r)
             and int(instruction.d.r) == _return_mreg()
         )
-        already_present = (
-            len(return_writes) == 1
-            and _same_terminal_carrier_write(
-                return_writes[0],
-                template.instruction,
-            )
+        already_present = len(return_writes) == 1 and _same_terminal_carrier_write(
+            return_writes[0],
+            template.instruction,
         )
         if return_writes and not already_present:
             logger.info(
@@ -3275,9 +3705,7 @@ def _preflight_imported_terminal_return_carriers(
                 int(terminal_target_ea),
             )
             return None
-    return tuple(
-        planned_by_target[key] for key in sorted(planned_by_target)
-    )
+    return tuple(planned_by_target[key] for key in sorted(planned_by_target))
 
 
 def _apply_imported_terminal_return_carriers(
@@ -3297,20 +3725,16 @@ def _apply_imported_terminal_return_carriers(
         imported_carrier_ea = int(mba.alloc_fict_ea(int(mba.entry_ea) + 1))
         assignment.setaddr(imported_carrier_ea)
         target_instructions = _instructions(insertion.target_block)
-        previous = (
-            target_instructions[-2]
-            if len(target_instructions) > 1
-            else None
-        )
+        previous = target_instructions[-2] if len(target_instructions) > 1 else None
         modifier.insert_instruction_now(
             insertion.target_block,
             assignment,
             previous,
             mark_dirty=True,
         )
-        pending_instruction_origins[
-            (mba_identity, imported_carrier_ea)
-        ] = native_carrier_ea
+        pending_instruction_origins[(mba_identity, imported_carrier_ea)] = (
+            native_carrier_ea
+        )
         pending_owned_instruction_eas[insertion.owner_target_ea].append(
             imported_carrier_ea
         )
@@ -3336,13 +3760,9 @@ def _apply_boundary_port_batch(
     transparent_helpers: Collection[object] = (),
 ) -> tuple[DetachedSnippetBoundaryPortResult, ...] | None:
     applied: list[DetachedSnippetBoundaryPortResult] = []
-    transparent_helper_serials = {
-        int(block.serial) for block in transparent_helpers
-    }
+    transparent_helper_serials = {int(block.serial) for block in transparent_helpers}
     for mutation in batch.direct:
-        delivery_modes = {
-            record.port.delivery_mode for record in mutation.records
-        }
+        delivery_modes = {record.port.delivery_mode for record in mutation.records}
         if len(delivery_modes) != 1:
             return None
         delivery_mode = next(iter(delivery_modes))
@@ -3352,8 +3772,10 @@ def _apply_boundary_port_batch(
             _resolve_boundary_port_block(binding, created)
             for binding in mutation.old_targets
         )
-        if endpoint is None or target is None or any(
-            old_target is None for old_target in old_targets
+        if (
+            endpoint is None
+            or target is None
+            or any(old_target is None for old_target in old_targets)
         ):
             return None
         current_successors = {int(serial) for serial in endpoint.succset}
@@ -3426,9 +3848,7 @@ def _apply_boundary_port_batch(
             semantic_successors
         ):
             for old_target in old_targets:
-                edge_source = edge_source_by_semantic_successor[
-                    int(old_target.serial)
-                ]
+                edge_source = edge_source_by_semantic_successor[int(old_target.serial)]
                 if edge_source is endpoint:
                     modifier.queue_conditional_target_change(
                         block_serial=int(endpoint.serial),
@@ -3440,20 +3860,17 @@ def _apply_boundary_port_batch(
                     modifier.queue_goto_change(
                         block_serial=int(edge_source.serial),
                         new_target=int(target.serial),
-                        description=(
-                            "redirect resolver routing fallthrough bridge"
-                        ),
+                        description=("redirect resolver routing fallthrough bridge"),
                     )
             expected = len(old_targets)
         else:
             return None
-        if expected and int(
-            modifier.apply(defer_post_apply_maintenance=True)
-        ) != expected:
+        if (
+            expected
+            and int(modifier.apply(defer_post_apply_maintenance=True)) != expected
+        ):
             return None
-        applied.extend(
-            _boundary_port_result(record) for record in mutation.records
-        )
+        applied.extend(_boundary_port_result(record) for record in mutation.records)
 
     for mutation in batch.conditional:
         source = _resolve_boundary_port_block(mutation.source, created)
@@ -3505,12 +3922,8 @@ def _apply_boundary_port_batch(
                 int(mba.stkoff_ida2vd(int(port.predicate_ida_stkoff))),
             )
             condition.size = int(port.predicate_size)
-            nonzero_true = (
-                taken if int(port.condition_code) == 5 else fallthrough
-            )
-            nonzero_false = (
-                fallthrough if int(port.condition_code) == 5 else taken
-            )
+            nonzero_true = taken if int(port.condition_code) == 5 else fallthrough
+            nonzero_false = fallthrough if int(port.condition_code) == 5 else taken
             expected = 1
             if int(source.nsucc()) == 0:
                 modifier.queue_terminal_goto_change(
@@ -3542,9 +3955,7 @@ def _apply_boundary_port_batch(
                 ),
                 rule_priority=1000,
             )
-            if int(
-                modifier.apply(defer_post_apply_maintenance=True)
-            ) != expected:
+            if int(modifier.apply(defer_post_apply_maintenance=True)) != expected:
                 return None
             applied.append(_boundary_port_result(mutation.record))
             continue
@@ -3597,14 +4008,13 @@ def _apply_boundary_port_batch(
                 modifier.queue_goto_change(
                     block_serial=int(fallthrough_bridge.serial),
                     new_target=int(fallthrough.serial),
-                    description=(
-                        "retarget resolver conditional fallthrough bridge"
-                    ),
+                    description=("retarget resolver conditional fallthrough bridge"),
                 )
             expected += 1
-        if expected and int(
-            modifier.apply(defer_post_apply_maintenance=True)
-        ) != expected:
+        if (
+            expected
+            and int(modifier.apply(defer_post_apply_maintenance=True)) != expected
+        ):
             return None
         applied.append(_boundary_port_result(mutation.record))
     return tuple(applied)
@@ -3639,9 +4049,7 @@ def _materialize_detached_snippet_templates(
         if expected_template_maturity is None
         else int(expected_template_maturity)
     )
-    if any(
-        int(template.maturity) != required_maturity for template in selected
-    ):
+    if any(int(template.maturity) != required_maturity for template in selected):
         logger.info(
             "detached snippet import abstained: destination_maturity=%d "
             "required_template_maturity=%d "
@@ -3674,9 +4082,8 @@ def _materialize_detached_snippet_templates(
             "native_preopt_ranges_require_raw_calls"
         )
         return {}
-    raw_preopt_import = (
-        preserve_raw_calls
-        and required_maturity == int(ida_hexrays.MMAT_PREOPTIMIZED)
+    raw_preopt_import = preserve_raw_calls and required_maturity == int(
+        ida_hexrays.MMAT_PREOPTIMIZED
     )
 
     imported_block_types: dict[tuple[int, int], int] = {}
@@ -3684,10 +4091,8 @@ def _materialize_detached_snippet_templates(
         for block in template.blocks:
             block_type = int(block.block_type)
             if block_type == int(ida_hexrays.BLT_STOP):
-                if (
-                    not block.instructions
-                    or int(block.instructions[-1].opcode)
-                    != int(ida_hexrays.m_ret)
+                if not block.instructions or int(block.instructions[-1].opcode) != int(
+                    ida_hexrays.m_ret
                 ):
                     logger.info(
                         "detached snippet import abstained: target=0x%X "
@@ -3744,8 +4149,7 @@ def _materialize_detached_snippet_templates(
             else _stable_destination_stack_map(mba, replacement_template)
         )
         for source_vd, destination_vd in (
-            stack_map
-            | analyzed_stack_maps_by_target[int(template.target_ea)]
+            stack_map | analyzed_stack_maps_by_target[int(template.target_ea)]
         ).items():
             if int(destination_vd) < 0:
                 logger.info(
@@ -3827,15 +4231,14 @@ def _materialize_detached_snippet_templates(
             stable_analyzed_stack_maps_by_target[int(template.target_ea)],
         )
         analyzed_calls = analyzed_calls_by_target[int(template.target_ea)]
-        subsumed_setup_eas = subsumed_call_setup_eas_by_target[
-            int(template.target_ea)
-        ]
+        subsumed_setup_eas = subsumed_call_setup_eas_by_target[int(template.target_ea)]
         for block in template.blocks:
             for captured in block.instructions:
                 if int(captured.ea) in subsumed_setup_eas:
                     continue
                 instruction = captured
                 instruction_stack_map = raw_stack_map
+                instruction_template: DetachedSnippetTemplate | None = template
                 captured_opcode = int(captured.opcode)
                 if (
                     captured_opcode
@@ -3845,6 +4248,15 @@ def _materialize_detached_snippet_templates(
                 ):
                     instruction = analyzed_calls[int(captured.ea)].instruction
                     instruction_stack_map = analyzed_stack_map
+                    instruction_template = replacement_template
+                instruction_stack_map = _stack_map_with_positive_identity_overrides(
+                    instruction_stack_map,
+                    _instruction_destination_stack_map(
+                        mba,
+                        instruction_template,
+                        int(captured.ea),
+                    ),
+                )
                 missing_source_vd = next(
                     (
                         int(operand.s.off)
@@ -3892,15 +4304,14 @@ def _materialize_detached_snippet_templates(
     boundary_port_batch = _preflight_boundary_port_batch(mba, selected)
     if boundary_port_batch is None:
         logger.info(
-            "detached snippet import abstained: reason="
-            "boundary_port_batch_preflight"
+            "detached snippet import abstained: reason=boundary_port_batch_preflight"
         )
         return _empty_import_result_for_boundary_ports(
             selected,
             "boundary_port_batch_preflight",
         )
-    needs_conditional_fallthrough_helpers = (
-        raw_preopt_import or bool(boundary_port_batch.conditional)
+    needs_conditional_fallthrough_helpers = raw_preopt_import or bool(
+        boundary_port_batch.conditional
     )
 
     modifier = DeferredGraphModifier(mba)
@@ -3926,9 +4337,7 @@ def _materialize_detached_snippet_templates(
 
     roots = {
         int(template.target_ea): int(
-            created[
-                (int(template.target_ea), int(template.root_source_serial))
-            ].serial
+            created[(int(template.target_ea), int(template.root_source_serial))].serial
         )
         for template in selected
     }
@@ -3978,9 +4387,7 @@ def _materialize_detached_snippet_templates(
             stable_analyzed_stack_maps_by_target[int(template.target_ea)],
         )
         analyzed_calls = analyzed_calls_by_target[int(template.target_ea)]
-        subsumed_setup_eas = subsumed_call_setup_eas_by_target[
-            int(template.target_ea)
-        ]
+        subsumed_setup_eas = subsumed_call_setup_eas_by_target[int(template.target_ea)]
         external_map: dict[int, int] = {}
         for block in template.blocks:
             for source_successor, external_ea in zip(
@@ -4003,9 +4410,7 @@ def _materialize_detached_snippet_templates(
                 external_map[int(source_successor)] = int(target_serial)
 
         for block in template.blocks:
-            destination = created[
-                (int(template.target_ea), int(block.source_serial))
-            ]
+            destination = created[(int(template.target_ea), int(block.source_serial))]
             _remove_all_instructions(modifier, destination)
             for captured in block.instructions:
                 if int(captured.ea) in subsumed_setup_eas:
@@ -4034,13 +4439,23 @@ def _materialize_detached_snippet_templates(
                             int(captured.ea),
                         )
                         return {}
-                    instruction = ida_hexrays.minsn_t(
-                        analyzed_call.instruction
-                    )
+                    instruction = ida_hexrays.minsn_t(analyzed_call.instruction)
                     instruction_stack_map = analyzed_stack_map
+                    instruction_template: DetachedSnippetTemplate | None = (
+                        replacement_template
+                    )
                 else:
                     instruction = ida_hexrays.minsn_t(captured)
                     instruction_stack_map = stack_map
+                    instruction_template = template
+                instruction_stack_map = _stack_map_with_positive_identity_overrides(
+                    instruction_stack_map,
+                    _instruction_destination_stack_map(
+                        mba,
+                        instruction_template,
+                        int(captured.ea),
+                    ),
+                )
                 native_instruction_ea = int(captured.ea)
                 if not all(
                     _rebase_template_operand(
@@ -4094,9 +4509,9 @@ def _materialize_detached_snippet_templates(
                     pending_instruction_origins[
                         (mba_identity, imported_instruction_ea)
                     ] = native_instruction_ea
-                    pending_owned_instruction_eas[
-                        int(template.target_ea)
-                    ].append(imported_instruction_ea)
+                    pending_owned_instruction_eas[int(template.target_ea)].append(
+                        imported_instruction_ea
+                    )
                 if int(instruction.opcode) in (
                     int(ida_hexrays.m_call),
                     int(ida_hexrays.m_icall),
@@ -4134,11 +4549,7 @@ def _materialize_detached_snippet_templates(
                         int(block.block_flags)
                         & (
                             int(ida_hexrays.MBL_GOTO)
-                            | (
-                                int(ida_hexrays.MBL_PUSH)
-                                if preserve_raw_calls
-                                else 0
-                            )
+                            | (int(ida_hexrays.MBL_PUSH) if preserve_raw_calls else 0)
                         )
                     )
                     | int(ida_hexrays.MBL_KEEP)
@@ -4176,9 +4587,7 @@ def _materialize_detached_snippet_templates(
                 or int(fallthrough_serial) == int(destination.serial) + 1
             ):
                 continue
-            helper_serial = modifier.insert_nop_block_now(
-                int(destination.serial)
-            )
+            helper_serial = modifier.insert_nop_block_now(int(destination.serial))
             helper = mba.get_mblock(int(helper_serial))
             if helper is None:
                 logger.info(
@@ -4259,14 +4668,12 @@ def _materialize_detached_snippet_templates(
             continue
         modifier.make_displaced_fallthrough_explicit_now(destination)
 
-    terminal_carrier_insertions = (
-        _preflight_imported_terminal_return_carriers(
-            mba,
-            function_ea,
-            boundary_port_batch,
-            created,
-            pending_instruction_origins,
-        )
+    terminal_carrier_insertions = _preflight_imported_terminal_return_carriers(
+        mba,
+        function_ea,
+        boundary_port_batch,
+        created,
+        pending_instruction_origins,
     )
     if terminal_carrier_insertions is None:
         logger.info(
@@ -4304,9 +4711,7 @@ def _materialize_detached_snippet_templates(
 
     roots = {
         int(template.target_ea): int(
-            created[
-                (int(template.target_ea), int(template.root_source_serial))
-            ].serial
+            created[(int(template.target_ea), int(template.root_source_serial))].serial
         )
         for template in selected
     }
@@ -4331,19 +4736,28 @@ def _materialize_detached_snippet_templates(
                 int(target_ea),
             )
             return {}
-        _IMPORTED_SNIPPET_ROOTS[
-            (stable_mba_identity(mba), int(target_ea))
-        ] = _ImportedSnippetRoot(
-            serial_hint=int(root_serial),
-            anchor_eas=tuple(
-                int(instruction.ea)
-                for instruction in _instructions(root_block)
-            ),
-            owned_instruction_eas=tuple(
-                pending_owned_instruction_eas[int(target_ea)]
-            ),
+        _IMPORTED_SNIPPET_ROOTS[(stable_mba_identity(mba), int(target_ea))] = (
+            _ImportedSnippetRoot(
+                serial_hint=int(root_serial),
+                anchor_eas=tuple(
+                    int(instruction.ea) for instruction in _instructions(root_block)
+                ),
+                owned_instruction_eas=tuple(
+                    pending_owned_instruction_eas[int(target_ea)]
+                ),
+            )
         )
     _IMPORTED_INSTRUCTION_ORIGINS.update(pending_instruction_origins)
+    identity = stable_mba_identity(mba)
+    _LAST_IMPORTED_INSTRUCTION_ORIGINS[int(function_ea)] = tuple(
+        sorted(
+            (int(imported_ea), int(native_ea))
+            for (mba_identity, imported_ea), native_ea in (
+                _IMPORTED_INSTRUCTION_ORIGINS.items()
+            )
+            if int(mba_identity) == int(identity)
+        )
+    )
     direct_evidence: list[AppliedDetachedSnippetDirectBoundaryPort] = []
     for mutation in boundary_port_batch.direct:
         endpoint = _resolve_boundary_port_block(mutation.endpoint, created)
@@ -4384,9 +4798,7 @@ def _materialize_detached_snippet_templates(
                 )
             )
         )
-    conditional_evidence: list[
-        AppliedDetachedSnippetConditionalBoundaryPort
-    ] = []
+    conditional_evidence: list[AppliedDetachedSnippetConditionalBoundaryPort] = []
     for mutation in boundary_port_batch.conditional:
         taken_target = _resolve_boundary_port_block(mutation.taken_target, created)
         fallthrough_target = _resolve_boundary_port_block(
@@ -4534,9 +4946,7 @@ def redirect_live_target_predecessors(
             raise RuntimeError(
                 "preflighted detached replacement predecessor redirect failed"
             )
-    modifier.mark_blocks_dirty_now(
-        *(predecessor for predecessor, _new_serial in rows)
-    )
+    modifier.mark_blocks_dirty_now(*(predecessor for predecessor, _new_serial in rows))
     mba.verify(True)
     return len(rows)
 
@@ -4722,10 +5132,7 @@ def restore_terminal_return_carriers(mba: object, function_ea: int) -> int:
         carrier_ea = int(template.instruction.ea)
         for serial in range(int(mba.qty)):
             block = mba.get_mblock(serial)
-            if (
-                int(block.type) != int(ida_hexrays.BLT_1WAY)
-                or int(block.nsucc()) != 1
-            ):
+            if int(block.type) != int(ida_hexrays.BLT_1WAY) or int(block.nsucc()) != 1:
                 continue
             instructions = _instructions(block)
             state_register_writes = tuple(
@@ -4772,10 +5179,7 @@ def restore_terminal_return_carriers(mba: object, function_ea: int) -> int:
 
 
 def _is_zero_operand(operand: object) -> bool:
-    return (
-        int(operand.t) == int(ida_hexrays.mop_n)
-        and int(operand.nnn.value) == 0
-    )
+    return int(operand.t) == int(ida_hexrays.mop_n) and int(operand.nnn.value) == 0
 
 
 def _call_predecessors(mba: object, block_serial: int) -> tuple[object, ...]:
@@ -4808,15 +5212,13 @@ def _carrier_write_before_branch(
             ):
                 return None
             destination = instruction.d
-            if (
-                int(destination.t) == int(ida_hexrays.mop_r)
-                and int(destination.r) == int(return_mreg)
-            ):
+            if int(destination.t) == int(ida_hexrays.mop_r) and int(
+                destination.r
+            ) == int(return_mreg):
                 return None
-            if (
-                int(destination.t) == int(ida_hexrays.mop_S)
-                and int(destination.s.off) == int(candidate.d.s.off)
-            ):
+            if int(destination.t) == int(ida_hexrays.mop_S) and int(
+                destination.s.off
+            ) == int(candidate.d.s.off):
                 return None
         if (
             int(instruction.opcode) == int(ida_hexrays.m_mov)
@@ -4839,8 +5241,7 @@ def capture_call_result_carriers(mba: object) -> tuple[CallResultCarrier, ...]:
         branch = block.tail
         if (
             branch is None
-            or int(branch.opcode)
-            not in (int(ida_hexrays.m_jz), int(ida_hexrays.m_jnz))
+            or int(branch.opcode) not in (int(ida_hexrays.m_jz), int(ida_hexrays.m_jnz))
             or int(branch.l.t) != int(ida_hexrays.mop_r)
             or int(branch.l.r) != int(return_mreg)
             or not _is_zero_operand(branch.r)
@@ -4879,10 +5280,9 @@ def _find_instruction(
         previous = None
         instruction = block.head
         while instruction is not None:
-            if (
-                int(instruction.ea) == int(instruction_ea)
-                and int(instruction.opcode) == int(opcode)
-            ):
+            if int(instruction.ea) == int(instruction_ea) and int(
+                instruction.opcode
+            ) == int(opcode):
                 matches.append((block, instruction, previous))
             previous = instruction
             instruction = instruction.next
@@ -4908,8 +5308,7 @@ def _operand_reads_stack(operand: object, stack_offset: int) -> bool:
         )
     if operand_type == int(ida_hexrays.mop_f):
         return any(
-            _operand_reads_stack(argument, stack_offset)
-            for argument in operand.f.args
+            _operand_reads_stack(argument, stack_offset) for argument in operand.f.args
         )
     return False
 
@@ -5031,30 +5430,223 @@ def _analyzed_call_templates(mba: object) -> tuple[tuple[int, _CallTemplate], ..
     return tuple(matches)
 
 
+def _analyzed_call_result_definitions(
+    mba: object,
+) -> tuple[_AnalyzedCallResultDefinition, ...]:
+    origins = dict(imported_detached_snippet_instruction_origins(mba))
+    call_opcodes = (int(ida_hexrays.m_call), int(ida_hexrays.m_icall))
+    definitions: list[_AnalyzedCallResultDefinition] = []
+    for serial in range(int(mba.qty)):
+        block = mba.get_mblock(serial)
+        for instruction in _instructions(block):
+            if (
+                int(instruction.opcode) != int(ida_hexrays.m_mov)
+                or int(instruction.l.t) != int(ida_hexrays.mop_d)
+                or int(instruction.d.t) != int(ida_hexrays.mop_r)
+            ):
+                continue
+            call = instruction.l.d
+            if int(call.opcode) not in call_opcodes or int(call.d.t) != int(
+                ida_hexrays.mop_f
+            ):
+                continue
+            call_opcode = int(call.opcode)
+            if call_opcode == int(ida_hexrays.m_call):
+                if int(call.l.t) != int(ida_hexrays.mop_v):
+                    continue
+                callee_ea: int | None = int(call.l.g)
+            else:
+                callee_ea = None
+            result_size = int(instruction.d.size)
+            if result_size <= 0:
+                continue
+            call_ea = int(
+                origins.get(
+                    int(call.ea),
+                    origins.get(int(instruction.ea), int(call.ea)),
+                )
+            )
+            definitions.append(
+                _AnalyzedCallResultDefinition(
+                    call_ea=call_ea,
+                    call_opcode=call_opcode,
+                    callee_ea=callee_ea,
+                    result_mreg=int(instruction.d.r),
+                    result_size=result_size,
+                )
+            )
+    return tuple(definitions)
+
+
+def _call_matches_result_definition(
+    instruction: object,
+    definition: _AnalyzedCallResultDefinition,
+) -> bool:
+    if int(instruction.opcode) != int(definition.call_opcode) or int(
+        instruction.d.t
+    ) != int(ida_hexrays.mop_f):
+        return False
+    if definition.callee_ea is None:
+        return int(instruction.opcode) == int(ida_hexrays.m_icall)
+    return int(instruction.l.t) == int(ida_hexrays.mop_v) and int(
+        instruction.l.g
+    ) == int(definition.callee_ea)
+
+
+def _owner_matches_result_definition(
+    instruction: object,
+    definition: _AnalyzedCallResultDefinition,
+) -> bool:
+    return (
+        int(instruction.opcode) == int(ida_hexrays.m_mov)
+        and int(instruction.l.t) == int(ida_hexrays.mop_d)
+        and _call_matches_result_definition(instruction.l.d, definition)
+        and int(instruction.d.t) == int(ida_hexrays.mop_r)
+        and int(instruction.d.r) == int(definition.result_mreg)
+        and int(instruction.d.size) == int(definition.result_size)
+    )
+
+
+def restore_detached_call_result_definitions(
+    mba: object,
+    function_ea: int,
+) -> int:
+    """Restore CALLS-analyzed result owners lost while replaying snippets.
+
+    The cache retains only native identity and the result location.  The live
+    replayed ``m_call``/``m_icall`` supplies its own ``mop_f`` callinfo, so no
+    MBA-owned callinfo object crosses a decompilation boundary.
+    """
+    owner_ea = int(function_ea)
+    origins = dict(imported_detached_snippet_instruction_origins(mba))
+    definitions = tuple(
+        definition
+        for (profile_ea, call_ea), definition in sorted(
+            _ANALYZED_CALL_RESULT_DEFINITIONS.items()
+        )
+        if int(profile_ea) == owner_ea
+        and (owner_ea, int(call_ea)) not in _ANALYZED_CALL_RESULT_DEFINITION_CONFLICTS
+    )
+    changed_blocks: list[object] = []
+    changed = 0
+    for definition in definitions:
+        raw_matches: list[tuple[object, object]] = []
+        preserved_matches: list[tuple[object, object]] = []
+        conflicting_call_owner = False
+        for serial in range(int(mba.qty)):
+            block = mba.get_mblock(serial)
+            for instruction in _instructions(block):
+                native_ea = int(origins.get(int(instruction.ea), int(instruction.ea)))
+                if native_ea != int(definition.call_ea):
+                    continue
+                if _call_matches_result_definition(instruction, definition):
+                    raw_matches.append((block, instruction))
+                    continue
+                if int(instruction.opcode) == int(ida_hexrays.m_mov) and int(
+                    instruction.l.t
+                ) == int(ida_hexrays.mop_d):
+                    nested = instruction.l.d
+                    if _call_matches_result_definition(nested, definition):
+                        if _owner_matches_result_definition(instruction, definition):
+                            preserved_matches.append((block, instruction))
+                        else:
+                            conflicting_call_owner = True
+                elif int(instruction.opcode) in (
+                    int(ida_hexrays.m_call),
+                    int(ida_hexrays.m_icall),
+                ):
+                    conflicting_call_owner = True
+
+        if preserved_matches:
+            if len(preserved_matches) != 1 or raw_matches or conflicting_call_owner:
+                logger.info(
+                    "call-result definition restore abstained: call=0x%X "
+                    "reason=ambiguous_preserved_owner preserved=%d raw=%d",
+                    int(definition.call_ea),
+                    len(preserved_matches),
+                    len(raw_matches),
+                )
+            continue
+        if len(raw_matches) != 1 or conflicting_call_owner:
+            if raw_matches or conflicting_call_owner:
+                logger.info(
+                    "call-result definition restore abstained: call=0x%X "
+                    "reason=ambiguous_raw_owner raw=%d conflict=%s",
+                    int(definition.call_ea),
+                    len(raw_matches),
+                    conflicting_call_owner,
+                )
+            continue
+
+        block, instruction = raw_matches[0]
+        call_expression = ida_hexrays.minsn_t(instruction)
+        call_expression.d.size = int(definition.result_size)
+        instruction.opcode = ida_hexrays.m_mov
+        instruction.l.erase()
+        instruction.l.make_insn(call_expression)
+        instruction.l.size = int(definition.result_size)
+        instruction.r.erase()
+        instruction.d.erase()
+        instruction.d.make_reg(
+            int(definition.result_mreg),
+            int(definition.result_size),
+        )
+        changed_blocks.append(block)
+        changed += 1
+        logger.info(
+            "call-result definition restored: call=0x%X "
+            "owner=blk%d@0x%X result_mreg=%d size=%d",
+            int(definition.call_ea),
+            int(block.serial),
+            int(block.start),
+            int(definition.result_mreg),
+            int(definition.result_size),
+        )
+    if changed:
+        DeferredGraphModifier(mba).mark_blocks_dirty_now(
+            *tuple(dict.fromkeys(changed_blocks))
+        )
+        mba.verify(True)
+    return changed
+
+
 def capture_detached_handler_call_templates(function_ea: int, mba: object) -> None:
-    """Retain owned one-argument CALLS templates for the next LOCOPT MBA."""
+    """Retain analyzed CALLS templates and result owners for later replay."""
     key = int(function_ea)
     for callee_ea, template in _analyzed_call_templates(mba):
         _ANALYZED_CALL_TEMPLATES[(key, int(callee_ea))] = _CallTemplate(
             instruction=ida_hexrays.minsn_t(template.instruction),
             argument_size=int(template.argument_size),
         )
+    for definition in _analyzed_call_result_definitions(mba):
+        definition_key = (key, int(definition.call_ea))
+        previous = _ANALYZED_CALL_RESULT_DEFINITIONS.get(definition_key)
+        if previous is None:
+            _ANALYZED_CALL_RESULT_DEFINITIONS[definition_key] = definition
+        elif previous != definition:
+            _ANALYZED_CALL_RESULT_DEFINITION_CONFLICTS.add(definition_key)
 
 
 def clear_detached_handler_call_templates() -> None:
     """Clear CALLS templates at resolver teardown or project reload."""
     _ANALYZED_CALL_TEMPLATES.clear()
+    _ANALYZED_CALL_RESULT_DEFINITIONS.clear()
+    _ANALYZED_CALL_RESULT_DEFINITION_CONFLICTS.clear()
     _DETACHED_SNIPPET_TEMPLATES.clear()
+    _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES.clear()
+    _DETACHED_CALLINFO_TEMPLATES.clear()
+    _DETACHED_CALLINFO_CONFLICTS.clear()
     _DETACHED_SNIPPET_GENERATIONS.clear()
     _IMPORTED_SNIPPET_ROOTS.clear()
     _IMPORTED_INSTRUCTION_ORIGINS.clear()
+    _LAST_IMPORTED_INSTRUCTION_ORIGINS.clear()
     _IMPORTED_DIRECT_BOUNDARY_EVIDENCE.clear()
     _IMPORTED_CONDITIONAL_BOUNDARY_EVIDENCE.clear()
     clear_owned_fake_block_registrations()
 
 
 def clear_imported_detached_snippet_roots() -> None:
-    """Forget live-MBA serials while retaining cross-decompile templates."""
+    """Forget live-MBA identities while retaining cross-decompile evidence."""
     _IMPORTED_SNIPPET_ROOTS.clear()
     _IMPORTED_INSTRUCTION_ORIGINS.clear()
     _IMPORTED_DIRECT_BOUNDARY_EVIDENCE.clear()
@@ -5109,9 +5701,7 @@ def materialize_detached_handler_island(
     anchor_ea = int(plan.source_predicate_ea)
     call = ida_hexrays.minsn_t(call_template.instruction)
     call.setaddr(anchor_ea)
-    source_argument_stkoff = int(
-        mba.stkoff_ida2vd(int(plan.call_argument_ida_stkoff))
-    )
+    source_argument_stkoff = int(mba.stkoff_ida2vd(int(plan.call_argument_ida_stkoff)))
     argument = call.d.f.args[0]
     argument.erase()
     argument.make_stkvar(mba, source_argument_stkoff)
@@ -5131,9 +5721,7 @@ def materialize_detached_handler_island(
     )
 
     modifier = DeferredGraphModifier(mba)
-    free_block = mba.get_mblock(
-        modifier.insert_nop_block_now(int(source.serial))
-    )
+    free_block = mba.get_mblock(modifier.insert_nop_block_now(int(source.serial)))
     true_handler = find_unique_live_block_by_ea(mba, int(plan.true_target_ea))
     false_handler = find_unique_live_block_by_ea(mba, int(plan.false_target_ea))
     if true_handler is None or false_handler is None:
@@ -5227,18 +5815,24 @@ def materialize_detached_handler_island(
 
 
 __all__ = [
+    "capture_detached_callinfo_templates",
     "CallResultCarrier",
+    "DetachedCallCompanionValidation",
+    "DetachedSnippetCompanionCaptureResult",
     "DetachedSnippetBlockTemplate",
     "DetachedSnippetTemplate",
     "capture_call_result_carriers",
     "capture_terminal_return_carrier_template",
     "capture_detached_handler_call_templates",
     "capture_detached_replacement_snippet_template",
+    "capture_detached_snippet_companion_templates",
     "capture_detached_snippet_template",
     "clear_detached_handler_call_templates",
+    "prepare_detached_callinfo_template",
     "clear_terminal_return_carrier_templates",
     "clear_imported_detached_snippet_roots",
     "detached_snippet_template_generation",
+    "detached_callinfo_template_eas",
     "detached_snippet_conditional_evidence",
     "detached_snippet_replacement_evidence",
     "detached_snippet_replacement_arm_states",
@@ -5247,6 +5841,7 @@ __all__ = [
     "detached_snippet_template_stack_map",
     "find_unique_live_block_by_ea",
     "imported_detached_snippet_instruction_origins",
+    "last_imported_detached_snippet_instruction_origins",
     "imported_detached_snippet_direct_boundary_evidence",
     "imported_detached_snippet_conditional_boundary_evidence",
     "imported_detached_snippet_terminal_origins",
@@ -5260,6 +5855,8 @@ __all__ = [
     "reconcile_imported_callinfo_with_live_native_calls",
     "redirect_live_target_predecessors",
     "restore_call_result_carriers",
+    "restore_detached_call_result_definitions",
     "restore_terminal_return_carriers",
     "stable_mba_identity",
+    "validate_detached_call_companion",
 ]

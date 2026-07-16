@@ -25,9 +25,7 @@ class _Operand:
         self.r = int(register)
         self.size = int(size)
         self.s = (
-            SimpleNamespace(off=int(stack_offset))
-            if stack_offset is not None
-            else None
+            SimpleNamespace(off=int(stack_offset)) if stack_offset is not None else None
         )
         self.nnn = SimpleNamespace(value=int(value)) if value is not None else None
         self.d = nested
@@ -219,7 +217,17 @@ def _lowered_mba(*, with_consumer: bool) -> tuple[_MBA, _Block, _Instruction]:
         left=consumer_source,
         dest=_Operand(ida_hexrays.mop_r, register=9),
     )
-    return _MBA((branch_block, _Block(1, 0x40AC6A, (consumer,), ()), _Block(2, 0x40B668, (_Instruction(ida_hexrays.m_nop, 0x40B668),), ()))), branch_block, branch
+    return (
+        _MBA(
+            (
+                branch_block,
+                _Block(1, 0x40AC6A, (consumer,), ()),
+                _Block(2, 0x40B668, (_Instruction(ida_hexrays.m_nop, 0x40B668),), ()),
+            )
+        ),
+        branch_block,
+        branch,
+    )
 
 
 def _fake_minsn(value: int | _Instruction) -> _Instruction:
@@ -228,7 +236,179 @@ def _fake_minsn(value: int | _Instruction) -> _Instruction:
     return _Instruction(ida_hexrays.m_nop, int(value))
 
 
-def test_restores_cached_call_result_after_consumers_are_reconnected(monkeypatch) -> None:
+def _analyzed_call_result_mba(
+    *,
+    call_ea: int = 0x40ABFA,
+    callee_ea: int = 0x40F830,
+    result_mreg: int | None = None,
+) -> _MBA:
+    result_register = (
+        int(ida_hexrays.reg2mreg(0)) if result_mreg is None else int(result_mreg)
+    )
+    call = _Instruction(
+        ida_hexrays.m_call,
+        call_ea,
+        left=_Operand(ida_hexrays.mop_v, target_ea=callee_ea),
+        dest=_Operand(ida_hexrays.mop_f),
+    )
+    call.d.f = SimpleNamespace(args=())
+    owner = _Instruction(
+        ida_hexrays.m_mov,
+        call_ea,
+        left=_Operand(ida_hexrays.mop_d, nested=call, size=4),
+        dest=_Operand(
+            ida_hexrays.mop_r,
+            register=result_register,
+            size=4,
+        ),
+    )
+    return _MBA((_Block(0, call_ea - 6, (owner,), ()),))
+
+
+def _bare_call_result_mba(
+    *,
+    call_ea: int = 0x40ABFA,
+    callee_ea: int = 0x40F830,
+    duplicate: bool = False,
+) -> _MBA:
+    def raw_call() -> _Instruction:
+        call = _Instruction(
+            ida_hexrays.m_call,
+            call_ea,
+            left=_Operand(ida_hexrays.mop_v, target_ea=callee_ea),
+            dest=_Operand(ida_hexrays.mop_f, size=0),
+        )
+        call.d.f = SimpleNamespace(args=())
+        return call
+
+    blocks = [_Block(0, call_ea - 6, (raw_call(),), ())]
+    if duplicate:
+        blocks.append(_Block(1, call_ea - 2, (raw_call(),), ()))
+    blocks.append(
+        _Block(
+            len(blocks),
+            call_ea + 5,
+            (_Instruction(ida_hexrays.m_nop, call_ea + 5),),
+            (),
+        )
+    )
+    return _MBA(tuple(blocks))
+
+
+def test_restores_analyzed_call_result_definition_by_native_ea(monkeypatch) -> None:
+    from d810.hexrays.mutation import detached_handler_island
+
+    function_ea = 0x40A560
+    detached_handler_island.clear_detached_handler_call_templates()
+    try:
+        detached_handler_island.capture_detached_handler_call_templates(
+            function_ea,
+            _analyzed_call_result_mba(),
+        )
+        replayed = _bare_call_result_mba()
+        raw_call = replayed.get_mblock(0).head
+        original_callinfo = raw_call.d.f
+        monkeypatch.setattr(
+            detached_handler_island.ida_hexrays,
+            "minsn_t",
+            _fake_minsn,
+        )
+
+        changed = detached_handler_island.restore_detached_call_result_definitions(
+            replayed,
+            function_ea,
+        )
+
+        assert changed == 1
+        owner = replayed.get_mblock(0).head
+        assert int(owner.opcode) == int(ida_hexrays.m_mov)
+        assert int(owner.l.t) == int(ida_hexrays.mop_d)
+        assert int(owner.l.d.opcode) == int(ida_hexrays.m_call)
+        assert int(owner.l.d.ea) == 0x40ABFA
+        assert int(owner.l.d.d.t) == int(ida_hexrays.mop_f)
+        assert int(owner.l.size) == int(owner.l.d.d.size) == 4
+        assert owner.l.d.d.f is not original_callinfo
+        assert int(owner.d.t) == int(ida_hexrays.mop_r)
+        assert int(owner.d.r) == int(ida_hexrays.reg2mreg(0))
+        assert int(owner.d.size) == 4
+        assert replayed.get_mblock(0).dirty == 1
+        assert replayed.chains_dirty == 1
+    finally:
+        detached_handler_island.clear_detached_handler_call_templates()
+
+
+def test_call_result_definition_restore_abstains_on_duplicate_native_owner(
+    monkeypatch,
+) -> None:
+    from d810.hexrays.mutation import detached_handler_island
+
+    function_ea = 0x40A560
+    detached_handler_island.clear_detached_handler_call_templates()
+    try:
+        detached_handler_island.capture_detached_handler_call_templates(
+            function_ea,
+            _analyzed_call_result_mba(),
+        )
+        replayed = _bare_call_result_mba(duplicate=True)
+        monkeypatch.setattr(
+            detached_handler_island.ida_hexrays,
+            "minsn_t",
+            _fake_minsn,
+        )
+
+        assert (
+            detached_handler_island.restore_detached_call_result_definitions(
+                replayed,
+                function_ea,
+            )
+            == 0
+        )
+        assert all(
+            int(block.head.opcode) == int(ida_hexrays.m_call)
+            for block in replayed.blocks[:-1]
+        )
+    finally:
+        detached_handler_island.clear_detached_handler_call_templates()
+
+
+def test_call_result_definition_restore_abstains_on_conflicting_result_register(
+    monkeypatch,
+) -> None:
+    from d810.hexrays.mutation import detached_handler_island
+
+    function_ea = 0x40A560
+    detached_handler_island.clear_detached_handler_call_templates()
+    try:
+        detached_handler_island.capture_detached_handler_call_templates(
+            function_ea,
+            _analyzed_call_result_mba(result_mreg=7),
+        )
+        detached_handler_island.capture_detached_handler_call_templates(
+            function_ea,
+            _analyzed_call_result_mba(result_mreg=9),
+        )
+        replayed = _bare_call_result_mba()
+        monkeypatch.setattr(
+            detached_handler_island.ida_hexrays,
+            "minsn_t",
+            _fake_minsn,
+        )
+
+        assert (
+            detached_handler_island.restore_detached_call_result_definitions(
+                replayed,
+                function_ea,
+            )
+            == 0
+        )
+        assert int(replayed.get_mblock(0).head.opcode) == int(ida_hexrays.m_call)
+    finally:
+        detached_handler_island.clear_detached_handler_call_templates()
+
+
+def test_restores_cached_call_result_after_consumers_are_reconnected(
+    monkeypatch,
+) -> None:
     from d810.hexrays.mutation import detached_handler_island
 
     raw = _raw_mba()
@@ -334,10 +514,13 @@ def test_replays_exact_early_maturity_return_carrier_into_terminal_state_handler
         )
         lowered, block = _terminal_return_live_mba()
 
-        assert detached_handler_island.restore_terminal_return_carriers(
-            lowered,
-            0x40A560,
-        ) == 1
+        assert (
+            detached_handler_island.restore_terminal_return_carriers(
+                lowered,
+                0x40A560,
+            )
+            == 1
+        )
 
         state_write, carrier = block.instructions()
         assert int(state_write.ea) == 0x40C7E5
@@ -391,10 +574,13 @@ def test_replays_unique_terminal_carrier_into_equivalent_one_way_state_writer(
             _terminal_return_carrier_snippet(),
         )
 
-        assert detached_handler_island.restore_terminal_return_carriers(
-            lowered,
-            0x40A560,
-        ) == 2
+        assert (
+            detached_handler_island.restore_terminal_return_carriers(
+                lowered,
+                0x40A560,
+            )
+            == 2
+        )
 
         _state_write, carrier = imported.instructions()
         assert int(carrier.ea) == 0x40C7EA
@@ -429,10 +615,13 @@ def test_terminal_return_carrier_replay_abstains_when_state_proof_drifted(
         )
         lowered, block = _terminal_return_live_mba(state=0xDEADBEEF)
 
-        assert detached_handler_island.restore_terminal_return_carriers(
-            lowered,
-            0x40A560,
-        ) == 0
+        assert (
+            detached_handler_island.restore_terminal_return_carriers(
+                lowered,
+                0x40A560,
+            )
+            == 0
+        )
         assert len(block.instructions()) == 1
     finally:
         detached_handler_island.clear_terminal_return_carrier_templates()
@@ -475,10 +664,13 @@ def test_terminal_return_carrier_replay_abstains_on_multiple_state_writes(
             _terminal_return_carrier_snippet(),
         )
 
-        assert detached_handler_island.restore_terminal_return_carriers(
-            lowered,
-            0x40A560,
-        ) == 0
+        assert (
+            detached_handler_island.restore_terminal_return_carriers(
+                lowered,
+                0x40A560,
+            )
+            == 0
+        )
         assert block.instructions() == (first_write, second_write)
     finally:
         detached_handler_island.clear_terminal_return_carrier_templates()
@@ -529,10 +721,13 @@ def test_terminal_return_carrier_replay_abstains_on_ambiguous_terminal_identity(
             ),
         )
 
-        assert detached_handler_island.restore_terminal_return_carriers(
-            lowered,
-            0x40A560,
-        ) == 0
+        assert (
+            detached_handler_island.restore_terminal_return_carriers(
+                lowered,
+                0x40A560,
+            )
+            == 0
+        )
         assert block.instructions() == (imported_write,)
     finally:
         detached_handler_island.clear_terminal_return_carrier_templates()
@@ -918,6 +1113,86 @@ def test_calls_applies_conditional_bridge_recorded_after_locopt(
     assert int(rule.priority) > int(island_rule.FlowRulePriority.UNFLATTEN)
 
 
+def test_calls_restores_profile_call_result_definition_before_early_return(
+    monkeypatch,
+) -> None:
+    from d810.optimizers.microcode.flow.jumps import (
+        materialized_computed_goto_island as island_rule,
+    )
+
+    restored: list[tuple[object, int]] = []
+    monkeypatch.setattr(
+        island_rule,
+        "get_materialized_indirect_transfers",
+        lambda _function_ea: (),
+    )
+    monkeypatch.setattr(
+        island_rule,
+        "restore_terminal_return_carriers",
+        lambda _mba, _function_ea: 0,
+    )
+    monkeypatch.setattr(
+        island_rule,
+        "_materialize_live_handler_replacements",
+        lambda _mba, _transfers: 0,
+    )
+    monkeypatch.setattr(
+        island_rule,
+        "_materialize_missing_detached_snippets",
+        lambda _mba, _transfers, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        island_rule,
+        "reconcile_imported_callinfo_with_live_native_calls",
+        lambda _mba: 0,
+    )
+    monkeypatch.setattr(
+        island_rule,
+        "_recover_imported_conditional_bridge_transfers",
+        lambda _mba, transfers: transfers,
+    )
+    monkeypatch.setattr(
+        island_rule,
+        "_apply_detached_snippet_terminal_routes",
+        lambda _mba, _transfers: 0,
+    )
+    monkeypatch.setattr(
+        island_rule,
+        "_apply_residual_state_route_bridges",
+        lambda _mba, _transfers: 0,
+    )
+    monkeypatch.setattr(
+        island_rule,
+        "_candidate_conditional_bridge_plans",
+        lambda _function_ea: (),
+    )
+    monkeypatch.setattr(
+        island_rule,
+        "restore_call_result_carriers",
+        lambda _mba, _carriers: 0,
+    )
+    monkeypatch.setattr(
+        island_rule,
+        "is_computed_goto_materialized",
+        lambda _function_ea: True,
+    )
+    monkeypatch.setattr(
+        island_rule,
+        "restore_detached_call_result_definitions",
+        lambda mba, function_ea: not restored.append((mba, function_ea)),
+        raising=False,
+    )
+    rule = island_rule.MaterializedComputedGotoIslandRule()
+    mba = SimpleNamespace(
+        entry_ea=0x40A560,
+        maturity=ida_hexrays.MMAT_CALLS,
+        this=0x4001,
+    )
+
+    assert rule.optimize(SimpleNamespace(mba=mba)) == 1
+    assert restored == [(mba, 0x40A560)]
+
+
 def test_calls_imports_live_handler_replacement_before_terminal_routes(
     monkeypatch,
 ) -> None:
@@ -942,8 +1217,7 @@ def test_calls_imports_live_handler_replacement_before_terminal_routes(
     monkeypatch.setattr(
         island_rule,
         "_materialize_missing_detached_snippets",
-        lambda _mba, _transfers, *, require_live_residual_source,
-        expected_template_maturity: (
+        lambda _mba, _transfers, *, require_live_residual_source, expected_template_maturity: (
             events.append("missing") or 1
             if require_live_residual_source
             and expected_template_maturity == int(ida_hexrays.MMAT_LOCOPT)
@@ -1138,9 +1412,7 @@ def test_calls_missing_import_ignores_stale_evidence_when_live_delivery_exists(
     monkeypatch.setattr(
         island_rule,
         "has_detached_snippet_template",
-        lambda _function_ea, candidate_target_ea: (
-            int(candidate_target_ea) == target_ea
-        ),
+        lambda _function_ea, candidate_target_ea: int(candidate_target_ea) == target_ea,
     )
     imported: list[tuple[int, ...]] = []
 
@@ -1165,12 +1437,15 @@ def test_calls_missing_import_ignores_stale_evidence_when_live_delivery_exists(
         materialize,
     )
 
-    assert island_rule._materialize_missing_detached_snippets(
-        mba,
-        (),
-        require_live_residual_source=True,
-        expected_template_maturity=int(ida_hexrays.MMAT_LOCOPT),
-    ) == 1
+    assert (
+        island_rule._materialize_missing_detached_snippets(
+            mba,
+            (),
+            require_live_residual_source=True,
+            expected_template_maturity=int(ida_hexrays.MMAT_LOCOPT),
+        )
+        == 1
+    )
     assert imported == [(target_ea,)]
 
 
@@ -1221,9 +1496,7 @@ def test_live_handler_replacement_releases_unreachable_native_keep_roots(
     )
     for block in (native_root, native_exit, unrelated_keep, imported_root):
         block.flags |= int(ida_hexrays.MBL_KEEP)
-    mba = _MBA(
-        (entry, live, native_root, native_exit, unrelated_keep, imported_root)
-    )
+    mba = _MBA((entry, live, native_root, native_exit, unrelated_keep, imported_root))
     transfer = SimpleNamespace(
         resolver_kind="static_equality_fixpoint",
         selector_state_var_reg=20,
@@ -1290,16 +1563,17 @@ def test_live_handler_replacement_releases_unreachable_native_keep_roots(
         island_rule,
         "detached_snippet_template_block_eas",
         lambda _function_ea, target_ea: (
-            (0x40A7AE, 0x40A7E5)
-            if int(target_ea) == 0x40A7AE
-            else ()
+            (0x40A7AE, 0x40A7E5) if int(target_ea) == 0x40A7AE else ()
         ),
     )
 
-    assert island_rule._materialize_live_handler_replacements(
-        mba,
-        (transfer,),
-    ) == 1
+    assert (
+        island_rule._materialize_live_handler_replacements(
+            mba,
+            (transfer,),
+        )
+        == 1
+    )
     assert (int(native_root.flags) & int(ida_hexrays.MBL_KEEP)) == 0
     assert (int(native_exit.flags) & int(ida_hexrays.MBL_KEEP)) == 0
     assert int(unrelated_keep.flags) & int(ida_hexrays.MBL_KEEP)
@@ -1323,11 +1597,7 @@ def test_locopt_preanalysis_imports_before_call_analysis_without_requesting_redo
     monkeypatch.setattr(
         island_rule,
         "_materialize_missing_detached_snippets",
-        lambda candidate_mba,
-        candidate_transfers,
-        *,
-        require_live_residual_source,
-        expected_template_maturity: (
+        lambda candidate_mba, candidate_transfers, *, require_live_residual_source, expected_template_maturity: (
             3
             if candidate_mba is mba
             and candidate_transfers is transfers
@@ -1402,6 +1672,30 @@ def test_preoptimized_hook_dispatches_live_mba_before_locopt() -> None:
 
     assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
     assert events == [DecompilationEvent.HEXRAYS_PREOPT_READY]
+
+
+def test_stkpnts_hook_dispatches_transient_stack_points() -> None:
+    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+    from d810.hexrays.lifecycle import DecompilationEvent
+
+    mba = SimpleNamespace(entry_ea=0x40A560)
+    stack_points = object()
+    events: list[object] = []
+
+    def callback(event: object, **kwargs: object) -> None:
+        assert event is DecompilationEvent.HEXRAYS_STKPNTS
+        assert kwargs == {
+            "function_ea": 0x40A560,
+            "mba": mba,
+            "stack_points": stack_points,
+            "decision": {},
+        }
+        events.append(event)
+
+    hook = SimpleNamespace(callback=callback)
+
+    assert HexraysDecompilationHook.stkpnts(hook, mba, stack_points) == 0
+    assert events == [DecompilationEvent.HEXRAYS_STKPNTS]
 
 
 def test_island_rule_materializes_semantic_island_before_other_bridges(
@@ -1513,6 +1807,7 @@ def test_terminal_route_helper_reads_reloaded_importer_provenance(
         "find_unique_live_block_by_ea",
         lambda _mba, ea: source if ea == 0xF1C002D0 else target,
     )
+
     def planner(*_args: object, **kwargs: object) -> tuple[object, ...]:
         assert kwargs["resolver_targets"] == {0x40C703: (0x40AF00,)}
         return (plan,)
@@ -1536,10 +1831,13 @@ def test_terminal_route_helper_reads_reloaded_importer_provenance(
 
     monkeypatch.setattr(island_rule, "DeferredGraphModifier", _Modifier)
 
-    assert island_rule._apply_detached_snippet_terminal_routes(
-        mba,
-        (transfer,),
-    ) == 1
+    assert (
+        island_rule._apply_detached_snippet_terminal_routes(
+            mba,
+            (transfer,),
+        )
+        == 1
+    )
 
 
 def test_terminal_route_helper_recovers_live_native_exit_from_state_snapshot(
@@ -1598,7 +1896,9 @@ def test_terminal_route_helper_recovers_live_native_exit_from_state_snapshot(
         lambda _mba, ea: (
             source
             if int(ea) == native_exit_ea
-            else target if int(ea) == target_ea else None
+            else target
+            if int(ea) == target_ea
+            else None
         ),
     )
 
@@ -1623,10 +1923,13 @@ def test_terminal_route_helper_recovers_live_native_exit_from_state_snapshot(
 
     monkeypatch.setattr(island_rule, "DeferredGraphModifier", _Modifier)
 
-    assert island_rule._apply_detached_snippet_terminal_routes(
-        mba,
-        (equality, terminal),
-    ) == 1
+    assert (
+        island_rule._apply_detached_snippet_terminal_routes(
+            mba,
+            (equality, terminal),
+        )
+        == 1
+    )
     assert _Modifier.queued == [(0, 1)]
 
 
@@ -1730,9 +2033,7 @@ def test_detached_island_uses_standalone_predicate_fork_topology(
                 tuple(int(instruction.opcode) for instruction in instructions),
             )
         )
-        body = tuple(instructions) or (
-            _Instruction(ida_hexrays.m_nop, 0x40C5D1),
-        )
+        body = tuple(instructions) or (_Instruction(ida_hexrays.m_nop, 0x40C5D1),)
         block = _Block(next_serial, 0x40C5D1, body, ())
         append_block(block)
         next_serial += 1

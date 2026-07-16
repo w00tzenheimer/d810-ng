@@ -172,6 +172,17 @@ cdef extern from "pro.h":
 
 
 # =============================================================================
+
+cdef extern from "frame.hpp":
+    cdef cppclass stkpnt_t:
+        ea_t ea
+        sval_t spd
+
+    cdef cppclass stkpnts_t(qvector[stkpnt_t]):
+        pass
+
+
+# =============================================================================
 # Hex-Rays specific types
 # =============================================================================
 
@@ -329,6 +340,9 @@ cdef extern from "hexrays.hpp":
         ivlset_t visible_memory
         mlist_t dead_regs
         int flags
+        mcallinfo_t& assign_from_copy "operator="(
+            const mcallinfo_t& other
+        ) except +
 
     cdef cppclass mcases_t:
         pass

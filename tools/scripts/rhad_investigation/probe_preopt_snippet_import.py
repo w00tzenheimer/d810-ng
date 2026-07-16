@@ -4,6 +4,7 @@ This is an investigation harness, not production profile logic.  Run it only
 against a disposable copy because the computed-goto resolver patches the input
 database's native bytes.
 """
+
 from __future__ import annotations
 
 import logging
@@ -14,42 +15,31 @@ import shutil
 import idapro
 
 
-BIN = Path(
-    os.environ.get("RHAD_PREOPT_BIN", ".tmp/rhad_preopt_probe.bin")
-).resolve()
+BIN = Path(os.environ.get("RHAD_PREOPT_BIN", ".tmp/rhad_preopt_probe.bin")).resolve()
 FUNC_EA = 0x40A560
 TAIL_START = 0x40B9A6
 TAIL_END = 0x40BB75
 DIAG_OUTPUT = os.environ.get("RHAD_PREOPT_DIAG_OUTPUT")
 QUIET_LOGS = os.environ.get("RHAD_PREOPT_QUIET_LOGS") == "1"
 IMPORT_ALL_PREPARED = os.environ.get("RHAD_PREOPT_IMPORT_ALL") == "1"
-CAPTURE_TRANSITION_MANIFEST = (
-    os.environ.get("RHAD_PREOPT_TRANSITION_MANIFEST") == "1"
-)
-REPLAY_TRANSITION_MANIFEST = (
-    os.environ.get("RHAD_PREOPT_TRANSITION_REPLAY") == "1"
-)
-REPLAY_TRANSITION_MANIFEST_DATABASE = os.environ.get(
-    "RHAD_PREOPT_REPLAY_MANIFEST_DB"
-)
+CAPTURE_TRANSITION_MANIFEST = os.environ.get("RHAD_PREOPT_TRANSITION_MANIFEST") == "1"
+REPLAY_TRANSITION_MANIFEST = os.environ.get("RHAD_PREOPT_TRANSITION_REPLAY") == "1"
+REPLAY_TRANSITION_MANIFEST_DATABASE = os.environ.get("RHAD_PREOPT_REPLAY_MANIFEST_DB")
 ENTRY_DUMP = os.environ.get("RHAD_PREOPT_ENTRY_DUMP") == "1"
-APPLY_INCOMING_BOUNDARIES = (
-    os.environ.get("RHAD_PREOPT_INCOMING_BOUNDARIES") == "1"
-)
-APPLY_INTERIOR_ENTRY_BRIDGES = (
-    os.environ.get("RHAD_PREOPT_INTERIOR_ENTRIES") == "1"
-)
+APPLY_INCOMING_BOUNDARIES = os.environ.get("RHAD_PREOPT_INCOMING_BOUNDARIES") == "1"
+APPLY_INTERIOR_ENTRY_BRIDGES = os.environ.get("RHAD_PREOPT_INTERIOR_ENTRIES") == "1"
 USE_UNION_CLOSURE = os.environ.get("RHAD_PREOPT_UNION_CLOSURE") == "1"
-USE_NATIVE_SEMANTIC_CLOSURE = (
-    os.environ.get("RHAD_PREOPT_NATIVE_CLOSURE") == "1"
-)
+USE_NATIVE_SEMANTIC_CLOSURE = os.environ.get("RHAD_PREOPT_NATIVE_CLOSURE") == "1"
 BOUNDARY_PORT_MODE = os.environ.get("RHAD_PREOPT_BOUNDARY_PORTS") == "1"
-TRACE_REDIRECT_CATEGORIES = (
-    os.environ.get("RHAD_TRACE_REDIRECT_CATEGORIES") == "1"
-)
-FULL_HANDLER_CLOSURE = (
-    os.environ.get("RHAD_PREOPT_FULL_HANDLER_CLOSURE") == "1"
-)
+TRACE_REDIRECT_CATEGORIES = os.environ.get("RHAD_TRACE_REDIRECT_CATEGORIES") == "1"
+STACK_CALLINFO_DIAG = os.environ.get("RHAD_PREOPT_STACK_CALLINFO_DIAG") == "1"
+STKPNTS_INJECT = os.environ.get("RHAD_PREOPT_STKPNTS_INJECT") == "1"
+STKPNTS_DUMP = os.environ.get("RHAD_PREOPT_STKPNTS_DUMP") == "1"
+UNIQUE_IMPORTED_BLOCK_STARTS = os.environ.get("RHAD_PREOPT_UNIQUE_BLOCK_STARTS") == "1"
+RAW_UNION_CALLS = os.environ.get("RHAD_PREOPT_RAW_UNION_CALLS") == "1" or STKPNTS_INJECT
+CALL_COMPANION_SWEEP = os.environ.get("RHAD_PREOPT_CALL_COMPANION_SWEEP") == "1"
+PRODUCTION_CALLINFO = os.environ.get("RHAD_PREOPT_PRODUCTION_CALLINFO") == "1"
+FULL_HANDLER_CLOSURE = os.environ.get("RHAD_PREOPT_FULL_HANDLER_CLOSURE") == "1"
 UNION_GENERATE_ONLY = os.environ.get("RHAD_PREOPT_UNION_GENERATE_ONLY") == "1"
 MAX_DECOMPILE_ATTEMPTS = int(os.environ.get("RHAD_PREOPT_MAX_ATTEMPTS", "6"))
 PREOPT_ALL_BLOCKS = os.environ.get("RHAD_PREOPT_ALL_BLOCKS") == "1"
@@ -70,12 +60,9 @@ if UNION_GENERATION_MODE not in {
         "or function_outlined"
     )
 if BOUNDARY_PORT_MODE and (
-    REPLAY_TRANSITION_MANIFEST
-    or REPLAY_TRANSITION_MANIFEST_DATABASE is not None
+    REPLAY_TRANSITION_MANIFEST or REPLAY_TRANSITION_MANIFEST_DATABASE is not None
 ):
-    raise ValueError(
-        "boundary-port mode refuses CALLS transition-manifest replay"
-    )
+    raise ValueError("boundary-port mode refuses CALLS transition-manifest replay")
 
 
 assert idapro.open_database(str(BIN), True) == 0
@@ -83,6 +70,7 @@ try:
     import ida_hexrays
     import ida_bytes
     import ida_funcs
+    import ida_frame
     import ida_gdl
     import ida_idp
     import ida_ua
@@ -92,6 +80,7 @@ try:
     import d810.hexrays.mutation.detached_handler_island as detached_island
     from d810.hexrays.mutation.detached_handler_island import (
         clear_detached_handler_call_templates,
+        capture_detached_snippet_companion_templates,
         capture_detached_snippet_template,
         DetachedSnippetBoundaryPortOwner,
         DetachedSnippetConditionalBoundaryPort,
@@ -107,6 +96,13 @@ try:
         normalize_detached_snippet_boundary_ports,
         safe_verify,
     )
+
+    if STKPNTS_INJECT or STKPNTS_DUMP:
+        from d810.speedups.cythxr._chexrays_api import (
+            copy_mcallinfo,
+            snapshot_stkpnts,
+            upsert_stkpnt,
+        )
     from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
     from d810.hexrays.mutation.cfg_mutations import (
         change_1way_block_successor,
@@ -144,13 +140,10 @@ try:
         "hook_method="
         f"{type(headless._state.manager.hx_decompiler_hook).preoptimized.__module__}."
         f"{type(headless._state.manager.hx_decompiler_hook).preoptimized.__qualname__}",
-        "handlers="
-        f"{tuple(sorted(preopt_preanalysis._PREOPT_PREANALYSIS_HANDLERS))}",
+        f"handlers={tuple(sorted(preopt_preanalysis._PREOPT_PREANALYSIS_HANDLERS))}",
         flush=True,
     )
-    original_restore_terminal_return_carriers = (
-        island.restore_terminal_return_carriers
-    )
+    original_restore_terminal_return_carriers = island.restore_terminal_return_carriers
 
     def trace_restore_terminal_return_carriers(mba, function_ea):
         if int(function_ea) == FUNC_EA and int(mba.maturity) == int(
@@ -160,8 +153,7 @@ try:
                 block = mba.get_mblock(serial)
                 instructions = _block_instructions(block)
                 if int(block.start) != 0x40A5D0 and not any(
-                    int(instruction.ea) == 0x40A5D0
-                    for instruction in instructions
+                    int(instruction.ea) == 0x40A5D0 for instruction in instructions
                 ):
                     continue
                 print(
@@ -189,9 +181,7 @@ try:
         )
         return restored
 
-    island.restore_terminal_return_carriers = (
-        trace_restore_terminal_return_carriers
-    )
+    island.restore_terminal_return_carriers = trace_restore_terminal_return_carriers
     if QUIET_LOGS:
         logging.disable(logging.CRITICAL)
     cg.install()
@@ -317,10 +307,247 @@ try:
             return frozenset(
                 native_ea
                 for instruction in block_instructions(block)
-                for native_ea in (
-                    native_instruction_ea(instruction, origins),
-                )
+                for native_ea in (native_instruction_ea(instruction, origins),)
                 if native_ea is not None
+            )
+
+        def stack_operand_rows(operand, mba):
+            rows = []
+            if int(operand.t) == int(ida_hexrays.mop_S):
+                vd_offset = int(operand.s.off)
+                rows.append(
+                    (
+                        vd_offset,
+                        int(mba.stkoff_vd2ida(vd_offset)),
+                        int(operand.size),
+                    )
+                )
+            elif int(operand.t) == int(ida_hexrays.mop_d):
+                nested = operand.d
+                rows.extend(stack_operand_rows(nested.l, mba))
+                rows.extend(stack_operand_rows(nested.r, mba))
+                rows.extend(stack_operand_rows(nested.d, mba))
+            elif int(operand.t) == int(ida_hexrays.mop_f):
+                for argument in operand.f.args:
+                    rows.extend(stack_operand_rows(argument, mba))
+            return tuple(rows)
+
+        def dump_call_argument_regions(label, mba):
+            if not STACK_CALLINFO_DIAG:
+                return
+            origins = dict(imported_detached_snippet_instruction_origins(mba))
+            rows = []
+            for serial in range(int(mba.qty)):
+                block = mba.get_mblock(serial)
+                instructions = tuple(block_instructions(block))
+                calls = tuple(
+                    nested
+                    for instruction in instructions
+                    for nested in nested_instructions(instruction)
+                    if int(nested.opcode)
+                    in (int(ida_hexrays.m_call), int(ida_hexrays.m_icall))
+                )
+                if not calls:
+                    continue
+                native_eas = block_native_eas(block, origins)
+                anchor_ea = min(native_eas, default=None)
+                predecessors = tuple(
+                    (
+                        int(predecessor),
+                        min(
+                            block_native_eas(
+                                mba.get_mblock(int(predecessor)),
+                                origins,
+                            ),
+                            default=None,
+                        ),
+                    )
+                    for predecessor in block.predset
+                )
+                instruction_rows = tuple(
+                    (
+                        hex(int(instruction.ea)),
+                        (
+                            None
+                            if native_instruction_ea(instruction, origins) is None
+                            else hex(
+                                int(
+                                    native_instruction_ea(
+                                        instruction,
+                                        origins,
+                                    )
+                                )
+                            )
+                        ),
+                        int(instruction.opcode),
+                        stack_operand_rows(instruction.l, mba),
+                        stack_operand_rows(instruction.r, mba),
+                        stack_operand_rows(instruction.d, mba),
+                        format_minsn_t(instruction),
+                    )
+                    for instruction in instructions
+                )
+                for call in calls:
+                    call_native_ea = native_instruction_ea(call, origins)
+                    rows.append(
+                        (
+                            (
+                                f"blk{serial}@0x{anchor_ea:X}"
+                                if anchor_ea is not None
+                                else f"block@fict:0x{int(block.start):X}"
+                            ),
+                            hex(int(call.ea)),
+                            (
+                                None
+                                if call_native_ea is None
+                                else hex(int(call_native_ea))
+                            ),
+                            tuple(
+                                (
+                                    f"blk{pred_serial}@0x{pred_anchor:X}"
+                                    if pred_anchor is not None
+                                    else f"blk{pred_serial}@fict"
+                                )
+                                for pred_serial, pred_anchor in predecessors
+                            ),
+                            tuple(int(successor) for successor in block.succset),
+                            instruction_rows,
+                        )
+                    )
+            print("CALL_ARGUMENT_REGIONS", f"label={label}", tuple(rows), flush=True)
+
+        def dump_stack_basis_probe(label, mba, native_ea, vd_offset):
+            if not STACK_CALLINFO_DIAG:
+                return
+            point = mba.locate_stkpnt(int(native_ea))
+            location = ida_hexrays.vdloc_t()
+            location.set_stkoff(int(vd_offset))
+            native_spd = int(
+                ida_frame.get_spd(ida_funcs.get_func(FUNC_EA), int(native_ea))
+            )
+            transient_spd = native_spd if point is None else int(point.spd)
+            default_idaloc = mba.vd2idaloc(location, 4)
+            explicit_idaloc = ida_hexrays.mba_t.vd2idaloc(
+                location,
+                4,
+                transient_spd,
+            )
+            native_insn = ida_ua.insn_t()
+            native_frame_offsets = []
+            if ida_ua.decode_insn(native_insn, int(native_ea)) > 0:
+                function = ida_funcs.get_func(FUNC_EA)
+                for operand_index, operand in enumerate(native_insn.ops):
+                    if int(operand.type) == int(ida_ua.o_void):
+                        break
+                    frame_offset = int(
+                        ida_frame.calc_stkvar_struc_offset(
+                            function,
+                            native_insn,
+                            operand_index,
+                        )
+                    )
+                    if frame_offset != int(idaapi.BADADDR):
+                        native_frame_offsets.append(frame_offset)
+            print(
+                "STACK_BASIS_PROBE",
+                f"label={label}",
+                f"native_ea=0x{int(native_ea):X}",
+                f"vd={int(vd_offset)}",
+                f"vd2ida={int(mba.stkoff_vd2ida(int(vd_offset)))}",
+                f"ida_zero_vd={int(mba.stkoff_ida2vd(0))}",
+                f"tmpstk_size={int(mba.tmpstk_size)}",
+                f"frsize={int(mba.frsize)}",
+                f"frregs={int(mba.frregs)}",
+                f"stacksize={int(mba.stacksize)}",
+                f"fullsize={int(mba.fullsize)}",
+                f"native_spd={native_spd}",
+                f"transient_spd={transient_spd}",
+                "located_point="
+                f"{None if point is None else (hex(int(point.ea)), int(point.spd))}",
+                f"native_frame_offsets={tuple(native_frame_offsets)}",
+                f"default_idaloc={default_idaloc}",
+                f"explicit_idaloc={explicit_idaloc}",
+                "default_stkoff="
+                f"{int(default_idaloc.stkoff()) if default_idaloc.is_stkoff() else None}",
+                "explicit_stkoff="
+                f"{int(explicit_idaloc.stkoff()) if explicit_idaloc.is_stkoff() else None}",
+                flush=True,
+            )
+
+        def dump_native_stack_identity_diff(label, mba):
+            if not STACK_CALLINFO_DIAG:
+                return
+            function = ida_funcs.get_func(FUNC_EA)
+            exact = 0
+            corrected = []
+            missing = []
+            ambiguous = []
+            for serial in range(int(mba.qty)):
+                block = mba.get_mblock(serial)
+                for instruction in block_instructions(block):
+                    vd_offsets = tuple(
+                        dict.fromkeys(
+                            int(operand.s.off)
+                            for operand in detached_island._instruction_operands(
+                                instruction
+                            )
+                            if int(operand.t) == int(ida_hexrays.mop_S)
+                        )
+                    )
+                    if not vd_offsets:
+                        continue
+                    native_ea = int(instruction.ea)
+                    native_insn = ida_ua.insn_t()
+                    if ida_ua.decode_insn(native_insn, native_ea) <= 0:
+                        missing.append((hex(native_ea), vd_offsets, "decode"))
+                        continue
+                    native_offsets = []
+                    for operand_index, operand in enumerate(native_insn.ops):
+                        if int(operand.type) == int(ida_ua.o_void):
+                            break
+                        frame_offset = int(
+                            ida_frame.calc_stkvar_struc_offset(
+                                function,
+                                native_insn,
+                                operand_index,
+                            )
+                        )
+                        if frame_offset != int(idaapi.BADADDR):
+                            native_offsets.append(frame_offset)
+                    native_offsets = tuple(dict.fromkeys(native_offsets))
+                    if len(vd_offsets) != 1 or len(native_offsets) != 1:
+                        ambiguous.append((hex(native_ea), vd_offsets, native_offsets))
+                        continue
+                    vd_offset = int(vd_offsets[0])
+                    fragment_ida = int(mba.stkoff_vd2ida(vd_offset))
+                    heuristic = int(
+                        detached_island._normalize_template_ida_stkoff(
+                            FUNC_EA,
+                            mba,
+                            fragment_ida,
+                        )
+                    )
+                    native_offset = int(native_offsets[0])
+                    if heuristic == native_offset:
+                        exact += 1
+                    else:
+                        corrected.append(
+                            (
+                                hex(native_ea),
+                                vd_offset,
+                                fragment_ida,
+                                heuristic,
+                                native_offset,
+                            )
+                        )
+            print(
+                "NATIVE_STACK_IDENTITY_DIFF",
+                f"label={label}",
+                f"exact={exact}",
+                f"corrected={tuple(corrected)}",
+                f"missing={tuple(missing)}",
+                f"ambiguous={tuple(ambiguous)}",
+                flush=True,
             )
 
         def reachable_block_serials(mba, root_serial):
@@ -332,8 +559,7 @@ try:
                     continue
                 reachable.add(serial)
                 pending.extend(
-                    int(successor)
-                    for successor in mba.get_mblock(serial).succset
+                    int(successor) for successor in mba.get_mblock(serial).succset
                 )
             return frozenset(reachable)
 
@@ -344,9 +570,7 @@ try:
                 for serial in range(int(mba.qty))
             }
             entry_serial = 0 if int(mba.qty) > 0 else None
-            entry_candidates = (
-                () if entry_serial is None else (entry_serial,)
-            )
+            entry_candidates = () if entry_serial is None else (entry_serial,)
             reachable = (
                 frozenset()
                 if entry_serial is None
@@ -355,6 +579,8 @@ try:
 
             call_rows = []
             synthetic_call_rows = []
+            stack_callinfo_rows = []
+            function = ida_funcs.get_func(FUNC_EA)
             for serial in range(int(mba.qty)):
                 block = mba.get_mblock(serial)
                 block_eas = native_eas_by_serial[serial]
@@ -394,6 +620,49 @@ try:
                             synthetic_call_rows.append(row)
                         else:
                             call_rows.append(row)
+                        if STACK_CALLINFO_DIAG:
+                            mba_stkpnt = (
+                                None
+                                if native_ea is None
+                                else mba.locate_stkpnt(native_ea)
+                            )
+                            native_spd = None
+                            if function is not None and native_ea is not None:
+                                native_spd = int(ida_frame.get_spd(function, native_ea))
+                            stack_callinfo_rows.append(
+                                (
+                                    row[0],
+                                    row[1],
+                                    row[2],
+                                    native_spd,
+                                    (
+                                        None
+                                        if mba_stkpnt is None
+                                        else (
+                                            hex(int(mba_stkpnt.ea)),
+                                            int(mba_stkpnt.spd),
+                                        )
+                                    ),
+                                    None
+                                    if callinfo is None
+                                    else int(callinfo.call_spd),
+                                    None
+                                    if callinfo is None
+                                    else int(callinfo.stkargs_top),
+                                    None if callinfo is None else int(callinfo.cc),
+                                    ()
+                                    if callinfo is None
+                                    else tuple(
+                                        (
+                                            int(argument.t),
+                                            int(argument.ea),
+                                            str(argument.argloc),
+                                            str(argument),
+                                        )
+                                        for argument in callinfo.args
+                                    ),
+                                )
+                            )
 
             captured_block_eas = ()
             if union_import_primary_seed_eas:
@@ -404,9 +673,7 @@ try:
             bindings_by_native_ea = {
                 native_ea: tuple(
                     serial
-                    for serial, serial_native_eas in (
-                        native_eas_by_serial.items()
-                    )
+                    for serial, serial_native_eas in (native_eas_by_serial.items())
                     if int(native_ea) in serial_native_eas
                 )
                 for native_ea in captured_block_eas
@@ -419,9 +686,7 @@ try:
             unreachable_captured = tuple(
                 (
                     hex(native_ea),
-                    tuple(
-                        f"blk{serial}@0x{native_ea:X}" for serial in serials
-                    ),
+                    tuple(f"blk{serial}@0x{native_ea:X}" for serial in serials),
                 )
                 for native_ea, serials in bindings_by_native_ea.items()
                 if serials and not any(serial in reachable for serial in serials)
@@ -447,6 +712,24 @@ try:
                 tuple(synthetic_call_rows),
                 flush=True,
             )
+            if STACK_CALLINFO_DIAG:
+                print(
+                    "FINAL_STACK_MODEL",
+                    {
+                        "tmpstk_size": int(mba.tmpstk_size),
+                        "frsize": int(mba.frsize),
+                        "frregs": int(mba.frregs),
+                        "stacksize": int(mba.stacksize),
+                        "fullsize": int(mba.fullsize),
+                        "spd_adjust": int(mba.spd_adjust),
+                    },
+                    flush=True,
+                )
+                print(
+                    "FINAL_STACK_CALLINFO",
+                    tuple(stack_callinfo_rows),
+                    flush=True,
+                )
             print(
                 "FINAL_CAPTURED_BLOCK_REACHABILITY",
                 f"entry_candidates={tuple(f'blk{serial}@0x{FUNC_EA:X}' for serial in entry_candidates)}",
@@ -477,6 +760,9 @@ try:
         union_source_generation_active = [False]
         union_import_seed_eas: list[tuple[int, ...]] = []
         union_import_primary_seed_eas: list[int] = []
+        union_stack_point_ranges: list[tuple[tuple[int, int], ...]] = []
+        transient_imported_stack_points: dict[int, int] = {}
+        route_callinfo_templates: dict[int, object] = {}
         boundary_port_plans: list[object] = []
         boundary_port_captures: list[object] = []
         latest_template_boundary_port_count = [0]
@@ -588,8 +874,8 @@ try:
 
                 return traced
 
-            minimal_emit._applied_direct_boundary_edge_keys = (
-                traced_boundary_edge_keys("direct", original_direct_edge_keys)
+            minimal_emit._applied_direct_boundary_edge_keys = traced_boundary_edge_keys(
+                "direct", original_direct_edge_keys
             )
             minimal_emit._applied_conditional_boundary_edge_keys = (
                 traced_boundary_edge_keys(
@@ -608,14 +894,10 @@ try:
         ):
             imported_entries = {int(ea) for ea in imported_block_eas}
             live_entries = {int(ea) for ea in live_native_eas}
-            captured_instructions = {
-                int(ea) for ea in captured_instruction_eas
-            }
-            closure_crossings = (
-                exclude_closure_conditionals_superseded_by_captured(
-                    closure_crossings,
-                    capture,
-                )
+            captured_instructions = {int(ea) for ea in captured_instruction_eas}
+            closure_crossings = exclude_closure_conditionals_superseded_by_captured(
+                closure_crossings,
+                capture,
             )
             direct_owner_binding_rows = []
 
@@ -628,16 +910,13 @@ try:
                 )
                 if owner is None:
                     raise ValueError(
-                        "captured boundary endpoint has no import owner: "
-                        f"0x{int(ea):X}"
+                        f"captured boundary endpoint has no import owner: 0x{int(ea):X}"
                     )
                 return DetachedSnippetBoundaryPortOwner(owner.value)
 
             direct = list(closure_crossings.direct)
             suppressed_closure_edges = []
-            state_owned_endpoints = state_transition_owned_endpoint_eas(
-                capture
-            )
+            state_owned_endpoints = state_transition_owned_endpoint_eas(capture)
             for edge in closure_boundary_edges:
                 if (
                     edge.kind is not NativeEdgeKind.INDIRECT
@@ -665,19 +944,14 @@ try:
                     target_owner = DetachedSnippetBoundaryPortOwner.LIVE
                 else:
                     raise ValueError(
-                        "closure boundary target has no import owner: "
-                        f"0x{target_ea:X}"
+                        f"closure boundary target has no import owner: 0x{target_ea:X}"
                     )
                 direct.append(
                     make_resolver_cut_boundary_port(
                         source_block_ea=int(edge.source_ea),
-                        source_instruction_ea=int(
-                            edge.source_instruction_ea
-                        ),
+                        source_instruction_ea=int(edge.source_instruction_ea),
                         target_ea=target_ea,
-                        source_owner=(
-                            DetachedSnippetBoundaryPortOwner.IMPORTED
-                        ),
+                        source_owner=(DetachedSnippetBoundaryPortOwner.IMPORTED),
                         target_owner=target_owner,
                         provenance=(
                             edge.provenance
@@ -694,8 +968,7 @@ try:
                         hex(instruction_ea),
                         hex(target_ea),
                     )
-                    for source_ea, instruction_ea, target_ea
-                    in suppressed_closure_edges
+                    for source_ea, instruction_ea, target_ea in suppressed_closure_edges
                 ],
                 flush=True,
             )
@@ -745,37 +1018,35 @@ try:
                         row.request.target_owner,
                     )
                     for owner_binding in owner_bindings:
-                        direct.append(DetachedSnippetDirectBoundaryPort(
-                            source_block_ea=int(
-                                row.request.source_block_ea
-                            ),
-                            source_instruction_ea=int(
-                                row.request.source_instruction_ea
-                            ),
-                            endpoint_block_ea=int(endpoint_ea),
-                            old_successor_eas=tuple(
-                                sorted(old_successor_eas)
-                            ),
-                            target_ea=int(row.request.target_ea),
-                            state_register=int(row.request.state_register),
-                            state_constant=int(row.request.state_constant),
-                            source_owner=DetachedSnippetBoundaryPortOwner(
-                                owner_binding.source_owner.value
-                            ),
-                            endpoint_owner=DetachedSnippetBoundaryPortOwner(
-                                owner_binding.endpoint_owner.value
-                            ),
-                            target_owner=target_owner,
-                            old_successor_owners=tuple(
-                                DetachedSnippetBoundaryPortOwner(owner.value)
-                                for owner in owner_binding.old_successor_owners
-                            ),
-                            delivery_mode=direct_endpoint_delivery_mode(
-                                row,
-                                old_successor_eas=old_successor_eas,
-                            ).value,
-                            resolver_kind=str(row.request.resolver_kind),
-                        ))
+                        direct.append(
+                            DetachedSnippetDirectBoundaryPort(
+                                source_block_ea=int(row.request.source_block_ea),
+                                source_instruction_ea=int(
+                                    row.request.source_instruction_ea
+                                ),
+                                endpoint_block_ea=int(endpoint_ea),
+                                old_successor_eas=tuple(sorted(old_successor_eas)),
+                                target_ea=int(row.request.target_ea),
+                                state_register=int(row.request.state_register),
+                                state_constant=int(row.request.state_constant),
+                                source_owner=DetachedSnippetBoundaryPortOwner(
+                                    owner_binding.source_owner.value
+                                ),
+                                endpoint_owner=DetachedSnippetBoundaryPortOwner(
+                                    owner_binding.endpoint_owner.value
+                                ),
+                                target_owner=target_owner,
+                                old_successor_owners=tuple(
+                                    DetachedSnippetBoundaryPortOwner(owner.value)
+                                    for owner in owner_binding.old_successor_owners
+                                ),
+                                delivery_mode=direct_endpoint_delivery_mode(
+                                    row,
+                                    old_successor_eas=old_successor_eas,
+                                ).value,
+                                resolver_kind=str(row.request.resolver_kind),
+                            )
+                        )
 
             conditional = list(
                 DetachedSnippetConditionalBoundaryPort(
@@ -930,24 +1201,20 @@ try:
             serials_by_native_entry: dict[int, list[int]] = {}
             for serial in range(int(mba.qty)):
                 block = mba.get_mblock(serial)
-                native_entry_ea = detached_island._unique_block_native_ea(
-                    block
-                )
+                native_entry_ea = detached_island._unique_block_native_ea(block)
                 if native_entry_ea is None:
                     continue
                 native_entry_by_serial[int(serial)] = int(native_entry_ea)
-                serials_by_native_entry.setdefault(
-                    int(native_entry_ea), []
-                ).append(int(serial))
+                serials_by_native_entry.setdefault(int(native_entry_ea), []).append(
+                    int(serial)
+                )
             ambiguous_entry_eas = frozenset(
                 entry_ea
                 for entry_ea, serials in serials_by_native_entry.items()
                 if len(serials) != 1
             )
             facts: dict[int, PreoptPortBlockFact] = {}
-            for serial, native_entry_ea in sorted(
-                native_entry_by_serial.items()
-            ):
+            for serial, native_entry_ea in sorted(native_entry_by_serial.items()):
                 if native_entry_ea in ambiguous_entry_eas:
                     continue
                 block = mba.get_mblock(serial)
@@ -1023,16 +1290,9 @@ try:
                 successors_complete = True
                 has_synthetic_function_exit_successor = False
                 for successor_serial in block.succset:
-                    successor_ea = native_entry_by_serial.get(
-                        int(successor_serial)
-                    )
-                    if (
-                        successor_ea is None
-                        or successor_ea in ambiguous_entry_eas
-                    ):
-                        successor_block = mba.get_mblock(
-                            int(successor_serial)
-                        )
+                    successor_ea = native_entry_by_serial.get(int(successor_serial))
+                    if successor_ea is None or successor_ea in ambiguous_entry_eas:
+                        successor_block = mba.get_mblock(int(successor_serial))
                         successor_is_synthetic_function_exit = (
                             successor_block is not None
                             and int(successor_block.nsucc()) == 0
@@ -1061,9 +1321,7 @@ try:
                     and block.tail is not None
                     and int(block.tail.d.t) == int(ida_hexrays.mop_b)
                 ):
-                    taken_successor_ea = native_entry_by_serial.get(
-                        int(block.tail.d.b)
-                    )
+                    taken_successor_ea = native_entry_by_serial.get(int(block.tail.d.b))
                     if taken_successor_ea is not None:
                         fallthrough_candidates = tuple(
                             successor_ea
@@ -1071,9 +1329,7 @@ try:
                             if int(successor_ea) != int(taken_successor_ea)
                         )
                         if len(fallthrough_candidates) == 1:
-                            fallthrough_successor_ea = int(
-                                fallthrough_candidates[0]
-                            )
+                            fallthrough_successor_ea = int(fallthrough_candidates[0])
                 facts[native_entry_ea] = PreoptPortBlockFact(
                     start_ea=native_entry_ea,
                     end_ea=end_ea,
@@ -1106,9 +1362,7 @@ try:
         # the staged CALLS session.  Recreate only that bookkeeping so this
         # harness exercises the real multi-pass preanalysis callbacks.
         cg._RESOLUTIONS_BY_EA[FUNC_EA] = resolution
-        cg._MATERIALIZATION_SESSIONS[FUNC_EA] = cg._MaterializationSession(
-            resolution
-        )
+        cg._MATERIALIZATION_SESSIONS[FUNC_EA] = cg._MaterializationSession(resolution)
         transfers = get_materialized_indirect_transfers(FUNC_EA)
         print(
             "RESOLVER",
@@ -1118,12 +1372,8 @@ try:
             f"transfers={len(transfers)}",
             flush=True,
         )
-        patch_plan_sources = {
-            int(plan.jmp_ea) for plan in resolution.patch_plans
-        }
-        resolver_materialized_bridge_targets_by_source_ea: dict[
-            int, set[int]
-        ] = {}
+        patch_plan_sources = {int(plan.jmp_ea) for plan in resolution.patch_plans}
+        resolver_materialized_bridge_targets_by_source_ea: dict[int, set[int]] = {}
         for plan in resolution.patch_plans:
             if (
                 plan.condition_code is None
@@ -1195,12 +1445,8 @@ try:
                 start_ea = int(start_ea)
                 requested_func_ea = int(function.start_ea)
                 owner = ida_funcs.get_func(start_ea)
-                owner_func_ea = (
-                    None if owner is None else int(owner.start_ea)
-                )
-                is_code = bool(
-                    ida_bytes.is_code(ida_bytes.get_full_flags(start_ea))
-                )
+                owner_func_ea = None if owner is None else int(owner.start_ea)
+                is_code = bool(ida_bytes.is_code(ida_bytes.get_full_flags(start_ea)))
                 if not can_decode_proven_native_successor(
                     is_code=is_code,
                     owner_func_ea=owner_func_ea,
@@ -1232,16 +1478,12 @@ try:
                         )
                         return None
                     next_ea = current_ea + size
-                    instruction_features = int(
-                        instruction.get_canon_feature()
-                    )
+                    instruction_features = int(instruction.get_canon_feature())
                     is_call = bool(ida_idp.is_call_insn(instruction))
                     is_basic_block_end = bool(
                         ida_idp.is_basic_block_end(instruction, False)
                     )
-                    has_stop_feature = bool(
-                        instruction_features & int(ida_idp.CF_STOP)
-                    )
+                    has_stop_feature = bool(instruction_features & int(ida_idp.CF_STOP))
                     direct_target_ea = None
                     if is_native_direct_control_operand(
                         operand_is_near=(
@@ -1254,12 +1496,8 @@ try:
                     ):
                         direct_target_ea = int(instruction.ops[0].addr)
                     force_stop = current_ea in resolver_cut_eas
-                    is_return = bool(
-                        ida_idp.is_ret_insn(instruction, 0)
-                    )
-                    is_indirect = bool(
-                        ida_idp.is_indirect_jump_insn(instruction)
-                    )
+                    is_return = bool(ida_idp.is_ret_insn(instruction, 0))
+                    is_indirect = bool(ida_idp.is_indirect_jump_insn(instruction))
                     if force_stop or is_return or is_indirect:
                         return NativeFlowBlockFact(
                             start_ea=start_ea,
@@ -1295,12 +1533,9 @@ try:
                         successors = ()
                         if direct_target_ea is not None:
                             successors = (direct_target_ea,)
-                            if (
-                                ida_funcs.func_contains(function, next_ea)
-                                and ida_bytes.is_flow(
-                                    ida_bytes.get_full_flags(next_ea)
-                                )
-                            ):
+                            if ida_funcs.func_contains(
+                                function, next_ea
+                            ) and ida_bytes.is_flow(ida_bytes.get_full_flags(next_ea)):
                                 successors += (next_ea,)
                         return NativeFlowBlockFact(
                             start_ea=start_ea,
@@ -1310,14 +1545,10 @@ try:
                         )
                     next_owner = ida_funcs.get_func(next_ea)
                     next_owner_func_ea = (
-                        None
-                        if next_owner is None
-                        else int(next_owner.start_ea)
+                        None if next_owner is None else int(next_owner.start_ea)
                     )
                     next_is_code = bool(
-                        ida_bytes.is_code(
-                            ida_bytes.get_full_flags(next_ea)
-                        )
+                        ida_bytes.is_code(ida_bytes.get_full_flags(next_ea))
                     )
                     if not can_decode_proven_native_successor(
                         is_code=next_is_code,
@@ -1355,16 +1586,11 @@ try:
                 instruction_features = (
                     int(instruction.get_canon_feature()) if decoded else 0
                 )
-                is_call_tail = bool(
-                    decoded and ida_idp.is_call_insn(instruction)
-                )
+                is_call_tail = bool(decoded and ida_idp.is_call_insn(instruction))
                 is_basic_block_end = bool(
-                    decoded
-                    and ida_idp.is_basic_block_end(instruction, False)
+                    decoded and ida_idp.is_basic_block_end(instruction, False)
                 )
-                has_stop_feature = bool(
-                    instruction_features & int(ida_idp.CF_STOP)
-                )
+                has_stop_feature = bool(instruction_features & int(ida_idp.CF_STOP))
                 direct_target_ea = None
                 if decoded and is_native_direct_control_operand(
                     operand_is_near=(
@@ -1380,8 +1606,7 @@ try:
                     start_ea=start_ea,
                     end_ea=end_ea,
                     successor_eas=tuple(
-                        int(successor.start_ea)
-                        for successor in flow_block.succs()
+                        int(successor.start_ea) for successor in flow_block.succs()
                     ),
                     direct_branch_target_ea=direct_target_ea,
                     is_call_tail=is_call_tail,
@@ -1389,12 +1614,9 @@ try:
                         decoded and ida_idp.is_ret_insn(instruction, 0)
                     ),
                     is_indirect_jump_tail=bool(
-                        decoded
-                        and ida_idp.is_indirect_jump_insn(instruction)
+                        decoded and ida_idp.is_indirect_jump_insn(instruction)
                     ),
-                    terminal_instruction_ea=(
-                        int(tail_ea) if decoded else None
-                    ),
+                    terminal_instruction_ea=(int(tail_ea) if decoded else None),
                     force_stop=(
                         not decoded
                         or any(
@@ -1441,11 +1663,7 @@ try:
                         flush=True,
                     )
                     facts_by_start_ea[entry_ea] = fact
-                if (
-                    fact.force_stop
-                    or fact.is_return_tail
-                    or fact.is_indirect_jump_tail
-                ):
+                if fact.force_stop or fact.is_return_tail or fact.is_indirect_jump_tail:
                     continue
                 pending.extend(int(ea) for ea in fact.successor_eas)
             return build_native_cfg_from_flow_facts(
@@ -1498,13 +1716,10 @@ try:
             if USE_NATIVE_SEMANTIC_CLOSURE:
                 assert function is not None
                 semantic_live_boundary_eas = (
-                    frozenset()
-                    if FULL_HANDLER_CLOSURE
-                    else preopt_live_native_eas
+                    frozenset() if FULL_HANDLER_CLOSURE else preopt_live_native_eas
                 )
                 resolver_cut_eas = frozenset(
-                    int(source_ea)
-                    for source_ea in resolution.jmp_targets
+                    int(source_ea) for source_ea in resolution.jmp_targets
                 )
                 state_registers = {
                     int(transfer.selector_state_var_reg)
@@ -1518,35 +1733,28 @@ try:
                 }
                 terminal_requests = ()
                 base_semantic_seed_eas = (
-                    plan.seed_eas
-                    if FULL_HANDLER_CLOSURE
-                    else import_plan.seed_eas
+                    plan.seed_eas if FULL_HANDLER_CLOSURE else import_plan.seed_eas
                 )
                 semantic_seed_eas = tuple(base_semantic_seed_eas)
                 if len(state_registers) == 1:
-                    terminal_requests = (
-                        get_terminal_return_carrier_requests(FUNC_EA)
-                    )
-                    semantic_seed_eas = (
-                        extend_semantic_seed_eas_with_terminal_targets(
-                            base_semantic_seed_eas,
-                            terminal_requests,
-                            state_register=next(iter(state_registers)),
-                        )
+                    terminal_requests = get_terminal_return_carrier_requests(FUNC_EA)
+                    semantic_seed_eas = extend_semantic_seed_eas_with_terminal_targets(
+                        base_semantic_seed_eas,
+                        terminal_requests,
+                        state_register=next(iter(state_registers)),
                     )
                 target_sets: dict[int, set[int]] = {
-                    int(source_ea): {
-                        int(target_ea) for target_ea in target_eas
-                    }
+                    int(source_ea): {int(target_ea) for target_ea in target_eas}
                     for source_ea, target_eas in resolution.jmp_targets.items()
                 }
                 if len(state_registers) == 1:
-                    for source_ea, target_eas in (
-                        materialized_terminal_target_eas_by_source(
-                            current_transfers,
-                            next(iter(state_registers)),
-                        ).items()
-                    ):
+                    for (
+                        source_ea,
+                        target_eas,
+                    ) in materialized_terminal_target_eas_by_source(
+                        current_transfers,
+                        next(iter(state_registers)),
+                    ).items():
                         target_sets.setdefault(int(source_ea), set()).update(
                             int(target_ea) for target_ea in target_eas
                         )
@@ -1569,9 +1777,7 @@ try:
                     live_native_eas=semantic_live_boundary_eas,
                     seed_eas=semantic_seed_eas,
                     resolver_cut_eas=resolver_cut_eas,
-                    resolver_target_eas_by_source=(
-                        resolver_target_eas_by_source
-                    ),
+                    resolver_target_eas_by_source=(resolver_target_eas_by_source),
                 )
                 semantic_closure = plan_native_semantic_closure(
                     native_cfg,
@@ -1657,9 +1863,7 @@ try:
                     for row in unproven_abstentions:
                         if row.source_block_ea is None:
                             continue
-                        native_block = native_cfg.blocks_by_ea[
-                            int(row.source_block_ea)
-                        ]
+                        native_block = native_cfg.blocks_by_ea[int(row.source_block_ea)]
                         tail_ea = int(
                             ida_bytes.prev_head(
                                 int(native_block.end_ea),
@@ -1675,8 +1879,7 @@ try:
                                 ),
                                 tuple(
                                     (int(register), hex(int(value)))
-                                    for register, value
-                                    in transfer.source_register_values
+                                    for register, value in transfer.source_register_values
                                 ),
                             )
                             for transfer in current_transfers
@@ -1688,15 +1891,15 @@ try:
                                 hex(tail_ea),
                                 tuple(
                                     hex(int(target_ea))
-                                    for target_ea
-                                    in resolver_target_eas_by_source.get(
+                                    for target_ea in resolver_target_eas_by_source.get(
                                         tail_ea, ()
                                     )
                                 ),
                                 tuple(
                                     hex(int(target_ea))
-                                    for target_ea
-                                    in resolution.jmp_targets.get(tail_ea, ())
+                                    for target_ea in resolution.jmp_targets.get(
+                                        tail_ea, ()
+                                    )
                                 ),
                                 transfer_rows,
                             )
@@ -1710,8 +1913,7 @@ try:
                     BOUNDARY_PORT_MODE
                     and unproven_abstentions
                     and all(
-                        row.reason
-                        is ClosureAbstentionReason.UNPROVEN_INDIRECT_TARGET
+                        row.reason is ClosureAbstentionReason.UNPROVEN_INDIRECT_TARGET
                         and row.source_block_ea is not None
                         for row in unproven_abstentions
                     )
@@ -1738,19 +1940,17 @@ try:
                             ).items()
                         )
                     }
-                    state_payload_handler_eas = (
-                        merge_exact_state_payload_handler_eas(
-                            state_payload_handler_eas,
-                            state_register=int(state_register),
-                            exact_routes=tuple(
-                                (
-                                    int(request.state_var_reg),
-                                    int(request.state_constant),
-                                    int(request.terminal_target_ea),
-                                )
-                                for request in terminal_requests
-                            ),
-                        )
+                    state_payload_handler_eas = merge_exact_state_payload_handler_eas(
+                        state_payload_handler_eas,
+                        state_register=int(state_register),
+                        exact_routes=tuple(
+                            (
+                                int(request.state_var_reg),
+                                int(request.state_constant),
+                                int(request.terminal_target_ea),
+                            )
+                            for request in terminal_requests
+                        ),
                     )
                     print(
                         "PREOPT_EXACT_TERMINAL_STATE_TARGETS",
@@ -1840,9 +2040,7 @@ try:
                 ranges = ida_hexrays.mba_ranges_t(function)
             if UNION_GENERATION_MODE != "function":
                 for start_ea, end_ea in semantic_ranges:
-                    ranges.ranges.push_back(
-                        idaapi.range_t(int(start_ea), int(end_ea))
-                    )
+                    ranges.ranges.push_back(idaapi.range_t(int(start_ea), int(end_ea)))
             failure = ida_hexrays.hexrays_failure_t()
             generation_flags = int(ida_hexrays.DECOMP_NO_WAIT)
             if PREOPT_ALL_BLOCKS:
@@ -1920,31 +2118,20 @@ try:
                         int(source_block.serial),
                         hex(int(source_block.start)),
                         None
-                        if detached_island._unique_block_native_ea(
-                            source_block
-                        )
-                        is None
+                        if detached_island._unique_block_native_ea(source_block) is None
                         else hex(
-                            int(
-                                detached_island._unique_block_native_ea(
-                                    source_block
-                                )
-                            )
+                            int(detached_island._unique_block_native_ea(source_block))
                         ),
                         [
                             hex(int(ea))
-                            for ea in detached_island._block_native_eas(
-                                source_block
-                            )
+                            for ea in detached_island._block_native_eas(source_block)
                         ],
                         [int(successor) for successor in source_block.succset],
                     )
                     for source_block in (
-                        snippet.get_mblock(serial)
-                        for serial in range(int(snippet.qty))
+                        snippet.get_mblock(serial) for serial in range(int(snippet.qty))
                     )
-                    if int(source_block.start)
-                    == int(import_plan.primary_seed_ea)
+                    if int(source_block.start) == int(import_plan.primary_seed_ea)
                     or int(import_plan.primary_seed_ea)
                     in detached_island._block_native_eas(source_block)
                 ],
@@ -1977,9 +2164,7 @@ try:
                         for instruction_ea, _opcode, _text in instruction_rows
                         if int(instruction_ea, 16) > 0
                     }
-                    matching_sources = sorted(
-                        unresolved_source_eas & native_eas
-                    )
+                    matching_sources = sorted(unresolved_source_eas & native_eas)
                     if not matching_sources:
                         continue
                     unresolved_rows.append(
@@ -1987,10 +2172,7 @@ try:
                             [hex(ea) for ea in matching_sources],
                             f"blk{int(source_block.serial)}@0x{min(native_eas):X}",
                             int(source_block.type),
-                            [
-                                int(successor)
-                                for successor in source_block.succset
-                            ],
+                            [int(successor) for successor in source_block.succset],
                             instruction_rows,
                         )
                     )
@@ -2000,22 +2182,19 @@ try:
                     flush=True,
                 )
             if BOUNDARY_PORT_MODE and boundary_port_plans:
-                port_facts, ambiguous_port_entry_eas = (
-                    build_preopt_port_block_facts(
-                        snippet,
-                        snippet_return_address_size=(
-                            first_preopt_return_address_sizes[0]
-                            if first_preopt_return_address_sizes
-                            else None
-                        ),
-                    )
+                port_facts, ambiguous_port_entry_eas = build_preopt_port_block_facts(
+                    snippet,
+                    snippet_return_address_size=(
+                        first_preopt_return_address_sizes[0]
+                        if first_preopt_return_address_sizes
+                        else None
+                    ),
                 )
                 if captured_preopt_entry_seed:
                     entry_evidence = captured_preopt_entry_seed[0][0]
                     print(
                         "PREOPT_STACK_CELL_REBASE",
-                        "live_vd="
-                        f"{hex(int(entry_evidence.stack_cell_identity[0]))}",
+                        f"live_vd={hex(int(entry_evidence.stack_cell_identity[0]))}",
                         "snippet_loads="
                         f"{[(hex(int(block_ea)), int(register), hex(int(stack_off)), int(size), hex(int(load_ea))) for block_ea, fact in sorted(port_facts.items()) for register, stack_off, size, load_ea in fact.register_stack_loads]}",
                         flush=True,
@@ -2035,9 +2214,7 @@ try:
                     requested_root_eas=(int(import_plan.primary_seed_ea),),
                 )
                 if any(
-                    detached_island._unique_block_native_ea(
-                        snippet.get_mblock(serial)
-                    )
+                    detached_island._unique_block_native_ea(snippet.get_mblock(serial))
                     == int(import_plan.primary_seed_ea)
                     for serial in range(int(snippet.qty))
                 ):
@@ -2097,21 +2274,17 @@ try:
                                     hex(int(constant)),
                                     hex(int(write_ea)),
                                 )
-                                for register, constant, write_ea
-                                in fact.register_constant_writes
+                                for register, constant, write_ea in fact.register_constant_writes
                                 if int(register) in state_registers
                             ),
                             tuple(hex(int(ea)) for ea in fact.successor_eas),
                             fact.tail_kind.value,
-                            None
-                            if fact.tail_ea is None
-                            else hex(int(fact.tail_ea)),
+                            None if fact.tail_ea is None else hex(int(fact.tail_ea)),
                         )
                         for block_ea, fact in sorted(port_facts.items())
                         if any(
                             int(register) in state_registers
-                            for register, _constant, _write_ea
-                            in fact.register_constant_writes
+                            for register, _constant, _write_ea in fact.register_constant_writes
                         )
                     ],
                     flush=True,
@@ -2160,19 +2333,18 @@ try:
                     if not latest_preopt_live_port_facts
                     else dict(latest_preopt_live_port_facts[0])
                 )
-                for evidence, _initial_state, _state_register in (
-                    captured_preopt_entry_seed
-                ):
+                for (
+                    evidence,
+                    _initial_state,
+                    _state_register,
+                ) in captured_preopt_entry_seed:
                     source_fact = preopt_entry_bridge_source_fact(evidence)
                     if source_fact is not None:
-                        live_capture_port_facts[int(source_fact.start_ea)] = (
-                            source_fact
-                        )
+                        live_capture_port_facts[int(source_fact.start_ea)] = source_fact
                 pruned_live_conditional_source_eas = tuple(
                     sorted(
                         int(source_ea)
-                        for source_ea, fact
-                        in live_capture_port_facts.items()
+                        for source_ea, fact in live_capture_port_facts.items()
                         if fact.tail_kind is PreoptPortTailKind.CONDITIONAL
                         and fact.tail_ea is not None
                         and fact.successors_complete
@@ -2180,9 +2352,7 @@ try:
                     )
                 )
                 pruned_live_conditional_topology = {}
-                conditional_routing_targets_by_source_ea: dict[
-                    int, set[int]
-                ] = {}
+                conditional_routing_targets_by_source_ea: dict[int, set[int]] = {}
                 live_conditional_native_cfg = None
                 if pruned_live_conditional_source_eas:
                     live_conditional_native_cfg = build_native_semantic_cfg(
@@ -2190,13 +2360,11 @@ try:
                         live_native_eas=preopt_live_native_eas,
                         seed_eas=pruned_live_conditional_source_eas,
                         resolver_cut_eas=resolver_cut_eas,
-                        resolver_target_eas_by_source=(
-                            resolver_target_eas_by_source
-                        ),
+                        resolver_target_eas_by_source=(resolver_target_eas_by_source),
                     )
-                    for native_block in (
-                        live_conditional_native_cfg.blocks_by_ea.values()
-                    ):
+                    for (
+                        native_block
+                    ) in live_conditional_native_cfg.blocks_by_ea.values():
                         exact_targets = {
                             int(edge.target_ea)
                             for edge in native_block.outgoing_edges
@@ -2210,18 +2378,17 @@ try:
                             conditional_routing_targets_by_source_ea.setdefault(
                                 int(native_block.start_ea), set()
                             ).update(exact_targets)
-                    for source_ea, target_eas in (
-                        resolver_materialized_bridge_targets_by_source_ea.items()
-                    ):
+                    for (
+                        source_ea,
+                        target_eas,
+                    ) in resolver_materialized_bridge_targets_by_source_ea.items():
                         conditional_routing_targets_by_source_ea.setdefault(
                             int(source_ea), set()
                         ).update(int(target_ea) for target_ea in target_eas)
                     for source_ea in pruned_live_conditional_source_eas:
                         source_fact = live_capture_port_facts[source_ea]
-                        native_block = (
-                            live_conditional_native_cfg.blocks_by_ea.get(
-                                source_ea
-                            )
+                        native_block = live_conditional_native_cfg.blocks_by_ea.get(
+                            source_ea
                         )
                         if native_block is None or source_fact.tail_ea is None:
                             continue
@@ -2244,10 +2411,7 @@ try:
                             if edge.kind is NativeEdgeKind.CONDITIONAL_FALSE
                             and edge.target_ea is not None
                         }
-                        if (
-                            len(taken_targets) != 1
-                            or len(fallthrough_targets) != 1
-                        ):
+                        if len(taken_targets) != 1 or len(fallthrough_targets) != 1:
                             continue
                         taken_ea = next(iter(taken_targets))
                         fallthrough_ea = next(iter(fallthrough_targets))
@@ -2279,9 +2443,9 @@ try:
                                 resolver_target_eas_by_source
                             ),
                         )
-                        for native_block in (
-                            conditional_arm_native_cfg.blocks_by_ea.values()
-                        ):
+                        for (
+                            native_block
+                        ) in conditional_arm_native_cfg.blocks_by_ea.values():
                             exact_targets = {
                                 int(edge.target_ea)
                                 for edge in native_block.outgoing_edges
@@ -2298,9 +2462,7 @@ try:
                 pruned_live_conditional_choices = (
                     recognize_preopt_pruned_conditional_state_choices(
                         blocks_by_ea=live_capture_port_facts,
-                        native_topology_by_ea=(
-                            pruned_live_conditional_topology
-                        ),
+                        native_topology_by_ea=(pruned_live_conditional_topology),
                         state_register=next(iter(state_registers)),
                         source_owner=PreoptBoundaryEndpointOwner.LIVE,
                     )
@@ -2324,9 +2486,7 @@ try:
                                     entry_bridge_evidence=(
                                         ()
                                         if not captured_preopt_entry_seed
-                                        else (
-                                            captured_preopt_entry_seed[0][0],
-                                        )
+                                        else (captured_preopt_entry_seed[0][0],)
                                     ),
                                 )
                             ),
@@ -2395,10 +2555,7 @@ try:
                     int(target_ea)
                     for target_eas in state_handler_eas.values()
                     for target_ea in target_eas
-                } | {
-                    int(request.source_handler_ea)
-                    for request in terminal_requests
-                }
+                } | {int(request.source_handler_ea) for request in terminal_requests}
                 exact_direct_rows = tuple(
                     (int(row.source_block_ea), int(row.target_ea))
                     for row in (
@@ -2412,13 +2569,11 @@ try:
                     source_sensitive_targets_by_source_ea.setdefault(
                         source_ea, set()
                     ).add(target_ea)
-                fixed_source_arm_routes = (
-                    derive_preopt_fixed_source_arm_routes(
-                        tuple(pruned_live_conditional_topology.values()),
-                        source_sensitive_targets_by_source_ea=(
-                            source_sensitive_targets_by_source_ea
-                        ),
-                    )
+                fixed_source_arm_routes = derive_preopt_fixed_source_arm_routes(
+                    tuple(pruned_live_conditional_topology.values()),
+                    source_sensitive_targets_by_source_ea=(
+                        source_sensitive_targets_by_source_ea
+                    ),
                 )
                 conditional_choice_arm_routes: list[tuple[int, int]] = []
                 for choice in pruned_live_conditional_choices:
@@ -2457,9 +2612,7 @@ try:
                 conditional_routing_plan = (
                     plan_preopt_conditional_routing_boundary_ports(
                         exclude_preopt_conditional_topology_with_planned_predicates(
-                            tuple(
-                                pruned_live_conditional_topology.values()
-                            ),
+                            tuple(pruned_live_conditional_topology.values()),
                             already_planned_conditionals,
                         ),
                         exact_targets_by_source_ea=(
@@ -2493,9 +2646,7 @@ try:
                         (
                             hex(int(row.source_ea)),
                             row.reason.value,
-                            None
-                            if row.target_ea is None
-                            else hex(int(row.target_ea)),
+                            None if row.target_ea is None else hex(int(row.target_ea)),
                         )
                         for row in state_transition_plan.abstentions
                     ],
@@ -2526,9 +2677,7 @@ try:
                         (
                             hex(int(row.source_ea)),
                             row.reason.value,
-                            None
-                            if row.target_ea is None
-                            else hex(int(row.target_ea)),
+                            None if row.target_ea is None else hex(int(row.target_ea)),
                         )
                         for row in literal_state_plan.abstentions
                     ],
@@ -2553,9 +2702,7 @@ try:
                         (
                             hex(int(row.source_ea)),
                             row.reason.value,
-                            None
-                            if row.target_ea is None
-                            else hex(int(row.target_ea)),
+                            None if row.target_ea is None else hex(int(row.target_ea)),
                         )
                         for row in terminal_return_plan.abstentions
                     ],
@@ -2578,9 +2725,7 @@ try:
                         (
                             hex(int(row.source_ea)),
                             row.reason.value,
-                            None
-                            if row.target_ea is None
-                            else hex(int(row.target_ea)),
+                            None if row.target_ea is None else hex(int(row.target_ea)),
                         )
                         for row in conditional_routing_plan.abstentions
                     ],
@@ -2599,12 +2744,9 @@ try:
                 (
                     merged_conditional,
                     conditional_merge_abstentions,
-                ) = coalesce_preopt_conditional_boundary_ports(
-                    conditional_candidates
-                )
+                ) = coalesce_preopt_conditional_boundary_ports(conditional_candidates)
                 conditional_source_blocks = {
-                    int(row.source_block_ea)
-                    for row in conditional_candidates
+                    int(row.source_block_ea) for row in conditional_candidates
                 } | {
                     int(row.predicate_block_ea)
                     for row in pruned_live_conditional_choices
@@ -2644,9 +2786,7 @@ try:
                             sorted(
                                 set(base_boundary_port_plan.abstentions)
                                 | set(state_transition_plan.abstentions)
-                                | set(
-                                    pruned_live_conditional_plan.abstentions
-                                )
+                                | set(pruned_live_conditional_plan.abstentions)
                                 | set(terminal_return_plan.abstentions)
                                 | set(conditional_merge_abstentions)
                                 | set(literal_state_plan.abstentions),
@@ -2673,9 +2813,7 @@ try:
                         get_materialized_indirect_transfers(FUNC_EA)
                     ),
                 )
-                source_dispatcher_map = (
-                    source_dispatcher_recovery.dispatch_map
-                )
+                source_dispatcher_map = source_dispatcher_recovery.dispatch_map
                 source_dispatcher_router_eas = frozenset(
                     int(block.start_ea)
                     for serial in (
@@ -2683,33 +2821,25 @@ try:
                         if source_dispatcher_map is None
                         else source_dispatcher_map.dispatcher_blocks
                     )
-                    if (
-                        block := source_flow_graph.get_block(int(serial))
-                    )
-                    is not None
+                    if (block := source_flow_graph.get_block(int(serial))) is not None
                     and int(block.start_ea) > 0
                 )
-                dispatcher_entry_eas = frozenset(
-                    int(dispatcher_ea)
-                    for transfer in get_materialized_indirect_transfers(
-                        FUNC_EA
+                dispatcher_entry_eas = (
+                    frozenset(
+                        int(dispatcher_ea)
+                        for transfer in get_materialized_indirect_transfers(FUNC_EA)
+                        for dispatcher_ea in transfer.dispatcher_router_eas
                     )
-                    for dispatcher_ea in transfer.dispatcher_router_eas
-                ) | source_dispatcher_router_eas
-                fixed_state_expected_targets_by_source_ea: dict[
-                    int, set[int]
-                ] = {}
-                fixed_state_expected_write_eas_by_source_ea: dict[
-                    int, set[int]
-                ] = {}
+                    | source_dispatcher_router_eas
+                )
+                fixed_state_expected_targets_by_source_ea: dict[int, set[int]] = {}
+                fixed_state_expected_write_eas_by_source_ea: dict[int, set[int]] = {}
                 exact_state_transition_source_eas = frozenset(
                     int(row.source_block_ea)
                     for row in (
-                        state_transition_plan.direct
-                        + literal_state_plan.direct
+                        state_transition_plan.direct + literal_state_plan.direct
                     )
-                    if row.source_owner
-                    is PreoptBoundaryEndpointOwner.LIVE
+                    if row.source_owner is PreoptBoundaryEndpointOwner.LIVE
                 )
                 proven_indirect_source_block_eas = frozenset(
                     int(source_ea)
@@ -2717,9 +2847,7 @@ try:
                     if live_conditional_native_cfg is not None
                     and (
                         native_source := (
-                            live_conditional_native_cfg.blocks_by_ea.get(
-                                int(source_ea)
-                            )
+                            live_conditional_native_cfg.blocks_by_ea.get(int(source_ea))
                         )
                     )
                     is not None
@@ -2733,10 +2861,7 @@ try:
                     + state_transition_plan.direct
                     + literal_state_plan.direct
                 ):
-                    if (
-                        row.source_owner
-                        is not PreoptBoundaryEndpointOwner.LIVE
-                    ):
+                    if row.source_owner is not PreoptBoundaryEndpointOwner.LIVE:
                         continue
                     fixed_state_expected_targets_by_source_ea.setdefault(
                         int(row.source_block_ea),
@@ -2748,10 +2873,7 @@ try:
                     ).add(int(row.source_instruction_ea))
                 print(
                     "PREOPT_PROVEN_INDIRECT_SOURCE_BLOCKS",
-                    [
-                        hex(int(ea))
-                        for ea in sorted(proven_indirect_source_block_eas)
-                    ],
+                    [hex(int(ea)) for ea in sorted(proven_indirect_source_block_eas)],
                     flush=True,
                 )
                 print(
@@ -2809,10 +2931,7 @@ try:
                                     int(source_ea)
                                 ].instruction_eas
                             ),
-                            (
-                                int(source_ea)
-                                in pruned_live_conditional_topology
-                            ),
+                            (int(source_ea) in pruned_live_conditional_topology),
                             live_capture_port_facts[
                                 int(source_ea)
                             ].has_synthetic_function_exit_successor,
@@ -2820,29 +2939,23 @@ try:
                                 int(source_ea)
                                 in {
                                     int(choice.predicate_block_ea)
-                                    for choice in (
-                                        pruned_live_conditional_choices
-                                    )
+                                    for choice in (pruned_live_conditional_choices)
                                 }
                             ),
-                            int(source_ea)
-                            in proven_indirect_source_block_eas,
+                            int(source_ea) in proven_indirect_source_block_eas,
                         )
                         for source_ea in sorted(
                             fixed_state_expected_targets_by_source_ea
                         )
                         if int(source_ea) in live_capture_port_facts
-                        and int(source_ea)
-                        not in pruned_live_conditional_topology
+                        and int(source_ea) not in pruned_live_conditional_topology
                     ],
                     flush=True,
                 )
                 proven_pruned_conditional_direct_source_eas = (
                     prove_preopt_pruned_conditional_fixed_state_sources(
                         blocks_by_ea=live_capture_port_facts,
-                        native_topology_by_ea=(
-                            pruned_live_conditional_topology
-                        ),
+                        native_topology_by_ea=(pruned_live_conditional_topology),
                         state_register=next(iter(state_registers)),
                         dispatcher_router_eas=dispatcher_entry_eas,
                         resolver_bridge_targets_by_source_ea=(
@@ -2870,9 +2983,7 @@ try:
                     f"count={len(proven_pruned_conditional_direct_source_eas)}",
                     [
                         hex(int(ea))
-                        for ea in sorted(
-                            proven_pruned_conditional_direct_source_eas
-                        )
+                        for ea in sorted(proven_pruned_conditional_direct_source_eas)
                     ],
                     f"resolver_bridges={len(resolver_materialized_bridge_targets_by_source_ea)}",
                     flush=True,
@@ -2897,16 +3008,12 @@ try:
                 capture_port_facts = dict(port_facts)
                 live_source_shapes = []
                 for request in boundary_port_plans[0].direct:
-                    if (
-                        request.source_owner
-                        is not PreoptBoundaryEndpointOwner.LIVE
-                    ):
+                    if request.source_owner is not PreoptBoundaryEndpointOwner.LIVE:
                         continue
                     candidates = tuple(
                         fact
                         for fact in live_capture_port_facts.values()
-                        if int(fact.start_ea)
-                        == int(request.source_block_ea)
+                        if int(fact.start_ea) == int(request.source_block_ea)
                         or int(request.source_instruction_ea)
                         in map(int, fact.instruction_eas)
                     )
@@ -2922,10 +3029,7 @@ try:
                                     if fact.tail_ea is None
                                     else hex(int(fact.tail_ea)),
                                     fact.tail_kind.value,
-                                    tuple(
-                                        hex(int(ea))
-                                        for ea in fact.successor_eas
-                                    ),
+                                    tuple(hex(int(ea)) for ea in fact.successor_eas),
                                     fact.successors_complete,
                                 )
                                 for fact in candidates
@@ -2933,18 +3037,13 @@ try:
                         )
                     )
                 for request in boundary_port_plans[0].conditional:
-                    if (
-                        request.source_owner
-                        is not PreoptBoundaryEndpointOwner.LIVE
-                    ):
+                    if request.source_owner is not PreoptBoundaryEndpointOwner.LIVE:
                         continue
                     candidates = tuple(
                         fact
                         for fact in live_capture_port_facts.values()
-                        if int(fact.start_ea)
-                        == int(request.source_block_ea)
-                        or int(request.predicate_ea)
-                        in map(int, fact.instruction_eas)
+                        if int(fact.start_ea) == int(request.source_block_ea)
+                        or int(request.predicate_ea) in map(int, fact.instruction_eas)
                     )
                     live_source_shapes.append(
                         (
@@ -2958,18 +3057,13 @@ try:
                                     if fact.tail_ea is None
                                     else hex(int(fact.tail_ea)),
                                     fact.tail_kind.value,
-                                    tuple(
-                                        hex(int(ea))
-                                        for ea in fact.successor_eas
-                                    ),
+                                    tuple(hex(int(ea)) for ea in fact.successor_eas),
                                     None
                                     if fact.taken_successor_ea is None
                                     else hex(int(fact.taken_successor_ea)),
                                     None
                                     if fact.fallthrough_successor_ea is None
-                                    else hex(
-                                        int(fact.fallthrough_successor_ea)
-                                    ),
+                                    else hex(int(fact.fallthrough_successor_ea)),
                                 )
                                 for fact in candidates
                             ),
@@ -2987,18 +3081,14 @@ try:
                     dispatcher_entry_eas=dispatcher_entry_eas,
                     resolver_cut_instruction_eas=frozenset(
                         int(transfer.source_jmp_ea)
-                        for transfer in get_materialized_indirect_transfers(
-                            FUNC_EA
-                        )
+                        for transfer in get_materialized_indirect_transfers(FUNC_EA)
                         if transfer.resolver_kind
                         in {
                             "static_fixpoint",
                             "detached_static_fixpoint",
                         }
                     )
-                    | frozenset(
-                        int(cut.tail_ea) for cut in state_transition_cuts
-                    ),
+                    | frozenset(int(cut.tail_ea) for cut in state_transition_cuts),
                     resolver_targets_by_source_block_ea=(
                         resolver_targets_by_source_block_ea
                     ),
@@ -3006,17 +3096,15 @@ try:
                         proven_pruned_conditional_direct_source_eas
                     ),
                 )
-                boundary_port_capture = (
-                    exclude_ports_satisfied_by_internal_edges(
-                        boundary_port_capture,
-                        proven_internal_edges=frozenset(
-                            (
-                                int(edge.source_ea),
-                                int(edge.target_ea),
-                            )
-                            for edge in semantic_closure.proven_internal_edges
-                        ),
-                    )
+                boundary_port_capture = exclude_ports_satisfied_by_internal_edges(
+                    boundary_port_capture,
+                    proven_internal_edges=frozenset(
+                        (
+                            int(edge.source_ea),
+                            int(edge.target_ea),
+                        )
+                        for edge in semantic_closure.proven_internal_edges
+                    ),
                 )
                 boundary_port_capture = (
                     exclude_direct_endpoints_superseded_by_conditionals(
@@ -3072,10 +3160,7 @@ try:
                                 )
                                 for edge in row.frontier_edges
                             ],
-                            [
-                                hex(int(ea))
-                                for ea in row.terminal_endpoint_block_eas
-                            ],
+                            [hex(int(ea)) for ea in row.terminal_endpoint_block_eas],
                             row.delivery_mode.value,
                             hex(int(row.request.target_ea)),
                         )
@@ -3108,9 +3193,7 @@ try:
                         (
                             hex(int(row.source_ea)),
                             row.reason.value,
-                            None
-                            if row.block_ea is None
-                            else hex(int(row.block_ea)),
+                            None if row.block_ea is None else hex(int(row.block_ea)),
                         )
                         for row in boundary_port_capture.abstentions
                     ],
@@ -3122,9 +3205,7 @@ try:
                 }
 
                 def boundary_port_abstention_shape(row):
-                    request = direct_request_by_instruction_ea.get(
-                        int(row.source_ea)
-                    )
+                    request = direct_request_by_instruction_ea.get(int(row.source_ea))
                     fact = (
                         None
                         if row.block_ea is None
@@ -3137,33 +3218,19 @@ try:
                             if request is None
                             else hex(int(request.source_block_ea))
                         ),
-                        (
-                            None
-                            if request is None
-                            else hex(int(request.target_ea))
-                        ),
+                        (None if request is None else hex(int(request.target_ea))),
                         row.reason.value,
                         (
                             None
                             if row.block_ea is None
                             else (
                                 hex(int(row.block_ea)),
-                                (
-                                    None
-                                    if fact is None
-                                    else hex(int(fact.tail_ea or 0))
-                                ),
-                                (
-                                    None
-                                    if fact is None
-                                    else fact.tail_kind.value
-                                ),
+                                (None if fact is None else hex(int(fact.tail_ea or 0))),
+                                (None if fact is None else fact.tail_kind.value),
                                 (
                                     []
                                     if fact is None
-                                    else [
-                                        hex(ea) for ea in fact.successor_eas
-                                    ]
+                                    else [hex(ea) for ea in fact.successor_eas]
                                 ),
                             )
                         ),
@@ -3221,23 +3288,19 @@ try:
                                             ],
                                         )
                                         for ea in fact.successor_eas
-                                        if int(ea)
-                                        in proven_indirect_source_block_eas
+                                        if int(ea) in proven_indirect_source_block_eas
                                     ],
                                 )
                                 for block_ea, fact in sorted(port_facts.items())
                                 if reaching_definitions_by_register[
                                     int(request.state_register)
                                 ][1][int(block_ea)]
-                                == frozenset(
-                                    {int(request.source_instruction_ea)}
-                                )
+                                == frozenset({int(request.source_instruction_ea)})
                             ],
                         )
                         for request in boundary_port_plans[0].direct
                         if any(
-                            int(row.source_ea)
-                            == int(request.source_instruction_ea)
+                            int(row.source_ea) == int(request.source_instruction_ea)
                             for row in boundary_port_capture.abstentions
                         )
                     ],
@@ -3248,7 +3311,9 @@ try:
                 seed_ea for seed_ea in plan.seed_eas if seed_ea in snippet_native_eas
             )
             missing_seed_eas = tuple(
-                seed_ea for seed_ea in plan.seed_eas if seed_ea not in snippet_native_eas
+                seed_ea
+                for seed_ea in plan.seed_eas
+                if seed_ea not in snippet_native_eas
             )
             outside_function_seed_eas = tuple(
                 seed_ea
@@ -3320,10 +3385,9 @@ try:
                     ],
                     flush=True,
                 )
-                latest_template_boundary_port_count[0] = (
-                    len(template_boundary_ports.direct)
-                    + len(template_boundary_ports.conditional)
-                )
+                latest_template_boundary_port_count[0] = len(
+                    template_boundary_ports.direct
+                ) + len(template_boundary_ports.conditional)
                 imported_port_eas = {
                     int(ea)
                     for port in template_boundary_ports.direct
@@ -3362,7 +3426,8 @@ try:
                                 )
                                 for block_ea, fact in port_facts.items()
                                 if int(block_ea) == ea
-                                or ea in {
+                                or ea
+                                in {
                                     int(instruction_ea)
                                     for instruction_ea in fact.instruction_eas
                                 }
@@ -3372,24 +3437,197 @@ try:
                     ],
                     flush=True,
                 )
-            captured = capture_detached_snippet_template(
+            calls_failure = ida_hexrays.hexrays_failure_t()
+            union_stack_point_ranges[:] = [tuple(capture_ranges)]
+            union_source_generation_active[0] = True
+            try:
+                calls_snippet = cg._generate_microcode_without_d810(
+                    ida_hexrays.gen_microcode,
+                    ranges,
+                    calls_failure,
+                    None,
+                    generation_flags,
+                    ida_hexrays.MMAT_CALLS,
+                )
+            finally:
+                union_source_generation_active[0] = False
+            capture_result = capture_detached_snippet_companion_templates(
                 FUNC_EA,
                 int(import_plan.primary_seed_ea),
                 snippet,
+                calls_snippet,
                 capture_ranges,
                 boundary_ports=template_boundary_ports,
                 owned_block_entry_eas=capture_block_entry_eas,
+            )
+            if PRODUCTION_CALLINFO:
+                cg.capture_detached_route_callinfo_templates(
+                    FUNC_EA,
+                    semantic_ranges,
+                )
+            if not capture_result.captured and CALL_COMPANION_SWEEP:
+                sweep_rows = []
+                sweep_call_eas: set[int] = set()
+                for entry_range in semantic_ranges:
+                    sweep_ranges = ida_hexrays.mba_ranges_t()
+                    for start_ea, end_ea in (
+                        entry_range,
+                        *(row for row in semantic_ranges if row != entry_range),
+                    ):
+                        sweep_ranges.ranges.push_back(
+                            idaapi.range_t(int(start_ea), int(end_ea))
+                        )
+                    sweep_failure = ida_hexrays.hexrays_failure_t()
+                    union_source_generation_active[0] = True
+                    try:
+                        sweep_mba = cg._generate_microcode_without_d810(
+                            ida_hexrays.gen_microcode,
+                            sweep_ranges,
+                            sweep_failure,
+                            None,
+                            generation_flags,
+                            ida_hexrays.MMAT_CALLS,
+                        )
+                    finally:
+                        union_source_generation_active[0] = False
+                    analyzed_call_eas = ()
+                    analyzed_call_rows = ()
+                    duplicate_call_ea = None
+                    if sweep_mba is not None:
+                        signatures, duplicate_call_ea = (
+                            detached_island._detached_call_signatures(sweep_mba)
+                        )
+                        analyzed_call_eas = tuple(
+                            sorted(
+                                call_ea
+                                for call_ea, signature in signatures.items()
+                                if signature.has_arglist
+                            )
+                        )
+                        analyzed_call_rows = tuple(
+                            (
+                                hex(int(nested.ea)),
+                                tuple(
+                                    (
+                                        int(argument.t),
+                                        int(argument.ea),
+                                        str(argument),
+                                    )
+                                    for argument in nested.d.f.args
+                                ),
+                                format_minsn_t(nested),
+                            )
+                            for serial in range(int(sweep_mba.qty))
+                            for instruction in block_instructions(
+                                sweep_mba.get_mblock(serial)
+                            )
+                            for nested in nested_instructions(instruction)
+                            if int(nested.opcode)
+                            in (
+                                int(ida_hexrays.m_call),
+                                int(ida_hexrays.m_icall),
+                            )
+                            and int(nested.d.t) == int(ida_hexrays.mop_f)
+                        )
+                        for serial in range(int(sweep_mba.qty)):
+                            for instruction in block_instructions(
+                                sweep_mba.get_mblock(serial)
+                            ):
+                                for nested in nested_instructions(instruction):
+                                    mba_independent_operand_types = {
+                                        int(ida_hexrays.mop_z),
+                                        int(ida_hexrays.mop_n),
+                                        int(ida_hexrays.mop_v),
+                                        int(ida_hexrays.mop_d),
+                                    }
+                                    if (
+                                        int(nested.opcode)
+                                        not in (
+                                            int(ida_hexrays.m_call),
+                                            int(ida_hexrays.m_icall),
+                                        )
+                                        or int(nested.d.t) != int(ida_hexrays.mop_f)
+                                        or any(
+                                            int(current.t)
+                                            not in mba_independent_operand_types
+                                            for argument in nested.d.f.args
+                                            for current in (
+                                                detached_island._walk_operand_tree(
+                                                    argument
+                                                )
+                                            )
+                                        )
+                                    ):
+                                        continue
+                                    route_callinfo_templates.setdefault(
+                                        int(nested.ea),
+                                        ida_hexrays.minsn_t(nested),
+                                    )
+                        sweep_call_eas.update(analyzed_call_eas)
+                    sweep_rows.append(
+                        (
+                            f"[0x{int(entry_range[0]):X},0x{int(entry_range[1]):X})",
+                            0 if sweep_mba is None else int(sweep_mba.qty),
+                            tuple(hex(ea) for ea in analyzed_call_eas),
+                            (
+                                None
+                                if duplicate_call_ea is None
+                                else hex(int(duplicate_call_ea))
+                            ),
+                            analyzed_call_rows,
+                            sweep_failure.desc(),
+                        )
+                    )
+                print(
+                    "UNION_CALL_COMPANION_SWEEP",
+                    f"covered={[hex(ea) for ea in sorted(sweep_call_eas)]}",
+                    "missing="
+                    f"{[hex(ea) for ea in sorted(set(capture_result.call_eas) - sweep_call_eas)]}",
+                    f"rows={sweep_rows}",
+                    flush=True,
+                )
+            captured = capture_result.captured
+            if RAW_UNION_CALLS and not captured:
+                dump_call_argument_regions("source-preopt-union", snippet)
+                dump_stack_basis_probe(
+                    "source-preopt-union",
+                    snippet,
+                    0x40AF23,
+                    216,
+                )
+                dump_native_stack_identity_diff("source-preopt-union", snippet)
+                captured = capture_detached_snippet_template(
+                    FUNC_EA,
+                    int(import_plan.primary_seed_ea),
+                    snippet,
+                    capture_ranges,
+                    boundary_ports=template_boundary_ports,
+                    owned_block_entry_eas=capture_block_entry_eas,
+                )
+                print(
+                    "UNION_STKPNTS_PRIMARY_CAPTURE",
+                    f"captured={captured}",
+                    f"primary=0x{int(import_plan.primary_seed_ea):X}",
+                    flush=True,
+                )
+            print(
+                "UNION_CALL_COMPANION",
+                f"captured={capture_result.captured}",
+                f"replacement_required={capture_result.replacement_required}",
+                f"calls={[hex(ea) for ea in capture_result.call_eas]}",
+                f"reason={capture_result.reason!r}",
+                "mismatch="
+                f"{None if capture_result.mismatch_ea is None else hex(int(capture_result.mismatch_ea))}",
+                f"calls_blocks={0 if calls_snippet is None else int(calls_snippet.qty)}",
+                f"failure={calls_failure.desc()!r}",
+                flush=True,
             )
             captured_block_eas = detached_snippet_template_block_eas(
                 FUNC_EA,
                 int(import_plan.primary_seed_ea),
             )
             duplicate_live_block_eas = tuple(
-                sorted(
-                    set(captured_block_eas).intersection(
-                        preopt_live_native_eas
-                    )
-                )
+                sorted(set(captured_block_eas).intersection(preopt_live_native_eas))
             )
             unexpected_duplicate_live_block_eas = tuple(
                 ea
@@ -3454,9 +3692,7 @@ try:
                         if instruction is block.tail:
                             break
                         instruction = instruction.next
-                unique_matches = {
-                    int(block.serial): block for block in matches
-                }
+                unique_matches = {int(block.serial): block for block in matches}
                 if len(unique_matches) != 1:
                     continue
                 root = next(iter(unique_matches.values()))
@@ -3534,9 +3770,7 @@ try:
                                 None
                                 if source is None
                                 else [
-                                    block_label(
-                                        mba.get_mblock(int(source.succ(index)))
-                                    )
+                                    block_label(mba.get_mblock(int(source.succ(index))))
                                     for index in range(int(source.nsucc()))
                                 ]
                             ),
@@ -3620,9 +3854,7 @@ try:
             for imported_exit_ea, native_exit_ea in terminal_origins:
                 source = find_unique_live_block_by_ea(mba, imported_exit_ea)
                 if source is not None:
-                    native_exit_by_source[int(source.serial)] = int(
-                        native_exit_ea
-                    )
+                    native_exit_by_source[int(source.serial)] = int(native_exit_ea)
             print(
                 "BOUNDARY_OWNED_TERMINAL_SOURCES",
                 f"stage={label}",
@@ -3669,9 +3901,7 @@ try:
                         target_ea=int(row.target_ea),
                         state_constant=int(row.state_constant),
                         state_register=int(row.state_register),
-                        via_ea=(
-                            None if row.via_ea is None else int(row.via_ea)
-                        ),
+                        via_ea=(None if row.via_ea is None else int(row.via_ea)),
                         requires_literal_state_write=(
                             bool(row.requires_literal_state_write)
                         ),
@@ -3715,7 +3945,8 @@ try:
                                 (
                                     None
                                     if (
-                                        target_block := find_unique_preopt_block_by_native_ea(
+                                        target_block
+                                        := find_unique_preopt_block_by_native_ea(
                                             mba,
                                             int(target_ea),
                                         )
@@ -3808,10 +4039,7 @@ try:
             return tuple(instructions)
 
         def plan_preopt_interior_entries(mba):
-            if (
-                not APPLY_INTERIOR_ENTRY_BRIDGES
-                or not union_import_primary_seed_eas
-            ):
+            if not APPLY_INTERIOR_ENTRY_BRIDGES or not union_import_primary_seed_eas:
                 return None
             template = detached_island._DETACHED_SNIPPET_TEMPLATES.get(
                 (FUNC_EA, int(union_import_primary_seed_eas[0]))
@@ -3834,15 +4062,13 @@ try:
             ambiguous_template_instruction_eas = tuple(
                 sorted(
                     instruction_ea
-                    for instruction_ea, native_entry_eas
-                    in entry_candidates_by_instruction_ea.items()
+                    for instruction_ea, native_entry_eas in entry_candidates_by_instruction_ea.items()
                     if len(native_entry_eas) != 1
                 )
             )
             native_entry_by_instruction_ea = {
                 instruction_ea: next(iter(native_entry_eas))
-                for instruction_ea, native_entry_eas
-                in entry_candidates_by_instruction_ea.items()
+                for instruction_ea, native_entry_eas in entry_candidates_by_instruction_ea.items()
                 if len(native_entry_eas) == 1
             }
             template_predecessor_entries = {
@@ -3853,17 +4079,14 @@ try:
                         if int(template_block.source_serial)
                         in {
                             int(successor_serial)
-                            for successor_serial
-                            in predecessor.successor_serials
+                            for successor_serial in predecessor.successor_serials
                         }
                     )
                 )
                 for template_block in template.blocks
             }
 
-            imported_origins = dict(
-                imported_detached_snippet_instruction_origins(mba)
-            )
+            imported_origins = dict(imported_detached_snippet_instruction_origins(mba))
             native_origins_by_imported_serial = {}
             predecessor_count_by_imported_serial = {}
             for serial in range(int(mba.qty)):
@@ -3876,17 +4099,11 @@ try:
                 if not native_origins:
                     continue
                 native_origins_by_imported_serial[int(serial)] = native_origins
-                predecessor_count_by_imported_serial[int(serial)] = int(
-                    block.npred()
-                )
+                predecessor_count_by_imported_serial[int(serial)] = int(block.npred())
 
             owner_index = index_preopt_imported_entry_owners(
-                native_entry_by_instruction_ea=(
-                    native_entry_by_instruction_ea
-                ),
-                native_origins_by_imported_serial=(
-                    native_origins_by_imported_serial
-                ),
+                native_entry_by_instruction_ea=(native_entry_by_instruction_ea),
+                native_origins_by_imported_serial=(native_origins_by_imported_serial),
                 predecessor_count_by_imported_serial=(
                     predecessor_count_by_imported_serial
                 ),
@@ -3909,17 +4126,12 @@ try:
                 for native_entry_ea, imported_owners in (
                     owner_index.owners_by_native_entry
                 )
-                if any(
-                    int(owner.predecessor_count) > 0
-                    for owner in imported_owners
-                )
+                if any(int(owner.predecessor_count) > 0 for owner in imported_owners)
             )
             candidates = []
             placeholder_ambiguities = []
             orphaned_without_placeholders = []
-            for native_entry_ea, imported_owners in (
-                owner_index.owners_by_native_entry
-            ):
+            for native_entry_ea, imported_owners in owner_index.owners_by_native_entry:
                 placeholders = []
                 for serial in range(int(mba.qty)):
                     block = mba.get_mblock(serial)
@@ -3949,10 +4161,7 @@ try:
                         orphaned_without_placeholders.append(
                             (
                                 int(native_entry_ea),
-                                tuple(
-                                    int(owner.serial)
-                                    for owner in imported_owners
-                                ),
+                                tuple(int(owner.serial) for owner in imported_owners),
                                 template_predecessor_entries.get(
                                     int(native_entry_ea),
                                     (),
@@ -3972,9 +4181,7 @@ try:
                         imported_owners=tuple(
                             PreoptImportedEntryOwner(
                                 serial=int(owner.serial),
-                                predecessor_count=int(
-                                    owner.predecessor_count
-                                ),
+                                predecessor_count=int(owner.predecessor_count),
                             )
                             for owner in imported_owners
                         ),
@@ -4022,15 +4229,12 @@ try:
                     block_serial=int(placeholder.serial),
                     goto_target=int(imported.serial),
                     description=(
-                        "PREOPT interior entry bridge "
-                        f"0x{int(row.native_entry_ea):X}"
+                        f"PREOPT interior entry bridge 0x{int(row.native_entry_ea):X}"
                     ),
                     priority=5,
                 )
                 queued += 1
-            applied = int(
-                modifier.apply(defer_post_apply_maintenance=True)
-            )
+            applied = int(modifier.apply(defer_post_apply_maintenance=True))
             print(
                 "PREOPT_INTERIOR_ENTRY_APPLY",
                 f"queued={queued}",
@@ -4092,9 +4296,7 @@ try:
                     and int(instruction.opcode) == int(ida_hexrays.m_mov)
                     and int(instruction.l.t) == int(ida_hexrays.mop_n)
                     and int(instruction.l.size) == 4
-                    and (
-                        int(instruction.l.nnn.value) & 0xFFFFFFFF
-                    )
+                    and (int(instruction.l.nnn.value) & 0xFFFFFFFF)
                     == int(row.state_constant)
                     and int(instruction.d.t) == int(ida_hexrays.mop_r)
                     and int(instruction.d.r) == int(row.state_register)
@@ -4124,9 +4326,7 @@ try:
                     int(row.predicate_ea),
                 )
                 if source is not None:
-                    source_identity_by_ea[int(row.predicate_ea)] = int(
-                        source.serial
-                    )
+                    source_identity_by_ea[int(row.predicate_ea)] = int(source.serial)
             direct_rows = exclude_direct_boundaries_with_conditional_source(
                 plan.direct,
                 plan.conditional,
@@ -4179,9 +4379,7 @@ try:
                             int(ida_hexrays.m_jcnd),
                             int(ida_hexrays.m_jtbl),
                         }
-                        or ida_hexrays.is_mcode_jcond(
-                            int(source.tail.opcode)
-                        )
+                        or ida_hexrays.is_mcode_jcond(int(source.tail.opcode))
                     )
                 )
                 tail_is_call = bool(
@@ -4295,14 +4493,11 @@ try:
                     int(ida_hexrays.m_call),
                     int(ida_hexrays.m_icall),
                 }
-                tail_is_goto = int(source.tail.opcode) == int(
-                    ida_hexrays.m_goto
-                )
+                tail_is_goto = int(source.tail.opcode) == int(ida_hexrays.m_goto)
                 if int(source.nsucc()) == 0:
                     if tail_is_call:
-                        if (
-                            source.nextb is None
-                            or int(source.nextb.serial) != int(via.serial)
+                        if source.nextb is None or int(source.nextb.serial) != int(
+                            via.serial
                         ):
                             skipped.append(
                                 (int(row.source_ea), "call_via_not_adjacent")
@@ -4313,9 +4508,7 @@ try:
                         and int(source.tail.l.t) == int(ida_hexrays.mop_b)
                         and int(source.tail.l.b) == int(via.serial)
                     ):
-                        skipped.append(
-                            (int(row.source_ea), "goto_via_target_mismatch")
-                        )
+                        skipped.append((int(row.source_ea), "goto_via_target_mismatch"))
                         continue
                     source.type = ida_hexrays.BLT_1WAY
                     source.succset.push_back(int(via.serial))
@@ -4324,8 +4517,7 @@ try:
                     via.mark_lists_dirty()
                     mba.mark_chains_dirty()
                 elif not (
-                    int(source.nsucc()) == 1
-                    and int(source.succ(0)) == int(via.serial)
+                    int(source.nsucc()) == 1 and int(source.succ(0)) == int(via.serial)
                 ):
                     skipped.append((int(row.source_ea), "via_edge_mismatch"))
                     continue
@@ -4380,7 +4572,8 @@ try:
                     source is None
                     or false_target is None
                     or true_target is None
-                    or int(source.serial) in {
+                    or int(source.serial)
+                    in {
                         int(false_target.serial),
                         int(true_target.serial),
                     }
@@ -4429,9 +4622,7 @@ try:
                     ),
                     rule_priority=1000,
                 )
-                applied = int(
-                    modifier.apply(defer_post_apply_maintenance=True)
-                )
+                applied = int(modifier.apply(defer_post_apply_maintenance=True))
                 if applied == 2:
                     conditional_applied += 1
                 else:
@@ -4483,9 +4674,8 @@ try:
                     flush=True,
                 )
                 return None
-            if (
-                preopt_seed is not None
-                and int(preopt_seed[2]) != int(recovery.state_var_reg)
+            if preopt_seed is not None and int(preopt_seed[2]) != int(
+                recovery.state_var_reg
             ):
                 print(
                     "ENTRY_PLAN_STAGE",
@@ -4515,9 +4705,7 @@ try:
                     mba,
                     state_register=int(recovery.state_var_reg),
                     after_ea=int(evidence.source_store_ea),
-                    before_ea=min(
-                        node.source_block_ea for node in routing_nodes
-                    ),
+                    before_ea=min(node.source_block_ea for node in routing_nodes),
                 )
                 if preopt_seed is None
                 else int(preopt_seed[1])
@@ -4535,9 +4723,7 @@ try:
                 int(evidence.taken_state_constant)
             )
             handler = (
-                graph.get_block(handler_serial)
-                if handler_serial is not None
-                else None
+                graph.get_block(handler_serial) if handler_serial is not None else None
             )
             if handler is None:
                 print(
@@ -4626,9 +4812,7 @@ try:
         captured_preopt_entry_seed: list[tuple[object, int, int]] = []
         latest_preopt_live_native_eas: list[frozenset[int]] = []
         first_preopt_return_address_sizes: list[int] = []
-        latest_preopt_live_port_facts: list[
-            dict[int, PreoptPortBlockFact]
-        ] = []
+        latest_preopt_live_port_facts: list[dict[int, PreoptPortBlockFact]] = []
         original_native_entry_bridge = cg._materialize_residual_entry_bridge
 
         def capture_entry_bridge_without_native_patch(
@@ -4660,9 +4844,7 @@ try:
             predicate_ida_stkoff = int(
                 mba.stkoff_vd2ida(int(evidence.predicate_stack_identity[0]))
             )
-            captured_entry_result[:] = [
-                (evidence, plan, predicate_ida_stkoff)
-            ]
+            captured_entry_result[:] = [(evidence, plan, predicate_ida_stkoff)]
             # Report one staged change to exercise the ordinary MERR_LOOP redo,
             # but publish no native-patch transfer.  The next PREOPT callback
             # consumes the portable plan and performs the logical-CFG rewrite.
@@ -4677,10 +4859,281 @@ try:
                 super().__init__()
                 self.preopt_callbacks = 0
                 self.calls_callbacks = 0
+                self.build_callinfo_callbacks = 0
+                self.callinfo_callbacks = 0
+                self.bad_call_sp_seen = False
                 self.entry_bridges = 0
                 self.boundary_ports_applied = 0
                 self.latest_boundary_ports_applied = 0
                 self.latest_boundary_ports_abstained = 0
+
+            def stkpnts(self, mba, stack_points):
+                is_profile = int(mba.entry_ea) == FUNC_EA
+                is_source = bool(union_source_generation_active[0])
+                if STKPNTS_DUMP and (is_profile or is_source):
+                    rows = tuple(
+                        (int(ea), int(spd))
+                        for ea, spd in snapshot_stkpnts(stack_points)
+                    )
+                    print(
+                        "TRANSIENT_STKPNTS_SNAPSHOT",
+                        f"entry={hex(int(mba.entry_ea))}",
+                        f"source_generation={is_source}",
+                        f"qty={len(rows)}",
+                        tuple(
+                            (hex(ea), spd)
+                            for ea, spd in rows
+                            if is_source or 0x40AEF0 <= ea < 0x40AFA0
+                        ),
+                        flush=True,
+                    )
+                if not is_profile or is_source:
+                    return 0
+                if not STKPNTS_INJECT:
+                    return 0
+                if not union_import_primary_seed_eas:
+                    return 0
+                template = detached_island._DETACHED_SNIPPET_TEMPLATES.get(
+                    (FUNC_EA, int(union_import_primary_seed_eas[0]))
+                )
+                if template is None:
+                    return 0
+                function = ida_funcs.get_func(FUNC_EA)
+                if function is None:
+                    return 0
+                call_eas = tuple(
+                    sorted(
+                        {
+                            int(nested.ea)
+                            for block in template.blocks
+                            for instruction in block.instructions
+                            for nested in nested_instructions(instruction)
+                            if int(nested.opcode)
+                            in (
+                                int(ida_hexrays.m_call),
+                                int(ida_hexrays.m_icall),
+                            )
+                        }
+                    )
+                )
+                imported_points = dict(transient_imported_stack_points)
+                before = dict(snapshot_stkpnts(stack_points))
+                inserted = []
+                updated = []
+                for live_ea, spd in sorted(imported_points.items()):
+                    if upsert_stkpnt(stack_points, live_ea, spd):
+                        inserted.append((live_ea, spd))
+                    else:
+                        updated.append((live_ea, spd))
+                for call_ea in call_eas:
+                    spd = int(ida_frame.get_spd(function, int(call_ea)))
+                    if upsert_stkpnt(stack_points, int(call_ea), spd):
+                        inserted.append((int(call_ea), spd))
+                    else:
+                        updated.append((int(call_ea), spd))
+                after = dict(snapshot_stkpnts(stack_points))
+                print(
+                    "TRANSIENT_STKPNTS_INJECT",
+                    f"ranges={tuple((hex(start), hex(end)) for start, end in union_stack_point_ranges[0]) if union_stack_point_ranges else ()}",
+                    f"imported_points={len(imported_points)}",
+                    f"inserted={len(inserted)}",
+                    f"updated={len(updated)}",
+                    f"before={tuple((hex(ea), before.get(ea)) for ea in call_eas)}",
+                    f"after={tuple((hex(ea), after.get(ea)) for ea in call_eas)}",
+                    flush=True,
+                )
+                self.bad_call_sp_seen = bool(mba.bad_call_sp_detected())
+                return 0
+
+            def build_callinfo(self, block, _call_type):
+                import ida_nalt
+                import ida_typeinf
+
+                mba = block.mba
+                if int(mba.entry_ea) != FUNC_EA:
+                    return None
+                if union_source_generation_active[0]:
+                    return None
+                self.build_callinfo_callbacks += 1
+                instruction = block.tail
+                origins = dict(imported_detached_snippet_instruction_origins(mba))
+                native_ea = (
+                    None
+                    if instruction is None
+                    else native_instruction_ea(instruction, origins)
+                )
+                block_eas = block_native_eas(block, origins)
+                anchor_ea = (
+                    native_ea if native_ea is not None else min(block_eas, default=None)
+                )
+                call = instruction
+                callinfo_evidence = None
+                route_template = (
+                    None
+                    if native_ea is None
+                    else route_callinfo_templates.get(int(native_ea))
+                )
+                if route_template is not None and not PRODUCTION_CALLINFO:
+                    function = ida_funcs.get_func(FUNC_EA)
+                    if function is not None:
+                        prepared = ida_hexrays.mcallinfo_t()
+                        if not copy_mcallinfo(prepared, route_template.d.f):
+                            return None
+                        source_span = int(
+                            int(route_template.d.f.stkargs_top)
+                            - int(route_template.d.f.call_spd)
+                        )
+                        destination_top = int(mba.stkoff_ida2vd(0))
+                        prepared.stkargs_top = destination_top
+                        prepared.call_spd = destination_top - source_span
+                        print(
+                            "ROUTE_CALLINFO_TEMPLATE",
+                            f"block=blk{int(block.serial)}@0x{int(native_ea):X}",
+                            f"call_spd={int(prepared.call_spd)}",
+                            f"stkargs_top={int(prepared.stkargs_top)}",
+                            f"args={tuple(str(argument) for argument in prepared.args)}",
+                            flush=True,
+                        )
+                        return prepared
+                if call is not None and int(call.opcode) == int(ida_hexrays.m_icall):
+                    call_ea = int(call.ea)
+                    operand_type = ida_typeinf.tinfo_t()
+                    has_operand_type = bool(
+                        ida_nalt.get_op_tinfo(operand_type, call_ea, 0)
+                    )
+                    profile_ea, resolution = cg._callinfo_profile_resolution(
+                        int(mba.entry_ea),
+                        call_ea,
+                    )
+                    transfers = get_materialized_indirect_transfers(profile_ea)
+                    reentry_eas = (
+                        frozenset()
+                        if resolution is None
+                        else cg._proven_callinfo_reentry_eas(
+                            resolution,
+                            transfers,
+                        )
+                    )
+                    no_stack_adjustment = (
+                        None
+                        if not reentry_eas
+                        else cg.native_corridor_has_no_stack_adjustment(
+                            call_ea,
+                            reentry_eas,
+                        )
+                    )
+                    evidence = (
+                        None
+                        if resolution is None
+                        else cg.collect_three_argument_callee_purged_evidence(
+                            block,
+                            proven_reentry_eas=reentry_eas,
+                            has_authoritative_type=has_operand_type,
+                            call_stack_deficit=cg.native_call_stack_deficit(
+                                block,
+                                call_ea,
+                            ),
+                            caller_stack_adjustment=(
+                                0 if no_stack_adjustment is True else None
+                            ),
+                            word_size=4,
+                        )
+                    )
+                    callinfo_evidence = (
+                        f"profile=0x{profile_ea:X}",
+                        f"resolution={resolution is not None}",
+                        f"has_operand_type={has_operand_type}",
+                        f"reentries={tuple(hex(ea) for ea in sorted(reentry_eas))}",
+                        f"no_stack_adjustment={no_stack_adjustment}",
+                        f"evidence={evidence}",
+                        "proof="
+                        f"{None if evidence is None else cg.prove_three_argument_callee_purged_call(evidence)}",
+                    )
+                print(
+                    "BUILD_CALLINFO_ABSTAINED",
+                    f"callback={self.build_callinfo_callbacks}",
+                    "block="
+                    f"{f'blk{int(block.serial)}@0x{anchor_ea:X}' if anchor_ea is not None else f'block@fict:0x{int(block.start):X}'}",
+                    "operand_types="
+                    f"{None if instruction is None else (int(instruction.l.t), int(instruction.r.t), int(instruction.d.t))}",
+                    "insn="
+                    f"{None if instruction is None else format_minsn_t(instruction)}",
+                    "block_insns="
+                    f"{tuple(format_minsn_t(candidate) for candidate in block_instructions(block))}",
+                    f"evidence={callinfo_evidence}",
+                    flush=True,
+                )
+                return None
+
+            def callinfo_built(self, block):
+                mba = block.mba
+                if int(mba.entry_ea) != FUNC_EA:
+                    return 0
+                if union_source_generation_active[0]:
+                    return 0
+                self.callinfo_callbacks += 1
+                instruction = block.tail
+                origins = dict(imported_detached_snippet_instruction_origins(mba))
+                native_ea = (
+                    None
+                    if instruction is None
+                    else native_instruction_ea(instruction, origins)
+                )
+                block_eas = block_native_eas(block, origins)
+                anchor_ea = (
+                    native_ea if native_ea is not None else min(block_eas, default=None)
+                )
+                anchor = (
+                    f"blk{int(block.serial)}@0x{anchor_ea:X}"
+                    if anchor_ea is not None
+                    else f"block@fict:0x{int(block.start):X}"
+                )
+                callinfo = (
+                    instruction.d.f
+                    if instruction is not None
+                    and int(instruction.opcode)
+                    in (int(ida_hexrays.m_call), int(ida_hexrays.m_icall))
+                    and int(instruction.d.t) == int(ida_hexrays.mop_f)
+                    else None
+                )
+                point = None if native_ea is None else mba.locate_stkpnt(int(native_ea))
+                bad_call_sp = bool(mba.bad_call_sp_detected())
+                first_bad_call = bad_call_sp and not self.bad_call_sp_seen
+                instruction_text = (
+                    None if instruction is None else format_minsn_t(instruction)
+                )
+                block_text = (
+                    ()
+                    if instruction is None
+                    or int(instruction.opcode) != int(ida_hexrays.m_icall)
+                    else tuple(
+                        format_minsn_t(candidate)
+                        for candidate in block_instructions(block)
+                    )
+                )
+                print(
+                    "CALLINFO_BUILT",
+                    f"callback={self.callinfo_callbacks}",
+                    f"block={anchor}",
+                    f"call_ea={None if native_ea is None else hex(int(native_ea))}",
+                    f"bad_call_sp={bad_call_sp}",
+                    f"first_bad_call={first_bad_call}",
+                    "point="
+                    f"{None if point is None else (hex(int(point.ea)), int(point.spd))}",
+                    f"call_spd={None if callinfo is None else int(callinfo.call_spd)}",
+                    "stkargs_top="
+                    f"{None if callinfo is None else int(callinfo.stkargs_top)}",
+                    f"cc={None if callinfo is None else int(callinfo.cc)}",
+                    "args="
+                    f"{() if callinfo is None else tuple((int(argument.t), int(argument.ea), str(argument.argloc), str(argument)) for argument in callinfo.args)}",
+                    "operand_types="
+                    f"{None if instruction is None else (int(instruction.l.t), int(instruction.r.t), int(instruction.d.t))}",
+                    f"insn={instruction_text}",
+                    f"block_insns={block_text}",
+                    flush=True,
+                )
+                self.bad_call_sp_seen = bad_call_sp
+                return 0
 
             def preoptimized(self, mba):
                 if int(mba.entry_ea) != FUNC_EA:
@@ -4688,9 +5141,7 @@ try:
                 if union_source_generation_active[0]:
                     return 0
                 self.preopt_callbacks += 1
-                dump_entry_window(
-                    f"preopt-before-import-{self.preopt_callbacks}", mba
-                )
+                dump_entry_window(f"preopt-before-import-{self.preopt_callbacks}", mba)
                 live_port_facts, live_ambiguous_entry_eas = (
                     build_preopt_port_block_facts(
                         mba,
@@ -4706,14 +5157,10 @@ try:
                     f"{[hex(ea) for ea in sorted(live_ambiguous_entry_eas)]}",
                     flush=True,
                 )
-                latest_preopt_live_native_eas[:] = [
-                    cg._live_mba_native_eas(mba)
-                ]
+                latest_preopt_live_native_eas[:] = [cg._live_mba_native_eas(mba)]
                 if not first_preopt_return_address_sizes:
                     first_preopt_return_address_sizes.append(int(mba.retsize))
-                current_transfers = get_materialized_indirect_transfers(
-                    FUNC_EA
-                )
+                current_transfers = get_materialized_indirect_transfers(FUNC_EA)
                 if not captured_preopt_entry_seed:
                     from d810.backends.hexrays.evidence.residual_entry_bridge import (
                         recognize_preoptimized_residual_entry_bridge,
@@ -4721,9 +5168,7 @@ try:
                         recover_state_routing_nodes,
                     )
 
-                    evidence = recognize_preoptimized_residual_entry_bridge(
-                        mba
-                    )
+                    evidence = recognize_preoptimized_residual_entry_bridge(mba)
                     state_registers = {
                         int(transfer.selector_state_var_reg)
                         for transfer in current_transfers
@@ -4750,8 +5195,7 @@ try:
                                 {
                                     int(transfer.source_block_ea)
                                     for transfer in current_transfers
-                                    if transfer.resolver_kind
-                                    == "static_fixpoint"
+                                    if transfer.resolver_kind == "static_fixpoint"
                                     and int(evidence.source_store_ea)
                                     < int(transfer.source_block_ea)
                                     < int(evidence.source_store_ea) + 0x100
@@ -4796,13 +5240,9 @@ try:
                         flush=True,
                     )
                 entry_result = (
-                    captured_entry_result[0]
-                    if captured_entry_result
-                    else None
+                    captured_entry_result[0] if captured_entry_result else None
                 )
-                entry_evidence = (
-                    None if entry_result is None else entry_result[0]
-                )
+                entry_evidence = None if entry_result is None else entry_result[0]
                 entry_plan = None if entry_result is None else entry_result[1]
                 predicate_ida_stkoff = (
                     None if entry_result is None else int(entry_result[2])
@@ -4822,13 +5262,66 @@ try:
                         mba,
                         FUNC_EA,
                         prepared_targets,
-                        expected_template_maturity=(
-                            ida_hexrays.MMAT_PREOPTIMIZED
+                        expected_template_maturity=(ida_hexrays.MMAT_PREOPTIMIZED),
+                        allow_raw_preopt_calls=(
+                            not USE_UNION_CLOSURE or RAW_UNION_CALLS
                         ),
-                        allow_raw_preopt_calls=True,
-                        import_native_preopt_ranges=True,
+                        import_native_preopt_ranges=(
+                            not USE_UNION_CLOSURE or RAW_UNION_CALLS
+                        ),
                     )
                     imported_count = len(materialize_result)
+                    if imported_count:
+                        function = ida_funcs.get_func(FUNC_EA)
+                        if function is not None:
+                            imported_origins = dict(
+                                imported_detached_snippet_instruction_origins(mba)
+                            )
+                            unique_start_rows = []
+                            if UNIQUE_IMPORTED_BLOCK_STARTS:
+                                for serial in range(int(mba.qty)):
+                                    block = mba.get_mblock(serial)
+                                    if block.head is None or not any(
+                                        int(instruction.ea) in imported_origins
+                                        for instruction in block_instructions(block)
+                                    ):
+                                        continue
+                                    block.start = int(block.head.ea)
+                                    block.end = int(block.head.ea) + 1
+                                    native_eas = block_native_eas(
+                                        block,
+                                        imported_origins,
+                                    )
+                                    unique_start_rows.append(
+                                        (
+                                            f"blk{serial}@0x{min(native_eas):X}",
+                                            hex(int(block.start)),
+                                        )
+                                    )
+                                print(
+                                    "UNIQUE_IMPORTED_BLOCK_STARTS",
+                                    tuple(unique_start_rows),
+                                    flush=True,
+                                )
+                            transient_imported_stack_points.clear()
+                            transient_imported_stack_points.update(
+                                {
+                                    int(live_ea): int(
+                                        ida_frame.get_spd(
+                                            function,
+                                            int(native_ea),
+                                        )
+                                    )
+                                    for live_ea, native_ea in imported_detached_snippet_instruction_origins(
+                                        mba
+                                    )
+                                    if int(native_ea) > 0
+                                }
+                            )
+                    dump_call_argument_regions(
+                        f"live-preopt-after-import-{self.preopt_callbacks}",
+                        mba,
+                    )
                     if BOUNDARY_PORT_MODE and imported_count:
                         applied_boundary_ports = len(
                             materialize_result.applied_boundary_ports
@@ -4837,21 +5330,13 @@ try:
                             materialize_result.abstained_boundary_ports
                         )
                         self.boundary_ports_applied += applied_boundary_ports
-                        self.latest_boundary_ports_applied = (
-                            applied_boundary_ports
-                        )
-                        self.latest_boundary_ports_abstained = (
-                            abstained_boundary_ports
-                        )
+                        self.latest_boundary_ports_applied = applied_boundary_ports
+                        self.latest_boundary_ports_abstained = abstained_boundary_ports
                         applied_conditionals = (
-                            imported_detached_snippet_conditional_boundary_evidence(
-                                mba
-                            )
+                            imported_detached_snippet_conditional_boundary_evidence(mba)
                         )
                         applied_direct = (
-                            imported_detached_snippet_direct_boundary_evidence(
-                                mba
-                            )
+                            imported_detached_snippet_direct_boundary_evidence(mba)
                         )
                         print(
                             "PREOPT_APPLIED_DIRECT_PORTS",
@@ -4880,17 +5365,13 @@ try:
                         mba,
                         current_transfers,
                         require_live_residual_source=False,
-                        expected_template_maturity=(
-                            ida_hexrays.MMAT_PREOPTIMIZED
-                        ),
+                        expected_template_maturity=(ida_hexrays.MMAT_PREOPTIMIZED),
                         allow_raw_preopt_calls=True,
                         import_native_preopt_ranges=True,
                     )
                 alias_count = register_union_seed_aliases(mba)
                 interior_entry_plan = (
-                    None
-                    if BOUNDARY_PORT_MODE
-                    else plan_preopt_interior_entries(mba)
+                    None if BOUNDARY_PORT_MODE else plan_preopt_interior_entries(mba)
                 )
                 interior_entry_bridges = (
                     0
@@ -4900,9 +5381,7 @@ try:
                         interior_entry_plan,
                     )
                 )
-                dump_entry_window(
-                    f"preopt-after-import-{self.preopt_callbacks}", mba
-                )
+                dump_entry_window(f"preopt-after-import-{self.preopt_callbacks}", mba)
                 imported_targets = imported_detached_snippet_target_eas(mba)
                 incoming_boundary_plan = dump_preopt_incoming_boundary_shapes(
                     f"preopt-{self.preopt_callbacks}",
@@ -4910,11 +5389,7 @@ try:
                     current_transfers,
                     imported_targets,
                 )
-                if (
-                    not BOUNDARY_PORT_MODE
-                    and entry_result is None
-                    and imported_count
-                ):
+                if not BOUNDARY_PORT_MODE and entry_result is None and imported_count:
                     direct_entry_plan = plan_entry_bridge(
                         mba,
                         current_transfers,
@@ -4934,9 +5409,7 @@ try:
                         direct_evidence, direct_plan = direct_entry_plan
                         direct_predicate_ida_stkoff = int(
                             mba.stkoff_vd2ida(
-                                int(
-                                    direct_evidence.predicate_stack_identity[0]
-                                )
+                                int(direct_evidence.predicate_stack_identity[0])
                             )
                         )
                         entry_result = (
@@ -4992,9 +5465,7 @@ try:
                             priority=5,
                         )
                         seeded_anchor = int(
-                            seed_modifier.apply(
-                                defer_post_apply_maintenance=True
-                            )
+                            seed_modifier.apply(defer_post_apply_maintenance=True)
                         )
                         source = find_unique_preopt_block_by_native_ea(
                             mba,
@@ -5043,9 +5514,7 @@ try:
                         )
                         condition = ida_hexrays.mop_t()
                         condition.make_stkvar(mba, predicate_vd_stkoff)
-                        condition.size = int(
-                            entry_evidence.predicate_stack_identity[1]
-                        )
+                        condition.size = int(entry_evidence.predicate_stack_identity[1])
                         rewrite_ea = int(source.head.ea)
                         nonzero_true_target = (
                             true_target
@@ -5063,12 +5532,8 @@ try:
                             old_dispatcher_serial=int(source.succset[0]),
                             rewrite_from_ea=rewrite_ea,
                             condition_operand=condition,
-                            false_target_serial=int(
-                                nonzero_false_target.serial
-                            ),
-                            true_target_serial=int(
-                                nonzero_true_target.serial
-                            ),
+                            false_target_serial=int(nonzero_false_target.serial),
+                            true_target_serial=int(nonzero_true_target.serial),
                             proof_id=(
                                 f"preopt_entry_bridge:0x{int(entry_evidence.predicate_ea):X}"
                             ),
@@ -5145,17 +5610,11 @@ try:
                 if int(mba.entry_ea) != FUNC_EA:
                     return 0
                 self.calls_callbacks += 1
-                dump_imported_seed_connectivity(
-                    f"calls-{self.calls_callbacks}", mba
-                )
-                dump_imported_terminal_routes(
-                    f"calls-{self.calls_callbacks}", mba
-                )
+                origins = dict(imported_detached_snippet_instruction_origins(mba))
+                dump_imported_seed_connectivity(f"calls-{self.calls_callbacks}", mba)
+                dump_imported_terminal_routes(f"calls-{self.calls_callbacks}", mba)
                 dump_boundary_owned_terminal_sources(
                     f"calls-{self.calls_callbacks}", mba
-                )
-                origins = dict(
-                    imported_detached_snippet_instruction_origins(mba)
                 )
                 rows: list[tuple[object, ...]] = []
                 for serial in range(int(mba.qty)):
@@ -5237,10 +5696,8 @@ try:
                             if latest_preopt_live_native_eas
                             else cg._live_mba_native_eas(cfunc.mba),
                         )
-                        prepared += (
-                            cg.prepare_terminal_return_carrier_templates(
-                                FUNC_EA
-                            )
+                        prepared += cg.prepare_terminal_return_carrier_templates(
+                            FUNC_EA
                         )
                     else:
                         prepared = cg.prepare_detached_handler_snippets(
@@ -5258,29 +5715,57 @@ try:
                     f"prepared={prepared}",
                     flush=True,
                 )
-                if (
-                    cfunc is not None
-                    and (
-                        (
-                            BOUNDARY_PORT_MODE
-                            and latest_template_boundary_port_count[0] > 0
-                            and hook.latest_boundary_ports_applied
-                            == latest_template_boundary_port_count[0]
-                            and hook.latest_boundary_ports_abstained == 0
-                        )
-                        or (
-                            not BOUNDARY_PORT_MODE
-                            and hook.entry_bridges > 0
-                            and fixed_point
-                        )
+                if cfunc is not None and (
+                    (
+                        BOUNDARY_PORT_MODE
+                        and latest_template_boundary_port_count[0] > 0
+                        and hook.latest_boundary_ports_applied
+                        == latest_template_boundary_port_count[0]
+                        and hook.latest_boundary_ports_abstained == 0
+                    )
+                    or (
+                        not BOUNDARY_PORT_MODE
+                        and hook.entry_bridges > 0
+                        and fixed_point
                     )
                 ):
                     break
             if cfunc is not None:
                 dump_final_native_inventory(cfunc.mba)
+                if STACK_CALLINFO_DIAG:
+                    call_rows: list[tuple[object, ...]] = []
+
+                    class CtreeCallVisitor(ida_hexrays.ctree_visitor_t):
+                        def __init__(self) -> None:
+                            ida_hexrays.ctree_visitor_t.__init__(
+                                self,
+                                ida_hexrays.CV_FAST,
+                            )
+
+                        def visit_expr(self, expression):
+                            if int(expression.op) != int(ida_hexrays.cot_call):
+                                return 0
+                            callee = expression.x
+                            callee_ea = (
+                                int(callee.obj_ea)
+                                if int(callee.op) == int(ida_hexrays.cot_obj)
+                                else None
+                            )
+                            rendered = expression.print1(cfunc)
+                            call_rows.append(
+                                (
+                                    hex(int(expression.ea)),
+                                    (None if callee_ea is None else hex(callee_ea)),
+                                    len(expression.a),
+                                    idaapi.tag_remove(str(rendered)),
+                                )
+                            )
+                            return 0
+
+                    CtreeCallVisitor().apply_to(cfunc.body, None)
+                    print("FINAL_CTREE_CALLS", tuple(call_rows), flush=True)
                 pseudocode = "\n".join(
-                    idaapi.tag_remove(str(line.line))
-                    for line in cfunc.get_pseudocode()
+                    idaapi.tag_remove(str(line.line)) for line in cfunc.get_pseudocode()
                 )
                 print(
                     "PSEUDOCODE",

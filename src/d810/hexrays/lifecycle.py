@@ -22,6 +22,7 @@ class DecompilationEvent(enum.Enum):
     HEXRAYS_FLOWCHART_READY = "decompilation.hexrays.flowchart.ready"
     HEXRAYS_PREOPT_READY = "decompilation.hexrays.preopt.ready"
     HEXRAYS_LOCOPT_READY = "decompilation.hexrays.locopt.ready"
+    HEXRAYS_STKPNTS = "decompilation.hexrays.stkpnts"
     HEXRAYS_BUILD_CALLINFO = "decompilation.hexrays.callinfo.build"
     HEXRAYS_CALLS_DONE = "decompilation.hexrays.calls_done"
     # Axis-C end-state event (E1): emitted once per maturity transition
