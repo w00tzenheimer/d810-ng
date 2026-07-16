@@ -20,6 +20,9 @@ Options:
   --open-config        Open and focus the D-810 Configuration dock at startup.
   --open-workbench     Open and focus the D810 workbench at startup.
   --function FUNCTION  Exact function name or integer EA for the workbench.
+  --connect            Run named actions in an existing loopback MCP IDA session.
+  --mcp-endpoint URL   Connect-only loopback HTTP /mcp endpoint. Default:
+                       http://127.0.0.1:13337/mcp
   --mcp                Start the mounted MCP plugin for a named action.
   --mcp-port PORT      Loopback host port for MCP. Default: 13337.
   -h, --help           Show this help.
@@ -103,6 +106,10 @@ OPEN_CONFIG=""
 OPEN_WORKBENCH=""
 FUNCTION_SET=""
 FUNCTION_VALUE=""
+CONNECT_MODE=""
+CONNECT_SET=""
+MCP_ENDPOINT_SET=""
+MCP_ENDPOINT_VALUE="http://127.0.0.1:13337/mcp"
 MCP_ENABLED=""
 MCP_PORT_SET=""
 MCP_PORT_VALUE="13337"
@@ -148,6 +155,19 @@ while [ "$#" -gt 0 ]; do
       FUNCTION_VALUE="$2"
       shift 2
       ;;
+    --connect)
+      [ -z "$CONNECT_SET" ] || fail "--connect may be specified only once"
+      CONNECT_MODE=1
+      CONNECT_SET=1
+      shift
+      ;;
+    --mcp-endpoint)
+      [ -z "$MCP_ENDPOINT_SET" ] || fail "--mcp-endpoint may be specified only once"
+      [ "$#" -ge 2 ] || fail "$1 requires a URL"
+      MCP_ENDPOINT_SET=1
+      MCP_ENDPOINT_VALUE="$2"
+      shift 2
+      ;;
     --mcp)
       MCP_ENABLED=1
       shift
@@ -180,6 +200,21 @@ if [ -n "$OPEN_CONFIG" ] || [ -n "$OPEN_WORKBENCH" ]; then
 fi
 if [ -n "$FUNCTION_SET" ] && [ -z "$OPEN_WORKBENCH" ]; then
   fail "--function requires --open-workbench"
+fi
+if [ -n "$CONNECT_MODE" ] && [ -z "$NAMED_AUTOMATION" ]; then
+  fail "--connect requires --open-config or --open-workbench"
+fi
+if [ -n "$CONNECT_MODE" ] && [ "${#IDA_ARGS[@]}" -gt 0 ]; then
+  fail "--connect does not accept IDA arguments after --"
+fi
+if [ -n "$CONNECT_MODE" ] && [ -n "$MCP_ENABLED" ]; then
+  fail "--mcp cannot be used with --connect"
+fi
+if [ -n "$CONNECT_MODE" ] && [ -n "$MCP_PORT_SET" ]; then
+  fail "--mcp-port cannot be used with --connect"
+fi
+if [ -n "$MCP_ENDPOINT_SET" ] && [ -z "$CONNECT_MODE" ]; then
+  fail "--mcp-endpoint requires --connect"
 fi
 if [ -n "$MCP_PORT_SET" ] && [ -z "$MCP_ENABLED" ]; then
   fail "--mcp-port requires --mcp"
@@ -255,6 +290,30 @@ fi
   || fail "selected checkout has no ida-plugin.json: $WORK_DIR"
 [ -f "$WORK_DIR/src/d810ng.py" ] \
   || fail "selected checkout has no src/d810ng.py: $WORK_DIR"
+
+if [ -n "$CONNECT_MODE" ]; then
+  command -v python3 >/dev/null 2>&1 \
+    || fail "python3 is required for existing-session GUI automation"
+  CONNECT_CLIENT="$WORK_DIR/tools/scripts/ida_gui_connect.py"
+  [ -f "$CONNECT_CLIENT" ] \
+    || fail "existing-session MCP client not found: $CONNECT_CLIENT"
+  CONNECT_ARGS=(
+    --worktree "$WORK_DIR"
+    --endpoint "$MCP_ENDPOINT_VALUE"
+  )
+  if [ -n "$OPEN_CONFIG" ]; then
+    CONNECT_ARGS+=( --open-config )
+  fi
+  if [ -n "$OPEN_WORKBENCH" ]; then
+    CONNECT_ARGS+=( --open-workbench )
+  fi
+  if [ -n "$FUNCTION_SET" ]; then
+    CONNECT_ARGS+=( --function "$FUNCTION_VALUE" )
+  fi
+  exec env \
+    "PYTHONPATH=$WORK_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 "$CONNECT_CLIENT" "${CONNECT_ARGS[@]}"
+fi
 
 DEFAULT_GUI_DOCKER_IMAGE="idapro-9.3-speedups:x11-arm64"
 GUI_RUNTIME_LABEL_KEY="org.d810.gui-runtime"
