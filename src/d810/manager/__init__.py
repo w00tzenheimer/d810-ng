@@ -8,6 +8,13 @@ __all__ = [
     "BaselineRef",
     "ConsumerOutcomeSnapshot",
     "ComparisonMetric",
+    "ConfigV2EditDiagnostic",
+    "ConfigV2EditError",
+    "ConfigV2EditableField",
+    "ConfigV2EditingService",
+    "ConfigV2FieldSerializer",
+    "ConfigV2ProjectDraft",
+    "ConfigV2ProjectValidation",
     "CountEntry",
     "D810_LOG_DIR_NAME",
     "D810Manager",
@@ -78,6 +85,14 @@ _WORKBENCH_RECIPE_MODEL_NAMES = {
     "RecipeValidation",
 }
 
+_CONFIG_V2_EDIT_MODEL_NAMES = {
+    "ConfigV2EditDiagnostic",
+    "ConfigV2EditableField",
+    "ConfigV2FieldSerializer",
+    "ConfigV2ProjectDraft",
+    "ConfigV2ProjectValidation",
+}
+
 
 def __getattr__(name: str):
     if name in _WORKBENCH_MODEL_NAMES:
@@ -88,6 +103,14 @@ def __getattr__(name: str):
         import d810.manager.workbench_recipe_models as recipe_models
 
         return getattr(recipe_models, name)
+    if name in _CONFIG_V2_EDIT_MODEL_NAMES:
+        import d810.manager.config_v2_edit_models as config_v2_models
+
+        return getattr(config_v2_models, name)
+    if name in {"ConfigV2EditError", "ConfigV2EditingService"}:
+        import d810.manager.config_v2_editing as config_v2_editing
+
+        return getattr(config_v2_editing, name)
     if name in {
         "ProjectConfigurationEditError",
         "ProjectConfigMode",

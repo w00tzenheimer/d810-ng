@@ -69,6 +69,12 @@ from d810.passes.recon_runtime_factory import (
 from d810.passes.scheduler import PassScheduler
 from d810.passes.store import shutdown_all_writers
 from d810.manager.flowgraph_ready import FlowGraphReadySubscriber
+from d810.manager.config_v2_edit_models import (
+    ConfigV2FieldSerializer,
+    ConfigV2ProjectDraft,
+    ConfigV2ProjectValidation,
+)
+from d810.manager.config_v2_editing import ConfigV2EditingService
 from d810.manager.function_recipe_runtime import (
     FunctionRecipeRuntime,
 )
@@ -184,6 +190,7 @@ class D810Manager:
         init=False
     )
     diagnostic_cleanup_service: DiagnosticCleanupService = dataclasses.field(init=False)
+    config_v2_editing_service: ConfigV2EditingService = dataclasses.field(init=False)
     instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
@@ -228,6 +235,7 @@ class D810Manager:
             active_paths_provider=self.diagnostic_active_paths_provider,
             quarantine_directory=self.log_dir / "diagnostic_quarantine",
         )
+        self.config_v2_editing_service = ConfigV2EditingService(workbench_registry)
 
     @property
     def started(self):
@@ -336,6 +344,100 @@ class D810Manager:
             checkpoint_wal=checkpoint_wal,
             vacuum_after=vacuum_after,
         )
+
+    def get_config_v2_serializer_manifest(self) -> tuple[ConfigV2FieldSerializer, ...]:
+        return self.config_v2_editing_service.serializer_manifest()
+
+    def create_config_v2_project_draft(
+        self,
+        runtime_project: object,
+        *,
+        destination: pathlib.Path,
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.create_draft(
+            runtime_project,
+            destination=destination,
+        )
+
+    def validate_config_v2_project_draft(
+        self, draft: ConfigV2ProjectDraft
+    ) -> ConfigV2ProjectValidation:
+        return self.config_v2_editing_service.validate(draft)
+
+    def set_config_v2_description(
+        self, draft: ConfigV2ProjectDraft, description: str
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.set_description(draft, description)
+
+    def add_config_v2_pass(
+        self,
+        draft: ConfigV2ProjectDraft,
+        pass_id: str,
+        *,
+        index: int | None = None,
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.add_pass(draft, pass_id, index=index)
+
+    def remove_config_v2_pass(
+        self, draft: ConfigV2ProjectDraft, pass_index: int
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.remove_pass(draft, pass_index)
+
+    def reorder_config_v2_pass(
+        self,
+        draft: ConfigV2ProjectDraft,
+        pass_index: int,
+        new_index: int,
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.reorder_pass(
+            draft, pass_index, new_index
+        )
+
+    def set_config_v2_pass_rules(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        pass_index: int,
+        include: typing.Sequence[str],
+        exclude: typing.Sequence[str],
+        options: typing.Mapping[str, object],
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.set_pass_rules(
+            draft,
+            pass_index=pass_index,
+            include=include,
+            exclude=exclude,
+            options=options,
+        )
+
+    def set_config_v2_routing_override(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        prefer: typing.Mapping[str, float],
+        require: str | None,
+        deny: typing.Sequence[str],
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.set_routing_override(
+            draft,
+            prefer=prefer,
+            require=require,
+            deny=deny,
+        )
+
+    def materialize_recipe_as_config_v2(
+        self,
+        draft: ConfigV2ProjectDraft,
+        recipe: PipelineRecipeDraft,
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.materialize_recipe(draft, recipe)
+
+    def save_config_v2_project(
+        self,
+        draft: ConfigV2ProjectDraft,
+        validation: ConfigV2ProjectValidation,
+    ) -> object:
+        return self.config_v2_editing_service.save(draft, validation)
 
     def capture_workbench_baseline(
         self,
