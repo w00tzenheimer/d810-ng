@@ -10,6 +10,8 @@ from d810.manager.workbench_models import (
     DeobfuscationWorkbenchSnapshot,
     OutcomeStatus,
     SnapshotFreshness,
+    WorkbenchCommandRequest,
+    WorkbenchCommandResult,
 )
 
 
@@ -375,18 +377,37 @@ def filter_workbench_rows(
 def action_states(
     snapshot: DeobfuscationWorkbenchSnapshot,
 ) -> tuple[WorkbenchActionState, ...]:
-    del snapshot
+    current = snapshot.freshness is SnapshotFreshness.CURRENT
+    engine_ready = current and snapshot.engine_started
+    engine_reason = (
+        ""
+        if engine_ready
+        else (
+            "Refresh the stale workbench snapshot before running this command."
+            if not current
+            else "Start D810 before running this command."
+        )
+    )
+    override_reason = (
+        "" if current else "Refresh the stale workbench snapshot before editing overrides."
+    )
     return (
         WorkbenchActionState("refresh", "Refresh", True, ""),
         WorkbenchActionState("export", "Export evidence", True, ""),
         WorkbenchActionState(
-            "analyze", "Analyze", False, "Analyze is delivered in Slice 2."
+            "analyze", "Analyze", engine_ready, engine_reason
         ),
         WorkbenchActionState(
             "deobfuscate",
             "Deobfuscate",
-            False,
-            "Scoped mutation is delivered in Slice 2.",
+            engine_ready,
+            engine_reason,
+        ),
+        WorkbenchActionState(
+            "function_override",
+            "Function override",
+            current,
+            override_reason,
         ),
         WorkbenchActionState(
             "compare", "Compare", False, "Native comparison is delivered in Slice 3."
@@ -400,6 +421,47 @@ def action_states(
             False,
             "The diagnostic explorer is delivered in workstream D0.",
         ),
+    )
+
+
+def command_request(
+    snapshot: DeobfuscationWorkbenchSnapshot,
+    command: str,
+) -> WorkbenchCommandRequest:
+    return WorkbenchCommandRequest(
+        command=str(command),
+        function_ea=snapshot.function.ea,
+        expected_generation=snapshot.generation,
+        function_fingerprint=snapshot.function.fingerprint,
+    )
+
+
+def stale_snapshot(
+    snapshot: DeobfuscationWorkbenchSnapshot,
+) -> DeobfuscationWorkbenchSnapshot:
+    return dataclasses.replace(
+        snapshot,
+        pipeline=tuple(
+            dataclasses.replace(stage, status=OutcomeStatus.STALE)
+            for stage in snapshot.pipeline
+        ),
+        consumers=tuple(
+            dataclasses.replace(outcome, status=OutcomeStatus.STALE)
+            for outcome in snapshot.consumers
+        ),
+        freshness=SnapshotFreshness.STALE,
+    )
+
+
+def should_accept_command_result(
+    snapshot: DeobfuscationWorkbenchSnapshot,
+    result: WorkbenchCommandResult,
+) -> bool:
+    return (
+        result.accepted
+        and result.function_ea == snapshot.function.ea
+        and result.requested_generation == snapshot.generation
+        and result.function_fingerprint == snapshot.function.fingerprint
     )
 
 
@@ -440,9 +502,12 @@ __all__ = [
     "WorkbenchRow",
     "WorkbenchSection",
     "action_states",
+    "command_request",
     "detail_text",
     "export_evidence_json",
     "filter_workbench_rows",
     "project_workbench_rows",
+    "should_accept_command_result",
+    "stale_snapshot",
     "status_presentation",
 ]
