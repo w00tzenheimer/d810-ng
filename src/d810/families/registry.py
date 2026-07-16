@@ -15,11 +15,13 @@ selection without a code change. ``project_config["router_resolution"]`` accepts
 (a ``name -> bias`` map that stable-sorts candidates by descending bias). The DEFAULT
 (absent / empty policy) preserves registration-order first-match exactly.
 
-Inert in production: the live maturity hook hardcodes ``HodurFamily()`` and never calls
-``select_family`` (only the unflatten driver / unit tests do); no golden config sets
-``router_resolution``.
+The live state-machine unflattener calls ``select_family`` with the effective rule and
+project configuration. Project-level routing policy takes precedence over any legacy
+rule-local policy while unrelated rule options remain available to family detectors.
 """
 from __future__ import annotations
+
+from collections.abc import Mapping
 
 # Importing the package runs its __init__, which eagerly imports every profile module so
 # each StateMachineCffFamily subclass auto-registers (registration side effect).
@@ -29,6 +31,20 @@ from d810.families.state_machine_cff import StateMachineCffFamily
 def registered_families() -> tuple:
     """Return one instance of every registered profile."""
     return tuple(family() for family in StateMachineCffFamily.all())
+
+
+def effective_family_selection_config(
+    *,
+    project_config: object | None,
+    rule_config: object | None,
+) -> dict[str, object]:
+    """Merge family inputs with project-level routing policy as the authority."""
+    effective: dict[str, object] = {}
+    if isinstance(rule_config, Mapping):
+        effective.update(rule_config)
+    if isinstance(project_config, Mapping):
+        effective.update(project_config)
+    return effective
 
 
 def select_family(graph, project_config, *, capabilities=frozenset()):

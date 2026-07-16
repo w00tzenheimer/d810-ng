@@ -29,6 +29,9 @@ def _runtime_project(tmp_path: Path) -> tuple[ProjectConfiguration, dict[str, ob
     additional = document["additional_configuration"]
     additional["future_additional"] = {"retain": True}
     additional["pipeline_v2"][0]["future_pass_field"] = {"retain": "yes"}
+    additional["pipeline_v2"][0]["rules"]["future_rule_field"] = {
+        "retain": "also"
+    }
     source = tmp_path / "runtime.json"
     source.write_text(json.dumps(document, indent=2), encoding="utf-8")
     return ProjectConfiguration.from_file(source), document
@@ -105,6 +108,14 @@ def test_unsupported_generic_field_edits_are_refused(tmp_path: Path):
         _service().set_field(draft, "future_top_level", {"destroy": True})
 
 
+def test_bundled_runtime_project_cannot_be_overwritten_in_place():
+    source = (CONF_DIR / "default_instruction_only_config_v2_canary.json").resolve()
+    project = ProjectConfiguration.from_file(source)
+
+    with pytest.raises(ConfigV2EditError, match="bundled"):
+        _service().create_draft(project, destination=source)
+
+
 def test_pass_selection_is_ordered_registered_and_can_remain_invalid_as_a_draft(
     tmp_path: Path,
 ):
@@ -175,6 +186,7 @@ def test_recipe_materialization_reuses_raw_entries_and_preserves_migration_metad
     mba = pipeline[-1]
     assert "migration" in mba
     assert mba["future_pass_field"] == {"retain": "yes"}
+    assert mba["rules"]["future_rule_field"] == {"retain": "also"}
 
 
 def test_routing_policy_and_stale_validation_fail_closed(tmp_path: Path):

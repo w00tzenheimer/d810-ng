@@ -119,7 +119,11 @@ from d810.evaluator.hexrays_microcode.use_def_dominance import (
 from d810.evaluator.hexrays_microcode.value_range_capability import (
     HexRaysValRangeCapability,
 )
-from d810.families.registry import registered_families, select_family
+from d810.families.registry import (
+    effective_family_selection_config,
+    registered_families,
+    select_family,
+)
 from d810.hexrays.ir_maturity import ida_maturity_to_ir, ir_maturity_to_ida
 from d810.ir.maturity import IRMaturity
 from d810.hexrays.observability import (
@@ -600,7 +604,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         project_config = self._project_config or (
             rule_config if isinstance(rule_config, dict) else {}
         )
-        family = self._select_family(mba, source, rule_config, backend)
+        family_config = effective_family_selection_config(
+            project_config=project_config,
+            rule_config=rule_config,
+        )
+        family = self._select_family(mba, source, family_config, backend)
         if self._family_defers(mba, family, is_indirect=_is_indirect):
             return 0
         if family is not None:
@@ -619,7 +627,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 family,
                 source,
                 backend,
-                family_context=rule_config,
+                family_context=family_config,
             )
             pipeline_mode = pipeline_v2_mode_from_project_config(project_config)
             self._last_pipeline_v2_mode = pipeline_mode.value
