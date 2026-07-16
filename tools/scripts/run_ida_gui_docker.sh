@@ -9,6 +9,14 @@ Usage: run_ida_gui_docker.sh [OPTIONS] [-- IDA_ARGS...]
 
 Options:
   -w, --worktree NAME  Use D810_REPO_ROOT/D810_WORKTREE_ROOT/NAME.
+  -l, --logs           Compatibility with run_system_tests_docker.sh; the GUI
+                       always mounts persistent D810 logs.
+  --enable-debug-logging
+                       Set D810_DEBUG_LOGGING=1 in the container.
+  --enable-diag-snapshot
+                       Set D810_DIAG_SNAPSHOT=1 in the container.
+  --disable-fact-lifecycle
+                       Set D810_FACT_LIFECYCLE=0 in the container.
   -h, --help           Show this help.
   --                   Pass all remaining arguments to IDA unchanged.
 
@@ -18,7 +26,9 @@ Environment:
   D810_WORKTREE_ROOT     Worktree directory below the repository root.
                          Default: .worktrees
   D810_GUI_DOCKER_IMAGE  GUI image. Default: idapro-9.3:x11-arm64
-  D810_IDA_USER_DIR      Persistent host IDA state. Default: $HOME/.idapro
+  D810_DOCKER_MEMORY     Container memory limit. Default: 4g
+  D810_IDA_USER_DIR      Host root for portable D810 config and logs.
+                         Default: $HOME/.idapro
   D810_GUI_DISPLAY       Container X11 display.
                          Default: host.docker.internal:0
   D810_XHOST_BIN         XQuartz xhost client. Default: /opt/X11/bin/xhost
@@ -26,12 +36,18 @@ Environment:
 Mounts:
   selected checkout             -> /work
   selected checkout             -> /root/.idapro/plugins/d810
-  D810_IDA_USER_DIR             -> /root/.idapro
-  D810_REPO_ROOT/samples/bins   -> /samples/bins (when present)
+  D810_IDA_USER_DIR/cfg/d810    -> /root/.idapro/cfg/d810
+  configured D810 log directory -> /root/.idapro/logs
+  The image-owned ida.reg is intentionally not replaced.
+  D810_REPO_ROOT/samples/bins   -> /samples/bins read-only (when present)
+
+Safety:
+  A /samples/bins/*.i64 argument is copied to the selected checkout's
+  .tmp/ida-gui directory. IDA opens the /work copy and cannot modify the source.
 
 Example:
   run_ida_gui_docker.sh -w truthful-config-v2-project-ui \
-    -- /samples/bins/libobfuscated.dylib.i64
+    -- /samples/bins/libobfuscated.dll.2026-06-03.i64
 EOF
 }
 
@@ -54,7 +70,19 @@ canonical_dir() {
   (cd "$path" && pwd -P)
 }
 
+canonical_file() {
+  local path="$1"
+  local directory
+  [ -f "$path" ] || return 1
+  directory="$(canonical_dir "$(dirname "$path")")" || return 1
+  printf '%s/%s\n' "$directory" "$(basename "$path")"
+}
+
 WORKTREE_REL=""
+MOUNT_LOGS_COMPAT=""
+ENABLE_DEBUG_LOGGING=""
+ENABLE_DIAG_SNAPSHOT=""
+DISABLE_FACT_LIFECYCLE=""
 IDA_ARGS=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -62,6 +90,25 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || fail "$1 requires a worktree name"
       WORKTREE_REL="$2"
       shift 2
+      ;;
+    -l|--logs)
+      MOUNT_LOGS_COMPAT=1
+      shift
+      ;;
+    --enable-debug-logging)
+      ENABLE_DEBUG_LOGGING=1
+      shift
+      ;;
+    --enable-diag-snapshot)
+      ENABLE_DIAG_SNAPSHOT=1
+      shift
+      ;;
+    --enable-fact-lifecycle)
+      fail "--enable-fact-lifecycle was removed; fact lifecycle is enabled by default"
+      ;;
+    --disable-fact-lifecycle)
+      DISABLE_FACT_LIFECYCLE=1
+      shift
       ;;
     -h|--help)
       usage
@@ -127,10 +174,12 @@ fi
   || fail "selected checkout has no src/d810ng.py: $WORK_DIR"
 
 DOCKER_IMAGE="${D810_GUI_DOCKER_IMAGE-idapro-9.3:x11-arm64}"
+DOCKER_MEMORY="${D810_DOCKER_MEMORY-4g}"
 GUI_DISPLAY="${D810_GUI_DISPLAY-host.docker.internal:0}"
 IDA_USER_PATH="${D810_IDA_USER_DIR-$HOME/.idapro}"
 XHOST_BIN="${D810_XHOST_BIN-/opt/X11/bin/xhost}"
 [ -n "$DOCKER_IMAGE" ] || fail "D810_GUI_DOCKER_IMAGE is set but empty"
+[ -n "$DOCKER_MEMORY" ] || fail "D810_DOCKER_MEMORY is set but empty"
 [ -n "$GUI_DISPLAY" ] || fail "D810_GUI_DISPLAY is set but empty"
 [ -n "$IDA_USER_PATH" ] || fail "D810_IDA_USER_DIR is set but empty"
 [ -x "$XHOST_BIN" ] || {
@@ -140,8 +189,47 @@ XHOST_BIN="${D810_XHOST_BIN-/opt/X11/bin/xhost}"
 
 IDA_USER_DIR="$(canonical_dir "$IDA_USER_PATH")" \
   || fail "IDA user directory not found: $IDA_USER_PATH"
-[ -f "$IDA_USER_DIR/idapro.hexlic" ] \
-  || fail "IDA user directory has no idapro.hexlic: $IDA_USER_DIR"
+
+D810_CONFIG_PATH="$IDA_USER_DIR/cfg/d810"
+mkdir -p "$D810_CONFIG_PATH"
+D810_CONFIG_DIR="$(canonical_dir "$D810_CONFIG_PATH")" \
+  || fail "cannot prepare D810 configuration directory: $D810_CONFIG_PATH"
+
+DEFAULT_D810_LOG_PATH="$IDA_USER_DIR/logs"
+CONFIGURED_LOG_PATH=""
+if [ -f "$D810_CONFIG_DIR/options.json" ]; then
+  command -v python3 >/dev/null 2>&1 \
+    || fail "python3 is required to read $D810_CONFIG_DIR/options.json"
+  CONFIGURED_LOG_PATH="$(python3 - "$D810_CONFIG_DIR/options.json" <<'PY'
+import json
+import pathlib
+import sys
+
+try:
+    with pathlib.Path(sys.argv[1]).open(encoding="utf-8") as stream:
+        value = json.load(stream).get("log_dir", "")
+except (OSError, ValueError, AttributeError):
+    value = ""
+
+if value:
+    print(pathlib.Path(str(value)).expanduser())
+PY
+)"
+fi
+if [ -n "$CONFIGURED_LOG_PATH" ]; then
+  case "$CONFIGURED_LOG_PATH" in
+    /*) ;;
+    *) fail "D810 log_dir must be absolute for Docker GUI persistence: $CONFIGURED_LOG_PATH" ;;
+  esac
+  D810_CONTAINER_LOG_DIR="$CONFIGURED_LOG_PATH"
+  D810_LOG_PATH="$CONFIGURED_LOG_PATH"
+else
+  D810_CONTAINER_LOG_DIR="/root/.idapro/logs"
+  D810_LOG_PATH="$DEFAULT_D810_LOG_PATH"
+fi
+mkdir -p "$D810_LOG_PATH"
+D810_LOG_DIR="$(canonical_dir "$D810_LOG_PATH")" \
+  || fail "cannot prepare D810 log directory: $D810_LOG_PATH"
 
 if ! XHOST_OUTPUT="$("$XHOST_BIN" 2>&1)"; then
   xquartz_recovery
@@ -161,13 +249,78 @@ if [ -d "$SAMPLES_DIR" ]; then
   SAMPLES_DIR="$(canonical_dir "$SAMPLES_DIR")"
 fi
 
+IDA_DATABASE_COPY=""
+if [ "${#IDA_ARGS[@]}" -gt 0 ]; then
+  for IDA_ARG_INDEX in "${!IDA_ARGS[@]}"; do
+    case "${IDA_ARGS[$IDA_ARG_INDEX]}" in
+    /samples/bins/*.i64)
+      [ -d "$SAMPLES_DIR" ] \
+        || fail "sample directory not found for ${IDA_ARGS[$IDA_ARG_INDEX]}"
+      SAMPLE_REL="${IDA_ARGS[$IDA_ARG_INDEX]#/samples/bins/}"
+      SAMPLE_SOURCE="$(canonical_file "$SAMPLES_DIR/$SAMPLE_REL")" \
+        || fail "sample database not found: ${IDA_ARGS[$IDA_ARG_INDEX]}"
+      case "$SAMPLE_SOURCE" in
+        "$SAMPLES_DIR"/*) ;;
+        *) fail "sample database escapes samples directory: ${IDA_ARGS[$IDA_ARG_INDEX]}" ;;
+      esac
+      COPY_DIR="$WORK_DIR/.tmp/ida-gui"
+      mkdir -p "$COPY_DIR"
+      SAMPLE_BASENAME="$(basename "$SAMPLE_SOURCE")"
+      COPY_TEMP="$(mktemp "$COPY_DIR/${SAMPLE_BASENAME%.i64}.docker.XXXXXX")"
+      IDA_DATABASE_COPY="$COPY_TEMP.i64"
+      mv "$COPY_TEMP" "$IDA_DATABASE_COPY"
+      cp -p "$SAMPLE_SOURCE" "$IDA_DATABASE_COPY"
+      cmp -s "$SAMPLE_SOURCE" "$IDA_DATABASE_COPY" \
+        || fail "sample database copy verification failed: $SAMPLE_SOURCE"
+      IDA_ARGS[$IDA_ARG_INDEX]="/work/.tmp/ida-gui/$(basename "$IDA_DATABASE_COPY")"
+      break
+      ;;
+    esac
+  done
+fi
+
+if [ -n "$ENABLE_DEBUG_LOGGING" ]; then
+  export D810_DEBUG_LOGGING=1
+fi
+if [ -n "$ENABLE_DIAG_SNAPSHOT" ]; then
+  export D810_DIAG_SNAPSHOT=1
+fi
+if [ -n "$DISABLE_FACT_LIFECYCLE" ]; then
+  export D810_FACT_LIFECYCLE=0
+fi
+
+EXTRA_ENV_ARGS=()
+for ENV_NAME in ${!D810_@}; do
+  case "$ENV_NAME" in
+    D810_GUI_DOCKER_IMAGE|D810_DOCKER_MEMORY|D810_REPO_ROOT|D810_WORKTREE_ROOT|D810_IDA_USER_DIR|D810_GUI_DISPLAY|D810_XHOST_BIN)
+      continue
+      ;;
+  esac
+  printenv "$ENV_NAME" >/dev/null 2>&1 || continue
+  ENV_VALUE="$(printenv "$ENV_NAME")"
+  [ -n "$ENV_VALUE" ] && EXTRA_ENV_ARGS+=( -e "$ENV_NAME=$ENV_VALUE" )
+done
+
 printf '%s plan:\n' "$0"
 printf '  image:     %s\n' "$DOCKER_IMAGE"
+printf '  memory:    %s\n' "$DOCKER_MEMORY"
 printf '  checkout:  %s\n' "$WORK_DIR"
 printf '  plugin:    %s -> /root/.idapro/plugins/d810\n' "$WORK_DIR"
-printf '  ida state: %s -> /root/.idapro (read-write)\n' "$IDA_USER_DIR"
+printf '  ida reg:   image-owned (preserves Linux IDAPython target)\n'
+printf '  d810 cfg:  %s -> /root/.idapro/cfg/d810 (read-write)\n' "$D810_CONFIG_DIR"
+printf '  d810 logs: %s -> /root/.idapro/logs (read-write)\n' "$D810_LOG_DIR"
+if [ "$D810_CONTAINER_LOG_DIR" != "/root/.idapro/logs" ]; then
+  printf '  log alias: %s -> %s (matches options.json)\n' \
+    "$D810_LOG_DIR" "$D810_CONTAINER_LOG_DIR"
+fi
 if [ -d "$SAMPLES_DIR" ]; then
-  printf '  samples:   %s -> /samples/bins (read-write)\n' "$SAMPLES_DIR"
+  printf '  samples:   %s -> /samples/bins (read-only)\n' "$SAMPLES_DIR"
+fi
+if [ -n "$IDA_DATABASE_COPY" ]; then
+  printf '  db copy:   %s\n' "$IDA_DATABASE_COPY"
+fi
+if [ -n "$MOUNT_LOGS_COMPAT" ]; then
+  printf '  logs:     persistent D810 logs enabled (-l compatibility)\n'
 fi
 printf '  display:   %s\n' "$GUI_DISPLAY"
 if [ "${#IDA_ARGS[@]}" -gt 0 ]; then
@@ -181,16 +334,28 @@ printf '\n'
 
 DOCKER_ARGS=(
   run --rm
+  --memory "$DOCKER_MEMORY"
+  -w /work
   -e "MODE=x11"
   -e "DISPLAY=$GUI_DISPLAY"
   -e "LIBGL_ALWAYS_SOFTWARE=1"
+  -e "IDA_PREFIX=/app/ida"
+  -e "IDA_INSTALL_DIR=/app/ida"
+  -e "D810_LIBCLANG_PATH=/app/ida/libclang.so"
   -e "PYTHONPATH=/root/.idapro/plugins/d810/src:/app/ida/python"
   -v "$WORK_DIR:/work"
-  -v "$IDA_USER_DIR:/root/.idapro"
+  -v "$D810_CONFIG_DIR:/root/.idapro/cfg/d810"
+  -v "$D810_LOG_DIR:/root/.idapro/logs"
   -v "$WORK_DIR:/root/.idapro/plugins/d810"
 )
+if [ "${#EXTRA_ENV_ARGS[@]}" -gt 0 ]; then
+  DOCKER_ARGS+=( "${EXTRA_ENV_ARGS[@]}" )
+fi
+if [ "$D810_CONTAINER_LOG_DIR" != "/root/.idapro/logs" ]; then
+  DOCKER_ARGS+=( -v "$D810_LOG_DIR:$D810_CONTAINER_LOG_DIR" )
+fi
 if [ -d "$SAMPLES_DIR" ]; then
-  DOCKER_ARGS+=( -v "$SAMPLES_DIR:/samples/bins" )
+  DOCKER_ARGS+=( -v "$SAMPLES_DIR:/samples/bins:ro" )
 fi
 DOCKER_ARGS+=( --entrypoint /app/ida/entrypoint.sh "$DOCKER_IMAGE" )
 if [ "${#IDA_ARGS[@]}" -gt 0 ]; then
