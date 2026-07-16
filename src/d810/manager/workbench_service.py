@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import pathlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from d810.manager.project_runtime import ProjectRuntimeSnapshot
 from d810.manager.workbench_models import (
@@ -23,6 +23,8 @@ from d810.manager.workbench_models import (
     RuntimeConfigRef,
     SnapshotFreshness,
     StatisticsSummary,
+    WorkbenchCommandRequest,
+    WorkbenchCommandResult,
     WorkbenchDiagnostic,
 )
 from d810.passes.contract_manifest import (
@@ -167,6 +169,8 @@ class WorkbenchService:
         self._manager = manager
         self._registry = registry or operational_config_v2_pass_registry()
         self._generation = 0
+        self._latest_function_ea: int | None = None
+        self._latest_function_fingerprint: str | None = None
 
     def collect(
         self,
@@ -183,6 +187,8 @@ class WorkbenchService:
         """Collect one generation without executing passes or mutating state."""
         self._generation += 1
         generation = self._generation
+        self._latest_function_ea = int(function_ea)
+        self._latest_function_fingerprint = function_fingerprint
         errors: list[str] = []
 
         runtime = RuntimeConfigRef(
@@ -268,6 +274,181 @@ class WorkbenchService:
             freshness=SnapshotFreshness.CURRENT,
             engine_started=bool(getattr(self._manager, "started", False)),
             collection_errors=tuple(errors),
+        )
+
+    def execute_analyze(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        target: object,
+        provider_phase: object,
+    ) -> WorkbenchCommandResult:
+        """Run recon collection/classification without invoking mutation."""
+        invalid = self._validate_request(request, expected_command="analyze")
+        if invalid is not None:
+            return invalid
+        try:
+            self._manager.analyze_workbench_function(
+                function_ea=request.function_ea,
+                target=target,
+                provider_phase=provider_phase,
+            )
+        except Exception as exc:
+            return self._failure(request, f"Analyze failed: {exc}")
+        if not self._request_is_current(request):
+            return self._stale_result(
+                request,
+                succeeded=True,
+                message="Analyze completed for an older workbench generation",
+            )
+        return self._result(
+            request,
+            status=OutcomeStatus.READY,
+            succeeded=True,
+            accepted=True,
+            refresh_requested=True,
+            message="Analysis completed",
+        )
+
+    def execute_deobfuscate(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        lifecycle: Callable[[], bool],
+    ) -> WorkbenchCommandResult:
+        """Invoke the established deobfuscation lifecycle exactly once."""
+        return self._execute_lifecycle(
+            request,
+            expected_command="deobfuscate",
+            label="Deobfuscation",
+            lifecycle=lifecycle,
+        )
+
+    def execute_function_override(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        lifecycle: Callable[[], bool],
+    ) -> WorkbenchCommandResult:
+        """Invoke the established function-rule dialog lifecycle exactly once."""
+        return self._execute_lifecycle(
+            request,
+            expected_command="function_override",
+            label="Function override",
+            lifecycle=lifecycle,
+        )
+
+    def _execute_lifecycle(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        expected_command: str,
+        label: str,
+        lifecycle: Callable[[], bool],
+    ) -> WorkbenchCommandResult:
+        invalid = self._validate_request(
+            request,
+            expected_command=expected_command,
+        )
+        if invalid is not None:
+            return invalid
+        try:
+            succeeded = bool(lifecycle())
+        except Exception as exc:
+            return self._failure(request, f"{label} failed: {exc}")
+        if not self._request_is_current(request):
+            return self._stale_result(
+                request,
+                succeeded=succeeded,
+                message=f"{label} completed for an older workbench generation",
+            )
+        if not succeeded:
+            return self._failure(request, f"{label} did not complete")
+        return self._result(
+            request,
+            status=OutcomeStatus.READY,
+            succeeded=True,
+            accepted=True,
+            refresh_requested=True,
+            message=f"{label} completed",
+        )
+
+    def _validate_request(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        expected_command: str,
+    ) -> WorkbenchCommandResult | None:
+        if request.command != expected_command:
+            return self._failure(
+                request,
+                f"Expected {expected_command!r} command, got {request.command!r}",
+            )
+        if not self._request_is_current(request):
+            return self._stale_result(
+                request,
+                succeeded=False,
+                message="Command belongs to an older workbench generation",
+            )
+        return None
+
+    def _request_is_current(self, request: WorkbenchCommandRequest) -> bool:
+        return (
+            request.expected_generation == self._generation
+            and request.function_ea == self._latest_function_ea
+            and request.function_fingerprint == self._latest_function_fingerprint
+        )
+
+    @staticmethod
+    def _result(
+        request: WorkbenchCommandRequest,
+        *,
+        status: OutcomeStatus,
+        succeeded: bool,
+        accepted: bool,
+        refresh_requested: bool,
+        message: str,
+    ) -> WorkbenchCommandResult:
+        return WorkbenchCommandResult(
+            command=request.command,
+            function_ea=request.function_ea,
+            requested_generation=request.expected_generation,
+            function_fingerprint=request.function_fingerprint,
+            status=status,
+            succeeded=succeeded,
+            accepted=accepted,
+            refresh_requested=refresh_requested,
+            message=message,
+        )
+
+    def _failure(
+        self,
+        request: WorkbenchCommandRequest,
+        message: str,
+    ) -> WorkbenchCommandResult:
+        return self._result(
+            request,
+            status=OutcomeStatus.FAILED,
+            succeeded=False,
+            accepted=self._request_is_current(request),
+            refresh_requested=False,
+            message=message,
+        )
+
+    def _stale_result(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        succeeded: bool,
+        message: str,
+    ) -> WorkbenchCommandResult:
+        return self._result(
+            request,
+            status=OutcomeStatus.STALE,
+            succeeded=succeeded,
+            accepted=False,
+            refresh_requested=False,
+            message=message,
         )
 
     def _pipeline(

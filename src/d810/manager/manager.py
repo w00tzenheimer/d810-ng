@@ -229,6 +229,23 @@ class D810Manager:
             latest_output=latest_output,
         )
 
+    def analyze_workbench_function(
+        self,
+        *,
+        function_ea: int,
+        target: object,
+        provider_phase: object,
+    ) -> object:
+        """Collect and classify recon evidence without applying any rewrite."""
+        if self._recon_runtime is None:
+            raise RuntimeError("Recon runtime is not available")
+        return self._recon_runtime.collect_and_analyze(
+            int(function_ea),
+            target,
+            provider_phase,
+            persist_hints=True,
+        )
+
     def configure(self, **kwargs):
         self.config = kwargs
         self.rule_scope_runtime.configure(kwargs)

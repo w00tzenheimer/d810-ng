@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import importlib.util
 import json
 from pathlib import Path
@@ -16,7 +17,11 @@ from d810.manager.project_runtime import (
     ProjectRuntimeSnapshot,
     RuleProjectionKind,
 )
-from d810.manager.workbench_models import OutcomeStatus, SnapshotFreshness
+from d810.manager.workbench_models import (
+    OutcomeStatus,
+    SnapshotFreshness,
+    WorkbenchCommandRequest,
+)
 from d810.manager import workbench_service as service_module
 from d810.passes.pass_pipeline import (
     FactRequirement,
@@ -450,3 +455,194 @@ def test_state_facade_supplies_current_runtime_context_without_parsing() -> None
     }
     assert "current_project_runtime_snapshot" in attributes
     assert "current_runtime_project" in attributes
+
+
+def _request(snapshot: object, command: str) -> WorkbenchCommandRequest:
+    return WorkbenchCommandRequest(
+        command=command,
+        function_ea=snapshot.function.ea,
+        expected_generation=snapshot.generation,
+        function_fingerprint=snapshot.function.fingerprint,
+    )
+
+
+def _collected_service(tmp_path: Path) -> tuple[object, object, object, object]:
+    project_snapshot, runtime_project = _project_context(tmp_path)
+    manager = _manager(tmp_path)
+    service = _service(manager)
+    snapshot = service.collect(
+        function_ea=0x401000,
+        function_name="target",
+        function_fingerprint="sha256:abc",
+        project_snapshot=project_snapshot,
+        runtime_project=runtime_project,
+    )
+    return service, manager, snapshot, (project_snapshot, runtime_project)
+
+
+def test_stale_before_command_rejects_without_invoking_any_lifecycle(
+    tmp_path: Path,
+) -> None:
+    service, manager, snapshot, _ = _collected_service(tmp_path)
+    calls: list[str] = []
+    manager.analyze_workbench_function = lambda **kwargs: calls.append("analyze")
+    stale = WorkbenchCommandRequest(
+        command="analyze",
+        function_ea=snapshot.function.ea,
+        expected_generation=snapshot.generation - 1,
+        function_fingerprint=snapshot.function.fingerprint,
+    )
+
+    analyze = service.execute_analyze(
+        stale,
+        target=object(),
+        provider_phase=object(),
+    )
+    deobfuscate = service.execute_deobfuscate(
+        dataclasses.replace(stale, command="deobfuscate"),
+        lifecycle=lambda: calls.append("deobfuscate") or True,
+    )
+    override = service.execute_function_override(
+        dataclasses.replace(stale, command="function_override"),
+        lifecycle=lambda: calls.append("override") or True,
+    )
+
+    assert calls == []
+    assert all(
+        result.status is OutcomeStatus.STALE
+        and result.succeeded is False
+        and result.accepted is False
+        for result in (analyze, deobfuscate, override)
+    )
+
+
+def test_analyze_calls_read_only_manager_seam_once_and_requests_refresh(
+    tmp_path: Path,
+) -> None:
+    service, manager, snapshot, _ = _collected_service(tmp_path)
+    target = object()
+    provider_phase = object()
+    calls: list[dict[str, object]] = []
+    manager.analyze_workbench_function = lambda **kwargs: calls.append(kwargs) or object()
+
+    result = service.execute_analyze(
+        _request(snapshot, "analyze"),
+        target=target,
+        provider_phase=provider_phase,
+    )
+
+    assert calls == [
+        {
+            "function_ea": 0x401000,
+            "target": target,
+            "provider_phase": provider_phase,
+        }
+    ]
+    assert result.status is OutcomeStatus.READY
+    assert result.succeeded is True
+    assert result.accepted is True
+    assert result.refresh_requested is True
+
+
+def test_deobfuscate_and_function_override_invoke_existing_lifecycles_once(
+    tmp_path: Path,
+) -> None:
+    service, _manager_obj, snapshot, _ = _collected_service(tmp_path)
+    calls: list[str] = []
+
+    deobfuscate = service.execute_deobfuscate(
+        _request(snapshot, "deobfuscate"),
+        lifecycle=lambda: calls.append("deobfuscate") or True,
+    )
+    override = service.execute_function_override(
+        _request(snapshot, "function_override"),
+        lifecycle=lambda: calls.append("override") or True,
+    )
+
+    assert calls == ["deobfuscate", "override"]
+    assert deobfuscate.succeeded is True
+    assert override.succeeded is True
+    assert deobfuscate.refresh_requested is True
+    assert override.refresh_requested is True
+
+
+def test_false_or_raising_lifecycle_fails_without_retry(tmp_path: Path) -> None:
+    service, _manager_obj, snapshot, _ = _collected_service(tmp_path)
+    calls: list[str] = []
+
+    failed = service.execute_deobfuscate(
+        _request(snapshot, "deobfuscate"),
+        lifecycle=lambda: calls.append("false") or False,
+    )
+
+    def raising() -> bool:
+        calls.append("raise")
+        raise RuntimeError("dialog failed")
+
+    errored = service.execute_function_override(
+        _request(snapshot, "function_override"),
+        lifecycle=raising,
+    )
+
+    assert calls == ["false", "raise"]
+    assert failed.status is OutcomeStatus.FAILED
+    assert errored.status is OutcomeStatus.FAILED
+    assert "dialog failed" in errored.message
+
+
+def test_generation_changed_inside_callback_returns_stale_completion(
+    tmp_path: Path,
+) -> None:
+    service, _manager_obj, snapshot, context = _collected_service(tmp_path)
+    project_snapshot, runtime_project = context
+
+    def lifecycle() -> bool:
+        service.collect(
+            function_ea=0x402000,
+            function_name="new_target",
+            function_fingerprint="sha256:new",
+            project_snapshot=project_snapshot,
+            runtime_project=runtime_project,
+        )
+        return True
+
+    result = service.execute_deobfuscate(
+        _request(snapshot, "deobfuscate"),
+        lifecycle=lifecycle,
+    )
+
+    assert result.status is OutcomeStatus.STALE
+    assert result.succeeded is True
+    assert result.accepted is False
+    assert result.refresh_requested is False
+
+
+def test_manager_analyze_seam_only_calls_recon_collection() -> None:
+    manager_path = _ROOT / "src" / "d810" / "manager" / "manager.py"
+    method = _method(manager_path, "D810Manager", "analyze_workbench_function")
+    calls = _call_names(method)
+
+    assert {"collect_and_analyze", "int"}.issubset(calls)
+    assert calls <= {"RuntimeError", "collect_and_analyze", "int"}
+    source = ast.unparse(method)
+    assert "persist_hints=True" in source
+    for forbidden in (
+        "optimizer",
+        "mutation",
+        "refresh_view",
+        "decompile",
+        "apply_hints",
+    ):
+        assert forbidden not in source
+
+
+def test_state_command_facades_delegate_without_policy() -> None:
+    state_path = _ROOT / "src" / "d810" / "manager" / "state.py"
+    expectations = {
+        "execute_workbench_analyze": "execute_analyze",
+        "execute_workbench_deobfuscate": "execute_deobfuscate",
+        "execute_workbench_function_override": "execute_function_override",
+    }
+    for method_name, expected_call in expectations.items():
+        method = _method(state_path, "D810State", method_name)
+        assert expected_call in _call_names(method)
