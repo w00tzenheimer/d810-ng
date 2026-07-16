@@ -10,6 +10,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 LAUNCHER = REPO_ROOT / "tools" / "scripts" / "run_ida_gui_docker.sh"
 GUI_IMAGE = "test-gui-image"
+GUI_RUNTIME_IMAGE = "idapro-9.3-speedups:x11-arm64"
+GUI_RUNTIME_LABEL = "x11-dev-emulation-z3-v1"
 WORKTREE_NAME = "truthful-config-v2-project-ui"
 
 
@@ -42,6 +44,7 @@ def _run(
     tmp_path: Path,
     *args: str,
     extra_env: dict[str, str] | None = None,
+    use_gui_image_env: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], list[list[str]], dict[str, Path]]:
     if not LAUNCHER.is_file():
         pytest.fail(f"launcher missing: {LAUNCHER}")
@@ -89,7 +92,10 @@ set -eu
   done
 } >> "$DOCKER_LOG"
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
-  [ "${MOCK_IMAGE_EXISTS:-1}" = 1 ]
+  [ "${MOCK_IMAGE_EXISTS:-1}" = 1 ] || exit 1
+  case " $* " in
+    *" --format "*) printf '%s\n' "${MOCK_GUI_RUNTIME_LABEL-x11-dev-emulation-z3-v1}" ;;
+  esac
 fi
 """,
         encoding="utf-8",
@@ -118,6 +124,7 @@ printf '%s\\n' "${MOCK_XHOST_ACCESS:-INET:localhost}"
         "D810_GUI_DISPLAY",
         "D810_XHOST_BIN",
         "MOCK_IMAGE_EXISTS",
+        "MOCK_GUI_RUNTIME_LABEL",
         "MOCK_XHOST_FAIL",
         "MOCK_XHOST_ACCESS",
         "D810_DEBUG_LOGGING",
@@ -130,11 +137,12 @@ printf '%s\\n' "${MOCK_XHOST_ACCESS:-INET:localhost}"
             "PATH": f"{bin_dir}:{env['PATH']}",
             "DOCKER_LOG": str(docker_log),
             "D810_REPO_ROOT": str(repo),
-            "D810_GUI_DOCKER_IMAGE": GUI_IMAGE,
             "D810_IDA_USER_DIR": str(ida_user),
             "D810_XHOST_BIN": str(xhost),
         }
     )
+    if use_gui_image_env:
+        env["D810_GUI_DOCKER_IMAGE"] = GUI_IMAGE
     if extra_env:
         env.update(extra_env)
 
@@ -171,7 +179,8 @@ def test_default_launch_mounts_root_checkout_portable_d810_state_and_samples(
     result, calls, paths = _run(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert calls[0] == ["image", "inspect", GUI_IMAGE]
+    assert calls[0][:3] == ["image", "inspect", "--format"]
+    assert calls[0][-1] == GUI_IMAGE
     run = calls[1]
     assert run[:2] == ["run", "--rm"]
     _assert_pair(run, "--memory", "4g")
@@ -198,6 +207,35 @@ def test_default_launch_mounts_root_checkout_portable_d810_state_and_samples(
     assert f"checkout:  {paths['repo']}" in result.stdout
     assert f"d810 cfg:  {paths['d810_config']}" in result.stdout
     assert f"d810 logs: {paths['d810_logs']}" in result.stdout
+
+
+def test_default_image_is_the_baked_d810_x11_runtime(tmp_path: Path) -> None:
+    result, calls, _paths = _run(tmp_path, use_gui_image_env=False)
+
+    assert result.returncode == 0, result.stderr
+    assert GUI_RUNTIME_IMAGE in calls[0]
+    assert calls[-1][-1] == GUI_RUNTIME_IMAGE
+
+
+def test_image_without_gui_runtime_dependencies_is_rejected(tmp_path: Path) -> None:
+    result, calls, _paths = _run(
+        tmp_path,
+        extra_env={"MOCK_GUI_RUNTIME_LABEL": ""},
+    )
+
+    assert result.returncode != 0
+    assert "D810 GUI runtime" in result.stderr
+    assert GUI_RUNTIME_LABEL in result.stderr
+    assert not any(call[:2] == ["run", "--rm"] for call in calls)
+
+
+def test_runtime_dockerfile_can_label_an_x11_gui_image() -> None:
+    dockerfile = (REPO_ROOT / "docker" / "Dockerfile.test-runtime").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ARG D810_GUI_RUNTIME_LABEL" in dockerfile
+    assert "org.d810.gui-runtime=${D810_GUI_RUNTIME_LABEL}" in dockerfile
 
 
 def test_worktree_launch_copies_sample_database_and_preserves_other_ida_arguments(
@@ -331,7 +369,9 @@ def test_missing_gui_image_fails_before_docker_run(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert GUI_IMAGE in result.stderr
-    assert calls == [["image", "inspect", GUI_IMAGE]]
+    assert len(calls) == 1
+    assert calls[0][:3] == ["image", "inspect", "--format"]
+    assert calls[0][-1] == GUI_IMAGE
 
 
 def test_help_documents_worktrees_state_and_sample_mount(tmp_path: Path) -> None:

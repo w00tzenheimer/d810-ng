@@ -1,5 +1,6 @@
 ARG IDA_IMAGE=idapro-9.3
 FROM ${IDA_IMAGE}
+ARG D810_GUI_RUNTIME_LABEL=""
 
 # Keep the disposable test runner offline after image construction.  Z3 stays
 # outside IDA's virtualenv because d810 deliberately bootstraps its matching
@@ -24,3 +25,4 @@ RUN set -eux; \
     rm -rf /root/.cache/pip /tmp/*
 
 LABEL org.d810.test-runtime="dev-emulation-z3-v1"
+LABEL org.d810.gui-runtime=${D810_GUI_RUNTIME_LABEL}

@@ -32,3 +32,17 @@ Automated Slice 0 gates passed in diff/truthful-config-v2-project-ui through f31
 **2026-07-16T17:05:00Z**
 
 Added and live-tested `tools/scripts/run_ida_gui_docker.sh` for worktree-aware XQuartz acceptance. The launcher preserves the image-owned Linux IDA registry, reuses host `cfg/d810`, `d810_function_rules.db`, and diagnostic logs through scoped mounts, mounts canonical samples read-only, and opens a byte-verified copy under the selected worktree. Eleven launcher contract tests pass. Live IDA 9.3 opened `/work/.tmp/ida-gui/libobfuscated.dll.2026-06-03.docker.on4e5h.i64` from `idapro-9.3:x11-arm64` with D810 loaded from `/root/.idapro/plugins/d810`; Docker reported the source sample mount `rw=false`, and the canonical database SHA-256 remained `61678430e3fe08f6bb23f41752faa22b57c805e8261277660933d01e3c046dab` before and after. This establishes the GUI test lane; the original truthful-config-v2 visual behavior still requires explicit workbench inspection, so the ticket remains open.
+
+**2026-07-16T17:40:00Z**
+
+The initial X11 base image mounted the selected plugin correctly but lacked the
+Python Z3 layer required during D810 import. Added
+`idapro-9.3-speedups:x11-arm64`, built from the X11 base through
+`docker/Dockerfile.test-runtime`, with the virtualenv dependencies and isolated
+`/root/.d810-speedups` Z3 installation. The launcher now defaults to this image
+and refuses images missing
+`org.d810.gui-runtime=x11-dev-emulation-z3-v1`. Fourteen launcher contracts
+pass. Live IDA output reports `D810 initialized (version 0.6.6)` from the
+selected worktree without the prior traceback, and the opened worktree copy
+still matches the canonical source SHA-256. The ticket remains open for visual
+workbench acceptance.
