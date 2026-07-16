@@ -9,6 +9,7 @@ import importlib.util
 import json
 import re
 import socket
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -393,6 +394,61 @@ def test_fixed_remote_template_has_only_approved_import_and_dispatch_boundary() 
     assert code.count("run_named_commands(") == 1
     assert "json.dumps" in code
     compile(code, "<fixed-d810-gui-connect>", "exec")
+
+
+def test_fixed_remote_template_runs_under_mcp_split_exec_namespaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _connector()
+    request = _request()
+    captured: list[gui_logic.GuiAutomationRequest] = []
+
+    def run_named_commands(
+        remote_request: gui_logic.GuiAutomationRequest,
+    ) -> gui_logic.GuiAutomationResult:
+        captured.append(remote_request)
+        commands = tuple(
+            gui_logic.GuiCommandResult(
+                name=command,
+                started_at_utc="2026-07-16T20:00:00Z",
+                finished_at_utc="2026-07-16T20:00:01Z",
+                status="succeeded",
+                details={"widget_title": command.value},
+                error=None,
+            )
+            for command in remote_request.commands
+        )
+        return gui_logic.GuiAutomationResult(
+            request_id=remote_request.request_id,
+            completed_at_utc="2026-07-16T20:00:01Z",
+            commands=commands,
+            status="succeeded",
+            error=None,
+        )
+
+    adapter = ModuleType("d810.ui.gui_automation")
+    adapter.run_named_commands = run_named_commands
+    monkeypatch.setitem(sys.modules, "d810.ui.gui_automation", adapter)
+
+    code = connector.build_remote_code(request)
+    tree = ast.parse(code)
+    assert isinstance(tree.body[-1], ast.Expr)
+    exec_tree = ast.Module(body=tree.body[:-1], type_ignores=[])
+    exec_globals: dict[str, object] = {}
+    exec_locals: dict[str, object] = {}
+
+    exec(compile(exec_tree, "<mcp-py-eval>", "exec"), exec_globals, exec_locals)
+    exec_globals.update(exec_locals)
+    eval_tree = ast.Expression(body=tree.body[-1].value)
+    result = eval(compile(eval_tree, "<mcp-py-eval>", "eval"), exec_globals)
+
+    assert captured == [request]
+    document = json.loads(result)
+    assert document["request_id"] == request.request_id
+    assert [command["name"] for command in document["commands"]] == [
+        "open-config",
+        "open-workbench",
+    ]
 
 
 @pytest.mark.parametrize(

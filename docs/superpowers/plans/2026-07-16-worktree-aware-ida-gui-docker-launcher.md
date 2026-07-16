@@ -48,7 +48,7 @@ The selected checkout is mounted at `/work` and
 `/samples/bins`. The accepted witness path is exactly:
 
 ```text
-/samples/bins/libobfuscated.dll.i64
+/samples/bins/libobfuscated.dll.2026-06-03.i64
 ```
 
 The launcher copies a selected sample into the chosen worktree's

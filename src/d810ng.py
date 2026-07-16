@@ -42,7 +42,11 @@ def ensure_hexrays_available(force_load: bool = False) -> bool:
         return False
     if ida_hexrays.init_hexrays_plugin():
         return True
-    if force_load and idaapi.load_plugin(decompiler) and ida_hexrays.init_hexrays_plugin():
+    if (
+        force_load
+        and idaapi.load_plugin(decompiler)
+        and ida_hexrays.init_hexrays_plugin()
+    ):
         return True
     return False
 
@@ -112,6 +116,8 @@ class D810Plugin(
     @override
     def late_init(self):
         super().late_init()
+        if not self.plugin.is_loaded():
+            self.plugin.load()
         # Do NOT force-init the decompiler here. Under deferred loading it may
         # not be loaded yet, and the previous code called term() and then fell
         # through -- leaving a half-torn-down plugin. The decompiler is loaded

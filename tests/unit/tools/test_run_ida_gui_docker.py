@@ -1108,7 +1108,7 @@ def test_help_completely_documents_fresh_and_connect_contracts(tmp_path: Path) -
     assert "127.0.0.1" in result.stdout
     assert ".tmp/ida-gui/automation-request-<request-id>.json" in result.stdout
     assert ".tmp/ida-gui/automation-<request-id>.json" in result.stdout
-    assert "samples/bins/libobfuscated.dll.i64" in result.stdout
+    assert "samples/bins/libobfuscated.dll.2026-06-03.i64" in result.stdout
     assert "dylib" not in result.stdout.lower()
     assert "copy" in result.stdout.lower()
     assert "/samples/bins" in result.stdout

@@ -127,7 +127,7 @@ present. A `/samples/bins/*.i64` argument is copied into the selected checkout's
 IDA starts. The canonical witness is:
 
 ```text
-/samples/bins/libobfuscated.dll.i64
+/samples/bins/libobfuscated.dll.2026-06-03.i64
 ```
 
 The source sample is never opened directly and its hash must remain unchanged.

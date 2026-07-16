@@ -41,7 +41,7 @@ _request_data = json.loads(
 _request = GuiAutomationRequest(
     request_id=_request_data["request_id"],
     created_at_utc=_request_data["created_at_utc"],
-    commands=tuple(GuiCommand(value) for value in _request_data["commands"]),
+    commands=tuple(map(GuiCommand, _request_data["commands"])),
     function_selector=_request_data["function_selector"],
     timeout_seconds=_request_data["timeout_seconds"],
 )
