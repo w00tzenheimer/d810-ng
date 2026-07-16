@@ -172,6 +172,27 @@ class DeobfuscationWorkbenchSnapshot:
     collection_errors: tuple[str, ...]
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class WorkbenchCommandRequest:
+    command: str
+    function_ea: int
+    expected_generation: int
+    function_fingerprint: str | None
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class WorkbenchCommandResult:
+    command: str
+    function_ea: int
+    requested_generation: int
+    function_fingerprint: str | None
+    status: OutcomeStatus
+    succeeded: bool
+    accepted: bool
+    refresh_requested: bool
+    message: str
+
+
 __all__ = [
     "ArtifactRef",
     "AttackSummary",
@@ -188,5 +209,7 @@ __all__ = [
     "RuntimeConfigRef",
     "SnapshotFreshness",
     "StatisticsSummary",
+    "WorkbenchCommandRequest",
+    "WorkbenchCommandResult",
     "WorkbenchDiagnostic",
 ]

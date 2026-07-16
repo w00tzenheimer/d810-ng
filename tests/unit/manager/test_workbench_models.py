@@ -186,3 +186,30 @@ def test_every_nested_record_is_frozen_and_slotted() -> None:
     assert all(not hasattr(record, "__dict__") for record in records)
     for record in records:
         assert record.__dataclass_params__.frozen is True
+
+
+def test_workbench_command_request_and_result_are_frozen_and_generation_bound() -> None:
+    request = models.WorkbenchCommandRequest(
+        command="analyze",
+        function_ea=0x401000,
+        expected_generation=9,
+        function_fingerprint="sha256:abc",
+    )
+    result = models.WorkbenchCommandResult(
+        command="analyze",
+        function_ea=0x401000,
+        requested_generation=9,
+        function_fingerprint="sha256:abc",
+        status=models.OutcomeStatus.READY,
+        succeeded=True,
+        accepted=True,
+        refresh_requested=True,
+        message="Analysis completed",
+    )
+
+    assert request.expected_generation == result.requested_generation
+    assert request.function_fingerprint == result.function_fingerprint
+    assert not hasattr(request, "__dict__")
+    assert not hasattr(result, "__dict__")
+    assert request.__dataclass_params__.frozen is True
+    assert result.__dataclass_params__.frozen is True
