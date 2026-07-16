@@ -80,3 +80,20 @@ enablement. Project-profile save remains explicitly disabled.
 Run focused recipe/registry/persistence/action tests, full unit tests,
 architecture gates, `git diff --check`, and `graphify update .`. Record exact
 automated evidence and leave Qt/live acceptance open.
+
+## Implementation evidence (2026-07-15)
+
+The headless slice is implemented. The operational registry publishes stable
+pass templates and explanatory transform children; immutable recipe drafts
+support add/remove/enable/disable/reorder and contract preflight; complete
+function recipes persist in sibling storage without modifying the existing
+function rule/tag/note records; manager/state commands enforce generation and
+function identity around apply-once and save; presentation logic remains pure.
+
+Fresh branch-wide verification after the Slice 5 integration completed with
+`5891 passed, 29 skipped, 9 warnings, 162 subtests passed`. The focused
+config-v2/family/recipe surface completed with `164 passed`. `sg scan`,
+`lint-imports`, and `git diff --check` were clean.
+
+Open boundary: Qt composition widgets and live IDA execution acceptance remain
+deferred. The ticket stays open until that adapter work is performed.

@@ -72,3 +72,20 @@ provider. State exposes immutable operations only. Run temporary-database
 fixtures across every owned table, focused UI/action tests, the full unit suite,
 architecture gates, `git diff --check`, and `graphify update .`. Keep Qt/live
 acceptance open.
+
+## Implementation evidence (2026-07-15)
+
+The headless D0/D1 services are implemented. Inventory discovers diagnostic
+databases read-only, orders databases and snapshots by recorded timestamps,
+projects allowlisted anchored records, and exposes pure filter/sort/group/jump
+logic. Cleanup supports selected/all snapshots, keep-latest, older-than,
+selected/all closed databases, and vacuum with active-path protection,
+schema-drift checks, exact-ID transactional deletion, integrity validation,
+separate WAL/vacuum outcomes, and reversible sidecar-aware quarantine.
+
+Fresh branch-wide verification completed with `5891 passed, 29 skipped, 9
+warnings, 162 subtests passed`. `sg scan`, `lint-imports`, and `git diff --check`
+were clean.
+
+Open boundary: the thin Qt dock and live IDA navigation/confirmation acceptance
+remain deferred. D0 and D1 stay open until that adapter work is performed.
