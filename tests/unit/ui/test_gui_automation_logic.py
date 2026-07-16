@@ -330,6 +330,24 @@ class _StringAuditValue(str, enum.Enum):
     CONFIG = "config"
 
 
+class _TextSubclass(str):
+    pass
+
+
+class _IntegerSubclass(int):
+    pass
+
+
+class _FloatSubclass(float):
+    pass
+
+
+class _SubclassBackedAuditValue(enum.Enum):
+    TEXT = _TextSubclass("text")
+    COUNT = _IntegerSubclass(7)
+    RATIO = _FloatSubclass(1.25)
+
+
 def _audit_with_details(logic: ModuleType, details: Mapping[str, object]) -> object:
     request = _request(logic, commands=(logic.GuiCommand.OPEN_CONFIG,))
     command = _command_result(logic, details=details)
@@ -368,6 +386,133 @@ def test_audit_normalizes_plain_enums_and_strictly_serializes() -> None:
     document = _audit_with_details(
         logic,
         {"nested": [{"label": _PlainAuditValue.CONFIG}]},
+    )
+
+    _assert_json_native(document)
+    assert json.loads(json.dumps(document, allow_nan=False)) == document
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_type", "expected"),
+    (
+        (_TextSubclass("text"), str, "text"),
+        (_IntegerSubclass(7), int, 7),
+        (_FloatSubclass(1.25), float, 1.25),
+    ),
+)
+def test_nested_details_normalize_scalar_subclasses_for_storage_and_output(
+    value: object,
+    expected_type: type[object],
+    expected: object,
+) -> None:
+    logic = _logic()
+
+    document = _audit_with_details(logic, {"nested": [{"value": value}]})
+    projected = document["commands"][0]["details"]["nested"][0]["value"]
+    command = _command_result(logic, details={"nested": [{"value": value}]})
+    frozen = command.details["nested"][0]["value"]
+
+    assert type(projected) is expected_type
+    assert projected == expected
+    assert type(frozen) is expected_type
+    assert frozen == expected
+    _assert_json_native(document)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_type", "expected"),
+    (
+        (_SubclassBackedAuditValue.TEXT, str, "text"),
+        (_SubclassBackedAuditValue.COUNT, int, 7),
+        (_SubclassBackedAuditValue.RATIO, float, 1.25),
+    ),
+)
+def test_enum_normalization_recurses_to_exact_builtin_scalar_types(
+    value: enum.Enum,
+    expected_type: type[object],
+    expected: object,
+) -> None:
+    logic = _logic()
+
+    document = _audit_with_details(logic, {"value": value})
+    projected = document["commands"][0]["details"]["value"]
+    command = _command_result(logic, details={"value": value})
+    frozen = command.details["value"]
+
+    assert type(projected) is expected_type
+    assert projected == expected
+    assert type(frozen) is expected_type
+    assert frozen == expected
+
+
+def test_audit_context_normalizes_string_subclasses() -> None:
+    logic = _logic()
+    request = _request(logic, commands=(logic.GuiCommand.OPEN_CONFIG,))
+    command = _command_result(logic)
+    result = logic.GuiAutomationResult(
+        request_id=request.request_id,
+        completed_at_utc="2026-07-16T18:30:01Z",
+        commands=(command,),
+        status="succeeded",
+        error=None,
+    )
+
+    document = logic.audit_document(
+        request,
+        result,
+        {
+            "mode": _TextSubclass("launch"),
+            "worktree": _TextSubclass("/work"),
+            "idb": {
+                "path": _TextSubclass("/work/sample.i64"),
+                "sha256": _TextSubclass("hex-digest"),
+            },
+            "mcp_endpoint": _TextSubclass("http://127.0.0.1:13337/mcp"),
+        },
+    )
+
+    assert type(document["mode"]) is str
+    assert type(document["worktree"]) is str
+    assert type(document["idb"]["path"]) is str
+    assert type(document["idb"]["sha256"]) is str
+    assert type(document["mcp_endpoint"]) is str
+    _assert_json_native(document)
+
+
+def test_audit_normalizes_direct_model_string_subclasses() -> None:
+    logic = _logic()
+    request = logic.GuiAutomationRequest(
+        request_id=_TextSubclass("request-123"),
+        created_at_utc=_TextSubclass("2026-07-16T18:30:00Z"),
+        commands=(logic.GuiCommand.OPEN_CONFIG,),
+        function_selector=_TextSubclass("target"),
+        timeout_seconds=30.0,
+    )
+    command = logic.GuiCommandResult(
+        name=logic.GuiCommand.OPEN_CONFIG,
+        started_at_utc=_TextSubclass("2026-07-16T18:30:00Z"),
+        finished_at_utc=_TextSubclass("2026-07-16T18:30:01Z"),
+        status=_TextSubclass("failed"),
+        details={},
+        error=_TextSubclass("command failed"),
+    )
+    result = logic.GuiAutomationResult(
+        request_id=_TextSubclass("request-123"),
+        completed_at_utc=_TextSubclass("2026-07-16T18:30:01Z"),
+        commands=(command,),
+        status=_TextSubclass("failed"),
+        error=_TextSubclass("automation failed"),
+    )
+
+    document = logic.audit_document(
+        request,
+        result,
+        {
+            "mode": "launch",
+            "worktree": "/work",
+            "idb": {"path": "/work/sample.i64", "sha256": "hex-digest"},
+            "mcp_endpoint": None,
+        },
     )
 
     _assert_json_native(document)

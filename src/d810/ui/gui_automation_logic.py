@@ -72,12 +72,17 @@ def _command(value: object) -> GuiCommand:
 def _freeze_json(value: object) -> object:
     if isinstance(value, enum.Enum):
         return _freeze_json(value.value)
-    if value is None or isinstance(value, (bool, str, int)):
+    if value is None or type(value) is bool:
         return value
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, int):
+        return int(value)
     if isinstance(value, float):
-        if not math.isfinite(value):
+        normalized = float(value)
+        if not math.isfinite(normalized):
             raise ValueError("JSON numbers must be finite")
-        return value
+        return normalized
     if isinstance(value, Mapping):
         frozen: dict[str, object] = {}
         for key, item in value.items():
@@ -93,12 +98,17 @@ def _freeze_json(value: object) -> object:
 def _json_native(value: object) -> object:
     if isinstance(value, enum.Enum):
         return _json_native(value.value)
-    if value is None or isinstance(value, (bool, str, int)):
+    if value is None or type(value) is bool:
         return value
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, int):
+        return int(value)
     if isinstance(value, float):
-        if not math.isfinite(value):
+        normalized = float(value)
+        if not math.isfinite(normalized):
             raise ValueError("JSON numbers must be finite")
-        return value
+        return normalized
     if isinstance(value, Mapping):
         native: dict[str, object] = {}
         for key, item in value.items():
@@ -106,7 +116,7 @@ def _json_native(value: object) -> object:
                 raise TypeError("JSON object keys must be strings")
             native[key] = _json_native(item)
         return native
-    if isinstance(value, tuple):
+    if isinstance(value, (list, tuple)):
         return [_json_native(item) for item in value]
     raise TypeError(f"value is not JSON-native: {value!r}")
 
@@ -208,7 +218,7 @@ def audit_document(
     }
     mcp_endpoint = _json_native(context.get("mcp_endpoint"))
 
-    return {
+    document = {
         "schema_version": 1,
         "request_id": request.request_id,
         "mode": mode,
@@ -233,6 +243,10 @@ def audit_document(
         "status": result.status,
         "error": result.error,
     }
+    native_document = _json_native(document)
+    if not isinstance(native_document, dict):
+        raise TypeError("audit document must be a JSON object")
+    return native_document
 
 
 __all__ = [
