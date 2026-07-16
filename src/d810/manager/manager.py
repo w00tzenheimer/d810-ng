@@ -61,7 +61,14 @@ from d810.manager.flowgraph_ready import FlowGraphReadySubscriber
 from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
 from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
 from d810.manager.profiling import ProfilingController
+from d810.manager.project_runtime import ProjectRuntimeSnapshot
 from d810.manager.rule_scope_runtime import RuleScopeRuntime
+from d810.manager.workbench_models import (
+    BaselineRef,
+    D810OutputRef,
+    DeobfuscationWorkbenchSnapshot,
+)
+from d810.manager.workbench_service import WorkbenchService
 
 
 D810_LOG_DIR_NAME = "d810_logs"
@@ -129,6 +136,7 @@ class D810Manager:
     )
     profiling: ProfilingController = dataclasses.field(init=False)
     rule_scope_runtime: RuleScopeRuntime = dataclasses.field(init=False)
+    workbench_service: WorkbenchService = dataclasses.field(init=False)
     instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
@@ -153,6 +161,7 @@ class D810Manager:
             project_name_provider=lambda: str(self.config.get("project_name", "")),
             config_provider=lambda: self.config,
         )
+        self.workbench_service = WorkbenchService(self)
 
     @property
     def started(self):
@@ -181,6 +190,44 @@ class D810Manager:
         if rt is None:
             return None
         return rt._store.db_path
+
+    def load_recon_hints(self, function_ea: int) -> typing.Any | None:
+        """Return persisted hints without triggering collection or mutation."""
+        runtime = self._recon_runtime
+        if runtime is None:
+            return None
+        return runtime.load_hints(int(function_ea))
+
+    def get_recon_outcome_reports(self, function_ea: int) -> tuple[typing.Any, ...]:
+        """Return a detached tuple of current cross-consumer reports."""
+        runtime = self._recon_runtime
+        if runtime is None:
+            return ()
+        return tuple(runtime.outcome_log.get_func_reports(int(function_ea)))
+
+    def get_workbench_snapshot(
+        self,
+        *,
+        function_ea: int,
+        function_name: str,
+        function_fingerprint: str | None,
+        project_snapshot: ProjectRuntimeSnapshot,
+        runtime_project: typing.Any,
+        facts: typing.Any | None = None,
+        baseline: BaselineRef | None = None,
+        latest_output: D810OutputRef | None = None,
+    ) -> DeobfuscationWorkbenchSnapshot:
+        """Collect one immutable read-only workbench snapshot."""
+        return self.workbench_service.collect(
+            function_ea=function_ea,
+            function_name=function_name,
+            function_fingerprint=function_fingerprint,
+            project_snapshot=project_snapshot,
+            runtime_project=runtime_project,
+            facts=facts,
+            baseline=baseline,
+            latest_output=latest_output,
+        )
 
     def configure(self, **kwargs):
         self.config = kwargs
