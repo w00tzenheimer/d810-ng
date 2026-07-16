@@ -31,9 +31,7 @@ class _Operand:
         self.t = int(operand_type)
         self.size = int(size)
         self.s = (
-            SimpleNamespace(off=int(stack_offset))
-            if stack_offset is not None
-            else None
+            SimpleNamespace(off=int(stack_offset)) if stack_offset is not None else None
         )
         self.a = address
         self.d = nested
@@ -66,6 +64,22 @@ class _Operand:
             return int(self.r) == int(other.r)
         if int(self.t) == int(ida_hexrays.mop_n):
             return int(self.nnn.value) == int(other.nnn.value)
+        if int(self.t) == int(ida_hexrays.mop_S):
+            return int(self.s.off) == int(other.s.off)
+        if int(self.t) == int(ida_hexrays.mop_a):
+            return self.a.equal_mops(other.a, _flags)
+        if int(self.t) == int(ida_hexrays.mop_d):
+            return (
+                int(self.d.opcode) == int(other.d.opcode)
+                and self.d.l.equal_mops(other.d.l, _flags)
+                and self.d.r.equal_mops(other.d.r, _flags)
+                and self.d.d.equal_mops(other.d.d, _flags)
+            )
+        if int(self.t) == int(ida_hexrays.mop_f):
+            return len(self.f.args) == len(other.f.args) and all(
+                left.equal_mops(right, _flags)
+                for left, right in zip(self.f.args, other.f.args)
+            )
         return int(self.t) == int(ida_hexrays.mop_z)
 
 
@@ -112,8 +126,7 @@ class _MBARanges:
 
     def range_contains(self, ea: int) -> bool:
         return any(
-            int(item.start_ea) <= int(ea) < int(item.end_ea)
-            for item in self.ranges
+            int(item.start_ea) <= int(ea) < int(item.end_ea) for item in self.ranges
         )
 
 
@@ -159,9 +172,7 @@ class _Block:
 
     def remove_from_block(self, instruction: _Instruction) -> None:
         remaining = tuple(
-            current
-            for current in self.instructions()
-            if current is not instruction
+            current for current in self.instructions() if current is not instruction
         )
         self._set_instructions(remaining)
 
@@ -332,6 +343,23 @@ def _install_runtime_fakes(monkeypatch) -> list[tuple[int, int]]:
     )
     monkeypatch.setattr(
         detached_handler_island,
+        "_DETACHED_CALLINFO_TEMPLATES",
+        {},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_DETACHED_CALLINFO_CONFLICTS",
+        set(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_DETACHED_SNIPPET_GENERATIONS",
+        {},
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
         "_IMPORTED_SNIPPET_ROOTS",
         {},
     )
@@ -339,6 +367,12 @@ def _install_runtime_fakes(monkeypatch) -> list[tuple[int, int]]:
         detached_handler_island,
         "_IMPORTED_INSTRUCTION_ORIGINS",
         {},
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_LAST_IMPORTED_INSTRUCTION_ORIGINS",
+        {},
+        raising=False,
     )
     monkeypatch.setattr(
         detached_handler_island,
@@ -431,20 +465,11 @@ def test_recursively_rebases_all_stack_operand_shapes(monkeypatch) -> None:
     stable_destination_delta = 0x1000 + 0x200
     assert int(imported.l.s.off) == source_offsets[0] + stable_destination_delta
     assert int(imported.l.size) == 1
-    assert (
-        int(imported.r.a.s.off)
-        == source_offsets[1] + stable_destination_delta
-    )
+    assert int(imported.r.a.s.off) == source_offsets[1] + stable_destination_delta
     assert int(imported.r.a.size) == 2
-    assert (
-        int(imported.d.d.l.s.off)
-        == source_offsets[2] + stable_destination_delta
-    )
+    assert int(imported.d.d.l.s.off) == source_offsets[2] + stable_destination_delta
     imported_arg = imported.d.d.r.f.args[0]
-    assert (
-        int(imported_arg.s.off)
-        == source_offsets[3] + stable_destination_delta
-    )
+    assert int(imported_arg.s.off) == source_offsets[3] + stable_destination_delta
     assert int(imported_arg.size) == 8
 
 
@@ -542,9 +567,7 @@ def test_range_capture_does_not_infer_empty_interior_block_ownership(
         (function_ea, target_ea)
     ]
 
-    assert tuple(block.native_entry_ea for block in template.blocks) == (
-        target_ea,
-    )
+    assert tuple(block.native_entry_ea for block in template.blocks) == (target_ea,)
 
 
 def test_duplicate_empty_entry_alias_resolves_to_anchored_root(
@@ -590,9 +613,7 @@ def test_capture_normalizes_negative_fragment_stack_identity_by_frame_size(
         detached_handler_island.ida_funcs,
         "get_func",
         lambda ea: (
-            SimpleNamespace(frsize=0x48C, frregs=4)
-            if int(ea) == function_ea
-            else None
+            SimpleNamespace(frsize=0x48C, frregs=4) if int(ea) == function_ea else None
         ),
     )
     source = _MBA(
@@ -624,6 +645,160 @@ def test_capture_normalizes_negative_fragment_stack_identity_by_frame_size(
     ]
     assert template.stack_vd_to_ida == ((source_vd, -0x480),)
     assert template.stable_stack_vd_to_ida == ((source_vd, 16),)
+
+
+def test_capture_prefers_unique_native_stack_identity_over_fragment_basis(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40AF23
+    source_vd = 216
+    monkeypatch.setattr(
+        detached_handler_island.ida_funcs,
+        "get_func",
+        lambda ea: (
+            SimpleNamespace(frsize=0x48C, frregs=4) if int(ea) == function_ea else None
+        ),
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_native_instruction_stack_frame_offsets",
+        lambda owner_ea, instruction_ea: (
+            (204,)
+            if int(owner_ea) == function_ea and int(instruction_ea) == target_ea
+            else ()
+        ),
+        raising=False,
+    )
+    source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_push,
+                        target_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_S,
+                            stack_offset=source_vd,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        vd_to_ida_delta=-1172,
+        stacksize=1172,
+    )
+
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, target_ea + 1),),
+    )
+    template = detached_handler_island._DETACHED_SNIPPET_TEMPLATES[
+        (function_ea, target_ea)
+    ]
+    assert template.stack_vd_to_ida == ((source_vd, -956),)
+    assert template.stable_stack_vd_to_ida == ((source_vd, 204),)
+
+
+def test_same_fragment_vd_uses_instruction_specific_native_stack_identity(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40AF23
+    restored_ea = 0x40AF6A
+    source_vd = 216
+    monkeypatch.setattr(
+        detached_handler_island.ida_funcs,
+        "get_func",
+        lambda ea: (
+            SimpleNamespace(frsize=0x48C, frregs=4) if int(ea) == function_ea else None
+        ),
+    )
+    native_identities = {
+        target_ea: (204,),
+        restored_ea: (216,),
+    }
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_native_instruction_stack_frame_offsets",
+        lambda owner_ea, instruction_ea: (
+            native_identities.get(int(instruction_ea), ())
+            if int(owner_ea) == function_ea
+            else ()
+        ),
+        raising=False,
+    )
+    source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_push,
+                        target_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_S,
+                            stack_offset=source_vd,
+                        ),
+                    ),
+                    _Instruction(
+                        ida_hexrays.m_push,
+                        restored_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_S,
+                            stack_offset=source_vd,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        vd_to_ida_delta=-1172,
+        stacksize=1172,
+    )
+
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, restored_ea + 1),),
+    )
+    template = detached_handler_island._DETACHED_SNIPPET_TEMPLATES[
+        (function_ea, target_ea)
+    ]
+    assert template.stack_vd_to_ida == ((source_vd, -956),)
+    assert template.stable_stack_vd_to_ida == ()
+    assert template.instruction_stack_vd_to_ida == (
+        (target_ea, source_vd, 204),
+        (restored_ea, source_vd, 216),
+    )
+
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        ida_to_vd_delta=0x200,
+    )
+    roots = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+    )
+    imported = destination.get_mblock(roots[target_ea]).instructions()
+    assert tuple(int(instruction.l.s.off) for instruction in imported) == (
+        204 + 0x200,
+        216 + 0x200,
+    )
 
 
 def test_remaps_recursive_block_references_and_cfg_edges(monkeypatch) -> None:
@@ -1018,10 +1193,13 @@ def test_redirects_live_target_predecessors_to_imported_replacement() -> None:
     predecessor.predset.push_back(0)
     old_target.predset.push_back(1)
 
-    assert detached_handler_island.redirect_live_target_predecessors(
-        mba,
-        {2: 3},
-    ) == 1
+    assert (
+        detached_handler_island.redirect_live_target_predecessors(
+            mba,
+            {2: 3},
+        )
+        == 1
+    )
     assert tuple(predecessor.succset) == (3,)
     assert tuple(old_target.predset) == ()
     assert tuple(imported_root.predset) == (1,)
@@ -1042,10 +1220,13 @@ def test_live_target_replacement_abstains_atomically_on_two_way_predecessor() ->
     old_target.predset.push_back(1)
     sibling.predset.push_back(1)
 
-    assert detached_handler_island.redirect_live_target_predecessors(
-        mba,
-        {2: 4},
-    ) == 0
+    assert (
+        detached_handler_island.redirect_live_target_predecessors(
+            mba,
+            {2: 4},
+        )
+        == 0
+    )
     assert tuple(predecessor.succset) == (2, 3)
     assert tuple(old_target.predset) == (1,)
     assert tuple(imported_root.predset) == ()
@@ -1228,6 +1409,411 @@ def test_import_uses_exact_analyzed_call_from_replacement_template(
         )
     )
     assert origins[int(imported_call.ea)] == call_ea
+    assert (
+        dict(
+            detached_handler_island.last_imported_detached_snippet_instruction_origins(
+                function_ea
+            )
+        )
+        == origins
+    )
+
+
+def test_call_companion_validation_accepts_exact_native_call_pair() -> None:
+    call_ea = 0x40BA56
+    callee_ea = 0x40F830
+    preopt = _MBA(
+        (
+            _Block(
+                0,
+                0x40B9A6,
+                (
+                    _Instruction(
+                        ida_hexrays.m_call,
+                        call_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_v,
+                            target_ea=callee_ea,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    calls = _MBA(
+        (
+            _Block(
+                0,
+                0x40B9A6,
+                (
+                    _Instruction(
+                        ida_hexrays.m_call,
+                        call_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_v,
+                            target_ea=callee_ea,
+                        ),
+                        dest=_Operand(ida_hexrays.mop_f),
+                    ),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_CALLS,
+    )
+
+    result = detached_handler_island.validate_detached_call_companion(
+        preopt,
+        calls,
+    )
+
+    assert result.accepted is True
+    assert result.call_eas == (call_ea,)
+    assert result.reason is None
+    assert result.mismatch_ea is None
+
+
+@pytest.mark.parametrize(
+    ("calls_instruction", "reason"),
+    (
+        (None, "call_ea_set_mismatch"),
+        (
+            _Instruction(
+                ida_hexrays.m_icall,
+                0x40BA56,
+                left=_Operand(ida_hexrays.mop_r, register=8),
+                dest=_Operand(ida_hexrays.mop_f),
+            ),
+            "call_opcode_mismatch",
+        ),
+        (
+            _Instruction(
+                ida_hexrays.m_call,
+                0x40BA56,
+                left=_Operand(ida_hexrays.mop_v, target_ea=0x40F900),
+                dest=_Operand(ida_hexrays.mop_f),
+            ),
+            "direct_callee_mismatch",
+        ),
+        (
+            _Instruction(
+                ida_hexrays.m_call,
+                0x40BA56,
+                left=_Operand(ida_hexrays.mop_v, target_ea=0x40F830),
+            ),
+            "analyzed_arglist_missing",
+        ),
+    ),
+)
+def test_call_companion_validation_abstains_on_mismatch(
+    calls_instruction: _Instruction | None,
+    reason: str,
+) -> None:
+    call_ea = 0x40BA56
+    preopt = _MBA(
+        (
+            _Block(
+                0,
+                0x40B9A6,
+                (
+                    _Instruction(
+                        ida_hexrays.m_call,
+                        call_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_v,
+                            target_ea=0x40F830,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    calls = _MBA(
+        (
+            _Block(
+                0,
+                0x40B9A6,
+                () if calls_instruction is None else (calls_instruction,),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_CALLS,
+    )
+
+    result = detached_handler_island.validate_detached_call_companion(
+        preopt,
+        calls,
+    )
+
+    assert result.accepted is False
+    assert result.reason == reason
+    assert result.mismatch_ea == call_ea
+
+
+def test_call_companion_validation_rejects_duplicate_native_call_ea() -> None:
+    call_ea = 0x40BA56
+    callee_ea = 0x40F830
+
+    def raw_call() -> _Instruction:
+        return _Instruction(
+            ida_hexrays.m_call,
+            call_ea,
+            left=_Operand(ida_hexrays.mop_v, target_ea=callee_ea),
+        )
+
+    preopt = _MBA(
+        (_Block(0, 0x40B9A6, (raw_call(), raw_call())),),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    calls = _MBA(
+        (
+            _Block(
+                0,
+                0x40B9A6,
+                (
+                    _Instruction(
+                        ida_hexrays.m_call,
+                        call_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_v,
+                            target_ea=callee_ea,
+                        ),
+                        dest=_Operand(ida_hexrays.mop_f),
+                    ),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_CALLS,
+    )
+
+    result = detached_handler_island.validate_detached_call_companion(
+        preopt,
+        calls,
+    )
+
+    assert result.accepted is False
+    assert result.reason == "preopt_duplicate_call_ea"
+    assert result.mismatch_ea == call_ea
+
+
+def test_companion_capture_publishes_primary_and_calls_atomically(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40B9A6
+    call_ea = 0x40BA56
+    callee_ea = 0x40F830
+    ranges = ((target_ea, call_ea + 1),)
+    preopt = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_call,
+                        call_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_v,
+                            target_ea=callee_ea,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    calls = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_call,
+                        call_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_v,
+                            target_ea=callee_ea,
+                        ),
+                        dest=_Operand(ida_hexrays.mop_f),
+                    ),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_CALLS,
+    )
+
+    result = detached_handler_island.capture_detached_snippet_companion_templates(
+        function_ea,
+        target_ea,
+        preopt,
+        calls,
+        ranges,
+    )
+
+    assert result.captured is True
+    assert result.replacement_required is True
+    assert result.call_eas == (call_ea,)
+    assert result.reason is None
+    assert detached_handler_island.has_detached_snippet_template(
+        function_ea,
+        target_ea,
+    )
+    assert detached_handler_island.has_detached_replacement_snippet_template(
+        function_ea,
+        target_ea,
+    )
+    assert (
+        detached_handler_island.detached_snippet_template_generation(function_ea) == 1
+    )
+
+
+def test_companion_capture_mismatch_leaves_both_caches_unchanged(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40B9A6
+    call_ea = 0x40BA56
+    preopt = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (_Instruction(ida_hexrays.m_call, call_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    calls = _MBA(
+        (_Block(0, target_ea, ()),),
+        maturity=ida_hexrays.MMAT_CALLS,
+    )
+
+    result = detached_handler_island.capture_detached_snippet_companion_templates(
+        function_ea,
+        target_ea,
+        preopt,
+        calls,
+        ((target_ea, call_ea + 1),),
+    )
+
+    assert result.captured is False
+    assert result.reason == "call_ea_set_mismatch"
+    assert not detached_handler_island.has_detached_snippet_template(
+        function_ea,
+        target_ea,
+    )
+    assert not detached_handler_island.has_detached_replacement_snippet_template(
+        function_ea,
+        target_ea,
+    )
+    assert (
+        detached_handler_island.detached_snippet_template_generation(function_ea) == 0
+    )
+
+
+def test_companion_capture_rolls_back_when_primary_capture_fails(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40B9A6
+    wrong_preopt_root = target_ea + 1
+    call_ea = 0x40BA56
+    callee_ea = 0x40F830
+    raw_call = _Instruction(
+        ida_hexrays.m_call,
+        call_ea,
+        left=_Operand(ida_hexrays.mop_v, target_ea=callee_ea),
+    )
+    preopt = _MBA(
+        (_Block(0, wrong_preopt_root, (raw_call,)),),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    calls = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_call,
+                        call_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_v,
+                            target_ea=callee_ea,
+                        ),
+                        dest=_Operand(ida_hexrays.mop_f),
+                    ),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_CALLS,
+    )
+
+    result = detached_handler_island.capture_detached_snippet_companion_templates(
+        function_ea,
+        target_ea,
+        preopt,
+        calls,
+        ((target_ea, call_ea + 1),),
+    )
+
+    assert result.captured is False
+    assert result.reason == "primary_capture_failed"
+    assert not detached_handler_island.has_detached_snippet_template(
+        function_ea,
+        target_ea,
+    )
+    assert not detached_handler_island.has_detached_replacement_snippet_template(
+        function_ea,
+        target_ea,
+    )
+    assert (
+        detached_handler_island.detached_snippet_template_generation(function_ea) == 0
+    )
+
+
+def test_companion_capture_allows_no_call_primary_without_calls_mba(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40B9A6
+    preopt = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    result = detached_handler_island.capture_detached_snippet_companion_templates(
+        function_ea,
+        target_ea,
+        preopt,
+        None,
+        ((target_ea, target_ea + 1),),
+    )
+
+    assert result.captured is True
+    assert result.replacement_required is False
+    assert result.call_eas == ()
+    assert result.reason is None
+    assert detached_handler_island.has_detached_snippet_template(
+        function_ea,
+        target_ea,
+    )
+    assert not detached_handler_island.has_detached_replacement_snippet_template(
+        function_ea,
+        target_ea,
+    )
 
 
 def test_import_omits_transient_stack_setup_subsumed_by_analyzed_call(
@@ -1341,8 +1927,7 @@ def test_import_omits_transient_stack_setup_subsumed_by_analyzed_call(
         )
     )
     imported_native_eas = {
-        int(origins[int(instruction.ea)])
-        for instruction in imported.instructions()
+        int(origins[int(instruction.ea)]) for instruction in imported.instructions()
     }
     assert imported_native_eas == {persistent_ea, call_ea}
     persistent_write = next(
@@ -1509,9 +2094,7 @@ def test_import_rebases_persistent_stack_slots_through_ida_identity(
     branch_ea = 0x40B2B1
     return_mreg = int(ida_hexrays.reg2mreg(0))
     argument_vd = 0x144
-    argument_ida = 0x44
     carrier_vd = 0x148
-    carrier_ida = 0x48
     unrelated_vd = 0x150
 
     setup = _Instruction(
@@ -1556,9 +2139,7 @@ def test_import_rebases_persistent_stack_slots_through_ida_identity(
         left=_Operand(ida_hexrays.mop_v, target_ea=0x42E1E8),
         dest=_Operand(
             ida_hexrays.mop_f,
-            arguments=(
-                _Operand(ida_hexrays.mop_S, stack_offset=argument_vd),
-            ),
+            arguments=(_Operand(ida_hexrays.mop_S, stack_offset=argument_vd),),
         ),
     )
     analyzed_call_owner = _Instruction(
@@ -1888,8 +2469,7 @@ def test_locopt_capture_preserves_analyzed_call_block_shape(monkeypatch) -> None
     ]
     assert len(template.blocks) == 1
     assert tuple(
-        int(instruction.opcode)
-        for instruction in template.blocks[0].instructions
+        int(instruction.opcode) for instruction in template.blocks[0].instructions
     ) == (
         int(ida_hexrays.m_call),
         int(ida_hexrays.m_call),
@@ -2103,8 +2683,10 @@ def test_imported_callinfo_defers_to_unique_live_native_authority(
     assert imported_call is not None
     assert int(imported_call.d.f.args[0].s.off) == wrong_argument_vd
 
-    changed = detached_handler_island.reconcile_imported_callinfo_with_live_native_calls(
-        destination
+    changed = (
+        detached_handler_island.reconcile_imported_callinfo_with_live_native_calls(
+            destination
+        )
     )
 
     assert changed == 1
@@ -2135,10 +2717,13 @@ def test_raw_template_reports_need_for_analyzed_call_authority(
         ((target_ea, call_ea + 1),),
     )
 
-    assert detached_handler_island.detached_snippet_requires_analyzed_calls(
-        function_ea,
-        target_ea,
-    ) is True
+    assert (
+        detached_handler_island.detached_snippet_requires_analyzed_calls(
+            function_ea,
+            target_ea,
+        )
+        is True
+    )
 
 
 def test_abstains_atomically_when_external_exit_is_ambiguous(monkeypatch) -> None:
@@ -2349,9 +2934,7 @@ def test_empty_nonadjacent_fallthrough_can_be_made_explicit(
         )
     )
 
-    DeferredGraphModifier(destination).make_displaced_fallthrough_explicit_now(
-        empty
-    )
+    DeferredGraphModifier(destination).make_displaced_fallthrough_explicit_now(empty)
 
     assert empty.tail is not None
     assert int(empty.tail.opcode) == int(ida_hexrays.m_goto)
@@ -2418,12 +3001,16 @@ def test_capture_boundary_port_wrapper_cannot_bypass_normalization() -> None:
         target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
     )
 
-    assert detached_handler_island._normalize_capture_boundary_ports(
-        DetachedSnippetBoundaryPorts(
-            direct=(first, conflicting),
-            conditional=(),
+    assert (
+        detached_handler_island._normalize_capture_boundary_ports(
+            DetachedSnippetBoundaryPorts(
+                direct=(first, conflicting),
+                conditional=(),
+            )
         )
-    ) is None
+        is None
+    )
+
 
 def _conditional_boundary_port(
     *,
@@ -2970,8 +3557,7 @@ def test_import_boundary_port_connects_imported_source_to_imported_target(
     imported_target = next(
         block
         for block in destination.blocks
-        if block.head is not None
-        and origins.get(int(block.head.ea)) == target_ea
+        if block.head is not None and origins.get(int(block.head.ea)) == target_ea
     )
     assert tuple(imported_source.succset) == (int(imported_target.serial),)
     assert result.applied_boundary_ports[0].endpoint_block_ea == source_ea
@@ -3062,8 +3648,7 @@ def test_import_boundary_port_prefers_template_local_old_successor(
     imported_target = next(
         block
         for block in destination.blocks
-        if block.head is not None
-        and origins.get(int(block.head.ea)) == target_ea
+        if block.head is not None and origins.get(int(block.head.ea)) == target_ea
     )
     assert tuple(imported_source.succset) == (int(imported_target.serial),)
     assert result.applied_boundary_ports[0].endpoint_block_ea == source_ea
@@ -3240,8 +3825,7 @@ def test_import_conditional_port_prefers_owned_old_targets_over_live_duplicates(
         origins[int(block.head.ea)]: int(block.serial)
         for block in destination.blocks
         if block.head is not None
-        and origins.get(int(block.head.ea))
-        in {taken_target_ea, fallthrough_target_ea}
+        and origins.get(int(block.head.ea)) in {taken_target_ea, fallthrough_target_ea}
     }
     assert inserted_helpers
     assert imported_targets[taken_target_ea] in imported_source.succset
@@ -3251,9 +3835,7 @@ def test_import_conditional_port_prefers_owned_old_targets_over_live_duplicates(
         if int(successor) != imported_targets[taken_target_ea]
     )
     helper = destination.get_mblock(helper_serial)
-    assert tuple(helper.succset) == (
-        imported_targets[fallthrough_target_ea],
-    )
+    assert tuple(helper.succset) == (imported_targets[fallthrough_target_ea],)
     assert int(imported_source.tail.d.b) == imported_targets[taken_target_ea]
     assert len(result.applied_boundary_ports) == 1
 
@@ -3402,8 +3984,7 @@ def test_import_direct_port_collapses_conditional_through_owned_helper(
     imported_target = next(
         block
         for block in destination.blocks
-        if block.head is not None
-        and origins.get(int(block.head.ea)) == target_ea
+        if block.head is not None and origins.get(int(block.head.ea)) == target_ea
     )
     assert int(imported_source.type) == int(ida_hexrays.BLT_1WAY)
     assert tuple(imported_source.succset) == (int(imported_target.serial),)
@@ -3436,14 +4017,17 @@ def test_import_boundary_port_connects_live_source_to_imported_target(
     target_ea = 0x1100
     dispatcher_ea = 0x1200
     source = _MBA(
-        (
-            _Block(0, target_ea, (_Instruction(ida_hexrays.m_nop, target_ea),)),
-        )
+        (_Block(0, target_ea, (_Instruction(ida_hexrays.m_nop, target_ea),)),)
     )
     destination = _MBA(
         (
             _Block(0, function_ea, (_Instruction(ida_hexrays.m_nop, function_ea),)),
-            _Block(1, live_source_ea, (_Instruction(ida_hexrays.m_nop, live_source_ea),), (2,)),
+            _Block(
+                1,
+                live_source_ea,
+                (_Instruction(ida_hexrays.m_nop, live_source_ea),),
+                (2,),
+            ),
             _Block(
                 2,
                 dispatcher_ea,
@@ -3543,9 +4127,7 @@ def test_import_boundary_port_distinguishes_live_old_copy_from_imported_target(
     )
 
     assert result[shared_target_ea] != 2
-    assert tuple(destination.get_mblock(1).succset) == (
-        result[shared_target_ea],
-    )
+    assert tuple(destination.get_mblock(1).succset) == (result[shared_target_ea],)
 
 
 def test_import_boundary_port_accepts_owner_enum_from_reloaded_module(
@@ -3561,9 +4143,7 @@ def test_import_boundary_port_accepts_owner_enum_from_reloaded_module(
     target_ea = 0x1100
     dispatcher_ea = 0x1200
     source = _MBA(
-        (
-            _Block(0, target_ea, (_Instruction(ida_hexrays.m_nop, target_ea),)),
-        )
+        (_Block(0, target_ea, (_Instruction(ida_hexrays.m_nop, target_ea),)),)
     )
     destination = _MBA(
         (
@@ -3618,9 +4198,7 @@ def test_import_boundary_port_materializes_pruned_live_frontier(
     target_ea = 0x1100
     dispatcher_ea = 0x1200
     source = _MBA(
-        (
-            _Block(0, target_ea, (_Instruction(ida_hexrays.m_nop, target_ea),)),
-        )
+        (_Block(0, target_ea, (_Instruction(ida_hexrays.m_nop, target_ea),)),)
     )
     destination = _MBA(
         (
@@ -3798,12 +4376,12 @@ def test_import_boundary_port_restores_pruned_live_conditional(
     )
     destination.append_block(rebound_taken_block)
     identity = detached_handler_island.stable_mba_identity(destination)
-    detached_handler_island._IMPORTED_SNIPPET_ROOTS[
-        (identity, taken_target_ea)
-    ] = detached_handler_island._ImportedSnippetRoot(
-        serial_hint=int(rebound_taken_block.serial),
-        anchor_eas=(rebound_anchor_ea,),
-        owned_instruction_eas=(rebound_anchor_ea,),
+    detached_handler_island._IMPORTED_SNIPPET_ROOTS[(identity, taken_target_ea)] = (
+        detached_handler_island._ImportedSnippetRoot(
+            serial_hint=int(rebound_taken_block.serial),
+            anchor_eas=(rebound_anchor_ea,),
+            owned_instruction_eas=(rebound_anchor_ea,),
+        )
     )
 
     rebound_evidence = (
@@ -3932,8 +4510,7 @@ def test_import_boundary_port_preserves_call_corridor(
     imported_target = next(
         block
         for block in destination.blocks
-        if block.head is not None
-        and origins.get(int(block.head.ea)) == target_ea
+        if block.head is not None and origins.get(int(block.head.ea)) == target_ea
     )
     assert tuple(helper.succset) == (int(imported_target.serial),)
     assert result.applied_boundary_ports[0].endpoint_block_ea == source_ea
@@ -4047,11 +4624,29 @@ def test_import_boundary_port_abstains_before_allocation_when_sibling_missing(
     missing_target_ea = 0x1500
     source = _MBA(
         (
-            _Block(0, first_source_ea, (_Instruction(ida_hexrays.m_nop, first_source_ea),), (3,)),
+            _Block(
+                0,
+                first_source_ea,
+                (_Instruction(ida_hexrays.m_nop, first_source_ea),),
+                (3,),
+            ),
             _Block(1, target_ea, (_Instruction(ida_hexrays.m_nop, target_ea),)),
-            _Block(2, second_source_ea, (_Instruction(ida_hexrays.m_nop, second_source_ea),), (4,)),
-            _Block(3, first_dispatcher_ea, (_Instruction(ida_hexrays.m_nop, first_dispatcher_ea),)),
-            _Block(4, second_dispatcher_ea, (_Instruction(ida_hexrays.m_nop, second_dispatcher_ea),)),
+            _Block(
+                2,
+                second_source_ea,
+                (_Instruction(ida_hexrays.m_nop, second_source_ea),),
+                (4,),
+            ),
+            _Block(
+                3,
+                first_dispatcher_ea,
+                (_Instruction(ida_hexrays.m_nop, first_dispatcher_ea),),
+            ),
+            _Block(
+                4,
+                second_dispatcher_ea,
+                (_Instruction(ida_hexrays.m_nop, second_dispatcher_ea),),
+            ),
         )
     )
     source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
@@ -4059,8 +4654,16 @@ def test_import_boundary_port_abstains_before_allocation_when_sibling_missing(
     destination = _MBA(
         (
             _Block(0, function_ea, (_Instruction(ida_hexrays.m_nop, function_ea),)),
-            _Block(1, first_dispatcher_ea, (_Instruction(ida_hexrays.m_nop, first_dispatcher_ea),)),
-            _Block(2, second_dispatcher_ea, (_Instruction(ida_hexrays.m_nop, second_dispatcher_ea),)),
+            _Block(
+                1,
+                first_dispatcher_ea,
+                (_Instruction(ida_hexrays.m_nop, first_dispatcher_ea),),
+            ),
+            _Block(
+                2,
+                second_dispatcher_ea,
+                (_Instruction(ida_hexrays.m_nop, second_dispatcher_ea),),
+            ),
         )
     )
     first_port = _direct_boundary_port(
@@ -4165,10 +4768,9 @@ def test_allocates_distinct_in_range_eas_for_converging_imported_defs(
     }
     assert len(imported_eas) == 2
     assert imported_eas.isdisjoint({first_target_ea, second_target_ea, function_ea})
-    assert {
-        destination.map_fict_ea(imported_ea)
-        for imported_ea in imported_eas
-    } == {function_ea + 1}
+    assert {destination.map_fict_ea(imported_ea) for imported_ea in imported_eas} == {
+        function_ea + 1
+    }
 
 
 def test_relocates_imported_root_after_block_renumbering(monkeypatch) -> None:

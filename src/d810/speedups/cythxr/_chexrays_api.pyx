@@ -20,6 +20,9 @@ from ._chexrays cimport (
     get_mreg_name,
     OPERAND_PROPERTIES,
     _swig_ptr,
+    stkpnt_t,
+    stkpnts_t,
+    mcallinfo_t,
 )
 
 
@@ -150,6 +153,73 @@ cpdef uint64 hash_minsn(object py_ins, uint64 func_entry_ea=0):
     h = _mix64(h, _hash_mop_ptr(&ins.r, <ea_t>func_entry_ea, &memo, 0))
     h = _mix64(h, _hash_mop_ptr(&ins.d, <ea_t>func_entry_ea, &memo, 0))
     return h
+
+
+cpdef tuple snapshot_stkpnts(object py_stkpnts):
+    """Return the transient Hex-Rays stack points as ``(ea, spd)`` rows."""
+    cdef stkpnts_t* points = <stkpnts_t*>_swig_ptr(py_stkpnts)
+    cdef size_t index
+    cdef list rows = []
+
+    if points == NULL:
+        return ()
+    for index in range(deref(points).size()):
+        rows.append(
+            (
+            int(deref(points)[index].ea),
+            int(deref(points)[index].spd),
+            )
+        )
+    return tuple(rows)
+
+
+cpdef bint upsert_stkpnt(object py_stkpnts, uint64 ea, long long spd):
+    """Insert or replace one transient Hex-Rays stack point by native EA.
+
+    ``hxe_stkpnts`` receives a sorted ``stkpnts_t``.  Stock IDAPython wraps
+    the object but exposes no vector methods, so this optional SDK adapter
+    performs the smallest possible operation while preserving that ordering.
+    """
+    cdef stkpnts_t* points = <stkpnts_t*>_swig_ptr(py_stkpnts)
+    cdef stkpnt_t point
+    cdef size_t index
+    cdef size_t count
+
+    if points == NULL:
+        return False
+    count = deref(points).size()
+    for index in range(count):
+        if deref(points)[index].ea == <ea_t>ea:
+            deref(points)[index].spd = <sval_t>spd
+            return False
+        if deref(points)[index].ea > <ea_t>ea:
+            point.ea = <ea_t>ea
+            point.spd = <sval_t>spd
+            deref(points).insert_copy(deref(points).begin() + index, point)
+            return True
+    point.ea = <ea_t>ea
+    point.spd = <sval_t>spd
+    deref(points).push_back(point)
+    return True
+
+
+cpdef bint copy_mcallinfo(object py_destination, object py_source):
+    """Deep-copy one SDK ``mcallinfo_t`` into another.
+
+    IDAPython exposes the default ``mcallinfo_t`` constructor but not the C++
+    copy constructor.  Copy into a Python-owned destination through the SDK
+    assignment operator so callers can return a complete analyzed callinfo
+    from ``hxe_build_callinfo`` without reconstructing its internal vectors.
+    """
+    cdef mcallinfo_t* destination = (
+        <mcallinfo_t*>_swig_ptr(py_destination)
+    )
+    cdef const mcallinfo_t* source = <const mcallinfo_t*>_swig_ptr(py_source)
+
+    if destination == NULL or source == NULL:
+        return False
+    deref(destination).assign_from_copy(deref(source))
+    return True
 
 
 cdef qstring stack_var_name(mop_t* op):

@@ -1,8 +1,11 @@
 """Runtime-layer regression tests for the computed-goto resolver."""
+
 from __future__ import annotations
 
 import sys
 from types import ModuleType, SimpleNamespace
+
+import pytest
 
 from d810.core.maturity_labels import IDA_MMAT_LOCOPT, IDA_MMAT_PREOPTIMIZED
 from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
@@ -76,7 +79,22 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
 )
 from d810.analyses.control_flow.semantic_transition import StateWriteAnchor
 from d810.capabilities.dispatcher import RouterKind
-from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+from d810.ir.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_proven_call_abi_cache(monkeypatch):
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_PROVEN_CALL_ABI_BY_EA",
+        {},
+    )
 
 
 def test_native_tail_state_scan_does_not_cross_block_start(monkeypatch):
@@ -102,11 +120,14 @@ def test_native_tail_state_scan_does_not_cross_block_start(monkeypatch):
         ),
     )
 
-    assert _native_final_state_write_before_live_tail(
-        block,
-        state_var_reg=20,
-        incoming_state=0xCCEC5DE0,
-    ) is None
+    assert (
+        _native_final_state_write_before_live_tail(
+            block,
+            state_var_reg=20,
+            incoming_state=0xCCEC5DE0,
+        )
+        is None
+    )
     assert (0x40B157, 0x40B158) in scanned_ranges
 
 
@@ -221,10 +242,11 @@ def test_build_callinfo_applies_proven_three_argument_stdcall(monkeypatch) -> No
         raising=False,
     )
     block = SimpleNamespace(
+        mba=SimpleNamespace(qty=0),
         tail=SimpleNamespace(
             opcode=ida_hexrays.m_icall,
             ea=call_ea,
-        )
+        ),
     )
 
     decision: dict[str, object] = {"callinfo": None}
@@ -237,6 +259,425 @@ def test_build_callinfo_applies_proven_three_argument_stdcall(monkeypatch) -> No
 
     assert applied == [StackCallAbiProof(3, 12)]
     assert decision["callinfo"] == "prepared-callinfo"
+
+
+def test_build_callinfo_uses_native_ea_route_template_before_type_guessing(
+    monkeypatch,
+) -> None:
+    import ida_hexrays
+
+    function_ea = 0x1000
+    imported_call_ea = 0xF10020
+    native_call_ea = 0x2030
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_RESOLUTIONS_BY_EA",
+        {function_ea: resolution},
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: ((imported_call_ea, native_call_ea),),
+    )
+
+    def copied(_destination, _source):
+        return True
+
+    monkeypatch.setattr(computed_goto_resolver, "_copy_mcallinfo", copied)
+    prepared = SimpleNamespace(args=(), call_spd=0, stkargs_top=0)
+    calls: list[tuple[object, ...]] = []
+
+    def prepare(*args: object, **kwargs: object) -> object:
+        calls.append((*args, kwargs["copy_callinfo"]))
+        return prepared
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_detached_callinfo_template",
+        prepare,
+    )
+    mba = SimpleNamespace(entry_ea=function_ea)
+    raw_call = SimpleNamespace(
+        opcode=ida_hexrays.m_call,
+        ea=imported_call_ea,
+        l=SimpleNamespace(t=ida_hexrays.mop_v, g=0x5000),
+    )
+    block = SimpleNamespace(tail=raw_call, mba=mba)
+    decision: dict[str, object] = {"callinfo": None}
+
+    _on_build_callinfo(
+        function_ea=function_ea,
+        block=block,
+        call_type=object(),
+        decision=decision,
+    )
+
+    assert decision["callinfo"] is prepared
+    assert calls == [
+        (
+            function_ea,
+            native_call_ea,
+            raw_call,
+            mba,
+            copied,
+        )
+    ]
+
+
+def test_build_callinfo_does_not_replay_route_template_into_source_mba(
+    monkeypatch,
+) -> None:
+    import ida_funcs
+    import ida_hexrays
+    import ida_nalt
+
+    profile_ea = 0x1000
+    source_mba_ea = 0x2000
+    native_call_ea = 0x2030
+    resolution = ComputedGotoResolution(
+        function_ea=profile_ea,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_RESOLUTIONS_BY_EA",
+        {profile_ea: resolution},
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        ida_funcs,
+        "get_func",
+        lambda ea: (
+            SimpleNamespace(start_ea=profile_ea) if int(ea) == native_call_ea else None
+        ),
+    )
+    monkeypatch.setattr(ida_nalt, "get_op_tinfo", lambda *_args: True)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_copy_mcallinfo",
+        lambda _destination, _source: True,
+    )
+    replayed: list[tuple[object, ...]] = []
+
+    def prepare(*args: object, **_kwargs: object) -> object:
+        replayed.append(args)
+        return SimpleNamespace(args=(), call_spd=0, stkargs_top=0)
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_detached_callinfo_template",
+        prepare,
+    )
+    mba = SimpleNamespace(entry_ea=source_mba_ea)
+    block = SimpleNamespace(
+        tail=SimpleNamespace(
+            opcode=ida_hexrays.m_icall,
+            ea=native_call_ea,
+        ),
+        mba=mba,
+    )
+    decision: dict[str, object] = {"callinfo": None}
+
+    _on_build_callinfo(
+        function_ea=source_mba_ea,
+        block=block,
+        call_type=object(),
+        decision=decision,
+    )
+
+    assert decision["callinfo"] is None
+    assert replayed == []
+
+
+def test_stkpnts_projects_native_spd_to_imported_and_call_eas(
+    monkeypatch,
+) -> None:
+    import ida_frame
+    import ida_funcs
+
+    function_ea = 0x1000
+    imported_call_ea = 0xF10020
+    imported_body_ea = 0xF10024
+    native_call_ea = 0x2030
+    native_body_ea = 0x2034
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_RESOLUTIONS_BY_EA",
+        {function_ea: resolution},
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "last_imported_detached_snippet_instruction_origins",
+        lambda _function_ea: (
+            (imported_call_ea, native_call_ea),
+            (imported_body_ea, native_body_ea),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "detached_callinfo_template_eas",
+        lambda _function_ea: (native_call_ea,),
+        raising=False,
+    )
+    function = object()
+    monkeypatch.setattr(
+        ida_funcs,
+        "get_func",
+        lambda ea: function if int(ea) == function_ea else None,
+    )
+    spd_by_ea = {native_call_ea: -12, native_body_ea: -8}
+    monkeypatch.setattr(
+        ida_frame,
+        "get_spd",
+        lambda candidate, ea: spd_by_ea[int(ea)] if candidate is function else 0,
+    )
+    applied: list[tuple[object, int, int]] = []
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_upsert_stkpnt",
+        lambda points, ea, spd: not applied.append((points, ea, spd)),
+        raising=False,
+    )
+    stack_points = object()
+    decision: dict[str, object] = {}
+
+    computed_goto_resolver._on_stkpnts(
+        function_ea=function_ea,
+        mba=SimpleNamespace(entry_ea=function_ea),
+        stack_points=stack_points,
+        decision=decision,
+    )
+
+    assert applied == [
+        (stack_points, native_call_ea, -12),
+        (stack_points, imported_call_ea, -12),
+        (stack_points, imported_body_ea, -8),
+    ]
+    assert decision == {"stack_points_modified": 3}
+
+
+def test_stkpnts_projects_native_spd_into_isolated_capture_ranges(
+    monkeypatch,
+) -> None:
+    import ida_bytes
+    import ida_frame
+    import ida_funcs
+    import idautils
+
+    profile_ea = 0x1000
+    capture_entry_ea = 0x2000
+    first_instruction_ea = 0x2010
+    second_instruction_ea = 0x2014
+    resolution = ComputedGotoResolution(
+        function_ea=profile_ea,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_RESOLUTIONS_BY_EA",
+        {profile_ea: resolution},
+    )
+    monkeypatch.setattr(computed_goto_resolver, "_SNIPPET_CAPTURE_ACTIVE", True)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_SNIPPET_CAPTURE_PROFILE_EA",
+        profile_ea,
+    )
+
+    class _Ranges(list):
+        def size(self) -> int:
+            return len(self)
+
+    mba = SimpleNamespace(
+        entry_ea=capture_entry_ea,
+        mbr=SimpleNamespace(
+            ranges=_Ranges(
+                [SimpleNamespace(start_ea=first_instruction_ea, end_ea=0x2020)]
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        idautils,
+        "Heads",
+        lambda start_ea, end_ea: (
+            (
+                first_instruction_ea,
+                second_instruction_ea,
+            )
+            if (int(start_ea), int(end_ea)) == (first_instruction_ea, 0x2020)
+            else ()
+        ),
+    )
+    monkeypatch.setattr(ida_bytes, "get_flags", lambda _ea: 1)
+    monkeypatch.setattr(ida_bytes, "is_code", lambda flags: int(flags) == 1)
+    function = object()
+    monkeypatch.setattr(
+        ida_funcs,
+        "get_func",
+        lambda ea: function if int(ea) == profile_ea else None,
+    )
+    spd_by_ea = {first_instruction_ea: -8, second_instruction_ea: -12}
+    monkeypatch.setattr(
+        ida_frame,
+        "get_spd",
+        lambda candidate, ea: spd_by_ea[int(ea)] if candidate is function else 0,
+    )
+    applied: list[tuple[object, int, int]] = []
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_upsert_stkpnt",
+        lambda points, ea, spd: not applied.append((points, ea, spd)),
+    )
+    stack_points = object()
+    decision: dict[str, object] = {}
+
+    computed_goto_resolver._on_stkpnts(
+        function_ea=capture_entry_ea,
+        mba=mba,
+        stack_points=stack_points,
+        decision=decision,
+    )
+
+    assert applied == [
+        (stack_points, first_instruction_ea, -8),
+        (stack_points, second_instruction_ea, -12),
+    ]
+    assert decision == {"stack_points_modified": 2}
+
+
+def test_build_callinfo_reuses_proof_after_cfg_rewrite_hides_reentry(
+    monkeypatch,
+) -> None:
+    import ida_hexrays
+    import ida_nalt
+
+    function_ea = 0x810000
+    call_ea = 0x810030
+    reentry_ea = 0x820020
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={reentry_ea: (0x830000,)},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_RESOLUTIONS_BY_EA",
+        {function_ea: resolution},
+    )
+    monkeypatch.setattr(ida_nalt, "get_op_tinfo", lambda *_args: False)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "native_call_stack_deficit",
+        lambda _block, _call_ea: 12,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "native_corridor_has_no_stack_adjustment",
+        lambda _call_ea, _reentry_eas: True,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "collect_three_argument_callee_purged_evidence",
+        lambda *_args, **_kwargs: StackCallAbiEvidence(
+            word_size=4,
+            outgoing_stack_offsets=(-12, -8, -4),
+            call_stack_deficit=12,
+            argument_values_proven=True,
+            continuation_is_linear=False,
+            continuation_reaches_proven_reentry=False,
+            caller_stack_adjustment=0,
+            has_authoritative_type=False,
+        ),
+    )
+    proof_calls: list[StackCallAbiProof | None] = [
+        StackCallAbiProof(3, 12),
+        None,
+    ]
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prove_three_argument_callee_purged_call",
+        lambda _evidence: proof_calls.pop(0),
+    )
+    applied: list[StackCallAbiProof] = []
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "apply_three_argument_stdcall_type",
+        lambda _call_type, proof: not applied.append(proof),
+    )
+    prepared = [object(), object()]
+    built: list[object] = []
+
+    def build_callinfo(_block, _call_type, _proof):
+        result = prepared[len(built)]
+        built.append(result)
+        return result
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "build_three_argument_stdcall_callinfo",
+        build_callinfo,
+    )
+    block = SimpleNamespace(
+        mba=SimpleNamespace(qty=0),
+        tail=SimpleNamespace(opcode=ida_hexrays.m_icall, ea=call_ea),
+    )
+    first: dict[str, object] = {"callinfo": None}
+    second: dict[str, object] = {"callinfo": None}
+
+    _on_build_callinfo(
+        function_ea=function_ea,
+        block=block,
+        call_type=object(),
+        decision=first,
+    )
+    _on_build_callinfo(
+        function_ea=function_ea,
+        block=block,
+        call_type=object(),
+        decision=second,
+    )
+
+    assert first["callinfo"] is prepared[0]
+    assert second["callinfo"] is prepared[1]
+    assert applied == [StackCallAbiProof(3, 12), StackCallAbiProof(3, 12)]
+    assert proof_calls == [None]
 
 
 def test_callinfo_reentry_accepts_only_exact_native_resolver_evidence() -> None:
@@ -360,6 +801,7 @@ def test_build_callinfo_derives_exact_detached_reentry_before_calls(
         lambda _block, _call_type, _proof: prepared_callinfo,
     )
     block = SimpleNamespace(
+        mba=SimpleNamespace(qty=0),
         start=0x1010,
         tail=SimpleNamespace(opcode=ida_hexrays.m_icall, ea=call_ea),
     )
@@ -401,9 +843,7 @@ def test_callinfo_profile_rebinds_isolated_snippet_to_native_owner(
     monkeypatch.setattr(
         ida_funcs,
         "get_func",
-        lambda call_ea: (
-            SimpleNamespace(start_ea=0x1000) if call_ea == 0x1030 else None
-        ),
+        lambda call_ea: SimpleNamespace(start_ea=0x1000) if call_ea == 0x1030 else None,
     )
 
     assert _callinfo_profile_resolution(0x1010, 0x1030) == (
@@ -474,10 +914,11 @@ def test_build_callinfo_preserves_authoritative_indirect_type(monkeypatch) -> No
         raising=False,
     )
     block = SimpleNamespace(
+        mba=SimpleNamespace(qty=0),
         tail=SimpleNamespace(
             opcode=ida_hexrays.m_icall,
             ea=0x1030,
-        )
+        ),
     )
 
     _on_build_callinfo(
@@ -497,16 +938,94 @@ def test_nested_snippet_generation_suppresses_d810() -> None:
         observed.append((args, d810_optimization_is_suppressed()))
         return "snippet"
 
-    assert computed_goto_resolver._generate_microcode_without_d810(
-        generate,
-        "ranges",
-        "failure",
-        None,
-        0x10,
-        3,
-    ) == "snippet"
+    assert (
+        computed_goto_resolver._generate_microcode_without_d810(
+            generate,
+            "ranges",
+            "failure",
+            None,
+            0x10,
+            3,
+        )
+        == "snippet"
+    )
     assert observed == [
         (("ranges", "failure", None, 0x10, 3), True),
+    ]
+
+
+def test_route_callinfo_capture_rotates_each_native_range_to_entry(
+    monkeypatch,
+) -> None:
+    import ida_hexrays
+    import idaapi
+
+    class FakeRanges:
+        def __init__(self) -> None:
+            self.ranges = self
+            self.items: list[tuple[int, int]] = []
+
+        def push_back(self, native_range: tuple[int, int]) -> None:
+            self.items.append(native_range)
+
+    class FakeFailure:
+        def desc(self) -> str:
+            return "no error"
+
+    native_ranges = ((0x1000, 0x1010), (0x2000, 0x2020), (0x3000, 0x3010))
+    generated_orders: list[tuple[tuple[int, int], ...]] = []
+    snippets = [object(), object(), object()]
+
+    monkeypatch.setattr(ida_hexrays, "mba_ranges_t", FakeRanges)
+    monkeypatch.setattr(ida_hexrays, "hexrays_failure_t", FakeFailure)
+    monkeypatch.setattr(idaapi, "range_t", lambda start, end: (start, end))
+
+    def generate(
+        _generator,
+        ranges,
+        _failure,
+        _retlist,
+        _flags,
+        maturity,
+    ):
+        assert int(maturity) == int(ida_hexrays.MMAT_CALLS)
+        generated_orders.append(tuple(ranges.items))
+        return snippets[len(generated_orders) - 1]
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_generate_microcode_without_d810",
+        generate,
+    )
+    captured: list[tuple[int, object]] = []
+
+    def capture(function_ea: int, snippet: object) -> tuple[int, ...]:
+        captured.append((function_ea, snippet))
+        return {
+            snippets[0]: (0x1018,),
+            snippets[1]: (0x2028, 0x1018),
+            snippets[2]: (),
+        }[snippet]
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "capture_detached_callinfo_templates",
+        capture,
+    )
+
+    assert computed_goto_resolver.capture_detached_route_callinfo_templates(
+        0x4000,
+        native_ranges,
+    ) == (0x1018, 0x2028)
+    assert generated_orders == [
+        (native_ranges[0], native_ranges[1], native_ranges[2]),
+        (native_ranges[1], native_ranges[0], native_ranges[2]),
+        (native_ranges[2], native_ranges[0], native_ranges[1]),
+    ]
+    assert captured == [
+        (0x4000, snippets[0]),
+        (0x4000, snippets[1]),
+        (0x4000, snippets[2]),
     ]
 
 
@@ -733,9 +1252,7 @@ def test_prepatch_handler_entry_route_replays_native_equality_leaf(
         resolution,
         (row,),
         route_resolver=resolve,
-        range_resolver=lambda target_ea: (
-            (target_ea, 0x40B17F),
-        ),
+        range_resolver=lambda target_ea: ((target_ea, 0x40B17F),),
     ) == (
         MaterializedIndirectTransfer(
             source_jmp_ea=0x40B149,
@@ -783,10 +1300,13 @@ def test_static_handler_entry_route_abstains_on_conflicting_context() -> None:
         for index, value in enumerate((0xFDEE1C81, 0xA0716E5B))
     )
 
-    assert _recover_static_handler_entry_route_transfers(
-        (leaf, *conflicting_context),
-        route_resolver=lambda *_args, **_kwargs: 0x40B163,
-    ) == ()
+    assert (
+        _recover_static_handler_entry_route_transfers(
+            (leaf, *conflicting_context),
+            route_resolver=lambda *_args, **_kwargs: 0x40B163,
+        )
+        == ()
+    )
 
 
 def test_static_handler_entry_route_abstains_on_conflicting_leaf_proofs() -> None:
@@ -811,10 +1331,13 @@ def test_static_handler_entry_route_abstains_on_conflicting_leaf_proofs() -> Non
         resolver_kind="static_fixpoint",
     )
 
-    assert _recover_static_handler_entry_route_transfers(
-        (*leaves, context),
-        route_resolver=lambda *_args, **_kwargs: 0x40B163,
-    ) == ()
+    assert (
+        _recover_static_handler_entry_route_transfers(
+            (*leaves, context),
+            route_resolver=lambda *_args, **_kwargs: 0x40B163,
+        )
+        == ()
+    )
 
 
 def test_prepare_detached_snippets_publishes_static_handler_entry_routes(
@@ -881,9 +1404,7 @@ def test_prepare_detached_snippets_publishes_static_handler_entry_routes(
     fake_hexrays.MMAT_LOCOPT = IDA_MMAT_LOCOPT
     monkeypatch.setitem(sys.modules, "ida_hexrays", fake_hexrays)
     monkeypatch.setitem(sys.modules, "idaapi", ModuleType("idaapi"))
-    mutation_module = ModuleType(
-        "d810.hexrays.mutation.detached_handler_island"
-    )
+    mutation_module = ModuleType("d810.hexrays.mutation.detached_handler_island")
     for name in (
         "capture_detached_replacement_snippet_template",
         "capture_detached_snippet_template",
@@ -944,9 +1465,7 @@ def test_prepare_terminal_return_carriers_is_independent_of_materialization(
     )
 
     assert (
-        computed_goto_resolver.prepare_terminal_return_carrier_templates(
-            function_ea
-        )
+        computed_goto_resolver.prepare_terminal_return_carrier_templates(function_ea)
         == 1
     )
     assert captured == [(function_ea, (request,))]
@@ -985,18 +1504,12 @@ def test_detached_static_terminal_transfers_seed_each_island_from_function_conte
     monkeypatch.setattr(
         computed_goto_resolver,
         "_static_register_state_before_jmp",
-        lambda _block_entry, _entry_state, _jmp_ea: {
-            "ebx": frozenset({source_state})
-        },
+        lambda _block_entry, _entry_state, _jmp_ea: {"ebx": frozenset({source_state})},
     )
     monkeypatch.setattr(
         computed_goto_resolver,
         "_residual_context_mregs",
-        lambda values: {
-            20: int(dict(values)["ebx"])
-        }
-        if "ebx" in dict(values)
-        else {},
+        lambda values: {20: int(dict(values)["ebx"])} if "ebx" in dict(values) else {},
     )
 
     (transfer,) = computed_goto_resolver._detached_static_terminal_transfers(
@@ -1092,11 +1605,14 @@ def test_residual_predicate_inherits_exact_preceding_state_write() -> None:
         ((260, state, 0x40A7AE),),
         state_write_sites={(260, state): write_ea},
     ) == {predicate_ea: state}
-    assert _residual_predicate_inherited_states(
-        graph,
-        ((260, state, 0x40A7AE),),
-        state_write_sites={(260, state): predicate_ea + 1},
-    ) == {}
+    assert (
+        _residual_predicate_inherited_states(
+            graph,
+            ((260, state, 0x40A7AE),),
+            state_write_sites={(260, state): predicate_ea + 1},
+        )
+        == {}
+    )
 
 
 def test_conditional_handler_bridge_requires_residual_route_not_predicate_patch(
@@ -1125,40 +1641,38 @@ def test_conditional_handler_bridge_requires_residual_route_not_predicate_patch(
             resolver_kind="condition_chain_handler_evidence",
         ),
     )
-    bridge_module = ModuleType(
-        "d810.backends.hexrays.evidence.residual_entry_bridge"
+    bridge_module = ModuleType("d810.backends.hexrays.evidence.residual_entry_bridge")
+    bridge_module.recognize_conditional_handler_bridges = lambda *_args, **_kwargs: (
+        SimpleNamespace(
+            predicate_ea=0x40C404,
+            source_block_ea=0x40C3F0,
+            predicate_register=44,
+            predicate_size=4,
+            predicate_compare_register=None,
+            predicate_compare_constant=None,
+            predicate_predecessor_ea=0x40C3FC,
+            true_state=true_state,
+            false_state=false_state,
+            true_target_ea=0x40A7AE,
+            false_target_ea=0x40B8E6,
+            true_is_taken=True,
+        ),
     )
-    bridge_module.recognize_conditional_handler_bridges = (
-        lambda *_args, **_kwargs: (
-            SimpleNamespace(
-                predicate_ea=0x40C404,
-                source_block_ea=0x40C3F0,
-                predicate_register=44,
-                    predicate_size=4,
-                    predicate_compare_register=None,
-                    predicate_compare_constant=None,
-                    predicate_predecessor_ea=0x40C3FC,
-                true_state=true_state,
-                false_state=false_state,
-                true_target_ea=0x40A7AE,
-                false_target_ea=0x40B8E6,
-                true_is_taken=True,
-            ),
-        )
-    )
-    bridge_module.predicate_arm_reaches_ea = (
-        lambda _mba, *, predicate_ea, route_ea: (predicate_ea, route_ea)
-        == (0x40C404, 0x40C422)
+    bridge_module.predicate_arm_reaches_ea = lambda _mba, *, predicate_ea, route_ea: (
+        (predicate_ea, route_ea) == (0x40C404, 0x40C422)
     )
     monkeypatch.setitem(
         sys.modules,
         "d810.backends.hexrays.evidence.residual_entry_bridge",
         bridge_module,
     )
-    assert recover_conditional_handler_bridge_transfers_from_mba(
-        transfers,
-        object(),
-    ) == ()
+    assert (
+        recover_conditional_handler_bridge_transfers_from_mba(
+            transfers,
+            object(),
+        )
+        == ()
+    )
 
     residual_route = MaterializedIndirectTransfer(
         source_jmp_ea=0x40C422,
@@ -1220,26 +1734,22 @@ def test_conditional_handler_bridge_accepts_imported_predicate_with_exact_arms(
             resolver_kind="residual_state_route",
         ),
     )
-    bridge_module = ModuleType(
-        "d810.backends.hexrays.evidence.residual_entry_bridge"
-    )
-    bridge_module.recognize_conditional_handler_bridges = (
-        lambda *_args, **_kwargs: (
-            SimpleNamespace(
-                predicate_ea=predicate_ea,
-                source_block_ea=predicate_ea,
-                predicate_register=8,
-                predicate_size=4,
-                predicate_compare_register=None,
-                predicate_compare_constant=None,
-                predicate_predecessor_ea=predicate_ea,
-                true_state=true_state,
-                false_state=false_state,
-                true_target_ea=true_target,
-                false_target_ea=false_target,
-                true_is_taken=True,
-            ),
-        )
+    bridge_module = ModuleType("d810.backends.hexrays.evidence.residual_entry_bridge")
+    bridge_module.recognize_conditional_handler_bridges = lambda *_args, **_kwargs: (
+        SimpleNamespace(
+            predicate_ea=predicate_ea,
+            source_block_ea=predicate_ea,
+            predicate_register=8,
+            predicate_size=4,
+            predicate_compare_register=None,
+            predicate_compare_constant=None,
+            predicate_predecessor_ea=predicate_ea,
+            true_state=true_state,
+            false_state=false_state,
+            true_target_ea=true_target,
+            false_target_ea=false_target,
+            true_is_taken=True,
+        ),
     )
     bridge_module.predicate_arm_reaches_ea = lambda *_args, **_kwargs: True
     monkeypatch.setitem(
@@ -1294,26 +1804,22 @@ def test_imported_predicate_accepts_static_equality_state_register_proof(
         static_route(0x40B3E5, true_state, true_target),
         static_route(0x40B6C8, false_state, false_target),
     )
-    bridge_module = ModuleType(
-        "d810.backends.hexrays.evidence.residual_entry_bridge"
-    )
-    bridge_module.recognize_conditional_handler_bridges = (
-        lambda *_args, **_kwargs: (
-            SimpleNamespace(
-                predicate_ea=predicate_ea,
-                source_block_ea=predicate_ea,
-                predicate_register=8,
-                predicate_size=4,
-                predicate_compare_register=None,
-                predicate_compare_constant=None,
-                predicate_predecessor_ea=predicate_ea,
-                true_state=true_state,
-                false_state=false_state,
-                true_target_ea=true_target,
-                false_target_ea=false_target,
-                true_is_taken=True,
-            ),
-        )
+    bridge_module = ModuleType("d810.backends.hexrays.evidence.residual_entry_bridge")
+    bridge_module.recognize_conditional_handler_bridges = lambda *_args, **_kwargs: (
+        SimpleNamespace(
+            predicate_ea=predicate_ea,
+            source_block_ea=predicate_ea,
+            predicate_register=8,
+            predicate_size=4,
+            predicate_compare_register=None,
+            predicate_compare_constant=None,
+            predicate_predecessor_ea=predicate_ea,
+            true_state=true_state,
+            false_state=false_state,
+            true_target_ea=true_target,
+            false_target_ea=false_target,
+            true_is_taken=True,
+        ),
     )
     bridge_module.predicate_arm_reaches_ea = lambda *_args, **_kwargs: False
     monkeypatch.setitem(
@@ -1356,26 +1862,22 @@ def test_live_opaque_bridge_accepts_exact_inherited_handler_route(
             (0x40C168, taken_state, 0x40C16A),
         )
     )
-    bridge_module = ModuleType(
-        "d810.backends.hexrays.evidence.residual_entry_bridge"
-    )
-    bridge_module.recognize_conditional_handler_bridges = (
-        lambda *_args, **_kwargs: (
-            SimpleNamespace(
-                predicate_ea=predicate_ea,
-                source_block_ea=0x40C20C,
-                predicate_register=None,
-                predicate_size=4,
-                predicate_compare_register=None,
-                predicate_compare_constant=0x62,
-                predicate_predecessor_ea=0x40C217,
-                true_state=taken_state,
-                false_state=inherited_state,
-                true_target_ea=0x40C16A,
-                false_target_ea=0x40AAA2,
-                true_is_taken=True,
-            ),
-        )
+    bridge_module = ModuleType("d810.backends.hexrays.evidence.residual_entry_bridge")
+    bridge_module.recognize_conditional_handler_bridges = lambda *_args, **_kwargs: (
+        SimpleNamespace(
+            predicate_ea=predicate_ea,
+            source_block_ea=0x40C20C,
+            predicate_register=None,
+            predicate_size=4,
+            predicate_compare_register=None,
+            predicate_compare_constant=0x62,
+            predicate_predecessor_ea=0x40C217,
+            true_state=taken_state,
+            false_state=inherited_state,
+            true_target_ea=0x40C16A,
+            false_target_ea=0x40AAA2,
+            true_is_taken=True,
+        ),
     )
     bridge_module.predicate_arm_reaches_ea = lambda *_args, **_kwargs: False
     monkeypatch.setitem(
@@ -1421,26 +1923,22 @@ def test_live_register_predicate_accepts_exact_inherited_handler_route(
             (0x40C85F, taken_state, taken_target),
         )
     )
-    bridge_module = ModuleType(
-        "d810.backends.hexrays.evidence.residual_entry_bridge"
-    )
-    bridge_module.recognize_conditional_handler_bridges = (
-        lambda *_args, **_kwargs: (
-            SimpleNamespace(
-                predicate_ea=predicate_ea,
-                source_block_ea=0x40C5BD,
-                predicate_register=44,
-                predicate_size=4,
-                predicate_compare_register=None,
-                predicate_compare_constant=0,
-                predicate_predecessor_ea=0x40C5CA,
-                true_state=taken_state,
-                false_state=inherited_state,
-                true_target_ea=taken_target,
-                false_target_ea=inherited_target,
-                true_is_taken=True,
-            ),
-        )
+    bridge_module = ModuleType("d810.backends.hexrays.evidence.residual_entry_bridge")
+    bridge_module.recognize_conditional_handler_bridges = lambda *_args, **_kwargs: (
+        SimpleNamespace(
+            predicate_ea=predicate_ea,
+            source_block_ea=0x40C5BD,
+            predicate_register=44,
+            predicate_size=4,
+            predicate_compare_register=None,
+            predicate_compare_constant=0,
+            predicate_predecessor_ea=0x40C5CA,
+            true_state=taken_state,
+            false_state=inherited_state,
+            true_target_ea=taken_target,
+            false_target_ea=inherited_target,
+            true_is_taken=True,
+        ),
     )
     bridge_module.predicate_arm_reaches_ea = lambda *_args, **_kwargs: False
     monkeypatch.setitem(
@@ -1602,22 +2100,28 @@ def test_setcc_equality_candidate_preserves_native_target_until_live_validation(
         0x304E8694,
         0x40B342,
     )
-    assert _static_equality_candidate_target(
-        candidate,
-        21,
-        live_target_block=203,
-        dispatcher_blocks=frozenset({124, 129}),
-        dispatch_anchor_eas=frozenset({0x40A5F0}),
-        dispatcher_fallback_eas=frozenset({0x40A5F0}),
-    ) is None
-    assert _static_equality_candidate_target(
-        candidate,
-        20,
-        live_target_block=124,
-        dispatcher_blocks=frozenset({124, 129}),
-        dispatch_anchor_eas=frozenset({0x40A5F0}),
-        dispatcher_fallback_eas=frozenset({0x40A5F0}),
-    ) is None
+    assert (
+        _static_equality_candidate_target(
+            candidate,
+            21,
+            live_target_block=203,
+            dispatcher_blocks=frozenset({124, 129}),
+            dispatch_anchor_eas=frozenset({0x40A5F0}),
+            dispatcher_fallback_eas=frozenset({0x40A5F0}),
+        )
+        is None
+    )
+    assert (
+        _static_equality_candidate_target(
+            candidate,
+            20,
+            live_target_block=124,
+            dispatcher_blocks=frozenset({124, 129}),
+            dispatch_anchor_eas=frozenset({0x40A5F0}),
+            dispatcher_fallback_eas=frozenset({0x40A5F0}),
+        )
+        is None
+    )
     dispatcher_candidate = candidate.__class__(
         source_jmp_ea=candidate.source_jmp_ea,
         source_block_ea=candidate.source_block_ea,
@@ -1627,14 +2131,17 @@ def test_setcc_equality_candidate_preserves_native_target_until_live_validation(
         selector_state_var_reg=20,
         resolver_kind="static_equality_candidate",
     )
-    assert _static_equality_candidate_target(
-        dispatcher_candidate,
-        20,
-        live_target_block=203,
-        dispatcher_blocks=frozenset({124, 129}),
-        dispatch_anchor_eas=frozenset(),
-        dispatcher_fallback_eas=frozenset({0x40A5F0}),
-    ) is None
+    assert (
+        _static_equality_candidate_target(
+            dispatcher_candidate,
+            20,
+            live_target_block=203,
+            dispatcher_blocks=frozenset({124, 129}),
+            dispatch_anchor_eas=frozenset(),
+            dispatcher_fallback_eas=frozenset({0x40A5F0}),
+        )
+        is None
+    )
     # Candidate evidence owns the native blocks but is not a logical route
     # until CALLS maps the target EA to exactly one live microcode handler.
     assert _exact_equality_native_target((candidate,), 0x304E8694) is None
@@ -1654,21 +2161,24 @@ def test_setcc_equality_candidate_abstains_without_discriminating_targets():
         "setcc",
     )
 
-    assert _static_equality_route_candidate(
-        row,
-        _PatchPlan(
-            0x40B340,
-            0x40B32C,
-            0x40B334,
-            b"",
-            0x40B342,
-            (),
-            (),
-            target_eas=(0x40B342, 0x40A5F0),
-        ),
-        state_var_reg=20,
-        context_mregs={},
-    ) is None
+    assert (
+        _static_equality_route_candidate(
+            row,
+            _PatchPlan(
+                0x40B340,
+                0x40B32C,
+                0x40B334,
+                b"",
+                0x40B342,
+                (),
+                (),
+                target_eas=(0x40B342, 0x40A5F0),
+            ),
+            state_var_reg=20,
+            context_mregs={},
+        )
+        is None
+    )
 
 
 def test_setcc_equality_candidate_uses_replay_proven_post_terminal_match():
@@ -1779,38 +2289,47 @@ def test_setcc_equality_delivery_requires_match_handler_and_nonmatch_fallback():
         proven_match_target_ea=0x40B342,
         dispatcher_fallback_eas=frozenset({0x40A5F0}),
     ) == (0x40A5F0, 0x40B342)
-    assert _setcc_equality_delivery_targets(
-        row,
-        match_target_ea=0x40A5F0,
-        nonmatch_target_ea=0x40B342,
-        proven_match_target_ea=0x40A5F0,
-        dispatcher_fallback_eas=frozenset({0x40A5F0}),
-    ) is None
-    assert _setcc_equality_delivery_targets(
-        row,
-        match_target_ea=0x40B342,
-        nonmatch_target_ea=0x40B344,
-        proven_match_target_ea=0x40B342,
-        dispatcher_fallback_eas=frozenset({0x40A5F0}),
-    ) is None
-    assert _setcc_equality_delivery_targets(
-        row,
-        match_target_ea=0x40B342,
-        nonmatch_target_ea=0x40A5F0,
-        proven_match_target_ea=0x40B344,
-        dispatcher_fallback_eas=frozenset({0x40A5F0}),
-    ) is None
+    assert (
+        _setcc_equality_delivery_targets(
+            row,
+            match_target_ea=0x40A5F0,
+            nonmatch_target_ea=0x40B342,
+            proven_match_target_ea=0x40A5F0,
+            dispatcher_fallback_eas=frozenset({0x40A5F0}),
+        )
+        is None
+    )
+    assert (
+        _setcc_equality_delivery_targets(
+            row,
+            match_target_ea=0x40B342,
+            nonmatch_target_ea=0x40B344,
+            proven_match_target_ea=0x40B342,
+            dispatcher_fallback_eas=frozenset({0x40A5F0}),
+        )
+        is None
+    )
+    assert (
+        _setcc_equality_delivery_targets(
+            row,
+            match_target_ea=0x40B342,
+            nonmatch_target_ea=0x40A5F0,
+            proven_match_target_ea=0x40B344,
+            dispatcher_fallback_eas=frozenset({0x40A5F0}),
+        )
+        is None
+    )
 
 
 def test_encode_direct_jump_preserves_short_site_or_abstains():
-    assert _encode_direct_jump(0x1000, 2, 0x1070) == b"\xEB\x6E"
+    assert _encode_direct_jump(0x1000, 2, 0x1070) == b"\xeb\x6e"
     assert _encode_direct_jump(0x1000, 2, 0x2000) is None
-    assert _encode_direct_jump(0x1000, 5, 0x2000) == b"\xE9\xFB\x0F\x00\x00"
+    assert _encode_direct_jump(0x1000, 5, 0x2000) == b"\xe9\xfb\x0f\x00\x00"
 
 
 def test_encode_x86_register_immediate32_is_register_generic_and_bounded():
-    assert _encode_x86_register_immediate32(3, 0xA0716E5B) == b"\xBB\x5B\x6E\x71\xA0"
-    assert _encode_x86_register_immediate32(0, 0x12345678) == b"\xB8\x78\x56\x34\x12"
+    assert _encode_x86_register_immediate32(3, 0xA0716E5B) == b"\xbb\x5b\x6e\x71\xa0"
+    assert _encode_x86_register_immediate32(0, 0x12345678) == b"\xb8\x78\x56\x34\x12"
     assert _encode_x86_register_immediate32(8, 1) is None
 
 
@@ -1819,10 +2338,13 @@ def test_entry_bridge_selects_only_jump_before_first_routing_node() -> None:
         ((0x40A5C8, 2), (0x40A5D6, 5)),
         routing_start_ea=0x40A5CA,
     ) == (0x40A5C8, 2)
-    assert computed_goto_resolver._select_prologue_entry_jump(
-        ((0x40A5C8, 2), (0x40A5C9, 2)),
-        routing_start_ea=0x40A5CA,
-    ) is None
+    assert (
+        computed_goto_resolver._select_prologue_entry_jump(
+            ((0x40A5C8, 2), (0x40A5C9, 2)),
+            routing_start_ea=0x40A5CA,
+        )
+        is None
+    )
 
 
 def test_entry_bridge_waits_for_one_residual_route_round() -> None:
@@ -1912,10 +2434,13 @@ def test_exact_equality_native_target_prefers_static_fixpoint_over_condition_cha
         resolver_kind="condition_chain_handler_evidence",
     )
 
-    assert _exact_equality_native_target(
-        (static_fixpoint, condition_chain_continuation),
-        state,
-    ) == 0x40C898
+    assert (
+        _exact_equality_native_target(
+            (static_fixpoint, condition_chain_continuation),
+            state,
+        )
+        == 0x40C898
+    )
 
 
 def test_validated_exact_route_suppresses_duplicate_condition_chain_glue_evidence():
@@ -2613,6 +3138,7 @@ def test_validated_setcc_target_survives_live_condition_chain_snapshot_and_lower
         state_var_reg = 20
 
     from d810.analyses.control_flow import dispatcher_recovery
+
     translator_module = ModuleType("d810.hexrays.mutation.ir_translator")
     translator_module.lift = lambda _mba: graph
     monkeypatch.setitem(
@@ -2639,23 +3165,22 @@ def test_validated_setcc_target_survives_live_condition_chain_snapshot_and_lower
         for transfer in snapshot_evidence
         if transfer.resolver_kind == "live_state_dispatcher_row_evidence"
     )
-    assert tuple(
-        transfer.selector_state_constant for transfer in live_rows
-    ) == (state, unrelated_state)
-    assert {
-        transfer.dispatcher_entry_ea for transfer in live_rows
-    } == {0x40A5F0}
-    assert {
-        transfer.dispatcher_router_eas for transfer in live_rows
-    } == {(0x40A5F0, 0x40B32C, 0x40C180)}
+    assert tuple(transfer.selector_state_constant for transfer in live_rows) == (
+        state,
+        unrelated_state,
+    )
+    assert {transfer.dispatcher_entry_ea for transfer in live_rows} == {0x40A5F0}
+    assert {transfer.dispatcher_router_eas for transfer in live_rows} == {
+        (0x40A5F0, 0x40B32C, 0x40C180)
+    }
     condition_rows = tuple(
         transfer
         for transfer in snapshot_evidence
         if transfer.resolver_kind == "condition_chain_handler_evidence"
     )
-    assert tuple(
-        transfer.selector_state_constant for transfer in condition_rows
-    ) == (unrelated_state,)
+    assert tuple(transfer.selector_state_constant for transfer in condition_rows) == (
+        unrelated_state,
+    )
     assert condition_rows[0].dispatcher_entry_ea == 0x40A5F0
     assert condition_rows[0].target_eas == (0x40C1A0,)
 
@@ -3009,8 +3534,8 @@ def test_live_tail_state_preserves_precise_replayed_exit_owner():
         transfers=(),
         handler_states={21: (incoming_state,)},
         handler_targets={final_state: 179},
-        handler_state_resolver=lambda *_args, **_kwargs: (
-            _ConcreteHandlerStateWrite(final_state, 0x40A7EF)
+        handler_state_resolver=lambda *_args, **_kwargs: _ConcreteHandlerStateWrite(
+            final_state, 0x40A7EF
         ),
         handler_exit_state_resolver=lambda *_args, **_kwargs: final_state,
         state_register_name="ebx",
@@ -3425,8 +3950,8 @@ def test_materialized_state_routes_abstain_when_router_successors_disagree():
         handler_states={77: (incoming_state,)},
         handler_targets={incoming_state: 77},
         handler_target_resolver=lambda _state: 145,
-        handler_state_resolver=lambda *_args, **_kwargs: (
-            _ConcreteHandlerStateWrite(next_state, 0x40A5F0)
+        handler_state_resolver=lambda *_args, **_kwargs: _ConcreteHandlerStateWrite(
+            next_state, 0x40A5F0
         ),
         state_register_name="ebx",
     )
@@ -3450,17 +3975,20 @@ def test_materialized_state_routes_reject_dispatcher_node_as_handler_target():
     def route_to_dispatcher_node(*_args, **_kwargs):
         return 0x40C0C8
 
-    assert _build_materialized_state_routes(
-        graph,
-        state_write_anchors=(StateWriteAnchor(71, state, state_var_reg=20),),
-        out_reg_maps={71: {20: state}},
-        dispatcher_entry_serial=8,
-        state_var_reg=20,
-        handler_serials=frozenset({67, 187}),
-        dispatcher_block_serials=frozenset({8, 187}),
-        transfers=(),
-        route_resolver=route_to_dispatcher_node,
-    ) == ()
+    assert (
+        _build_materialized_state_routes(
+            graph,
+            state_write_anchors=(StateWriteAnchor(71, state, state_var_reg=20),),
+            out_reg_maps={71: {20: state}},
+            dispatcher_entry_serial=8,
+            state_var_reg=20,
+            handler_serials=frozenset({67, 187}),
+            dispatcher_block_serials=frozenset({8, 187}),
+            transfers=(),
+            route_resolver=route_to_dispatcher_node,
+        )
+        == ()
+    )
 
 
 def test_materialized_state_routes_keep_exact_handler_over_router_overlap():
@@ -3737,11 +4265,7 @@ def test_materialized_state_routes_partition_register_snapshot_at_anchor_ea():
         dispatch_anchor_eas,
     ):
         calls.append((start_ea, dict(initial_mregs)))
-        return (
-            0x9000
-            if start_ea == 0x4000 and initial_mregs.get(4) == 0x1234
-            else None
-        )
+        return 0x9000 if start_ea == 0x4000 and initial_mregs.get(4) == 0x1234 else None
 
     routes = _build_materialized_state_routes(
         graph,
@@ -3843,9 +4367,7 @@ def test_unique_static_equality_handler_targets_select_matching_arm() -> None:
         selector_state_constant=state,
         resolver_kind="residual_state_route",
     )
-    assert _unique_static_equality_handler_targets(
-        (exact, residual), 20
-    ) == {
+    assert _unique_static_equality_handler_targets((exact, residual), 20) == {
         state: 0x40AF00,
     }
 
@@ -3922,9 +4444,7 @@ def test_exact_equality_fragment_ownership_excludes_unvalidated_candidates() -> 
         resolver_kind="residual_state_route",
     )
 
-    assert _exact_equality_fragment_transfers((exact, candidate, route)) == (
-        exact,
-    )
+    assert _exact_equality_fragment_transfers((exact, candidate, route)) == (exact,)
 
 
 def test_plan_residual_state_routes_requires_one_way_dispatch_back_edge() -> None:
@@ -3971,11 +4491,14 @@ def test_residual_patch_site_abstains_at_shared_state_join() -> None:
         func_ea=0x40A560,
     )
 
-    assert computed_goto_resolver._residual_patch_site_is_path_local(
-        graph,
-        source_serial=10,
-        patch_ea=0x40B534,
-    ) is False
+    assert (
+        computed_goto_resolver._residual_patch_site_is_path_local(
+            graph,
+            source_serial=10,
+            patch_ea=0x40B534,
+        )
+        is False
+    )
 
 
 def test_residual_patch_site_accepts_single_predecessor_corridor() -> None:
@@ -3994,11 +4517,14 @@ def test_residual_patch_site_accepts_single_predecessor_corridor() -> None:
         func_ea=0x40A560,
     )
 
-    assert computed_goto_resolver._residual_patch_site_is_path_local(
-        graph,
-        source_serial=10,
-        patch_ea=0x40B534,
-    ) is True
+    assert (
+        computed_goto_resolver._residual_patch_site_is_path_local(
+            graph,
+            source_serial=10,
+            patch_ea=0x40B534,
+        )
+        is True
+    )
 
 
 def test_residual_state_route_evidence_keeps_unpatchable_target_ea() -> None:
@@ -4025,13 +4551,16 @@ def test_residual_state_route_evidence_keeps_unpatchable_target_ea() -> None:
     assert evidence.selector_state_constant == state
     assert evidence.selector_state_var_reg == 20
 
-    assert _build_residual_state_route_evidence(
-        graph,
-        ((10, state, target_ea),),
-        state_write_sites={(10, state): 0x40ADEC},
-        state_var_reg=20,
-        existing_transfers=(evidence,),
-    ) == ()
+    assert (
+        _build_residual_state_route_evidence(
+            graph,
+            ((10, state, target_ea),),
+            state_write_sites={(10, state): 0x40ADEC},
+            state_var_reg=20,
+            existing_transfers=(evidence,),
+        )
+        == ()
+    )
 
 
 def test_residual_state_route_evidence_preserves_distinct_same_state_sources() -> None:
@@ -4060,10 +4589,7 @@ def test_residual_state_route_evidence_preserves_distinct_same_state_sources() -
         existing_transfers=(),
     )
 
-    assert tuple(
-        (row.source_block_ea, row.source_jmp_ea)
-        for row in evidence
-    ) == (
+    assert tuple((row.source_block_ea, row.source_jmp_ea) for row in evidence) == (
         (0x40BB3D, 0x40BB49),
         (0x40C6DA, 0x40C6DA),
     )
@@ -4127,12 +4653,15 @@ def test_plan_misrouted_exact_state_route_outranks_coarse_bst_interval() -> None
         state_routes={state: (0x40B8E6, 0x40B940)},
         state_write_sites={(10, state): 0x40B354},
     ) == ((10, state, 0x40B8E6),)
-    assert _plan_misrouted_exact_state_route_patches(
-        graph,
-        (StateWriteTransition(10, state, 20, False, None),),
-        state_routes={state: (0x40B8E6, 0x40B940)},
-        state_write_sites={(10, state): 0x40B354},
-    ) == ()
+    assert (
+        _plan_misrouted_exact_state_route_patches(
+            graph,
+            (StateWriteTransition(10, state, 20, False, None),),
+            state_routes={state: (0x40B8E6, 0x40B940)},
+            state_write_sites={(10, state): 0x40B354},
+        )
+        == ()
+    )
 
 
 def test_plan_exact_state_write_route_without_coarse_transition() -> None:
@@ -4148,15 +4677,20 @@ def test_plan_exact_state_write_route_without_coarse_transition() -> None:
         state_routes={state: (0x40C1A0, 0x40C20C)},
         state_write_sites={(10, state): 0x40B908},
     ) == ((10, state, 0x40C1A0),)
-    assert _plan_misrouted_exact_state_route_patches(
-        graph,
-        (StateWriteTransition(10, state, 99, False, None),),
-        state_routes={state: (0x40B8E6, 0x40B940)},
-        state_write_sites={},
-    ) == ()
+    assert (
+        _plan_misrouted_exact_state_route_patches(
+            graph,
+            (StateWriteTransition(10, state, 99, False, None),),
+            state_routes={state: (0x40B8E6, 0x40B940)},
+            state_write_sites={},
+        )
+        == ()
+    )
 
 
-def test_plan_unseen_residual_state_routes_uses_microcode_absence_not_root_shape() -> None:
+def test_plan_unseen_residual_state_routes_uses_microcode_absence_not_root_shape() -> (
+    None
+):
     missing_state = 0xA5A94B86
     live_state = 0xEC71CA67
     graph = FlowGraph(
@@ -4226,7 +4760,9 @@ def test_plan_all_residual_routes_keeps_primary_and_unseen_work_in_same_round() 
     ) == ((11, routed_but_detached_state, 0x40AEE6),)
 
 
-def test_select_register_indirect_patch_region_uses_only_register_target_chain() -> None:
+def test_select_register_indirect_patch_region_uses_only_register_target_chain() -> (
+    None
+):
     assert _select_register_indirect_patch_region(
         (
             (0x40C6F7, 0x40C6F9, "mov", True, False),
@@ -4236,12 +4772,15 @@ def test_select_register_indirect_patch_region_uses_only_register_target_chain()
         )
     ) == (0x40C6F7, 8)
 
-    assert _select_register_indirect_patch_region(
-        (
-            (0x1000, 0x1005, "mov", False, False),
-            (0x1005, 0x1007, "jmp", False, True),
+    assert (
+        _select_register_indirect_patch_region(
+            (
+                (0x1000, 0x1005, "mov", False, False),
+                (0x1005, 0x1007, "jmp", False, True),
+            )
         )
-    ) is None
+        is None
+    )
 
 
 def test_dispatch_patch_region_prefers_terminal_indirect_over_earlier_jcc() -> None:
@@ -4294,7 +4833,10 @@ def test_residual_route_patch_site_abstains_without_terminal_indirect(
         lambda _write_ea, *, materialized_anchor_eas: None,
     )
 
-    assert computed_goto_resolver._native_residual_route_patch_site(
-        0x40B04A,
-        materialized_anchor_eas=frozenset({0x40B06B}),
-    ) is None
+    assert (
+        computed_goto_resolver._native_residual_route_patch_site(
+            0x40B04A,
+            materialized_anchor_eas=frozenset({0x40B06B}),
+        )
+        is None
+    )

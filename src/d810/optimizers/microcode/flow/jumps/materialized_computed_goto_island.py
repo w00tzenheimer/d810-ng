@@ -1,4 +1,5 @@
 """Profile-gated LOCOPT delivery for detached computed-goto handler islands."""
+
 from __future__ import annotations
 
 import ida_hexrays
@@ -61,6 +62,7 @@ from d810.hexrays.mutation.detached_handler_island import (
     reconcile_imported_callinfo_with_live_native_calls,
     redirect_live_target_predecessors,
     restore_call_result_carriers,
+    restore_detached_call_result_definitions,
     restore_terminal_return_carriers,
     stable_mba_identity,
 )
@@ -91,6 +93,7 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     is_computed_goto_materialized,
     recover_conditional_handler_bridge_transfers_from_mba,
 )
+
 logger = getLogger("D810.optimizer.materialized_computed_goto_island")
 _CALLS_HANDLER_NAME = "materialized_computed_goto_island.calls_done"
 _LOCOPT_HANDLER_NAME = "materialized_computed_goto_island.locopt"
@@ -151,9 +154,7 @@ def _boundary_owned_terminal_source_blocks(
                 int(port.endpoint_block_ea),
             )
             endpoint_blocks = (
-                {}
-                if endpoint is None
-                else {int(endpoint.serial): endpoint}
+                {} if endpoint is None else {int(endpoint.serial): endpoint}
             )
         if len(endpoint_blocks) != 1:
             continue
@@ -166,9 +167,7 @@ def _boundary_owned_terminal_source_blocks(
     if not endpoint_blocks_by_old_successor:
         return frozenset()
 
-    instruction_origins = dict(
-        imported_detached_snippet_instruction_origins(mba)
-    )
+    instruction_origins = dict(imported_detached_snippet_instruction_origins(mba))
     source_native_ea_by_block: dict[int, int] = {}
     predecessor_blocks_by_source: dict[int, frozenset[int]] = {}
     for imported_exit_ea, _native_exit_ea in terminal_origins:
@@ -197,9 +196,7 @@ def _boundary_owned_terminal_source_blocks(
         predecessor_blocks_by_source=predecessor_blocks_by_source,
         redirect_endpoint_blocks_by_old_successor_ea={
             native_ea: frozenset(endpoint_blocks)
-            for native_ea, endpoint_blocks in (
-                endpoint_blocks_by_old_successor.items()
-            )
+            for native_ea, endpoint_blocks in (endpoint_blocks_by_old_successor.items())
         },
     )
     if selected:
@@ -247,8 +244,7 @@ def _restore_preopt_terminal_return_carriers(
         "terminal_return_carriers": int(restored),
     }
     logger.info(
-        "PREOPT restored %d terminal return carrier(s) before local and call "
-        "analysis",
+        "PREOPT restored %d terminal return carrier(s) before local and call analysis",
         int(restored),
     )
 
@@ -405,9 +401,7 @@ def _apply_detached_snippet_terminal_routes(
 ) -> int:
     """Replace imported terminal m_ijmps with exact resolver-target edges."""
     terminal_origins = (
-        detached_handler_island_mutation.imported_detached_snippet_terminal_origins(
-            mba
-        )
+        detached_handler_island_mutation.imported_detached_snippet_terminal_origins(mba)
     )
     state_registers = {
         int(transfer.selector_state_var_reg)
@@ -432,9 +426,9 @@ def _apply_detached_snippet_terminal_routes(
                 "detached_static_fixpoint",
             ):
                 continue
-            resolver_target_sets.setdefault(
-                int(transfer.source_jmp_ea), set()
-            ).update(int(target_ea) for target_ea in transfer.target_eas)
+            resolver_target_sets.setdefault(int(transfer.source_jmp_ea), set()).update(
+                int(target_ea) for target_ea in transfer.target_eas
+            )
         resolver_targets = {
             native_exit_ea: tuple(sorted(targets))
             for native_exit_ea, targets in resolver_target_sets.items()
@@ -599,9 +593,7 @@ def _materialize_missing_detached_snippets(
         if (
             require_live_residual_source
             and plan.evidence_kind == "residual_state_route_evidence"
-            and (
-                source is None or int(source.nsucc()) != 1
-            )
+            and (source is None or int(source.nsucc()) != 1)
         ):
             logger.info(
                 "detached snippet LOCOPT evidence skipped: source=0x%X "
@@ -621,9 +613,7 @@ def _materialize_missing_detached_snippets(
             continue
         admissible_plans.append(plan)
     plans = tuple(admissible_plans)
-    target_eas = tuple(
-        dict.fromkeys(int(plan.target_ea) for plan in plans)
-    )
+    target_eas = tuple(dict.fromkeys(int(plan.target_ea) for plan in plans))
     if not target_eas:
         return 0
     roots = materialize_detached_snippet_templates(
@@ -676,9 +666,7 @@ def _materialize_live_handler_replacements(
         next(iter(state_registers)),
     )
     imported_targets = frozenset(imported_detached_snippet_target_eas(mba))
-    candidate_targets = tuple(
-        sorted(set(int(ea) for ea in state_targets.values()))
-    )
+    candidate_targets = tuple(sorted(set(int(ea) for ea in state_targets.values())))
     candidate_rows = tuple(
         (
             int(target_ea),
@@ -704,9 +692,7 @@ def _materialize_live_handler_replacements(
         for target_ea in candidate_targets
         if target_ea not in imported_targets
         and has_detached_replacement_snippet_template(function_ea, target_ea)
-        for row in (
-            detached_snippet_replacement_evidence(function_ea, target_ea),
-        )
+        for row in (detached_snippet_replacement_evidence(function_ea, target_ea),)
         if row is not None
     )
     if not evidence:
@@ -778,9 +764,7 @@ def _materialize_live_handler_replacements(
                 target_ea,
             )
             return 0
-        predecessor_serials = tuple(
-            int(serial) for serial in old_target.predset
-        )
+        predecessor_serials = tuple(int(serial) for serial in old_target.predset)
         if not predecessor_serials:
             logger.info(
                 "CALLS live-handler replacement import-only: "
@@ -834,9 +818,7 @@ def _materialize_live_handler_replacements(
         if target_ea in old_target_serials
     }
     redirected = (
-        redirect_live_target_predecessors(mba, redirect_map)
-        if redirect_map
-        else 0
+        redirect_live_target_predecessors(mba, redirect_map) if redirect_map else 0
     )
     if redirect_map and redirected <= 0:
         logger.info(
@@ -849,8 +831,7 @@ def _materialize_live_handler_replacements(
         "CALLS live-handler replacement connected: roots=%s redirects=%d "
         "import_only=%s",
         {
-            hex(int(target_ea)): "blk%d@0x%X"
-            % (int(root_serial), int(target_ea))
+            hex(int(target_ea)): "blk%d@0x%X" % (int(root_serial), int(target_ea))
             for target_ea, root_serial in roots.items()
         },
         int(redirected),
@@ -913,9 +894,7 @@ def _release_replaced_native_handler_keeps(
         if serial in reachable:
             continue
         block = mba.get_mblock(serial)
-        if block is None or not (
-            int(block.flags) & int(ida_hexrays.MBL_KEEP)
-        ):
+        if block is None or not (int(block.flags) & int(ida_hexrays.MBL_KEEP)):
             continue
         block_eas = {int(block.start)}
         instruction = block.head
@@ -1012,8 +991,7 @@ def _recover_imported_conditional_bridge_transfers(
     )
     if not produced:
         native_by_imported = {
-            int(imported_ea): int(native_ea)
-            for imported_ea, native_ea in origins
+            int(imported_ea): int(native_ea) for imported_ea, native_ea in origins
         }
         candidate_rows: list[tuple[object, ...]] = []
         for serial in range(int(mba.qty)):
@@ -1047,9 +1025,7 @@ def _recover_imported_conditional_bridge_transfers(
                         break
                     instruction = instruction.next
                 successor_anchor = (
-                    instructions[0][0]
-                    if instructions
-                    else hex(int(successor.start))
+                    instructions[0][0] if instructions else hex(int(successor.start))
                 )
                 successors.append(
                     (
@@ -1086,8 +1062,7 @@ def _recover_imported_conditional_bridge_transfers(
     merged = transfers + produced
     record_materialized_indirect_transfers(int(mba.entry_ea), merged)
     native_by_imported = {
-        int(imported_ea): int(native_ea)
-        for imported_ea, native_ea in origins
+        int(imported_ea): int(native_ea) for imported_ea, native_ea in origins
     }
     logger.info(
         "CALLS imported conditional bridge evidence: predicates=%s",
@@ -1388,8 +1363,7 @@ def _dominant_target_state_write(
             ):
                 result = (
                     int(instruction.ea),
-                    int(instruction.l.nnn.value)
-                    & ((1 << (8 * int(state_size))) - 1),
+                    int(instruction.l.nnn.value) & ((1 << (8 * int(state_size))) - 1),
                 )
             if instruction is block.tail:
                 break
@@ -1474,9 +1448,7 @@ def _conditional_bridge_target_topologies(
             for target_ea in targets:
                 if target_ea not in planned_targets:
                     continue
-                dispatcher_ea = (
-                    targets[1] if target_ea == targets[0] else targets[0]
-                )
+                dispatcher_ea = targets[1] if target_ea == targets[0] else targets[0]
                 router = find_unique_live_block_by_ea(
                     mba,
                     int(transfer.source_jmp_ea),
@@ -1494,13 +1466,9 @@ def _conditional_bridge_target_topologies(
                 dispatcher = find_unique_live_block_by_ea(mba, dispatcher_ea)
                 if target is None or dispatcher is None:
                     continue
-                dispatchers.setdefault(target_ea, set()).add(
-                    int(dispatcher.serial)
-                )
+                dispatchers.setdefault(target_ea, set()).add(int(dispatcher.serial))
                 if router is not None:
-                    route_owners.setdefault(target_ea, set()).add(
-                        int(router.serial)
-                    )
+                    route_owners.setdefault(target_ea, set()).add(int(router.serial))
             continue
         if (
             transfer.resolver_kind != "residual_state_route"
@@ -1626,9 +1594,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 require_live_residual_source=True,
                 expected_template_maturity=int(ida_hexrays.MMAT_LOCOPT),
             )
-            reconciled_calls = reconcile_imported_callinfo_with_live_native_calls(
-                mba
-            )
+            reconciled_calls = reconcile_imported_callinfo_with_live_native_calls(mba)
             # Snippets imported during LOCOPT are already present when this
             # CALLS rule runs, so neither import counter is a reliable signal
             # that their cross-maturity arm-state evidence still needs to be
@@ -1655,13 +1621,17 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 )
             except Exception:
                 logger.warning(
-                    "CALLS conditional handler bridge batch failed: "
-                    "func=0x%X plans=%d",
+                    "CALLS conditional handler bridge batch failed: func=0x%X plans=%d",
                     function_ea,
                     len(bridge_plans),
                     exc_info=True,
                 )
                 conditional_bridges = 0
+            restored_call_definitions = (
+                restore_detached_call_result_definitions(mba, function_ea)
+                if is_computed_goto_materialized(function_ea)
+                else 0
+            )
             graph_changes = (
                 int(terminal_carriers)
                 + int(replacement_imports)
@@ -1670,6 +1640,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 + int(terminal_routes)
                 + int(residual_bridges)
                 + int(conditional_bridges)
+                + int(restored_call_definitions)
             )
             if graph_changes:
                 logger.info(
@@ -1678,8 +1649,8 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                     "cross-maturity missing target(s), reconciled %d imported "
                     "callinfo record(s), materialized "
                     "%d detached terminal route(s) and %d residual state-route "
-                    "bridge(s), plus %d conditional "
-                    "handler bridge(s)",
+                    "bridge(s), plus %d conditional handler bridge(s) and %d "
+                    "analyzed call-result definition(s)",
                     int(terminal_carriers),
                     int(replacement_imports),
                     int(missing_imports),
@@ -1687,6 +1658,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                     int(terminal_routes),
                     int(residual_bridges),
                     int(conditional_bridges),
+                    int(restored_call_definitions),
                 )
                 return graph_changes
             cached_carriers = self._call_result_carriers.get(function_ea, ())
@@ -1717,9 +1689,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
             transfers,
         )
         pre_dce_changes = (
-            int(kept_snippet_blocks)
-            + int(terminal_routes)
-            + int(residual_bridges)
+            int(kept_snippet_blocks) + int(terminal_routes) + int(residual_bridges)
         )
         if kept_snippet_blocks or terminal_routes or residual_bridges:
             logger.info(
@@ -1734,8 +1704,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
         island_plans = _candidate_plans(function_ea)
         bridge_plans = _candidate_conditional_bridge_plans(function_ea)
         logger.info(
-            "computed-goto island planner: func=0x%X maturity=%s "
-            "islands=%d bridges=%d",
+            "computed-goto island planner: func=0x%X maturity=%s islands=%d bridges=%d",
             function_ea,
             maturity_to_string(maturity),
             len(island_plans),
@@ -1754,8 +1723,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                     applied = materialize_detached_handler_island(mba, plan)
                 except Exception:
                     logger.warning(
-                        "detached handler island failed: func=0x%X "
-                        "predicate=0x%X",
+                        "detached handler island failed: func=0x%X predicate=0x%X",
                         function_ea,
                         int(plan.source_predicate_ea),
                         exc_info=True,

@@ -65,10 +65,13 @@ def _run_worker(binary: pathlib.Path, output_path: pathlib.Path) -> None:
                 ida_hexrays.clear_cached_cfuncs()
                 first_round = ida_hexrays.decompile(_FUNCTION_EA)
                 assert first_round is not None
-                assert cg.prepare_detached_handler_snippets(
-                    _FUNCTION_EA,
-                    live_mba=first_round.mba,
-                ) > 0
+                assert (
+                    cg.prepare_detached_handler_snippets(
+                        _FUNCTION_EA,
+                        live_mba=first_round.mba,
+                    )
+                    > 0
+                )
                 ida_hexrays.clear_cached_cfuncs()
                 cfunc = ida_hexrays.decompile(_FUNCTION_EA)
                 recovered = str(cfunc) if cfunc is not None else "None"
@@ -121,7 +124,9 @@ def test_real_loader_matches_reachable_semantic_oracle(tmp_path) -> None:
 
     assert recovered != "None"
     assert "while ( 1 )" not in recovered
+    assert "HIBYTE(" not in recovered
     assert "sub_40F830()" in recovered
+    assert "memset((void *)Param[1], 0, 0x40000u)" in recovered
     assert re.search(r"sub_4069C0\([^;\n]*&Param\[13\]\)", recovered)
     assert "return &off_48B8A4;" in recovered
     assert recovered.count("free(") == 6
@@ -132,7 +137,10 @@ def test_real_loader_matches_reachable_semantic_oracle(tmp_path) -> None:
         "DispatchMessageA(",
     ):
         assert recovered.count(call) == 1
-    assert re.search(r"MessageBoxW\([\s\S]*?\) == 7", recovered)
+    assert re.search(
+        r"sub_40F830\(\)\s*&&\s*MessageBoxW\([\s\S]*?\)\s*==\s*7",
+        recovered,
+    )
 
 
 if __name__ == "__main__":

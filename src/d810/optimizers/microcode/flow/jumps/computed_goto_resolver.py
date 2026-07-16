@@ -53,15 +53,15 @@ equality chain is still intact (GLBOPT1 constant-folds it away). Runs on the
 flowchart-preanalysis seam (before Hex-Rays builds ``qflow_chart``) and requests
 a Hex-Rays rebuild so the rewritten CFG is picked up.
 """
+
 from __future__ import annotations
 
 import collections
 import itertools
 import struct
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
-from d810.core.typing import Callable, Mapping, NamedTuple
+from d810.core.typing import Callable, Mapping, NamedTuple, Sequence
 
 from d810.capabilities.detached_handler_snippets import (
     register_detached_handler_snippet_preparer,
@@ -77,6 +77,7 @@ from d810.backends.hexrays.evidence.call_abi import (
     native_corridor_has_no_stack_adjustment,
 )
 from d810.analyses.control_flow.call_abi import (
+    StackCallAbiProof,
     prove_three_argument_callee_purged_call,
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
@@ -107,8 +108,19 @@ from d810.hexrays.preanalysis.callinfo_preanalysis import (
     register_callinfo_preanalysis_handler,
     unregister_callinfo_preanalysis_handler,
 )
+from d810.hexrays.preanalysis.stkpnts_preanalysis import (
+    register_stkpnts_preanalysis_handler,
+    unregister_stkpnts_preanalysis_handler,
+)
 from d810.hexrays.hooks.optimization_suppression import (
     suppress_d810_optimization,
+)
+from d810.hexrays.mutation.detached_handler_island import (
+    capture_detached_callinfo_templates,
+    detached_callinfo_template_eas,
+    imported_detached_snippet_instruction_origins,
+    last_imported_detached_snippet_instruction_origins,
+    prepare_detached_callinfo_template,
 )
 from d810.hexrays.preanalysis.indirect_jump_labels import (
     clear_materialized_indirect_dispatcher_evidence,
@@ -119,11 +131,21 @@ from d810.hexrays.preanalysis.indirect_jump_labels import (
     mark_indirect_dispatcher,
 )
 
+try:
+    from d810.speedups.cythxr._chexrays_api import (
+        copy_mcallinfo as _copy_mcallinfo,
+        upsert_stkpnt as _upsert_stkpnt,
+    )
+except ImportError:  # Optional native SDK bridge; provider abstains when absent.
+    _copy_mcallinfo = None
+    _upsert_stkpnt = None
+
 logger = getLogger("D810.hexrays.preanalysis.computed_goto")
 
 _HANDLER_NAME = "computed_goto_resolver"
 _CALLS_HANDLER_NAME = "computed_goto_resolver.calls_done"
 _CALLINFO_HANDLER_NAME = "computed_goto_resolver.callinfo"
+_STKPNTS_HANDLER_NAME = "computed_goto_resolver.stkpnts"
 #: Cap on emulated instructions for one corridor trace (a flattened state machine
 #: with N states * M handler instructions; generous headroom, fail-open on hit).
 _DEFAULT_MAX_INSTRUCTIONS = 20000
@@ -157,9 +179,9 @@ class ComputedGotoResolution:
     )
     #: Exact singleton native-register snapshots at static-fixpoint block
     #: entries.  These refill only missing cells during concrete corridor replay.
-    corridor_register_snapshots: tuple[
-        tuple[int, tuple[tuple[str, int], ...]], ...
-    ] = field(default_factory=tuple)
+    corridor_register_snapshots: tuple[tuple[int, tuple[tuple[str, int], ...]], ...] = (
+        field(default_factory=tuple)
+    )
 
     @property
     def site_count(self) -> int:
@@ -356,17 +378,61 @@ def resolve_computed_gotos(
 _MASK32 = 0xFFFFFFFF
 _MAX_SET = 32  # multi-cmov chains produce value-sets bigger than 8
 _MAX_FIXPOINT_STEPS = 400000  # the fixpoint reprocesses blocks; give it room
-_SV_REG_NAMES = {0: "eax", 1: "ecx", 2: "edx", 3: "ebx", 4: "esp", 5: "ebp", 6: "esi", 7: "edi"}
+_SV_REG_NAMES = {
+    0: "eax",
+    1: "ecx",
+    2: "edx",
+    3: "ebx",
+    4: "esp",
+    5: "ebp",
+    6: "esi",
+    7: "edi",
+}
 _SV_CALLER_CLOBBERED = ("eax", "ecx", "edx")
 _SV_SHIFT_MNEMS = {"shl", "sal", "shr"}
 _SV_CMOV_MNEMS = {
-    "cmovz", "cmovnz", "cmove", "cmovne", "cmovl", "cmovle", "cmovg", "cmovge",
-    "cmova", "cmovae", "cmovb", "cmovbe", "cmovs", "cmovns", "cmovo", "cmovno",
-    "cmovp", "cmovnp", "cmovpe", "cmovpo",
+    "cmovz",
+    "cmovnz",
+    "cmove",
+    "cmovne",
+    "cmovl",
+    "cmovle",
+    "cmovg",
+    "cmovge",
+    "cmova",
+    "cmovae",
+    "cmovb",
+    "cmovbe",
+    "cmovs",
+    "cmovns",
+    "cmovo",
+    "cmovno",
+    "cmovp",
+    "cmovnp",
+    "cmovpe",
+    "cmovpo",
 }
 _SV_JCC_MNEMS = {
-    "jz", "jnz", "je", "jne", "jl", "jle", "jg", "jge", "ja", "jae", "jb",
-    "jbe", "js", "jns", "jo", "jno", "jp", "jnp", "jcxz", "jecxz",
+    "jz",
+    "jnz",
+    "je",
+    "jne",
+    "jl",
+    "jle",
+    "jg",
+    "jge",
+    "ja",
+    "jae",
+    "jb",
+    "jbe",
+    "js",
+    "jns",
+    "jo",
+    "jno",
+    "jp",
+    "jnp",
+    "jcxz",
+    "jecxz",
 }
 #: instructions whose bytes are safe to overwrite when redirecting a jmp reg
 #: (the address-computation chain + the setcc/shift/select that feed it).
@@ -384,9 +450,7 @@ def _unique_equality_state_targets(
     for register_name, state_constant, target_ea in rows:
         if str(register_name) != str(state_register_name):
             continue
-        candidates.setdefault(int(state_constant) & _MASK32, set()).add(
-            int(target_ea)
-        )
+        candidates.setdefault(int(state_constant) & _MASK32, set()).add(int(target_ea))
     return {
         state: next(iter(targets))
         for state, targets in candidates.items()
@@ -680,13 +744,9 @@ def _exact_register_state_write_sites(
         )
         if instruction_ea is None:
             continue
-        candidates.setdefault((block_serial, state_constant), set()).add(
-            instruction_ea
-        )
+        candidates.setdefault((block_serial, state_constant), set()).add(instruction_ea)
     return {
-        key: next(iter(sites))
-        for key, sites in candidates.items()
-        if len(sites) == 1
+        key: next(iter(sites)) for key, sites in candidates.items() if len(sites) == 1
     }
 
 
@@ -724,11 +784,7 @@ def _native_register_immediate_write_matches(
     destination_mreg = None
     if insn.ops[0].type == idaapi.o_reg:
         destination_mreg = _native_register_mreg(_sv_reg_name(insn.ops[0]) or "")
-    immediate = (
-        int(insn.ops[1].value)
-        if insn.ops[1].type == idaapi.o_imm
-        else None
-    )
+    immediate = int(insn.ops[1].value) if insn.ops[1].type == idaapi.o_imm else None
     return _state_write_values_match(
         mnemonic=idaapi.print_insn_mnem(int(instruction_ea)) or "",
         destination_mreg=destination_mreg,
@@ -935,7 +991,7 @@ def _encode_two_way_branch(
     return (
         bytes([0x0F, 0x80 + cc])
         + struct.pack("<i", int(true_target_ea) - jcc_end)
-        + b"\xE9"
+        + b"\xe9"
         + struct.pack("<i", int(false_target_ea) - jmp_end)
     )
 
@@ -1054,10 +1110,7 @@ def _sv_process_writer(mnem: str, insn, state) -> None:
     import idaapi  # type: ignore[import-untyped]
 
     op0 = insn.ops[0]
-    if (
-        op0.type != idaapi.o_reg
-        or not _insn_writes_first_operand(insn, idaapi.CF_CHG1)
-    ):
+    if op0.type != idaapi.o_reg or not _insn_writes_first_operand(insn, idaapi.CF_CHG1):
         return
     dst = _sv_reg_name(op0)
     if dst is None:
@@ -1067,19 +1120,39 @@ def _sv_process_writer(mnem: str, insn, state) -> None:
     elif mnem == "lea":
         state[dst] = _sv_resolve_source(insn.ops[1], state, is_lea=True)
     elif mnem == "add":
-        state[dst] = _sv_combine(state.get(dst), _sv_resolve_source(insn.ops[1], state, is_lea=False), lambda a, b: a + b)
+        state[dst] = _sv_combine(
+            state.get(dst),
+            _sv_resolve_source(insn.ops[1], state, is_lea=False),
+            lambda a, b: a + b,
+        )
     elif mnem == "sub":
-        state[dst] = _sv_combine(state.get(dst), _sv_resolve_source(insn.ops[1], state, is_lea=False), lambda a, b: a - b)
+        state[dst] = _sv_combine(
+            state.get(dst),
+            _sv_resolve_source(insn.ops[1], state, is_lea=False),
+            lambda a, b: a - b,
+        )
     elif mnem == "xor":
         op1 = insn.ops[1]
         if op1.type == idaapi.o_reg and op1.reg == op0.reg:
             state[dst] = _sv_singleton(0)
         else:
-            state[dst] = _sv_combine(state.get(dst), _sv_resolve_source(op1, state, is_lea=False), lambda a, b: a ^ b)
+            state[dst] = _sv_combine(
+                state.get(dst),
+                _sv_resolve_source(op1, state, is_lea=False),
+                lambda a, b: a ^ b,
+            )
     elif mnem == "and":
-        state[dst] = _sv_combine(state.get(dst), _sv_resolve_source(insn.ops[1], state, is_lea=False), lambda a, b: a & b)
+        state[dst] = _sv_combine(
+            state.get(dst),
+            _sv_resolve_source(insn.ops[1], state, is_lea=False),
+            lambda a, b: a & b,
+        )
     elif mnem == "or":
-        state[dst] = _sv_combine(state.get(dst), _sv_resolve_source(insn.ops[1], state, is_lea=False), lambda a, b: a | b)
+        state[dst] = _sv_combine(
+            state.get(dst),
+            _sv_resolve_source(insn.ops[1], state, is_lea=False),
+            lambda a, b: a | b,
+        )
     elif mnem in _SV_CMOV_MNEMS:
         src_val = _sv_resolve_source(insn.ops[1], state, is_lea=False)
         old = state.get(dst)
@@ -1097,7 +1170,11 @@ def _sv_process_writer(mnem: str, insn, state) -> None:
             out: set[int] = set()
             for v in cur:
                 for s in amt:
-                    out.add((v << s) & _MASK32 if mnem in ("shl", "sal") else (v >> s) & _MASK32)
+                    out.add(
+                        (v << s) & _MASK32
+                        if mnem in ("shl", "sal")
+                        else (v >> s) & _MASK32
+                    )
             state[dst] = frozenset(out) if len(out) <= _MAX_SET else None
     elif mnem.startswith("set") and len(mnem) > 3:  # setcc: low byte := {0,1}
         cur = state.get(dst)
@@ -1287,11 +1364,16 @@ def _static_register_state_before_jmp(
         if mnem == "call":
             for register in _SV_CALLER_CLOBBERED:
                 state[register] = None
-        elif mnem == "jmp" or mnem in _SV_JCC_MNEMS or mnem in {
-            "retn",
-            "ret",
-            "retf",
-        }:
+        elif (
+            mnem == "jmp"
+            or mnem in _SV_JCC_MNEMS
+            or mnem
+            in {
+                "retn",
+                "ret",
+                "retf",
+            }
+        ):
             return {}
         else:
             _sv_process_writer(mnem, insn, state)
@@ -1342,9 +1424,7 @@ def _detached_static_terminal_transfers(
                     source_register_values=tuple(
                         sorted(
                             _residual_context_mregs(
-                                _sv_concrete_register_values(
-                                    source_state
-                                )
+                                _sv_concrete_register_values(source_state)
                             ).items()
                         )
                     ),
@@ -1401,17 +1481,27 @@ def _replay_two_way(block_entry: int, entry_state0: dict, jmp_ea: int) -> dict |
             selector = None
         elif mnem in _SV_CMOV_MNEMS and insn.ops[0].type == idaapi.o_reg:
             dst = _sv_reg_name(insn.ops[0])
-            state_t[dst] = _sv_resolve_source(insn.ops[1], state_t, is_lea=False)  # taken: dst=src
+            state_t[dst] = _sv_resolve_source(
+                insn.ops[1], state_t, is_lea=False
+            )  # taken: dst=src
             # not-taken: dst unchanged
             info = {"ea": ea, "cc": _select_cc_nibble(ea, length)}
             if selector is not None:
                 info.update(selector)
-        elif mnem.startswith("set") and len(mnem) > 3 and insn.ops[0].type == idaapi.o_reg:
+        elif (
+            mnem.startswith("set")
+            and len(mnem) > 3
+            and insn.ops[0].type == idaapi.o_reg
+        ):
             dst = _sv_reg_name(insn.ops[0])
             old_t = state_t.get(dst)
             old_f = state_f.get(dst)
-            base_t = (next(iter(old_t)) & 0xFFFFFF00) if old_t and len(old_t) == 1 else 0
-            base_f = (next(iter(old_f)) & 0xFFFFFF00) if old_f and len(old_f) == 1 else 0
+            base_t = (
+                (next(iter(old_t)) & 0xFFFFFF00) if old_t and len(old_t) == 1 else 0
+            )
+            base_f = (
+                (next(iter(old_f)) & 0xFFFFFF00) if old_f and len(old_f) == 1 else 0
+            )
             state_t[dst] = _sv_singleton(base_t | 1)  # taken: al = 1
             state_f[dst] = _sv_singleton(base_f | 0)  # not-taken: al = 0
             info = {"ea": ea, "cc": _select_cc_nibble(ea, length)}
@@ -1533,7 +1623,9 @@ def _find_reloc_patch_start(block_entry: int, jmp_ea: int) -> int:
     return last_anchor_end
 
 
-def _extend_for_padding(region_end: int, needed_extra: int, forbidden_starts: set[int]) -> int:
+def _extend_for_padding(
+    region_end: int, needed_extra: int, forbidden_starts: set[int]
+) -> int:
     """How many trailing NOP bytes past *region_end* can be reclaimed (stopping at
     any jump-target leader) to fit a longer rewrite."""
     import ida_bytes  # type: ignore[import-untyped]
@@ -1578,20 +1670,30 @@ def _bake_patch_plans(
                 patch_start = _find_patch_start(block_entry, jmp_ea)
                 region_len = region_end - patch_start
                 if region_len < 5:
-                    region_len += _extend_for_padding(region_end, 5 - region_len, forbidden_starts)
+                    region_len += _extend_for_padding(
+                        region_end, 5 - region_len, forbidden_starts
+                    )
                 if region_len < 5:
                     skipped.append((jmp_ea, 1, "no room (uncond)"))
                     continue
                 rel = targets[0] - (patch_start + 5)
-                body = b"\xE9" + struct.pack("<i", rel)
+                body = b"\xe9" + struct.pack("<i", rel)
                 body += b"\x90" * (region_len - len(body))
-                plans.append(_PatchPlan(
-                    jmp_ea=jmp_ea, block_entry=block_entry, patch_start=patch_start,
-                    patch_bytes=body, region_end=patch_start + region_len,
-                    insn_heads=(patch_start,), new_block_eas=(patch_start,),
-                    target_eas=tuple(int(target) for target in targets),
-                    source_register_values=_sv_concrete_register_values(entry_state0),
-                ))
+                plans.append(
+                    _PatchPlan(
+                        jmp_ea=jmp_ea,
+                        block_entry=block_entry,
+                        patch_start=patch_start,
+                        patch_bytes=body,
+                        region_end=patch_start + region_len,
+                        insn_heads=(patch_start,),
+                        new_block_eas=(patch_start,),
+                        target_eas=tuple(int(target) for target in targets),
+                        source_register_values=_sv_concrete_register_values(
+                            entry_state0
+                        ),
+                    )
+                )
             elif len(targets) == 2:
                 info = _replay_two_way(block_entry, entry_state0, jmp_ea)
                 if info is None:
@@ -1604,7 +1706,9 @@ def _bake_patch_plans(
                 fail_reason = ""
                 for ps_fn in (_find_patch_start, _find_reloc_patch_start):
                     patch_start = ps_fn(block_entry, jmp_ea)
-                    split = max(_last_reg_writer_end(block_entry, jmp_ea, jmp_reg), patch_start)
+                    split = max(
+                        _last_reg_writer_end(block_entry, jmp_ea, jmp_reg), patch_start
+                    )
                     tail = _live_tail_bytes(split, jmp_ea)
                     if tail is None:
                         fail_reason = "live tail not relocatable"
@@ -1615,38 +1719,53 @@ def _bake_patch_plans(
                     jmp_end = jcc_end + 5
                     body = (
                         tail
-                        + bytes([0x0F, 0x80 + (info["cc"] & 0xF)]) + struct.pack("<i", info["true"] - jcc_end)
-                        + b"\xE9" + struct.pack("<i", info["false"] - jmp_end)
+                        + bytes([0x0F, 0x80 + (info["cc"] & 0xF)])
+                        + struct.pack("<i", info["true"] - jcc_end)
+                        + b"\xe9"
+                        + struct.pack("<i", info["false"] - jmp_end)
                     )
                     region_len = region_end - patch_start
                     if region_len < len(body):
-                        region_len += _extend_for_padding(region_end, len(body) - region_len, forbidden_starts)
+                        region_len += _extend_for_padding(
+                            region_end, len(body) - region_len, forbidden_starts
+                        )
                     if region_len < len(body):
                         fail_reason = f"no room (need {len(body)} have {region_end - patch_start})"
                         continue
                     body += b"\x90" * (region_len - len(body))
-                    plans.append(_PatchPlan(
-                        jmp_ea=jmp_ea, block_entry=block_entry, patch_start=patch_start,
-                        patch_bytes=body, region_end=patch_start + region_len,
-                        insn_heads=(patch_start, jcc_start, jcc_end),
-                        # the E9 at jcc_end is a NEW instruction (not in any trace);
-                        # both jcc and its E9 fall-through must be pulled into the func.
-                        new_block_eas=(jcc_start, jcc_end),
-                        target_eas=tuple(int(target) for target in targets),
-                        condition_code=int(info["cc"]),
-                        true_target_ea=int(info["true"]),
-                        false_target_ea=int(info["false"]),
-                        selector_register_name=info.get("selector_register_name"),
-                        selector_compare_constant=info.get("selector_compare_constant"),
-                        selector_state_on_left=info.get("selector_state_on_left"),
-                        source_register_values=_sv_concrete_register_values(entry_state0),
-                    ))
+                    plans.append(
+                        _PatchPlan(
+                            jmp_ea=jmp_ea,
+                            block_entry=block_entry,
+                            patch_start=patch_start,
+                            patch_bytes=body,
+                            region_end=patch_start + region_len,
+                            insn_heads=(patch_start, jcc_start, jcc_end),
+                            # the E9 at jcc_end is a NEW instruction (not in any trace);
+                            # both jcc and its E9 fall-through must be pulled into the func.
+                            new_block_eas=(jcc_start, jcc_end),
+                            target_eas=tuple(int(target) for target in targets),
+                            condition_code=int(info["cc"]),
+                            true_target_ea=int(info["true"]),
+                            false_target_ea=int(info["false"]),
+                            selector_register_name=info.get("selector_register_name"),
+                            selector_compare_constant=info.get(
+                                "selector_compare_constant"
+                            ),
+                            selector_state_on_left=info.get("selector_state_on_left"),
+                            source_register_values=_sv_concrete_register_values(
+                                entry_state0
+                            ),
+                        )
+                    )
                     done = True
                     break
                 if not done:
                     skipped.append((jmp_ea, 2, fail_reason))
             else:
-                skipped.append((jmp_ea, len(targets), f"{len(targets)}-way (needs N-way delivery)"))
+                skipped.append(
+                    (jmp_ea, len(targets), f"{len(targets)}-way (needs N-way delivery)")
+                )
         except Exception as exc:  # noqa: BLE001
             skipped.append((jmp_ea, len(targets), f"exception: {exc!r}"))
     return plans, skipped
@@ -1665,7 +1784,9 @@ def resolve_computed_gotos_static(function_ea: int) -> ComputedGotoResolution | 
         return None
     text_start, text_end, _ = text
 
-    entry_state, resolved_sites, unresolved_sites, block_entry_of, steps = _static_resolver_fixpoint(function_ea)
+    entry_state, resolved_sites, unresolved_sites, block_entry_of, steps = (
+        _static_resolver_fixpoint(function_ea)
+    )
     if not resolved_sites:
         return None
 
@@ -1673,11 +1794,15 @@ def resolve_computed_gotos_static(function_ea: int) -> ComputedGotoResolution | 
     for tgts in resolved_sites.values():
         all_targets.update(tgts)
     forbidden = all_targets | set(entry_state)
-    plans, skipped = _bake_patch_plans(resolved_sites, block_entry_of, entry_state, forbidden)
+    plans, skipped = _bake_patch_plans(
+        resolved_sites, block_entry_of, entry_state, forbidden
+    )
     if skipped:
         logger.info(
             "computed-goto(static): %d/%d sites patched; %d skipped: %s",
-            len(plans), len(resolved_sites), len(skipped),
+            len(plans),
+            len(resolved_sites),
+            len(skipped),
             ", ".join(f"0x{ea:x}:{n}way:{r}" for ea, n, r in skipped[:12]),
         )
     if not plans:
@@ -1686,7 +1811,9 @@ def resolve_computed_gotos_static(function_ea: int) -> ComputedGotoResolution | 
     reachable = tuple(sorted(set(entry_state) | all_targets))
     return ComputedGotoResolution(
         function_ea=int(function_ea),
-        jmp_targets={int(k): tuple(int(t) for t in v) for k, v in resolved_sites.items()},
+        jmp_targets={
+            int(k): tuple(int(t) for t in v) for k, v in resolved_sites.items()
+        },
         reachable_eas=reachable,
         arch=arch,
         executed_insns=steps,
@@ -1717,7 +1844,9 @@ def _static_materialized_transfers(
         {
             int(target)
             for plan in resolution.patch_plans
-            for target in (plan.target_eas or resolution.jmp_targets.get(plan.jmp_ea, ()))
+            for target in (
+                plan.target_eas or resolution.jmp_targets.get(plan.jmp_ea, ())
+            )
         }
     )
     next_target_by_ea = {
@@ -1726,19 +1855,13 @@ def _static_materialized_transfers(
     }
     context_register_values = tuple(
         sorted(
-            _residual_context_mregs(
-                resolution.function_context_register_values
-            ).items()
+            _residual_context_mregs(resolution.function_context_register_values).items()
         )
     )
     corridor_register_snapshots = tuple(
         (
             int(source_ea),
-            tuple(
-                sorted(
-                    _residual_context_mregs(register_values).items()
-                )
-            ),
+            tuple(sorted(_residual_context_mregs(register_values).items())),
         )
         for source_ea, register_values in resolution.corridor_register_snapshots
     )
@@ -1746,7 +1869,9 @@ def _static_materialized_transfers(
     for plan_index, plan in enumerate(resolution.patch_plans):
         targets = tuple(
             int(target)
-            for target in (plan.target_eas or resolution.jmp_targets.get(plan.jmp_ea, ()))
+            for target in (
+                plan.target_eas or resolution.jmp_targets.get(plan.jmp_ea, ())
+            )
         )
         if not targets:
             continue
@@ -1757,7 +1882,9 @@ def _static_materialized_transfers(
                 source_block_ea=int(plan.block_entry),
                 materialized_anchor_eas=anchors,
                 target_eas=targets,
-                next_target_ea=(next_target_by_ea.get(targets[0]) if len(targets) == 1 else None),
+                next_target_ea=(
+                    next_target_by_ea.get(targets[0]) if len(targets) == 1 else None
+                ),
                 condition_code=plan.condition_code,
                 true_target_ea=plan.true_target_ea,
                 false_target_ea=plan.false_target_ea,
@@ -1768,11 +1895,7 @@ def _static_materialized_transfers(
                 selector_state_on_left=plan.selector_state_on_left,
                 context_register_values=context_register_values,
                 source_register_values=tuple(
-                    sorted(
-                        _residual_context_mregs(
-                            plan.source_register_values
-                        ).items()
-                    )
+                    sorted(_residual_context_mregs(plan.source_register_values).items())
                 ),
                 corridor_register_snapshots=(
                     corridor_register_snapshots if plan_index == 0 else ()
@@ -2081,7 +2204,9 @@ def _resolve_concrete_dispatch_corridor(
         if mnem == "jmp":
             if insn.ops[0].type not in (idaapi.o_near, idaapi.o_far):
                 return None
-            if ea in dispatch_anchor_eas and _is_materialized_dispatch_instruction(mnem):
+            if ea in dispatch_anchor_eas and _is_materialized_dispatch_instruction(
+                mnem
+            ):
                 completed_dispatches += 1
             ea = int(insn.ops[0].addr)
             continue
@@ -2125,8 +2250,7 @@ def _recover_static_handler_entry_route_transfers(
     ):
         return ()
     context_mregs = {
-        mreg: next(iter(values))
-        for mreg, values in context_candidates.items()
+        mreg: next(iter(values)) for mreg, values in context_candidates.items()
     }
     context_register_values = tuple(sorted(context_mregs.items()))
     dispatch_anchor_eas = frozenset(
@@ -2206,13 +2330,16 @@ def _recover_prepatch_handler_entry_routes(
     if route_resolver is None:
         route_resolver = _resolve_concrete_dispatch_corridor
     if range_resolver is None:
-        envelope_end = max(
-            (
-                int(ea)
-                for ea in (*resolution.reachable_eas, *resolution.block_entries)
-            ),
-            default=int(resolution.function_ea),
-        ) + 0x100
+        envelope_end = (
+            max(
+                (
+                    int(ea)
+                    for ea in (*resolution.reachable_eas, *resolution.block_entries)
+                ),
+                default=int(resolution.function_ea),
+            )
+            + 0x100
+        )
 
         def range_resolver(target_ea: int):
             return _native_residual_fragment_ranges(
@@ -2232,8 +2359,7 @@ def _recover_prepatch_handler_entry_routes(
     if any(len(values) != 1 for values in context_candidates.values()):
         return ()
     context_mregs = {
-        mreg: next(iter(values))
-        for mreg, values in context_candidates.items()
+        mreg: next(iter(values)) for mreg, values in context_candidates.items()
     }
     context_register_values = tuple(sorted(context_mregs.items()))
 
@@ -2360,9 +2486,8 @@ def _resolve_concrete_handler_state_write(
                 if values is not None and len(values) == 1
                 else None
             )
-        if (
-            insn.ops[0].type == idaapi.o_reg
-            and _insn_writes_first_operand(insn, idaapi.CF_CHG1)
+        if insn.ops[0].type == idaapi.o_reg and _insn_writes_first_operand(
+            insn, idaapi.CF_CHG1
         ):
             _sv_process_writer(mnem, insn, state)
         ea += length
@@ -2410,9 +2535,7 @@ def _native_final_state_write_before_live_tail(
                     _sv_reg_name(insn.ops[0]) or ""
                 )
             immediate = (
-                int(insn.ops[1].value)
-                if insn.ops[1].type == idaapi.o_imm
-                else None
+                int(insn.ops[1].value) if insn.ops[1].type == idaapi.o_imm else None
             )
             if not _state_write_values_match(
                 mnemonic=idaapi.print_insn_mnem(int(instruction_ea)) or "",
@@ -2422,23 +2545,15 @@ def _native_final_state_write_before_live_tail(
                 state_constant=int(immediate) if immediate is not None else 0,
             ):
                 continue
-            candidates.append(
-                (int(instruction_ea), int(immediate) & _MASK32)
-            )
+            candidates.append((int(instruction_ea), int(immediate) & _MASK32))
         if not candidates:
             continue
         latest_ea = max(ea for ea, _state in candidates)
-        latest_states = {
-            state for ea, state in candidates if int(ea) == int(latest_ea)
-        }
+        latest_states = {state for ea, state in candidates if int(ea) == int(latest_ea)}
         if len(latest_states) != 1:
             return None
         state = next(iter(latest_states))
-        return (
-            int(state)
-            if int(state) != (int(incoming_state) & _MASK32)
-            else None
-        )
+        return int(state) if int(state) != (int(incoming_state) & _MASK32) else None
     return None
 
 
@@ -2555,9 +2670,7 @@ def _build_materialized_state_routes(
                 serial_eas.add(int(native_entry_ea))
             handler_by_ea.setdefault(int(block.start_ea), set()).add(int(serial))
             if native_entry_ea is not None:
-                handler_by_ea.setdefault(int(native_entry_ea), set()).add(
-                    int(serial)
-                )
+                handler_by_ea.setdefault(int(native_entry_ea), set()).add(int(serial))
             for insn in block.insn_snapshots:
                 serial_eas.add(int(insn.ea))
                 handler_by_ea.setdefault(int(insn.ea), set()).add(int(serial))
@@ -2627,8 +2740,7 @@ def _build_materialized_state_routes(
             if (
                 evidence.resolver_kind == "residual_state_route_evidence"
                 and evidence.selector_state_constant is not None
-                and (int(evidence.selector_state_constant) & _MASK32)
-                == state_constant
+                and (int(evidence.selector_state_constant) & _MASK32) == state_constant
                 and evidence.selector_state_var_reg is not None
                 and int(evidence.selector_state_var_reg) == int(state_var_reg)
                 and tuple(int(ea) for ea in evidence.target_eas)
@@ -2692,7 +2804,9 @@ def _build_materialized_state_routes(
             )
         )
     for anchor in state_write_anchors:
-        if anchor.state_var_reg is None or int(anchor.state_var_reg) != int(state_var_reg):
+        if anchor.state_var_reg is None or int(anchor.state_var_reg) != int(
+            state_var_reg
+        ):
             continue
         source_block = flow_graph.get_block(int(anchor.block_serial))
         if source_block is None:
@@ -2716,15 +2830,12 @@ def _build_materialized_state_routes(
             and int(expected_target_serial) in trusted_handler_override_serials
         ):
             exact_target_serial = int(expected_target_serial)
-        if (
-            exact_target_serial is not None
-            and (
-                int(exact_target_serial) in handler_serials
-                or (
-                    expected_target_serial is not None
-                    and int(expected_target_serial) in dispatcher_block_serials
-                    and int(exact_target_serial) not in dispatcher_block_serials
-                )
+        if exact_target_serial is not None and (
+            int(exact_target_serial) in handler_serials
+            or (
+                expected_target_serial is not None
+                and int(expected_target_serial) in dispatcher_block_serials
+                and int(exact_target_serial) not in dispatcher_block_serials
             )
         ):
             routes.add(
@@ -2781,9 +2892,7 @@ def _build_materialized_state_routes(
                 == (int(anchor.block_serial),)
                 and int(dispatcher_entry_serial)
                 in tuple(int(succ) for succ in successor.succs)
-                and out_reg_maps.get(int(successor_serial), {}).get(
-                    int(state_var_reg)
-                )
+                and out_reg_maps.get(int(successor_serial), {}).get(int(state_var_reg))
                 == state_constant
             ):
                 route_source_serials.add(int(successor_serial))
@@ -2945,9 +3054,7 @@ def _build_materialized_state_routes(
                 )
                 for incoming_state in sorted(incoming_states):
                     initial_mregs = dict(context_mregs)
-                    initial_mregs[int(state_var_reg)] = (
-                        int(incoming_state) & _MASK32
-                    )
+                    initial_mregs[int(state_var_reg)] = int(incoming_state) & _MASK32
                     try:
                         replay_result = handler_state_resolver(
                             source_entry_ea,
@@ -3003,13 +3110,9 @@ def _build_materialized_state_routes(
                                 )
                             except Exception:
                                 replay_result = None
-                            if isinstance(
-                                replay_result, _ConcreteHandlerStateWrite
-                            ):
+                            if isinstance(replay_result, _ConcreteHandlerStateWrite):
                                 replay_exit_proven = True
-                                next_state = (
-                                    int(replay_result.next_state) & _MASK32
-                                )
+                                next_state = int(replay_result.next_state) & _MASK32
                                 route_source_serial = find_unique_target_block(
                                     flow_graph,
                                     int(replay_result.exit_ea),
@@ -3055,17 +3158,12 @@ def _build_materialized_state_routes(
                         in trusted_handler_override_serials
                     ):
                         exact_target_serial = int(expected_target_serial)
-                    exact_target_authoritative = (
-                        exact_target_serial is not None
-                        and (
-                            int(exact_target_serial) in handler_serials
-                            or (
-                                expected_target_serial is not None
-                                and int(expected_target_serial)
-                                in dispatcher_block_serials
-                                and int(exact_target_serial)
-                                not in dispatcher_block_serials
-                            )
+                    exact_target_authoritative = exact_target_serial is not None and (
+                        int(exact_target_serial) in handler_serials
+                        or (
+                            expected_target_serial is not None
+                            and int(expected_target_serial) in dispatcher_block_serials
+                            and int(exact_target_serial) not in dispatcher_block_serials
                         )
                     )
                     target_serial = (
@@ -3074,10 +3172,7 @@ def _build_materialized_state_routes(
                         else expected_target_serial
                     )
                     native_dispatch_start_ea = int(dispatcher_block.start_ea)
-                    if (
-                        target_serial is None
-                        and handler_target_resolver is not None
-                    ):
+                    if target_serial is None and handler_target_resolver is not None:
                         try:
                             target_serial = handler_target_resolver(state_constant)
                         except Exception:
@@ -3151,12 +3246,9 @@ def _build_materialized_state_routes(
                                 successor_targets.add(next(iter(target_serials)))
                         if len(successor_targets) == 1:
                             target_serial = next(iter(successor_targets))
-                    if (
-                        target_serial is None
-                        or (
-                            int(target_serial) not in handler_serials
-                            and not exact_target_authoritative
-                        )
+                    if target_serial is None or (
+                        int(target_serial) not in handler_serials
+                        and not exact_target_authoritative
                     ):
                         continue
                     routes.add(
@@ -3288,8 +3380,7 @@ def _build_conditional_handler_state_routes(
         else:
             source_serials = tuple(int(serial) for serial in arm_source_serials)
             if any(
-                flow_graph.get_block(int(serial)) is None
-                for serial in source_serials
+                flow_graph.get_block(int(serial)) is None for serial in source_serials
             ):
                 continue
         for source_serial, state_constant, target_ea in (
@@ -3372,10 +3463,13 @@ def _residual_fragment_ranges(
     import ida_funcs  # type: ignore[import-untyped]
 
     envelope_start = int(resolution.function_ea)
-    envelope_end = max(
-        (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
-        default=envelope_start,
-    ) + 0x100
+    envelope_end = (
+        max(
+            (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
+            default=envelope_start,
+        )
+        + 0x100
+    )
     starts: list[tuple[int, int]] = []
     ea = envelope_start
     max_candidates = 512
@@ -3384,7 +3478,11 @@ def _residual_fragment_ranges(
         try:
             head = int(ida_bytes.get_item_head(ea))
             flags = ida_bytes.get_flags(head)
-            if head != ea or not ida_bytes.is_code(flags) or ida_funcs.get_func(head) is not None:
+            if (
+                head != ea
+                or not ida_bytes.is_code(flags)
+                or ida_funcs.get_func(head) is not None
+            ):
                 ea += 1
                 continue
             end = min(int(ida_bytes.get_item_end(head)) + max_bytes, envelope_end)
@@ -3416,10 +3514,13 @@ def _materialize_residual_fragments(
     if not context:
         return (0, ())
     envelope_start = int(resolution.function_ea)
-    envelope_end = max(
-        (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
-        default=envelope_start,
-    ) + 0x100
+    envelope_end = (
+        max(
+            (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
+            default=envelope_start,
+        )
+        + 0x100
+    )
     evidence_by_branch: dict[int, object] = {}
     candidate_ranges = set(_residual_fragment_ranges(resolution))
     candidate_ranges.update(
@@ -3436,7 +3537,11 @@ def _materialize_residual_fragments(
         failure = ida_hexrays.hexrays_failure_t()
         try:
             mba = ida_hexrays.gen_microcode(
-                ranges, failure, None, ida_hexrays.DECOMP_NO_WAIT, ida_hexrays.MMAT_LOCOPT
+                ranges,
+                failure,
+                None,
+                ida_hexrays.DECOMP_NO_WAIT,
+                ida_hexrays.MMAT_LOCOPT,
             )
             if mba is None:
                 logger.info("residual state-route: CALLS generation returned None")
@@ -3513,10 +3618,10 @@ def _native_selector_block_entry(cmp_ea: int, text_start: int) -> int:
         size = ida_ua.decode_insn(insn, int(candidate_ea))
         if size <= 0 or int(candidate_ea) + int(size) != int(cmp_ea):
             continue
-        if (
-            (idaapi.print_insn_mnem(int(candidate_ea)) or "") in {"lea", "mov"}
-            and insn.ops[0].type == idaapi.o_reg
-        ):
+        if (idaapi.print_insn_mnem(int(candidate_ea)) or "") in {
+            "lea",
+            "mov",
+        } and insn.ops[0].type == idaapi.o_reg:
             candidates.append(int(candidate_ea))
     if candidates:
         return max(candidates)
@@ -3571,9 +3676,8 @@ def _static_equality_route_candidate(
             return None
         if selected_target_ea == replay_match:
             pass
-        elif (
-            selected_target_ea == replay_nonmatch
-            and replay_match == int(row.terminal_end_ea)
+        elif selected_target_ea == replay_nonmatch and replay_match == int(
+            row.terminal_end_ea
         ):
             selected_target_ea = replay_match
         else:
@@ -3737,9 +3841,7 @@ def _native_equality_state_rows(
         branch_ea, branch_insn, branch_size, mnemonic = branch
         setcc_condition_code = _equality_setcc_condition_code(mnemonic)
         if setcc_condition_code is not None:
-            terminal_jmp_ea = _native_first_register_indirect_jump(
-                int(branch_ea)
-            )
+            terminal_jmp_ea = _native_first_register_indirect_jump(int(branch_ea))
             if terminal_jmp_ea is None:
                 continue
             terminal = ida_ua.insn_t()
@@ -3762,10 +3864,10 @@ def _native_equality_state_rows(
             )
             continue
         target_ea = None
-        if (
-            mnemonic in {"jz", "je"}
-            and branch_insn.ops[0].type in {idaapi.o_near, idaapi.o_far}
-        ):
+        if mnemonic in {"jz", "je"} and branch_insn.ops[0].type in {
+            idaapi.o_near,
+            idaapi.o_far,
+        }:
             target_ea = int(branch_insn.ops[0].addr)
         elif mnemonic in {"jnz", "jne"}:
             following_ea = int(branch_ea) + int(branch_size)
@@ -3779,9 +3881,7 @@ def _native_equality_state_rows(
                 target_ea = int(following.ops[0].addr)
         if target_ea is not None:
             condition_code = 4 if mnemonic in {"jz", "je"} else 5
-            terminal_jmp_ea = _native_first_register_indirect_jump(
-                int(target_ea)
-            )
+            terminal_jmp_ea = _native_first_register_indirect_jump(int(target_ea))
             if terminal_jmp_ea is None:
                 continue
             terminal = ida_ua.insn_t()
@@ -3829,9 +3929,7 @@ def _resolve_native_setcc_route_facts(
     rows: tuple[_NativeEqualityRow, ...],
 ) -> tuple[tuple[_NativeEqualityRow, int, int], ...]:
     """Replay setcc selectors before any byte patch invalidates their arms."""
-    context_mregs = _residual_context_mregs(
-        resolution.function_context_register_values
-    )
+    context_mregs = _residual_context_mregs(resolution.function_context_register_values)
     facts: list[tuple[_NativeEqualityRow, int, int]] = []
     for row in rows:
         if row.selector_kind != "setcc":
@@ -3998,13 +4096,14 @@ def _materialize_static_equality_fragments(
     import ida_segment  # type: ignore[import-untyped]
     import idaapi  # type: ignore[import-untyped]
 
-    envelope_end = max(
-        (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
-        default=int(resolution.function_ea),
-    ) + 0x100
-    context_mregs = _residual_context_mregs(
-        resolution.function_context_register_values
+    envelope_end = (
+        max(
+            (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
+            default=int(resolution.function_ea),
+        )
+        + 0x100
     )
+    context_mregs = _residual_context_mregs(resolution.function_context_register_values)
     facts_by_branch: dict[int, set[tuple[_NativeEqualityRow, int, int]]] = {}
     route_candidates: list[MaterializedIndirectTransfer] = []
     setcc_replay_facts: dict[_NativeEqualityRow, set[tuple[int, int]]] = {}
@@ -4122,9 +4221,7 @@ def _materialize_static_equality_fragments(
                 materialized_region_end_ea=int(row.terminal_end_ea),
             )
         )
-    dispatcher_fallback_eas = _static_equality_dispatcher_fallback_eas(
-        tuple(transfers)
-    )
+    dispatcher_fallback_eas = _static_equality_dispatcher_fallback_eas(tuple(transfers))
     for row, match_target, nonmatch_target in native_setcc_routes:
         proven_match_targets = {
             int(candidate.target_eas[0])
@@ -4337,10 +4434,7 @@ def _native_post_state_write_indirect_site(
             return _select_register_indirect_patch_region(tuple(decoded))
         if mnemonic in {"ret", "retn", "retf", "call"}:
             return None
-        if (
-            mnemonic == "jmp"
-            and insn.ops[0].type in {idaapi.o_near, idaapi.o_far}
-        ):
+        if mnemonic == "jmp" and insn.ops[0].type in {idaapi.o_near, idaapi.o_far}:
             if cursor in materialized_anchor_eas and size >= 5:
                 return (cursor, size)
             return None
@@ -4387,8 +4481,7 @@ def _residual_patch_site_is_path_local(
         for block in flow_graph.blocks.values()
         if int(block.start_ea) == int(patch_ea)
         or any(
-            int(instruction.ea) == int(patch_ea)
-            for instruction in block.insn_snapshots
+            int(instruction.ea) == int(patch_ea) for instruction in block.insn_snapshots
         )
     )
     if len(owners) != 1:
@@ -4541,7 +4634,6 @@ def _materialize_residual_state_routes(
     import ida_funcs  # type: ignore[import-untyped]
     import ida_hexrays  # type: ignore[import-untyped]
     import ida_segment  # type: ignore[import-untyped]
-    import ida_ua  # type: ignore[import-untyped]
     import idaapi  # type: ignore[import-untyped]
 
     from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
@@ -4551,9 +4643,6 @@ def _materialize_residual_state_routes(
     from d810.backends.hexrays.evidence.condition_chain_analysis import (
         analyze_condition_chain_dispatcher,
     )
-    from d810.backends.hexrays.evidence.residual_entry_bridge import (
-        recognize_conditional_handler_bridges,
-    )
     from d810.hexrays.mutation.ir_translator import lift
 
     if resolution.arch != "x86" or not resolution.patch_plans:
@@ -4562,10 +4651,13 @@ def _materialize_residual_state_routes(
     if func is None:
         return (0, ())
 
-    envelope_end = max(
-        (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
-        default=int(resolution.function_ea),
-    ) + 0x100
+    envelope_end = (
+        max(
+            (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
+            default=int(resolution.function_ea),
+        )
+        + 0x100
+    )
     native_rows = _native_equality_state_target_rows(
         int(resolution.function_ea),
         envelope_end_ea=envelope_end,
@@ -4688,9 +4780,7 @@ def _materialize_residual_state_routes(
             if len(facts) != 1:
                 continue
             branch_size, state_constant, target_ea = next(iter(facts))
-            body = b"\xE9" + struct.pack(
-                "<i", int(target_ea) - (int(branch_ea) + 5)
-            )
+            body = b"\xe9" + struct.pack("<i", int(target_ea) - (int(branch_ea) + 5))
             if int(branch_size) < len(body):
                 continue
             body += b"\x90" * (int(branch_size) - len(body))
@@ -4787,10 +4877,13 @@ def _materialize_residual_state_routes_from_mba(
 
     if resolution.arch != "x86" or not resolution.patch_plans:
         return (0, ())
-    envelope_end = max(
-        (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
-        default=int(resolution.function_ea),
-    ) + 0x100
+    envelope_end = (
+        max(
+            (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
+            default=int(resolution.function_ea),
+        )
+        + 0x100
+    )
     try:
         graph = lift(mba)
         recovery = recover_dispatcher(
@@ -4869,12 +4962,10 @@ def _materialize_residual_state_routes_from_mba(
             state_routes=state_routes,
             state_write_sites=state_write_sites,
         )
-        inherited_states_by_predicate_ea = (
-            _residual_predicate_inherited_states(
-                graph,
-                plans,
-                state_write_sites=state_write_sites,
-            )
+        inherited_states_by_predicate_ea = _residual_predicate_inherited_states(
+            graph,
+            plans,
+            state_write_sites=state_write_sites,
         )
         logger.info(
             "live residual state-route: blocks=%d entry=%d reg=%d transitions=%d plans=%d",
@@ -4894,9 +4985,7 @@ def _materialize_residual_state_routes_from_mba(
                     transition.via_block,
                     tuple(
                         int(serial)
-                        for serial in graph.blocks[
-                            int(transition.write_block)
-                        ].succs
+                        for serial in graph.blocks[int(transition.write_block)].succs
                     ),
                     hex(int(graph.blocks[int(transition.write_block)].start_ea)),
                 )
@@ -4926,9 +5015,7 @@ def _materialize_residual_state_routes_from_mba(
             mba,
             state_register=int(recovery.state_var_reg),
             state_targets=conditional_state_targets,
-            inherited_states_by_predicate_ea=(
-                inherited_states_by_predicate_ea
-            ),
+            inherited_states_by_predicate_ea=(inherited_states_by_predicate_ea),
         )
     except Exception:
         logger.warning(
@@ -4945,8 +5032,7 @@ def _materialize_residual_state_routes_from_mba(
     materialized_dispatch_anchor_eas = frozenset(
         int(anchor_ea)
         for transfer in transfers
-        if transfer.resolver_kind == "static_fixpoint"
-        and len(transfer.target_eas) == 1
+        if transfer.resolver_kind == "static_fixpoint" and len(transfer.target_eas) == 1
         for anchor_ea in transfer.materialized_anchor_eas
     )
     for source_serial, state_constant, target_ea in plans:
@@ -5017,16 +5103,12 @@ def _materialize_residual_state_routes_from_mba(
         if len(facts) != 1:
             continue
         branch_size, state_constant, target_ea = next(iter(facts))
-        body = b"\xE9" + struct.pack(
-            "<i", int(target_ea) - (int(branch_ea) + 5)
-        )
+        body = b"\xe9" + struct.pack("<i", int(target_ea) - (int(branch_ea) + 5))
         if int(branch_size) < len(body):
             continue
         body += b"\x90" * (int(branch_size) - len(body))
         ida_bytes.patch_bytes(int(branch_ea), body)
-        ida_bytes.del_items(
-            int(branch_ea), ida_bytes.DELIT_EXPAND, int(branch_size)
-        )
+        ida_bytes.del_items(int(branch_ea), ida_bytes.DELIT_EXPAND, int(branch_size))
         idaapi.create_insn(int(branch_ea))
         delivered_targets.append(int(target_ea))
         produced.append(
@@ -5034,10 +5116,10 @@ def _materialize_residual_state_routes_from_mba(
                 source_jmp_ea=int(branch_ea),
                 source_block_ea=int(branch_ea),
                 materialized_anchor_eas=(int(branch_ea),),
-            target_eas=(int(target_ea),),
-            selector_state_var_reg=int(recovery.state_var_reg),
-            selector_state_constant=int(state_constant),
-            resolver_kind="residual_state_route",
+                target_eas=(int(target_ea),),
+                selector_state_var_reg=int(recovery.state_var_reg),
+                selector_state_constant=int(state_constant),
+                resolver_kind="residual_state_route",
             )
         )
     conditional_bridges = recover_conditional_handler_bridge_transfers_from_mba(
@@ -5117,16 +5199,17 @@ def _materialize_residual_fragment_from_mba(
         recognize_residual_indirect_transfer,
     )
 
-    context = _residual_context_mregs(
-        resolution.function_context_register_values
-    )
+    context = _residual_context_mregs(resolution.function_context_register_values)
     if not context:
         return (0, ())
     envelope_start = int(resolution.function_ea)
-    envelope_end = max(
-        (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
-        default=envelope_start,
-    ) + 0x100
+    envelope_end = (
+        max(
+            (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
+            default=envelope_start,
+        )
+        + 0x100
+    )
     try:
         evidence = recognize_residual_indirect_transfer(
             mba,
@@ -5214,9 +5297,6 @@ def _recover_static_equality_route_transfers_from_mba(
     the same state and re-check condition-chain handler membership.
     """
     from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
-    from d810.analyses.control_flow.materialized_indirect_transfer import (
-        find_unique_target_block,
-    )
     from d810.hexrays.mutation.ir_translator import lift
 
     if resolution.arch != "x86" or not resolution.patch_plans:
@@ -5234,13 +5314,14 @@ def _recover_static_equality_route_transfers_from_mba(
     if recovery.state_var_reg is None:
         return ()
     state_var_reg = int(recovery.state_var_reg)
-    envelope_end = max(
-        (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
-        default=int(resolution.function_ea),
-    ) + 0x100
-    context_mregs = _residual_context_mregs(
-        resolution.function_context_register_values
+    envelope_end = (
+        max(
+            (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
+            default=int(resolution.function_ea),
+        )
+        + 0x100
     )
+    context_mregs = _residual_context_mregs(resolution.function_context_register_values)
     register_snapshots_by_ea = {
         int(source_ea): _residual_context_mregs(register_values)
         for source_ea, register_values in resolution.corridor_register_snapshots
@@ -5303,7 +5384,10 @@ def _recover_static_equality_route_transfers_from_mba(
             target_ea = transfer.false_target_ea
         else:
             continue
-        if target_ea is None or find_unique_target_entry_block(graph, int(target_ea)) is None:
+        if (
+            target_ea is None
+            or find_unique_target_entry_block(graph, int(target_ea)) is None
+        ):
             continue
         targets_by_state.setdefault(
             int(transfer.selector_compare_constant) & _MASK32,
@@ -5330,11 +5414,12 @@ def _recover_static_equality_route_transfers_from_mba(
             register_snapshots_by_ea=register_snapshots_by_ea,
             dispatch_anchor_eas=dispatch_anchor_eas,
         )
-        if target_ea is None or find_unique_target_entry_block(graph, int(target_ea)) is None:
+        if (
+            target_ea is None
+            or find_unique_target_entry_block(graph, int(target_ea)) is None
+        ):
             continue
-        jmp_ea = _native_first_register_indirect_jump(
-            int(row.direct_target_ea)
-        )
+        jmp_ea = _native_first_register_indirect_jump(int(row.direct_target_ea))
         if jmp_ea is None:
             continue
         targets_by_state.setdefault(int(row.state_constant), set()).add(
@@ -5366,10 +5451,12 @@ def _recover_static_equality_route_transfers_from_mba(
         )
     logger.info(
         "static equality-route recovery: rows=%d states=%d transfers=%d",
-        len(_native_equality_state_rows(
-            int(resolution.function_ea),
-            envelope_end_ea=envelope_end,
-        )),
+        len(
+            _native_equality_state_rows(
+                int(resolution.function_ea),
+                envelope_end_ea=envelope_end,
+            )
+        ),
         len(targets_by_state),
         len(produced),
     )
@@ -5488,16 +5575,18 @@ def _states_with_validated_exact_equality_routes(
     )
 
 
-def _encode_direct_jump(source_ea: int, region_size: int, target_ea: int) -> bytes | None:
+def _encode_direct_jump(
+    source_ea: int, region_size: int, target_ea: int
+) -> bytes | None:
     """Encode a size-preserving direct jump, preferring the original short form."""
     source = int(source_ea)
     size = int(region_size)
     target = int(target_ea)
     short_delta = target - (source + 2)
     if size == 2 and -128 <= short_delta <= 127:
-        return b"\xEB" + struct.pack("b", short_delta)
+        return b"\xeb" + struct.pack("b", short_delta)
     if size >= 5:
-        body = b"\xE9" + struct.pack("<i", target - (source + 5))
+        body = b"\xe9" + struct.pack("<i", target - (source + 5))
         return body + b"\x90" * (size - len(body))
     return None
 
@@ -5542,7 +5631,10 @@ def _native_entry_bridge_trampoline(
     predicate = ida_ua.insn_t()
     predicate_size = int(ida_ua.decode_insn(predicate, int(predicate_ea)))
     if predicate_size <= 0:
-        logger.info("residual entry trampoline: predicate decode failed at 0x%X", int(predicate_ea))
+        logger.info(
+            "residual entry trampoline: predicate decode failed at 0x%X",
+            int(predicate_ea),
+        )
         return None
 
     entry_sites: list[tuple[int, int]] = []
@@ -5565,9 +5657,8 @@ def _native_entry_bridge_trampoline(
             entry_sites.append((cursor, size))
         # IDA's metapc decoder reports the canonical long NOP as NN_nop but
         # print_insn_mnem() can return an empty string for the 11-byte form.
-        if (
-            (mnemonic == "nop" or int(insn.itype) == int(idaapi.NN_nop))
-            and size >= int(required_cave_size)
+        if (mnemonic == "nop" or int(insn.itype) == int(idaapi.NN_nop)) and size >= int(
+            required_cave_size
         ):
             cave_sites.append((cursor, size))
         cursor += size
@@ -5696,7 +5787,9 @@ def _materialize_residual_entry_bridge(
         if initial_state is None:
             return _abstain("no_initial_state_write")
         handler_serial = dmap.resolve_target(int(evidence.taken_state_constant))
-        handler = graph.get_block(handler_serial) if handler_serial is not None else None
+        handler = (
+            graph.get_block(handler_serial) if handler_serial is not None else None
+        )
         if handler is None:
             return _abstain("taken_state_has_no_live_handler")
         residual_target = _exact_equality_native_target(
@@ -5739,9 +5832,7 @@ def _materialize_residual_entry_bridge(
             return _abstain("native_trampoline_not_found")
         entry_ea, entry_size, cave_ea, cave_size = trampoline
         entry_body = _encode_direct_jump(entry_ea, entry_size, cave_ea)
-        processor_register = int(
-            ida_hexrays.mreg2reg(int(recovery.state_var_reg), 4)
-        )
+        processor_register = int(ida_hexrays.mreg2reg(int(recovery.state_var_reg), 4))
         state_write = _encode_x86_register_immediate32(
             processor_register,
             int(evidence.taken_state_constant),
@@ -5749,7 +5840,7 @@ def _materialize_residual_entry_bridge(
         inverted_condition = int(plan.condition_code) ^ 1
         residual_target = int(plan.false_target_ea)
         conditional_residual = (
-            b"\x0F"
+            b"\x0f"
             + bytes((0x80 | inverted_condition,))
             + struct.pack("<i", residual_target - (cave_ea + 6))
         )
@@ -5863,9 +5954,7 @@ def _recover_condition_chain_handler_transfers_from_mba(
         if transfer.resolver_kind == "condition_chain_handler_evidence"
         and transfer.selector_state_constant is not None
     }
-    existing_states.update(
-        _states_with_validated_exact_equality_routes(transfers)
-    )
+    existing_states.update(_states_with_validated_exact_equality_routes(transfers))
     existing_live_states = {
         int(transfer.selector_state_constant)
         for transfer in transfers
@@ -5971,9 +6060,9 @@ def recover_conditional_handler_bridge_transfers_from_mba(
             elif transfer.condition_code == 5:
                 target = transfer.false_target_ea
         elif transfer.resolver_kind in {
-                "condition_chain_handler_evidence",
-                "static_equality_route",
-                "residual_state_route",
+            "condition_chain_handler_evidence",
+            "static_equality_route",
+            "residual_state_route",
         }:
             if (
                 transfer.selector_state_constant is None
@@ -6042,20 +6131,14 @@ def recover_conditional_handler_bridge_transfers_from_mba(
             if inherited_states_by_predicate_ea is not None
             else None
         )
-        inherited_arm_proven = (
-            inherited_state is not None
-            and any(
-                int(state) == (int(inherited_state) & _MASK32)
-                and state_targets.get(int(state)) == int(target_ea)
-                for state, target_ea in arm_proofs
-            )
+        inherited_arm_proven = inherited_state is not None and any(
+            int(state) == (int(inherited_state) & _MASK32)
+            and state_targets.get(int(state)) == int(target_ea)
+            for state, target_ea in arm_proofs
         )
-        imported_arm_proven = (
-            int(row.predicate_ea) in imported_predicate_eas
-            and all(
-                state_targets.get(int(state)) == int(target_ea)
-                for state, target_ea in arm_proofs
-            )
+        imported_arm_proven = int(row.predicate_ea) in imported_predicate_eas and all(
+            state_targets.get(int(state)) == int(target_ea)
+            for state, target_ea in arm_proofs
         )
         if (
             not residual_arm_proven
@@ -6122,8 +6205,7 @@ def _static_absorb_eas(
         int(target)
         for plan in resolution.patch_plans
         for target in (
-            plan.target_eas
-            or resolution.jmp_targets.get(int(plan.jmp_ea), ())
+            plan.target_eas or resolution.jmp_targets.get(int(plan.jmp_ea), ())
         )
     }
     return tuple(
@@ -6154,10 +6236,13 @@ def _materialize_static(resolution: ComputedGotoResolution) -> int:
     # Snapshot native equality selectors before patch decoding invalidates
     # detached instruction heads.  The rows remain provenance only; setcc
     # targets still require unique live-microcode validation at CALLS.
-    equality_envelope_end = max(
-        (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
-        default=int(resolution.function_ea),
-    ) + 0x100
+    equality_envelope_end = (
+        max(
+            (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
+            default=int(resolution.function_ea),
+        )
+        + 0x100
+    )
     native_equality_rows = _native_equality_state_rows(
         int(resolution.function_ea),
         envelope_end_ea=equality_envelope_end,
@@ -6177,7 +6262,9 @@ def _materialize_static(resolution: ComputedGotoResolution) -> int:
         ida_bytes.patch_bytes(plan.patch_start, plan.patch_bytes)
         new_block_eas.extend(plan.new_block_eas)
     for plan in resolution.patch_plans:
-        ida_bytes.del_items(plan.block_entry, ida_bytes.DELIT_EXPAND, plan.region_end - plan.block_entry)
+        ida_bytes.del_items(
+            plan.block_entry, ida_bytes.DELIT_EXPAND, plan.region_end - plan.block_entry
+        )
     for plan in resolution.patch_plans:
         for head in plan.insn_heads:
             idaapi.create_insn(int(head))
@@ -6304,7 +6391,11 @@ def _analyze_select_block(jmp_ea: int, block_start: int, arch: str) -> dict | No
         if length <= 0:
             break
         mnem = idaapi.print_insn_mnem(ea) or ""
-        if mnem == "lea" and insn.ops[0].type == idaapi.o_reg and insn.ops[1].type in (idaapi.o_mem, idaapi.o_displ):
+        if (
+            mnem == "lea"
+            and insn.ops[0].type == idaapi.o_reg
+            and insn.ops[1].type in (idaapi.o_mem, idaapi.o_displ)
+        ):
             lea_cell[insn.ops[0].reg] = int(insn.ops[1].addr)
         elif mnem == "cmp" and insn.ops[1].type == idaapi.o_imm:
             cmp_end = ea + length
@@ -6324,8 +6415,9 @@ def _analyze_select_block(jmp_ea: int, block_start: int, arch: str) -> dict | No
     return {
         "cmp_end": int(cmp_end),
         "cc": int(cc),
-        "target_false": (getptr(cell_false) + key) & mask,  # cc false → dst keeps its lea
-        "target_true": (getptr(cell_true) + key) & mask,    # cc true  → dst = src
+        "target_false": (getptr(cell_false) + key)
+        & mask,  # cc false → dst keeps its lea
+        "target_true": (getptr(cell_true) + key) & mask,  # cc true  → dst = src
     }
 
 
@@ -6365,10 +6457,16 @@ def deliver_by_byte_patch(resolution: ComputedGotoResolution) -> int:
     new_jmp_eas: list[int] = []
     insn = ida_ua.insn_t()
 
-    def _apply(patch_start: int, region_end: int, body: bytes, insn_heads: tuple[int, ...]) -> None:
-        ida_bytes.patch_bytes(patch_start, body + b"\x90" * (region_end - patch_start - len(body)))
+    def _apply(
+        patch_start: int, region_end: int, body: bytes, insn_heads: tuple[int, ...]
+    ) -> None:
+        ida_bytes.patch_bytes(
+            patch_start, body + b"\x90" * (region_end - patch_start - len(body))
+        )
         # re-decode the rewritten region so IDA sees the new jcc/jmp instructions
-        ida_bytes.del_items(patch_start, ida_bytes.DELIT_EXPAND, region_end - patch_start)
+        ida_bytes.del_items(
+            patch_start, ida_bytes.DELIT_EXPAND, region_end - patch_start
+        )
         for head in insn_heads:
             idaapi.create_insn(int(head))
 
@@ -6378,21 +6476,27 @@ def deliver_by_byte_patch(resolution: ComputedGotoResolution) -> int:
             continue
         region_end = int(jmp_ea) + jlen
         if len(targets) == 1:
-            body = b"\xE9" + _pack_i32(int(targets[0]) - (int(jmp_ea) + 5))
+            body = b"\xe9" + _pack_i32(int(targets[0]) - (int(jmp_ea) + 5))
             if region_end - int(jmp_ea) >= len(body):
                 _apply(int(jmp_ea), region_end, body, (int(jmp_ea),))
                 new_jmp_eas.append(int(jmp_ea))
             continue
         if len(targets) != 2:
             continue
-        info = _analyze_select_block(int(jmp_ea), _block_start_of(int(jmp_ea), text_start), resolution.arch)
+        info = _analyze_select_block(
+            int(jmp_ea), _block_start_of(int(jmp_ea), text_start), resolution.arch
+        )
         if info is None:
             continue
         cmp_end = info["cmp_end"]
         jcc_end = cmp_end + 6
         jmp_end = jcc_end + 5
-        body = (bytes([0x0F, 0x80 + (info["cc"] & 0x0F)]) + _pack_i32(info["target_true"] - jcc_end)
-                + b"\xE9" + _pack_i32(info["target_false"] - jmp_end))
+        body = (
+            bytes([0x0F, 0x80 + (info["cc"] & 0x0F)])
+            + _pack_i32(info["target_true"] - jcc_end)
+            + b"\xe9"
+            + _pack_i32(info["target_false"] - jmp_end)
+        )
         if region_end - cmp_end < len(body):
             continue
         _apply(cmp_end, region_end, body, (cmp_end, jcc_end))
@@ -6421,7 +6525,6 @@ def materialize_computed_gotos(resolution: ComputedGotoResolution) -> int:
     verified via a full CALLS microcode dump.)
     """
     import ida_auto  # type: ignore[import-untyped]
-    import ida_bytes  # type: ignore[import-untyped]
     import ida_funcs  # type: ignore[import-untyped]
     import ida_segment  # type: ignore[import-untyped]
 
@@ -6485,7 +6588,9 @@ def _has_unresolved_computed_goto(function_ea: int) -> bool:
     return False
 
 
-def resolve_and_materialize(function_ea: int, **kwargs: object) -> ComputedGotoResolution | None:
+def resolve_and_materialize(
+    function_ea: int, **kwargs: object
+) -> ComputedGotoResolution | None:
     """Full pipeline for one function: resolve then materialise. Concolic
     execution is tried first (the fixture's cmov-pointer-select shape); when it
     finds nothing -- e.g. an x86 loader whose prologue the from-entry trace
@@ -6514,6 +6619,7 @@ def resolve_and_materialize(function_ea: int, **kwargs: object) -> ComputedGotoR
 #: EAs whose staged materialization reached a fixed point in this registration.
 _MATERIALIZED_EAS: set[int] = set()
 _RESOLUTIONS_BY_EA: dict[int, ComputedGotoResolution] = {}
+_PROVEN_CALL_ABI_BY_EA: dict[tuple[int, int], StackCallAbiProof] = {}
 _SNIPPET_CAPTURE_ACTIVE = False
 _SNIPPET_CAPTURE_PROFILE_EA: int | None = None
 
@@ -6525,6 +6631,93 @@ def _generate_microcode_without_d810(
     """Build an evidence-only MBA without recursively applying d810 rewrites."""
     with suppress_d810_optimization():
         return generate_microcode(*args)
+
+
+def capture_detached_route_callinfo_templates(
+    function_ea: int,
+    native_ranges: Sequence[tuple[int, int]],
+) -> tuple[int, ...]:
+    """Capture CALLS authority with every proven range tried as the entry.
+
+    Hex-Rays may omit valid calls when a disconnected native-range union has
+    one arbitrary entry.  Rotating each range to the first position gives each
+    resolver-proven route one conservative CALLS view.  The native-EA registry
+    merges equivalent observations and tombstones conflicts.
+    """
+    import ida_hexrays  # type: ignore[import-untyped]
+    import idaapi  # type: ignore[import-untyped]
+
+    global _SNIPPET_CAPTURE_ACTIVE, _SNIPPET_CAPTURE_PROFILE_EA
+
+    key = int(function_ea)
+    normalized_ranges = tuple(
+        dict.fromkeys(
+            (int(start_ea), int(end_ea))
+            for start_ea, end_ea in native_ranges
+            if int(end_ea) > int(start_ea)
+        )
+    )
+    if not normalized_ranges:
+        return ()
+    if (
+        _SNIPPET_CAPTURE_ACTIVE
+        and _SNIPPET_CAPTURE_PROFILE_EA is not None
+        and int(_SNIPPET_CAPTURE_PROFILE_EA) != key
+    ):
+        return ()
+
+    established_scope = not _SNIPPET_CAPTURE_ACTIVE
+    previous_profile_ea = _SNIPPET_CAPTURE_PROFILE_EA
+    if established_scope:
+        _SNIPPET_CAPTURE_ACTIVE = True
+        _SNIPPET_CAPTURE_PROFILE_EA = key
+
+    captured: set[int] = set()
+    try:
+        for entry_range in normalized_ranges:
+            ordered_ranges = (
+                entry_range,
+                *(row for row in normalized_ranges if row != entry_range),
+            )
+            ranges = ida_hexrays.mba_ranges_t()
+            for start_ea, end_ea in ordered_ranges:
+                ranges.ranges.push_back(idaapi.range_t(int(start_ea), int(end_ea)))
+            failure = ida_hexrays.hexrays_failure_t()
+            try:
+                calls_mba = _generate_microcode_without_d810(
+                    ida_hexrays.gen_microcode,
+                    ranges,
+                    failure,
+                    None,
+                    int(ida_hexrays.DECOMP_NO_WAIT),
+                    ida_hexrays.MMAT_CALLS,
+                )
+            except Exception:
+                logger.info(
+                    "detached route CALLS generation failed: func=0x%X "
+                    "entry=[0x%X,0x%X)",
+                    key,
+                    int(entry_range[0]),
+                    int(entry_range[1]),
+                    exc_info=True,
+                )
+                continue
+            if calls_mba is None:
+                logger.info(
+                    "detached route CALLS generation abstained: func=0x%X "
+                    "entry=[0x%X,0x%X) reason=%s",
+                    key,
+                    int(entry_range[0]),
+                    int(entry_range[1]),
+                    failure.desc(),
+                )
+                continue
+            captured.update(capture_detached_callinfo_templates(key, calls_mba))
+    finally:
+        if established_scope:
+            _SNIPPET_CAPTURE_ACTIVE = False
+            _SNIPPET_CAPTURE_PROFILE_EA = previous_profile_ea
+    return tuple(sorted(captured))
 
 
 def _live_mba_native_eas(
@@ -6573,9 +6766,7 @@ def _capture_terminal_return_carrier_requests(
     for request in requests:
         if has_terminal_return_carrier_template(function_ea, request):
             continue
-        if not _native_target_is_return_epilogue(
-            int(request.terminal_target_ea)
-        ):
+        if not _native_target_is_return_epilogue(int(request.terminal_target_ea)):
             logger.info(
                 "terminal return-carrier capture abstained: source=0x%X "
                 "target=0x%X reason=target_not_epilogue",
@@ -6746,16 +6937,17 @@ def prepare_detached_handler_snippets(
         ),
         live_target_eas=live_target_eas,
     )
-    target_eas = tuple(
-        sorted({int(plan.target_ea) for plan in route_plans})
-    )
+    target_eas = tuple(sorted({int(plan.target_ea) for plan in route_plans}))
     terminal_carrier_requests = get_terminal_return_carrier_requests(key)
     if not target_eas and not terminal_carrier_requests:
         return 0
-    envelope_end = max(
-        (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
-        default=key,
-    ) + 0x100
+    envelope_end = (
+        max(
+            (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
+            default=key,
+        )
+        + 0x100
+    )
     captured = 0
     _SNIPPET_CAPTURE_PROFILE_EA = key
     _SNIPPET_CAPTURE_ACTIVE = True
@@ -6789,17 +6981,14 @@ def prepare_detached_handler_snippets(
                 )
                 continue
             need_replacement_template = (
-                (
-                    len(merged_ranges) > 1
-                    or detached_snippet_requires_analyzed_calls(
-                        key,
-                        int(target_ea),
-                    )
-                )
-                and not has_detached_replacement_snippet_template(
+                len(merged_ranges) > 1
+                or detached_snippet_requires_analyzed_calls(
                     key,
                     int(target_ea),
                 )
+            ) and not has_detached_replacement_snippet_template(
+                key,
+                int(target_ea),
             )
             if not need_locopt_template and not need_replacement_template:
                 continue
@@ -6820,8 +7009,7 @@ def prepare_detached_handler_snippets(
                     )
                 except Exception:
                     logger.info(
-                        "detached %s snippet generation failed: "
-                        "target=0x%X ranges=%s",
+                        "detached %s snippet generation failed: target=0x%X ranges=%s",
                         primary_maturity_name,
                         int(target_ea),
                         merged_ranges,
@@ -6862,17 +7050,14 @@ def prepare_detached_handler_snippets(
                     )
 
             need_replacement_template = (
-                (
-                    len(merged_ranges) > 1
-                    or detached_snippet_requires_analyzed_calls(
-                        key,
-                        int(target_ea),
-                    )
-                )
-                and not has_detached_replacement_snippet_template(
+                len(merged_ranges) > 1
+                or detached_snippet_requires_analyzed_calls(
                     key,
                     int(target_ea),
                 )
+            ) and not has_detached_replacement_snippet_template(
+                key,
+                int(target_ea),
             )
 
             if need_replacement_template:
@@ -6895,6 +7080,27 @@ def prepare_detached_handler_snippets(
                         exc_info=True,
                     )
                     replacement = None
+                if replacement is not None:
+                    captured_callinfos = (
+                        capture_detached_route_callinfo_templates(
+                            key,
+                            merged_ranges,
+                        )
+                        if len(merged_ranges) > 1
+                        else capture_detached_callinfo_templates(
+                            key,
+                            replacement,
+                        )
+                    )
+                    if captured_callinfos:
+                        captured += 1
+                        logger.info(
+                            "detached route CALLS authority captured: "
+                            "func=0x%X target=0x%X calls=%s",
+                            key,
+                            int(target_ea),
+                            [hex(int(ea)) for ea in captured_callinfos],
+                        )
                 if (
                     replacement is not None
                     and capture_detached_replacement_snippet_template(
@@ -7054,6 +7260,100 @@ def _first_x86_fastcall_register_accesses(
     return first[0], first[1]
 
 
+def _capture_range_instruction_eas(mba: object) -> tuple[int, ...]:
+    """Return native code heads owned by an isolated capture MBA."""
+    import ida_bytes  # type: ignore[import-untyped]
+    import idautils  # type: ignore[import-untyped]
+
+    instruction_eas: set[int] = set()
+    ranges = mba.mbr.ranges
+    for index in range(int(ranges.size())):
+        native_range = ranges[index]
+        for ea in idautils.Heads(
+            int(native_range.start_ea),
+            int(native_range.end_ea),
+        ):
+            if ida_bytes.is_code(ida_bytes.get_flags(int(ea))):
+                instruction_eas.add(int(ea))
+    return tuple(sorted(instruction_eas))
+
+
+def _on_stkpnts(
+    *,
+    function_ea: int,
+    mba: object,
+    stack_points: object,
+    decision: dict,
+) -> None:
+    """Project native SP facts onto resolver-owned imported instructions."""
+    import ida_frame  # type: ignore[import-untyped]
+    import ida_funcs  # type: ignore[import-untyped]
+
+    callback_key = int(function_ea)
+    capture_active = _SNIPPET_CAPTURE_ACTIVE and _SNIPPET_CAPTURE_PROFILE_EA is not None
+    key = int(_SNIPPET_CAPTURE_PROFILE_EA) if capture_active else callback_key
+    resolution = _RESOLUTIONS_BY_EA.get(key)
+    if resolution is None or resolution.arch != "x86" or _upsert_stkpnt is None:
+        return
+    function = ida_funcs.get_func(key)
+    if function is None:
+        return
+
+    if capture_active:
+        native_ea_by_live_ea = {
+            int(native_ea): int(native_ea)
+            for native_ea in _capture_range_instruction_eas(mba)
+        }
+    else:
+        native_ea_by_live_ea = {
+            int(imported_ea): int(native_ea)
+            for imported_ea, native_ea in (
+                last_imported_detached_snippet_instruction_origins(key)
+            )
+        }
+        native_ea_by_live_ea.update(
+            {
+                int(call_ea): int(call_ea)
+                for call_ea in detached_callinfo_template_eas(key)
+            }
+        )
+        native_ea_by_live_ea.update(
+            {
+                int(imported_ea): int(native_ea)
+                for imported_ea, native_ea in (
+                    imported_detached_snippet_instruction_origins(mba)
+                )
+            }
+        )
+    projected: list[tuple[int, int, int]] = []
+    for live_ea, native_ea in sorted(native_ea_by_live_ea.items()):
+        try:
+            spd = int(ida_frame.get_spd(function, int(native_ea)))
+            _upsert_stkpnt(stack_points, int(live_ea), spd)
+        except Exception:
+            logger.debug(
+                "computed-goto stack-point projection failed: "
+                "func=0x%X live=0x%X native=0x%X",
+                key,
+                int(live_ea),
+                int(native_ea),
+                exc_info=True,
+            )
+            continue
+        projected.append((int(live_ea), int(native_ea), spd))
+    if not projected:
+        return
+    decision["stack_points_modified"] = len(projected)
+    logger.info(
+        "computed-goto stack provenance projected: func=0x%X points=%d "
+        "capture=%s native_calls=%s",
+        key,
+        len(projected),
+        capture_active,
+        [hex(int(ea)) for ea in detached_callinfo_template_eas(key)],
+    )
+
+
 def _on_build_callinfo(
     *,
     function_ea: int,
@@ -7070,18 +7370,42 @@ def _on_build_callinfo(
     tail = block.tail
     if tail is None:
         return
-    call_ea = int(tail.ea)
+    imported_origins = dict(imported_detached_snippet_instruction_origins(block.mba))
+    call_ea = int(imported_origins.get(int(tail.ea), int(tail.ea)))
     key, resolution = _callinfo_profile_resolution(function_ea, call_ea)
     profile_owned = resolution is not None and resolution.arch == "x86"
-    direct_call = (
-        int(tail.opcode) == int(ida_hexrays.m_call)
-        and int(tail.l.t) == int(ida_hexrays.mop_v)
+    direct_call = int(tail.opcode) == int(ida_hexrays.m_call) and int(tail.l.t) == int(
+        ida_hexrays.mop_v
     )
-    indirect_call = (
-        int(tail.opcode) == int(ida_hexrays.m_icall)
-    )
+    indirect_call = int(tail.opcode) == int(ida_hexrays.m_icall)
     if not profile_owned or (not direct_call and not indirect_call):
         return
+
+    owns_live_profile_mba = int(function_ea) == int(key)
+    if (
+        owns_live_profile_mba
+        and not _SNIPPET_CAPTURE_ACTIVE
+        and _copy_mcallinfo is not None
+    ):
+        route_callinfo = prepare_detached_callinfo_template(
+            key,
+            call_ea,
+            tail,
+            block.mba,
+            copy_callinfo=_copy_mcallinfo,
+        )
+        if route_callinfo is not None:
+            decision["callinfo"] = route_callinfo
+            logger.info(
+                "computed-goto route callinfo restored: func=0x%X "
+                "call=0x%X args=%d call_spd=%d stkargs_top=%d",
+                key,
+                call_ea,
+                len(route_callinfo.args),
+                int(route_callinfo.call_spd),
+                int(route_callinfo.stkargs_top),
+            )
+            return
 
     operand_type = ida_typeinf.tinfo_t()
     has_operand_type = bool(ida_nalt.get_op_tinfo(operand_type, call_ea, 0))
@@ -7089,6 +7413,28 @@ def _on_build_callinfo(
     if indirect_call:
         if has_operand_type:
             return
+        proof_key = (key, call_ea)
+        cached_proof = _PROVEN_CALL_ABI_BY_EA.get(proof_key)
+        if cached_proof is not None and apply_three_argument_stdcall_type(
+            call_type,
+            cached_proof,
+        ):
+            prepared_callinfo = build_three_argument_stdcall_callinfo(
+                block,
+                call_type,
+                cached_proof,
+            )
+            if prepared_callinfo is not None:
+                decision["callinfo"] = prepared_callinfo
+                logger.info(
+                    "computed-goto indirect call proof reused: "
+                    "func=0x%X call=0x%X cc=stdcall args=%d stack_bytes=%d",
+                    key,
+                    call_ea,
+                    int(cached_proof.argument_count),
+                    int(cached_proof.stack_argument_bytes),
+                )
+                return
         recorded_transfers = get_materialized_indirect_transfers(key)
         proven_reentry_eas = _proven_callinfo_reentry_eas(
             resolution,
@@ -7117,20 +7463,16 @@ def _on_build_callinfo(
                     resolution,
                     combined_transfers,
                 )
-                no_stack_adjustment = (
-                    native_corridor_has_no_stack_adjustment(
-                        call_ea,
-                        proven_reentry_eas,
-                    )
+                no_stack_adjustment = native_corridor_has_no_stack_adjustment(
+                    call_ea,
+                    proven_reentry_eas,
                 )
         evidence = collect_three_argument_callee_purged_evidence(
             block,
             proven_reentry_eas=proven_reentry_eas,
             has_authoritative_type=has_operand_type,
             call_stack_deficit=native_call_stack_deficit(block, call_ea),
-            caller_stack_adjustment=(
-                0 if no_stack_adjustment is True else None
-            ),
+            caller_stack_adjustment=(0 if no_stack_adjustment is True else None),
             word_size=4,
         )
         proof = prove_three_argument_callee_purged_call(evidence)
@@ -7146,6 +7488,7 @@ def _on_build_callinfo(
         )
         if prepared_callinfo is None:
             return
+        _PROVEN_CALL_ABI_BY_EA[proof_key] = proof
         decision["callinfo"] = prepared_callinfo
         logger.info(
             "computed-goto indirect call prototype stabilized: "
@@ -7396,6 +7739,7 @@ def install() -> None:
     _MATERIALIZED_EAS.clear()
     _MATERIALIZATION_SESSIONS.clear()
     _RESOLUTIONS_BY_EA.clear()
+    _PROVEN_CALL_ABI_BY_EA.clear()
     _SNIPPET_CAPTURE_ACTIVE = False
     _SNIPPET_CAPTURE_PROFILE_EA = None
     register_flowchart_preanalysis_handler(_HANDLER_NAME, _on_flowchart_preanalysis)
@@ -7406,6 +7750,10 @@ def install() -> None:
     register_callinfo_preanalysis_handler(
         _CALLINFO_HANDLER_NAME,
         _on_build_callinfo,
+    )
+    register_stkpnts_preanalysis_handler(
+        _STKPNTS_HANDLER_NAME,
+        _on_stkpnts,
     )
     register_detached_handler_snippet_preparer(
         prepare_detached_handler_snippets,
@@ -7423,11 +7771,13 @@ def uninstall() -> None:
     _MATERIALIZED_EAS.clear()
     _MATERIALIZATION_SESSIONS.clear()
     _RESOLUTIONS_BY_EA.clear()
+    _PROVEN_CALL_ABI_BY_EA.clear()
     _SNIPPET_CAPTURE_ACTIVE = False
     _SNIPPET_CAPTURE_PROFILE_EA = None
     unregister_flowchart_preanalysis_handler(_HANDLER_NAME)
     unregister_calls_done_preanalysis_handler(_CALLS_HANDLER_NAME)
     unregister_callinfo_preanalysis_handler(_CALLINFO_HANDLER_NAME)
+    unregister_stkpnts_preanalysis_handler(_STKPNTS_HANDLER_NAME)
     unregister_detached_handler_snippet_preparer(
         prepare_detached_handler_snippets,
     )
@@ -7442,6 +7792,7 @@ __all__ = [
     "resolve_and_materialize",
     "prepare_detached_handler_snippets",
     "prepare_terminal_return_carrier_templates",
+    "capture_detached_route_callinfo_templates",
     "recover_conditional_handler_bridge_transfers_from_mba",
     "install",
     "uninstall",

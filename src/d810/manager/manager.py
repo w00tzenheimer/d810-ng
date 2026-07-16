@@ -82,6 +82,7 @@ def maybe_run_tail_distinct(mba: typing.Any) -> None:
     from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
         maybe_run_tail_distinct as _impl,
     )
+
     _impl(mba)
 
 
@@ -123,7 +124,9 @@ class D810Manager:
     rule_scope_service: RuleScopeService = dataclasses.field(
         default_factory=RuleScopeService
     )
-    block_pass_scheduler: PassScheduler = dataclasses.field(default_factory=PassScheduler)
+    block_pass_scheduler: PassScheduler = dataclasses.field(
+        default_factory=PassScheduler
+    )
     instruction_pass_scheduler: PassScheduler = dataclasses.field(
         default_factory=PassScheduler
     )
@@ -137,10 +140,12 @@ class D810Manager:
     _recon_phase: typing.Any = dataclasses.field(default=None, init=False)
     _recon_runtime: typing.Any = dataclasses.field(default=None, init=False)
     _recon_bundle: typing.Any = dataclasses.field(default=None, init=False)
-    _flowgraph_ready_subscriber: typing.Any = dataclasses.field(default=None, init=False)
+    _flowgraph_ready_subscriber: typing.Any = dataclasses.field(
+        default=None, init=False
+    )
     _post_d810_runtime: typing.Any = dataclasses.field(default=None, init=False)
-    _function_analysis_priors: dict[str, FunctionAnalysisPriors] = (
-        dataclasses.field(default_factory=dict, init=False)
+    _function_analysis_priors: dict[str, FunctionAnalysisPriors] = dataclasses.field(
+        default_factory=dict, init=False
     )
 
     def __post_init__(self) -> None:
@@ -207,11 +212,7 @@ class D810Manager:
             except TypeError:
                 items = (value,)
         return tuple(
-            dict.fromkeys(
-                str(item).strip()
-                for item in items
-                if str(item).strip()
-            )
+            dict.fromkeys(str(item).strip() for item in items if str(item).strip())
         )
 
     def _load_recon_fact_profile_modules(self) -> None:
@@ -400,7 +401,9 @@ class D810Manager:
         self.rule_scope_service.set_active_inference(
             self.rule_scope_runtime.active_rule_inference
         )
-        self.rule_scope_service.register_inference("unflattening", unflattening_inference)
+        self.rule_scope_service.register_inference(
+            "unflattening", unflattening_inference
+        )
 
         # Instantiate core manager classes from registry
         self.instruction_optimizer = InstructionOptimizerManager(
@@ -691,6 +694,15 @@ class D810Manager:
             run_callinfo_preanalysis_handlers,
         )
 
+        from d810.hexrays.preanalysis.stkpnts_preanalysis import (
+            run_stkpnts_preanalysis_handlers,
+        )
+
+        self.event_emitter.on(
+            DecompilationEvent.HEXRAYS_STKPNTS,
+            run_stkpnts_preanalysis_handlers,
+        )
+
         from d810.hexrays.preanalysis.calls_done_preanalysis import (
             run_calls_done_preanalysis_handlers,
         )
@@ -831,4 +843,4 @@ def d810_hooks_suppressed(manager: D810Manager):
         manager.block_optimizer.install()
 
 
-from d810.manager.state import D810State  # noqa: E402
+from d810.manager.state import D810State as D810State  # noqa: E402
