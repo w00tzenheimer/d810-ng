@@ -24,3 +24,7 @@ Immutable function/runtime/attack/pipeline/outcome/rule-scope/artifact snapshots
 **2026-07-15T23:57:01Z**
 
 Implementation plan saved at docs/superpowers/plans/2026-07-15-deobfuscation-workbench-slice-1.md. It defines immutable manager models, truthful pass/preflight/outcome/rule/stat/artifact collection, pure projection/export logic, a thin dock adapter, stable Stats redirect, automated gates, and an explicitly deferred live IDA/Qt acceptance gate.
+
+**2026-07-16T00:14:16Z**
+
+Terminal-only Slice 1 implementation completed through 3667b9245. Focused workbench/config/stats/action gate: 101 passed. Full unit gate: 5757 passed, 29 skipped, 9 pre-existing contract-vocabulary warnings, 162 subtests in 82.07s. ast-grep, import-linter, diff, prohibited-import, placeholder, and unanchored-block-serial scans are clean. Live dock/function-follow/theme/navigation/export acceptance remains deferred by user request, so this ticket stays in_progress.
