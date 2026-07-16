@@ -80,7 +80,9 @@ def _normalized_path(path: os.PathLike[str] | str) -> str:
 
 def _readonly_connection(path: os.PathLike[str] | str) -> sqlite3.Connection:
     absolute = _normalized_path(path)
-    uri = "file:" + quote(absolute, safe="/") + "?mode=ro"
+    sidecars_exist = Path(absolute + "-wal").exists() or Path(absolute + "-shm").exists()
+    immutable = "" if sidecars_exist else "&immutable=1"
+    uri = "file:" + quote(absolute, safe="/") + "?mode=ro" + immutable
     connection = sqlite3.connect(uri, uri=True)
     connection.row_factory = sqlite3.Row
     return connection
