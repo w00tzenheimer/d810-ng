@@ -1,6 +1,8 @@
 """Unit tests for the direct interval-set unflatten emitter (epic d81-jfg2)."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from d810.capabilities.dispatcher import RouterKind
@@ -58,6 +60,7 @@ from d810.transforms.graph_modification import (
     RedirectBranch,
     RedirectGoto,
     SyntheticRegisterNonzeroCondition,
+    SyntheticStackValueEqualsCondition,
 )
 from d810.transforms.minimal_unflatten_emit import (
     _applied_conditional_boundary_edge_keys,
@@ -69,6 +72,7 @@ from d810.transforms.minimal_unflatten_emit import (
     build_loop_guard_exit_redirects,
     build_materialized_conditional_handler_bridges,
     build_resolver_proven_indirect_call_neutralizations,
+    build_stack_carried_state_selector_lowerings,
     _normalize_degenerate_branch_redirects,
     build_source_keyed_handler_redirects,
     build_state_write_redirects,
@@ -193,6 +197,27 @@ def _mov_reg_from_stack(ea, reg, stkoff):
     )
 
 
+def _mov_reg_from_reg(ea, source_reg, destination_reg):
+    return InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=ea,
+        operands=(),
+        l=MopSnapshot(
+            t=_T_REG,
+            size=4,
+            reg=source_reg,
+            kind=OperandKind.REGISTER,
+        ),
+        d=MopSnapshot(
+            t=_T_REG,
+            size=4,
+            reg=destination_reg,
+            kind=OperandKind.REGISTER,
+        ),
+        kind=InsnKind.MOV,
+    )
+
+
 def _mov_stack_from_reg(ea, stkoff, reg):
     return InsnSnapshot(
         opcode=_OP_MOV,
@@ -251,6 +276,30 @@ def _state_ne_tail(ea, const):
         kind=InsnKind.COND_JUMP,
         branch_predicate=PredicateKind.NE,
         is_conditional_jump=True,
+    )
+
+
+def _signed_ge_tail(ea, compared, taken):
+    return InsnSnapshot(
+        opcode=0x32,
+        ea=ea,
+        operands=(),
+        l=MopSnapshot(t=_T_STK, size=4, stkoff=0x30, kind=OperandKind.STACK),
+        r=MopSnapshot(t=_T_NUM, size=4, value=compared, kind=OperandKind.NUMBER),
+        d=MopSnapshot(t=0, size=0, block_ref=taken, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        branch_predicate=PredicateKind.SGE,
+        is_conditional_jump=True,
+    )
+
+
+def _indirect_jump(ea):
+    return InsnSnapshot(
+        opcode=0x36,
+        ea=ea,
+        operands=(),
+        l=MopSnapshot(t=_T_REG, size=4, reg=8, kind=OperandKind.REGISTER),
+        kind=InsnKind.INDIRECT_JUMP,
     )
 
 
@@ -543,13 +592,15 @@ def test_emitter_scans_imported_materialized_handler_root(_seam) -> None:
     (
         "materialized_profile",
         "has_imported_boundary_evidence",
+        "state_var_reg",
         "expected_region",
     ),
     (
-        (False, False, frozenset()),
-        (False, True, frozenset()),
-        (True, False, frozenset()),
-        (True, True, frozenset({2, 3})),
+        (False, False, None, frozenset()),
+        (False, True, None, frozenset()),
+        (True, False, None, frozenset()),
+        (True, True, None, frozenset({2, 3})),
+        (True, False, 20, frozenset({2, 3})),
     ),
 )
 def test_dispatcher_predecessor_filter_requires_imported_boundary_evidence(
@@ -557,6 +608,7 @@ def test_dispatcher_predecessor_filter_requires_imported_boundary_evidence(
     monkeypatch,
     materialized_profile,
     has_imported_boundary_evidence,
+    state_var_reg,
     expected_region,
 ) -> None:
     """Ordinary stack dispatchers retain semantic guard predecessors.
@@ -614,7 +666,8 @@ def test_dispatcher_predecessor_filter_requires_imported_boundary_evidence(
     emit_minimal_unflatten(
         fg,
         _disp({0x10: 10}, exit_block=99),
-        state_var_stkoff=_STATE,
+        state_var_stkoff=_STATE if state_var_reg is None else None,
+        state_var_reg=state_var_reg,
         dispatcher_entry_serial=2,
         initial_state=0x10,
         dispatcher_region_serials=frozenset({2, 3}),
@@ -904,6 +957,65 @@ def test_recovers_initial_state_from_prologue(_seam) -> None:
         fg, disp, _STATE, dispatcher_entry_serial=2
     )
     assert _recover_initial_state(fg, transitions, 2, None) == 0x10
+
+
+def test_recovers_register_initial_state_across_entry_only_glue(_seam) -> None:
+    state_reg = 99
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,), (_mov_reg(0x1100, 0x10, state_reg),)),
+            # The dispatcher predecessor is shared with a handler back-edge.
+            # Only blk1@0x1040 is reachable before crossing the dispatcher.
+            2: _b(2, (3,), (1, 10)),
+            3: _b(3, (10,), (2,)),
+            10: _b(10, (2,), (3,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    assert _recover_initial_state(
+        fg,
+        (),
+        3,
+        None,
+        state_var_reg=state_reg,
+    ) == 0x10
+
+
+def test_emit_prefers_entry_reaching_initial_state_over_range_hint(_seam) -> None:
+    state_reg = 99
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,), (_mov_reg(0x1100, 0x10, state_reg),)),
+            2: _b(2, (3,), (1, 10, 20)),
+            3: _b(3, (10, 20), (2,)),
+            10: _b(10, (2,), (3,), (_mov_reg(0x1400, 0x20, state_reg),)),
+            20: _b(20, (2,), (3,), (_mov_reg(0x1500, 0x10, state_reg),)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dispatcher = _disp({0x10: 10, 0x20: 20}, exit_block=99)
+
+    plan = emit_minimal_unflatten(
+        fg,
+        dispatcher,
+        state_var_stkoff=None,
+        state_var_reg=state_reg,
+        dispatcher_entry_serial=3,
+        initial_state=0x20,
+    )
+
+    edges = {
+        (modification.from_serial, modification.old_target, modification.new_target)
+        for modification in plan.as_graph_modifications()
+        if isinstance(modification, (RedirectGoto, RedirectBranch))
+    }
+    assert (2, 3, 10) in edges
+    assert (2, 3, 20) not in edges
 
 
 def test_emit_bails_when_no_entry_bridge(_seam) -> None:
@@ -1406,6 +1518,41 @@ def test_entry_bridge_requires_witness_preserves_live_no_provider_exit_path(_sea
         if isinstance(m, RedirectGoto)
     }
     assert (0, 2, 10) not in gotos
+
+
+def test_computed_goto_entry_bridge_ignores_router_only_scratch_liveness(_seam) -> None:
+    scratch = 8
+    state_reg = 20
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 99), (0,), (_mov_reg(0x1080, 0x1234, scratch),)),
+            10: _b(10, (99,), (2,)),
+            99: _b(99, (100,), (2, 10), (_use_nested_reg(0x10C0, scratch),)),
+            100: _exit_block(100, (99,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        _disp({0x10: 10}, exit_block=100),
+        state_var_stkoff=None,
+        state_var_reg=state_reg,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        branch_witness_map=None,
+        entry_bridge_exit_path_blocks=(2, 99),
+        entry_bridge_requires_witness=True,
+        materialized_computed_goto_profile=True,
+    )
+    gotos = {
+        (modification.from_serial, modification.old_target, modification.new_target)
+        for modification in plan.as_graph_modifications()
+        if isinstance(modification, RedirectGoto)
+    }
+    assert (0, 2, 10) in gotos
 
 
 def test_entry_bridge_requires_witness_preserves_live_no_provider_stack_exit_path(_seam) -> None:
@@ -3088,6 +3235,45 @@ def test_emit_accepts_exact_materialized_conditional_entry_without_scalar_state(
     assert (20, 2, 10) in redirects
 
 
+def test_materialized_computed_goto_profile_recovers_multi_entry_state_writer(
+    _seam,
+) -> None:
+    """A proven computed-goto profile owns state writes entering BST subtrees."""
+    state = 0x20
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (10,), ()),
+            2: _b(2, (20,), (12, 20)),
+            10: _b(10, (11,), (0,), (_mov_state(0x1010, state),)),
+            11: _b(11, (12,), (10,)),
+            12: _b(12, (2,), (11,)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    plan = emit_minimal_unflatten(
+        flow_graph,
+        _disp({state: 20}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=state,
+        materialized_computed_goto_profile=True,
+    )
+
+    redirects = {
+        (
+            modification.from_serial,
+            modification.old_target,
+            modification.new_target,
+        )
+        for modification in plan.as_graph_modifications()
+        if isinstance(modification, RedirectGoto)
+    }
+    assert (10, 11, 20) in redirects
+
+
 def test_emit_accepts_applied_preopt_conditional_port_when_one_router_row_was_pruned(
     _seam,
     monkeypatch,
@@ -3734,6 +3920,793 @@ def test_register_conditional_entry_bridges_leaf_arms(_seam) -> None:
     }
     assert (1, 3, 21) in edges, f"a2!=0 arm not bridged to its handler: {sorted(edges)}"
     assert (2, 3, 22) in edges, f"a2==0 arm not bridged to its handler: {sorted(edges)}"
+
+
+def test_stack_carried_state_selector_lowers_at_handler_consumer(_seam) -> None:
+    state_reg = 28
+    carrier_reg = 7
+    carrier_stkoff = 0x54
+    first_state = 0x4D34CF70
+    second_state = 0xB13A6E93
+    predicate_ea = 0x40D266
+    consumer_ea = 0x40EAA7
+    router_ea = 0x40EAB1
+    consumer_tail = InsnSnapshot(
+        opcode=0x33,
+        ea=router_ea,
+        operands=(),
+        l=MopSnapshot(
+            t=_T_STK,
+            size=4,
+            stkoff=carrier_stkoff,
+            kind=OperandKind.STACK,
+        ),
+        r=MopSnapshot(
+            t=_T_NUM,
+            size=4,
+            value=0x10B85E45,
+            kind=OperandKind.NUMBER,
+        ),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    fg = FlowGraph(
+        blocks={
+            0: _b(
+                0,
+                (1, 2),
+                (),
+                (
+                    _mov_reg(predicate_ea - 5, first_state, carrier_reg),
+                    InsnSnapshot(
+                        opcode=0x33,
+                        ea=predicate_ea,
+                        operands=(),
+                        kind=InsnKind.COND_JUMP,
+                        is_conditional_jump=True,
+                    ),
+                ),
+            ),
+            1: _b(
+                1,
+                (2,),
+                (0,),
+                (_mov_reg(predicate_ea, second_state, carrier_reg),),
+            ),
+            2: _b(
+                2,
+                (3,),
+                (0, 1),
+                (_mov_stack_from_reg(predicate_ea + 3, carrier_stkoff, carrier_reg),),
+            ),
+            3: _b(3, (4, 5), (2,)),
+            4: _b(4, (21,), (3, 10)),
+            5: _b(5, (22,), (3, 6)),
+            6: _b(
+                6,
+                (5,),
+                (10,),
+                (
+                    InsnSnapshot(
+                        opcode=0x40,
+                        ea=router_ea + 6,
+                        operands=(),
+                        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=5),
+                        kind=InsnKind.GOTO,
+                        is_unconditional_jump=True,
+                    ),
+                ),
+            ),
+            10: _b(
+                10,
+                (4, 6),
+                (21,),
+                (
+                    _mov_reg_from_stack(consumer_ea, state_reg, carrier_stkoff),
+                    consumer_tail,
+                ),
+            ),
+            21: _b(21, (10,), (4,)),
+            22: _b(22, (10,), (5,)),
+        },
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+
+    expected = [
+        LowerConditionalStateTransition(
+            source_serial=10,
+            old_dispatcher_serial=4,
+            rewrite_from_ea=router_ea,
+            condition_operand=SyntheticStackValueEqualsCondition(
+                stack_stkoff=carrier_stkoff,
+                stack_size=8,
+                value=first_state,
+            ),
+            false_target_serial=22,
+            true_target_serial=21,
+            proof_id=(
+                "stack_carried_state_selector:"
+                "source_ea=0x1280:store_ea=0x40D269"
+            ),
+            reason="resolver_proven_stack_carried_state_selector",
+        )
+    ]
+    dispatcher = _disp({first_state: 21, second_state: 22}, exit_block=99)
+
+    assert build_stack_carried_state_selector_lowerings(
+        fg,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+    ) == expected
+
+    # LOCOPT can fold ``mov state_reg, [stack]`` into the conditional tail.
+    # The storage identity remains explicit in the tail and must carry the
+    # same proof as the unfused form.
+    direct_blocks = dict(fg.blocks)
+    direct_blocks[10] = _b(10, (4, 5), (21,), (consumer_tail,))
+    direct_graph = FlowGraph(
+        blocks=direct_blocks,
+        entry_serial=fg.entry_serial,
+        func_ea=fg.func_ea,
+    )
+    direct_expected = [
+        LowerConditionalStateTransition(
+            source_serial=10,
+            old_dispatcher_serial=4,
+            rewrite_from_ea=router_ea,
+            condition_operand=SyntheticStackValueEqualsCondition(
+                stack_stkoff=carrier_stkoff,
+                stack_size=4,
+                value=first_state,
+            ),
+            false_target_serial=22,
+            true_target_serial=21,
+            proof_id=(
+                "stack_carried_state_selector:"
+                "source_ea=0x1280:store_ea=0x40D269"
+            ),
+            reason="resolver_proven_stack_carried_state_selector",
+        )
+    ]
+    assert build_stack_carried_state_selector_lowerings(
+        direct_graph,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+    ) == direct_expected
+
+    imported_target_ea = 0x40DD70
+    imported_candidate = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40DD6E,
+        source_block_ea=0x40DD58,
+        materialized_anchor_eas=(),
+        target_eas=(imported_target_ea,),
+        selector_state_var_reg=state_reg,
+        selector_state_constant=second_state,
+        resolver_kind="static_equality_candidate",
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        fg,
+        _disp({first_state: 21}, exit_block=99),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21}),
+        materialized_indirect_transfers=(imported_candidate,),
+        handler_entry_eas_by_serial={22: imported_target_ea},
+    ) == expected
+
+    # Exact imported equality ownership outranks a stale legacy route for the
+    # same state.  The stale route can still name the comparison leaf that
+    # existed before detached-target import; unioning both owners would make
+    # the selector ambiguous and preserve the computed goto.
+    stale_route = MaterializedStateRoute(
+        source_block_serial=10,
+        state_constant=second_state,
+        target_handler_serial=21,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        fg,
+        _disp({first_state: 21}, exit_block=99),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21}),
+        materialized_state_routes=(stale_route,),
+        materialized_indirect_transfers=(imported_candidate,),
+        handler_entry_eas_by_serial={22: imported_target_ea},
+    ) == expected
+
+    # PREOPT can leave a dead register-copy used only to select the native
+    # computed-goto target.  Once an exact resolver edge replaces that target,
+    # the copy is transparent only when its destination is not live at either
+    # selected handler.
+    blocks_with_dead_copy = dict(fg.blocks)
+    blocks_with_dead_copy[6] = _b(
+        6,
+        (5,),
+        (10,),
+        (
+            InsnSnapshot(
+                opcode=_OP_MOV,
+                ea=router_ea + 4,
+                operands=(),
+                l=MopSnapshot(
+                    t=_T_REG,
+                    size=4,
+                    reg=9,
+                    kind=OperandKind.REGISTER,
+                ),
+                d=MopSnapshot(
+                    t=_T_REG,
+                    size=4,
+                    reg=8,
+                    kind=OperandKind.REGISTER,
+                ),
+                kind=InsnKind.MOV,
+            ),
+            fg.blocks[6].insn_snapshots[-1],
+        ),
+    )
+    graph_with_dead_copy = FlowGraph(
+        blocks=blocks_with_dead_copy,
+        entry_serial=fg.entry_serial,
+        func_ea=fg.func_ea,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        graph_with_dead_copy,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+    ) == expected
+
+    # An applied resolver-cut port can prove a larger pure address-computation
+    # envelope transparent.  Loads/arithmetic remain bypassable only when each
+    # instruction defines a register, the exact endpoint enters the router,
+    # and no store/call/control effect is present.
+    endpoint_ea = router_ea + 0x20
+    target_anchor_ea = router_ea + 0x30
+    endpoint_goto = InsnSnapshot(
+        opcode=0x40,
+        ea=endpoint_ea + 3,
+        operands=(),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=5),
+        kind=InsnKind.GOTO,
+        is_unconditional_jump=True,
+    )
+    pure_endpoint_insns = (
+        InsnSnapshot(
+            opcode=2,
+            ea=endpoint_ea,
+            operands=(),
+            l=MopSnapshot(kind=OperandKind.GLOBAL, value=0x48BD50),
+            d=MopSnapshot(t=_T_REG, size=4, reg=8, kind=OperandKind.REGISTER),
+            kind=InsnKind.LOAD,
+        ),
+        InsnSnapshot(
+            opcode=12,
+            ea=endpoint_ea + 2,
+            operands=(),
+            l=MopSnapshot(t=_T_REG, size=4, reg=8, kind=OperandKind.REGISTER),
+            d=MopSnapshot(t=_T_REG, size=4, reg=8, kind=OperandKind.REGISTER),
+            kind=InsnKind.ADD,
+        ),
+        endpoint_goto,
+    )
+    blocks_with_resolver_envelope = dict(fg.blocks)
+    blocks_with_resolver_envelope[5] = _b(
+        5,
+        (22,),
+        (3, 6),
+        (InsnSnapshot(opcode=0, ea=target_anchor_ea, operands=(), kind=InsnKind.NOP),),
+    )
+    blocks_with_resolver_envelope[6] = _b(
+        6,
+        (5,),
+        (10,),
+        pure_endpoint_insns,
+    )
+    graph_with_resolver_envelope = FlowGraph(
+        blocks=blocks_with_resolver_envelope,
+        entry_serial=fg.entry_serial,
+        func_ea=fg.func_ea,
+    )
+    resolver_cut_evidence = (
+        AppliedDetachedSnippetDirectBoundaryPort(
+            port=DetachedSnippetDirectBoundaryPort(
+                source_block_ea=0x40DABB,
+                source_instruction_ea=0x40DACE,
+                endpoint_block_ea=0x40DABB,
+                old_successor_eas=(),
+                target_ea=0x40D370,
+                state_register=None,
+                state_constant=None,
+                source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+                delivery_mode="terminal_goto",
+                resolver_kind="static_equality_candidate_dispatcher_cut",
+            ),
+            endpoint_anchor_eas=tuple(insn.ea for insn in pure_endpoint_insns),
+            target_anchor_eas=(target_anchor_ea,),
+        ),
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        graph_with_resolver_envelope,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+    ) == []
+    assert build_stack_carried_state_selector_lowerings(
+        graph_with_resolver_envelope,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+        imported_direct_boundary_evidence=resolver_cut_evidence,
+    ) == expected
+
+    # A use reached only after re-entering the dispatcher is not a semantic
+    # handler use: the direct lowering replaces that traversal.  Cut liveness
+    # at dispatcher entry while retaining uses in the selected handler itself.
+    router_use = InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=router_ea + 8,
+        operands=(),
+        l=MopSnapshot(t=_T_REG, size=4, reg=8, kind=OperandKind.REGISTER),
+        d=MopSnapshot(t=_T_REG, size=4, reg=9, kind=OperandKind.REGISTER),
+        kind=InsnKind.MOV,
+    )
+    blocks_with_router_only_use = dict(blocks_with_dead_copy)
+    blocks_with_router_only_use[4] = _b(4, (21,), (3, 10), (router_use,))
+    graph_with_router_only_use = FlowGraph(
+        blocks=blocks_with_router_only_use,
+        entry_serial=fg.entry_serial,
+        func_ea=fg.func_ea,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        graph_with_router_only_use,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+    ) == expected
+
+    blocks_with_handler_use = dict(blocks_with_dead_copy)
+    blocks_with_handler_use[21] = _b(21, (10,), (4,), (router_use,))
+    graph_with_handler_use = FlowGraph(
+        blocks=blocks_with_handler_use,
+        entry_serial=fg.entry_serial,
+        func_ea=fg.func_ea,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        graph_with_handler_use,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+    ) == []
+
+    # A one-way bridge carrying any operation beyond NOPs and its terminal
+    # GOTO is not a transparent dispatcher trampoline.  Preserve it rather
+    # than bypassing a potentially meaningful side effect.
+    blocks_with_effect = dict(fg.blocks)
+    blocks_with_effect[6] = _b(
+        6,
+        (5,),
+        (10,),
+        (
+            _mov_reg(router_ea + 4, 0xDEADBEEF, carrier_reg),
+            fg.blocks[6].insn_snapshots[-1],
+        ),
+    )
+    graph_with_effect = FlowGraph(
+        blocks=blocks_with_effect,
+        entry_serial=fg.entry_serial,
+        func_ea=fg.func_ea,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        graph_with_effect,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+    ) == []
+
+
+def test_folded_imported_stack_selector_bypasses_converged_indirect_router(
+    _seam,
+) -> None:
+    state_reg = 28
+    carrier_reg = 7
+    carrier_stkoff = 0x6C
+    first_state = 0x142718FC
+    second_state = 0x1D4F9917
+    predicate_ea = 0x1100
+    consumer_ea = 0x2200
+    router_ea = 0x2204
+    imported_target_ea = 0x5000
+    owner_state = 0xF6D08EC5
+    consumer_tail = InsnSnapshot(
+        opcode=0x33,
+        ea=router_ea,
+        operands=(),
+        l=MopSnapshot(
+            t=_T_STK,
+            size=4,
+            stkoff=carrier_stkoff,
+            kind=OperandKind.STACK,
+        ),
+        r=MopSnapshot(
+            t=_T_NUM,
+            size=4,
+            value=0x10B85E45,
+            kind=OperandKind.NUMBER,
+        ),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=12),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    terminal_ijmp = InsnSnapshot(
+        opcode=0x36,
+        ea=router_ea + 8,
+        operands=(),
+        kind=InsnKind.INDIRECT_JUMP,
+    )
+    fg = FlowGraph(
+        blocks={
+            0: _b(
+                0,
+                (1, 2),
+                (),
+                (
+                    _mov_reg(predicate_ea - 5, first_state, carrier_reg),
+                    InsnSnapshot(
+                        opcode=0x33,
+                        ea=predicate_ea,
+                        operands=(),
+                        kind=InsnKind.COND_JUMP,
+                        is_conditional_jump=True,
+                    ),
+                ),
+            ),
+            1: _b(
+                1,
+                (2,),
+                (0,),
+                (_mov_reg(predicate_ea, second_state, carrier_reg),),
+            ),
+            2: _b(
+                2,
+                (10,),
+                (0, 1),
+                (_mov_stack_from_reg(predicate_ea + 3, carrier_stkoff, carrier_reg),),
+            ),
+            10: _b(10, (11, 12), (2,), (consumer_tail,)),
+            11: _b(
+                11,
+                (12,),
+                (10,),
+                (
+                    InsnSnapshot(
+                        opcode=_OP_MOV,
+                        ea=router_ea + 4,
+                        operands=(),
+                        l=MopSnapshot(
+                            t=_T_REG,
+                            size=4,
+                            reg=9,
+                            kind=OperandKind.REGISTER,
+                        ),
+                        d=MopSnapshot(
+                            t=_T_REG,
+                            size=4,
+                            reg=8,
+                            kind=OperandKind.REGISTER,
+                        ),
+                        kind=InsnKind.MOV,
+                    ),
+                ),
+            ),
+            12: _b(12, (), (10, 11), (terminal_ijmp,)),
+            21: _b(21, (), (), ()),
+            22: _b(22, (), (), ()),
+            30: _b(30, (), (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    imported_owner = MaterializedIndirectTransfer(
+        source_jmp_ea=0x4FF0,
+        source_block_ea=0x4FE0,
+        materialized_anchor_eas=(),
+        target_eas=(imported_target_ea,),
+        selector_state_var_reg=state_reg,
+        selector_state_constant=owner_state,
+        resolver_kind="static_equality_candidate",
+    )
+
+    assert build_stack_carried_state_selector_lowerings(
+        fg,
+        _disp({first_state: 21, second_state: 22}, exit_block=99),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({30}),
+        handler_serials=frozenset({21, 22}),
+        materialized_indirect_transfers=(imported_owner,),
+        handler_entry_eas_by_serial={10: imported_target_ea},
+    ) == [
+        LowerConditionalStateTransition(
+            source_serial=10,
+            old_dispatcher_serial=11,
+            rewrite_from_ea=router_ea,
+            condition_operand=SyntheticStackValueEqualsCondition(
+                stack_stkoff=carrier_stkoff,
+                stack_size=4,
+                value=first_state,
+            ),
+            false_target_serial=22,
+            true_target_serial=21,
+            proof_id=(
+                "stack_carried_state_selector:"
+                "source_ea=0x1280:store_ea=0x1103"
+            ),
+            reason="resolver_proven_stack_carried_state_selector",
+        )
+    ]
+
+    # The converged-indirect exception belongs only to an exact imported
+    # equality owner.  An ordinary handler with the same folded stack tail
+    # must preserve the unresolved router.
+    assert build_stack_carried_state_selector_lowerings(
+        fg,
+        _disp({first_state: 21, second_state: 22}, exit_block=99),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({30}),
+        handler_serials=frozenset({10, 21, 22}),
+    ) == []
+
+    # A detached static replay of the exact live indirect endpoint supplies
+    # the missing ownership proof when PREOPT assigned the equality state to
+    # an imported clone rather than this original live handler.  The replay
+    # authorizes the existing stack-selector proof; its router-root EAs are
+    # never used as the lowering destinations.
+    terminal_transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=router_ea + 8,
+        source_block_ea=consumer_ea,
+        materialized_anchor_eas=(),
+        target_eas=(0x6000, 0x7000),
+        condition_code=12,
+        true_target_ea=0x6000,
+        false_target_ea=0x7000,
+        resolver_kind="detached_static_fixpoint",
+    )
+    expected = [
+        LowerConditionalStateTransition(
+            source_serial=10,
+            old_dispatcher_serial=11,
+            rewrite_from_ea=router_ea,
+            condition_operand=SyntheticStackValueEqualsCondition(
+                stack_stkoff=carrier_stkoff,
+                stack_size=4,
+                value=first_state,
+            ),
+            false_target_serial=22,
+            true_target_serial=21,
+            proof_id=(
+                "stack_carried_state_selector:"
+                "source_ea=0x1280:store_ea=0x1103"
+            ),
+            reason="resolver_proven_stack_carried_state_selector",
+        )
+    ]
+    clone_owned_args = dict(
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({30}),
+        handler_serials=frozenset({10, 21, 22}),
+        handler_entry_eas_by_serial={30: imported_target_ea},
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        fg,
+        _disp({first_state: 21, second_state: 22}, exit_block=99),
+        materialized_indirect_transfers=(imported_owner, terminal_transfer),
+        **clone_owned_args,
+    ) == expected
+
+    mismatched_terminal = replace(
+        terminal_transfer,
+        source_jmp_ea=router_ea + 0x40,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        fg,
+        _disp({first_state: 21, second_state: 22}, exit_block=99),
+        materialized_indirect_transfers=(imported_owner, mismatched_terminal),
+        **clone_owned_args,
+    ) == []
+    incomplete_terminal = replace(terminal_transfer, false_target_ea=None)
+    assert build_stack_carried_state_selector_lowerings(
+        fg,
+        _disp({first_state: 21, second_state: 22}, exit_block=99),
+        materialized_indirect_transfers=(imported_owner, incomplete_terminal),
+        **clone_owned_args,
+    ) == []
+
+    # A call at the shared endpoint is a semantic effect, not a disposable
+    # computed-jump router.  Exact ownership alone must not bypass it.
+    effect_blocks = dict(fg.blocks)
+    effect_blocks[12] = _b(
+        12,
+        (),
+        (10, 11),
+        (
+            InsnSnapshot(
+                opcode=0x31,
+                ea=router_ea + 8,
+                operands=(),
+                kind=InsnKind.CALL,
+            ),
+        ),
+    )
+    effect_graph = FlowGraph(
+        blocks=effect_blocks,
+        entry_serial=fg.entry_serial,
+        func_ea=fg.func_ea,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        effect_graph,
+        _disp({first_state: 21, second_state: 22}, exit_block=99),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({30}),
+        handler_serials=frozenset({21, 22}),
+        materialized_indirect_transfers=(imported_owner,),
+        handler_entry_eas_by_serial={10: imported_target_ea},
+    ) == []
+
+
+def test_terminal_replay_endpoint_excludes_imported_clone() -> None:
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    source_jmp_ea = 0x40DACE
+    terminal_ijmp = InsnSnapshot(
+        opcode=0x36,
+        ea=source_jmp_ea,
+        operands=(),
+        kind=InsnKind.INDIRECT_JUMP,
+    )
+    fg = FlowGraph(
+        blocks={
+            12: _b(12, (), (), (terminal_ijmp,)),
+            31: _b(31, (), (), (terminal_ijmp,)),
+        },
+        entry_serial=12,
+        func_ea=0x40D200,
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=source_jmp_ea,
+        source_block_ea=0x40DABB,
+        materialized_anchor_eas=(),
+        target_eas=(0x40D381, 0x40E5C0),
+        condition_code=12,
+        true_target_ea=0x40D381,
+        false_target_ea=0x40E5C0,
+        resolver_kind="detached_static_fixpoint",
+    )
+
+    helper = emit_module._resolver_proven_live_terminal_endpoint_serials
+    assert helper(
+        fg,
+        (transfer,),
+        imported_endpoint_serials=frozenset(),
+    ) == frozenset()
+    assert helper(
+        fg,
+        (transfer,),
+        imported_endpoint_serials=frozenset({31}),
+    ) == frozenset({12})
+    assert helper(
+        fg,
+        (transfer,),
+        imported_endpoint_serials=frozenset({12, 31}),
+    ) == frozenset()
+
+
+def test_stack_carried_state_selector_abstains_on_second_cell_write(_seam) -> None:
+    state_reg = 28
+    carrier_reg = 7
+    carrier_stkoff = 0x54
+    first_state = 0x10
+    second_state = 0x20
+    consumer_tail = InsnSnapshot(
+        opcode=0x33,
+        ea=0x2204,
+        operands=(),
+        l=MopSnapshot(
+            t=_T_STK,
+            size=4,
+            stkoff=carrier_stkoff,
+            kind=OperandKind.STACK,
+        ),
+        r=MopSnapshot(t=_T_NUM, size=4, value=0, kind=OperandKind.NUMBER),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1, 2), (), (_mov_reg(0x1000, first_state, carrier_reg),)),
+            1: _b(1, (2,), (0,), (_mov_reg(0x1040, second_state, carrier_reg),)),
+            2: _b(2, (3,), (0, 1), (_mov_stack_from_reg(0x1080, carrier_stkoff, carrier_reg),)),
+            3: _b(3, (4, 5), (2,)),
+            4: _b(4, (21,), (3, 10)),
+            5: _b(5, (22,), (3, 10)),
+            10: _b(
+                10,
+                (4, 5),
+                (21,),
+                (
+                    _mov_reg_from_stack(0x2200, state_reg, carrier_stkoff),
+                    consumer_tail,
+                ),
+            ),
+            21: _b(21, (10,), (4,)),
+            22: _b(22, (10,), (5,)),
+            30: _b(30, (), (), (_mov_stack_const(0x3000, carrier_stkoff, first_state),)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    assert build_stack_carried_state_selector_lowerings(
+        fg,
+        _disp({first_state: 21, second_state: 22}, exit_block=99),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+    ) == []
+
+
+def test_scalar_initial_state_suppresses_register_conditional_entry_scan(_seam) -> None:
+    state_reg = 99
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2, 3), (0,), (_mov_reg(0x1100, 0x10, state_reg),)),
+            2: _b(2, (3,), (1,), (_mov_reg(0x1200, 0x20, state_reg),)),
+            3: _b(3, (4,), (1, 2), (_mov_state(0x1300, 0xDEAD),)),
+            4: _b(4, (21, 22), (3, 21, 22)),
+            21: _b(21, (4,), (4,)),
+            22: _b(22, (4,), (4,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dispatcher = _disp({0x10: 21, 0x20: 22}, exit_block=99)
+    transitions = recover_state_write_transitions(
+        fg, dispatcher, _STATE, dispatcher_entry_serial=4
+    )
+
+    modifications = build_state_write_redirects(
+        fg,
+        dispatcher,
+        transitions,
+        dispatcher_entry_serial=4,
+        pre_header_serial=None,
+        initial_state=0x10,
+        state_var_stkoff=None,
+        state_var_reg=state_reg,
+    )
+
+    edges = {
+        (modification.from_serial, modification.old_target, modification.new_target)
+        for modification in modifications
+        if isinstance(modification, (RedirectGoto, RedirectBranch))
+    }
+    assert (3, 4, 21) in edges
+    assert not any(source in {1, 2} for source, _old, _new in edges)
 
 
 def test_register_conditional_entry_ignores_invariant_leaf_register(_seam) -> None:

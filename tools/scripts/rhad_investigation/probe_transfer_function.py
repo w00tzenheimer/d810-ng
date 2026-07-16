@@ -34,6 +34,17 @@ OUTPUT = Path(
 ).resolve()
 DIAG_OUTPUT = os.environ.get("RHAD_TRANSFER_DIAG_OUTPUT")
 RESOLUTION_OUTPUT = os.environ.get("RHAD_TRANSFER_RESOLUTION_OUTPUT")
+TRANSFER_OUTPUT = os.environ.get("RHAD_TRANSFER_TRANSFERS_OUTPUT") or os.environ.get(
+    "RHAD_TRANSFER_TRANSFER_OUTPUT"
+)
+ORIGIN_OUTPUT = os.environ.get("RHAD_TRANSFER_ORIGINS_OUTPUT")
+TRACE_HANDLER_ROUTES = os.environ.get("RHAD_TRANSFER_TRACE_HANDLER_ROUTES") == "1"
+TRACE_HANDLER_EAS = frozenset(
+    int(item.strip(), 0)
+    for item in os.environ.get("RHAD_TRANSFER_TRACE_HANDLER_EAS", "").split(",")
+    if item.strip()
+)
+CTREE_OUTPUT = os.environ.get("RHAD_TRANSFER_CTREE_OUTPUT")
 SIDECAR_SUFFIXES = (".id0", ".id1", ".id2", ".nam", ".til", ".i64")
 
 
@@ -80,6 +91,35 @@ def _print_summary(
         f"jumpout={text.count('JUMPOUT(')}",
         f"inline_asm={text.count('__asm')}",
         flush=True,
+    )
+
+
+def _write_ctree_statement_anchors(cfunc: object, destination: Path) -> None:
+    """Persist statement order with native EA anchors for parity triage."""
+    import ida_hexrays
+
+    rows: list[dict[str, object]] = []
+
+    class _StatementVisitor(ida_hexrays.ctree_visitor_t):
+        def __init__(self) -> None:
+            ida_hexrays.ctree_visitor_t.__init__(self, ida_hexrays.CV_FAST)
+
+        def visit_insn(self, insn: object) -> int:  # type: ignore[override]
+            rows.append(
+                {
+                    "index": len(rows),
+                    "op": int(insn.op),
+                    "opname": str(insn.opname),
+                    "ea": f"0x{int(insn.ea):X}",
+                }
+            )
+            return 0
+
+    _StatementVisitor().apply_to(cfunc.body, None)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(rows, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
 
@@ -157,6 +197,98 @@ try:
 
         headless.configure(project="default_unflattening_ollvm.json")
         headless.start()
+        if TRACE_HANDLER_ROUTES:
+            import d810.transforms.minimal_unflatten_emit as emit_module
+
+            trace_context = {}
+            original_recover_handler_transitions = (
+                emit_module.recover_handler_transitions
+            )
+            original_resolve_exit_states = (
+                emit_module.resolve_materialized_handler_exit_states
+            )
+
+            def trace_recover_handler_transitions(flow_graph, *args, **kwargs):
+                trace_context["flow_graph"] = flow_graph
+                return original_recover_handler_transitions(
+                    flow_graph,
+                    *args,
+                    **kwargs,
+                )
+
+            def trace_resolve_exit_states(transitions, routes, handler_serials):
+                resolved = original_resolve_exit_states(
+                    transitions,
+                    routes,
+                    handler_serials,
+                )
+                graph = trace_context["flow_graph"]
+                for transition in resolved:
+                    handler_block = graph.get_block(int(transition.handler))
+                    if (
+                        TRACE_HANDLER_EAS
+                        and (
+                            handler_block is None
+                            or int(handler_block.start_ea) not in TRACE_HANDLER_EAS
+                        )
+                    ):
+                        continue
+                    for arm in transition.arms:
+                        path_labels = []
+                        for serial in arm.ordered_path:
+                            block = graph.get_block(int(serial))
+                            path_labels.append(
+                                f"blk{int(serial)}@0x{int(block.start_ea):X}"
+                                if block is not None
+                                else f"blk{int(serial)}@?"
+                            )
+                        matching_routes = [
+                            route
+                            for route in routes
+                            if int(route.source_block_serial) in arm.ordered_path
+                            or (
+                                route.source_handler_serial is not None
+                                and int(route.source_handler_serial)
+                                == int(transition.handler)
+                            )
+                        ]
+                        print(
+                            "HANDLER_ROUTE",
+                            (
+                                f"handler=blk{int(transition.handler)}@"
+                                f"0x{int(handler_block.start_ea):X}"
+                                if handler_block is not None
+                                else f"handler=blk{int(transition.handler)}@?"
+                            ),
+                            f"states={[hex(int(state)) for state in transition.states]}",
+                            f"next={None if arm.next_state is None else hex(int(arm.next_state))}",
+                            f"branch={arm.branch_block}",
+                            f"source_keyed={arm.source_keyed_block}",
+                            f"path={path_labels}",
+                            "routes="
+                            + repr(
+                                [
+                                    (
+                                        int(route.source_block_serial),
+                                        hex(int(route.state_constant)),
+                                        int(route.target_handler_serial),
+                                        route.proof_kind,
+                                        route.source_handler_serial,
+                                        route.handler_exit_proven,
+                                    )
+                                    for route in matching_routes
+                                ]
+                            ),
+                            flush=True,
+                        )
+                return resolved
+
+            emit_module.recover_handler_transitions = (
+                trace_recover_handler_transitions
+            )
+            emit_module.resolve_materialized_handler_exit_states = (
+                trace_resolve_exit_states
+            )
         cg.install()
         try:
             ida_hexrays.clear_cached_cfuncs()
@@ -174,6 +306,71 @@ try:
                 final = first
             materialized = cg.is_computed_goto_materialized(FUNCTION_EA)
             resolution = cg._RESOLUTIONS_BY_EA.get(FUNCTION_EA)
+            if ORIGIN_OUTPUT and final is not None:
+                from d810.hexrays.mutation.detached_handler_island import (
+                    imported_detached_snippet_instruction_origins,
+                )
+
+                destination = Path(ORIGIN_OUTPUT).resolve()
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "imported_ea": f"0x{int(imported_ea):X}",
+                                "native_ea": f"0x{int(native_ea):X}",
+                            }
+                            for imported_ea, native_ea in (
+                                imported_detached_snippet_instruction_origins(
+                                    final.mba
+                                )
+                            )
+                        ],
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                print("ORIGIN_JSON", destination, flush=True)
+            if TRANSFER_OUTPUT:
+                from d810.hexrays.preanalysis.indirect_jump_labels import (
+                    get_materialized_indirect_transfers,
+                )
+
+                destination = Path(TRANSFER_OUTPUT).resolve()
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "source_jmp_ea": f"0x{int(transfer.source_jmp_ea):X}",
+                                "source_block_ea": f"0x{int(transfer.source_block_ea):X}",
+                                "target_eas": [
+                                    f"0x{int(target_ea):X}"
+                                    for target_ea in transfer.target_eas
+                                ],
+                                "resolver_kind": transfer.resolver_kind,
+                                "source_register_values": [
+                                    [int(register), f"0x{int(value):X}"]
+                                    for register, value in transfer.source_register_values
+                                ],
+                                "target_register_values": [
+                                    [int(register), f"0x{int(value):X}"]
+                                    for register, value in transfer.target_register_values
+                                ],
+                            }
+                            for transfer in get_materialized_indirect_transfers(
+                                FUNCTION_EA
+                            )
+                        ],
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                print("TRANSFER_JSON", destination, flush=True)
             if RESOLUTION_OUTPUT and resolution is not None:
                 destination = Path(RESOLUTION_OUTPUT).resolve()
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -225,6 +422,10 @@ try:
             headless.stop()
 
     OUTPUT.write_text(_pseudocode(final), encoding="utf-8")
+    if CTREE_OUTPUT and final is not None:
+        ctree_destination = Path(CTREE_OUTPUT).resolve()
+        _write_ctree_statement_anchors(final, ctree_destination)
+        print("CTREE_JSON", ctree_destination, flush=True)
     _print_summary(
         first=first,
         final=final,

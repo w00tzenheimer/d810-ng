@@ -598,6 +598,58 @@ def test_plan_detached_snippet_route_selects_missing_static_equality_arm() -> No
     )
 
 
+def test_plan_detached_snippet_route_seeds_missing_static_equality_candidate() -> None:
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40DAB9,
+        source_block_ea=0x40DAA8,
+        materialized_anchor_eas=(),
+        target_eas=(0x40DABB,),
+        selector_state_var_reg=28,
+        selector_state_constant=0xB13A6E93,
+        resolver_kind="static_equality_candidate",
+    )
+
+    assert plan_detached_snippet_routes(
+        (transfer,),
+        live_eas=frozenset({0x40D381}),
+        live_target_eas=frozenset({0x40D381}),
+    ) == (
+        DetachedSnippetRoutePlan(
+            source_ea=0x40DAB9,
+            target_ea=0x40DABB,
+            state_constant=0xB13A6E93,
+            evidence_kind="static_equality_candidate",
+        ),
+    )
+
+    # Once that exact target is represented by the live MBA, no detached
+    # capture is needed.
+    assert plan_detached_snippet_routes(
+        (transfer,),
+        live_eas=frozenset({0x40D381, 0x40DABB}),
+        live_target_eas=frozenset({0x40D381, 0x40DABB}),
+    ) == ()
+
+
+def test_plan_detached_snippet_route_rejects_conflicting_equality_candidates() -> None:
+    def candidate(target_ea: int) -> MaterializedIndirectTransfer:
+        return MaterializedIndirectTransfer(
+            source_jmp_ea=0x40DAB9,
+            source_block_ea=0x40DAA8,
+            materialized_anchor_eas=(),
+            target_eas=(target_ea,),
+            selector_state_var_reg=28,
+            selector_state_constant=0xB13A6E93,
+            resolver_kind="static_equality_candidate",
+        )
+
+    assert plan_detached_snippet_routes(
+        (candidate(0x40DABB), candidate(0x40DAD0)),
+        live_eas=frozenset({0x40D381}),
+        live_target_eas=frozenset({0x40D381}),
+    ) == ()
+
+
 def test_conditional_bridge_preserves_imported_target_without_router_predecessor() -> None:
     plan = _conditional_bridge(
         true_target=0x40AF00,

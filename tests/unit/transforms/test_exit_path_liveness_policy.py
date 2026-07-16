@@ -16,6 +16,7 @@ _OP_MOV = 4
 _OP_JZ = 44
 _T_NUM = 2
 _T_STK = 4
+_T_REG = 1
 _T_BLOCK = 5
 _LIVE = 0x18
 _STATE = 0x14
@@ -27,6 +28,10 @@ def _stk(stkoff: int) -> MopSnapshot:
 
 def _num(value: int) -> MopSnapshot:
     return MopSnapshot(t=_T_NUM, size=4, value=value, kind=OperandKind.NUMBER)
+
+
+def _reg(register: int) -> MopSnapshot:
+    return MopSnapshot(t=_T_REG, size=4, reg=register, kind=OperandKind.REGISTER)
 
 
 def _block_ref(serial: int) -> MopSnapshot:
@@ -51,6 +56,28 @@ def _use_stk(ea: int, src: int) -> InsnSnapshot:
         operands=(),
         l=_stk(src),
         d=MopSnapshot(t=1, size=4, reg=0, kind=OperandKind.REGISTER),
+        kind=InsnKind.MOV,
+    )
+
+
+def _mov_reg_const(ea: int, register: int, value: int) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=ea,
+        operands=(),
+        l=_num(value),
+        d=_reg(register),
+        kind=InsnKind.MOV,
+    )
+
+
+def _use_reg(ea: int, register: int) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=ea,
+        operands=(),
+        l=_reg(register),
+        d=_reg(register + 1),
         kind=InsnKind.MOV,
     )
 
@@ -130,3 +157,32 @@ def test_no_provider_liveness_requires_edge_context_for_redundant_write() -> Non
     fg = _nested_entry_graph(proven_value=1)
 
     assert exit_path_blocks_live_violations(fg, (9,), 13, _STATE) == {("stk", _LIVE)}
+
+
+def test_router_boundary_liveness_ignores_uses_confined_to_bypassed_router() -> None:
+    scratch = 8
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (9,), ()),
+            9: _b(9, (13,), (0,), (_mov_reg_const(0x1090, scratch, 1),)),
+            13: _b(13, (15,), (9,)),
+            15: _b(15, (20,), (13,), (_use_reg(0x10F0, scratch),)),
+            20: _b(20, (), (15,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    assert exit_path_blocks_live_violations(
+        fg,
+        (9, 15),
+        13,
+        _STATE,
+    ) == {("reg", scratch)}
+    assert exit_path_blocks_live_violations(
+        fg,
+        (9, 15),
+        13,
+        _STATE,
+        cut_exit_path_uses=True,
+    ) == set()

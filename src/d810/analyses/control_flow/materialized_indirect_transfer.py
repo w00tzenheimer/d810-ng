@@ -49,6 +49,11 @@ class MaterializedIndirectTransfer:
     #: Exact singleton mreg values at ``source_block_ea`` from the resolver's
     #: static fixpoint.  Path-local concrete state still wins on merge.
     source_register_values: tuple[tuple[int, int], ...] = ()
+    #: Exact singleton mreg values on arrival at the transfer's unique target.
+    #: This is deliberately separate from ``source_register_values``: detached
+    #: handler replay may seed only evidence captured after the selected arm
+    #: has reached that target.
+    target_register_values: tuple[tuple[int, int], ...] = ()
     #: Exact singleton mreg snapshots at every resolver block entry.  One
     #: transfer in a function may carry the shared tuple; consumers aggregate.
     corridor_register_snapshots: tuple[
@@ -389,6 +394,8 @@ def plan_residual_state_route_bridges(
 def unique_materialized_equality_target_eas(
     transfers: Sequence[MaterializedIndirectTransfer],
     state_var_reg: int,
+    *,
+    validated_candidate_target_eas: frozenset[int] = frozenset(),
 ) -> dict[int, int]:
     """Project exact equality evidence to one handler EA per state.
 
@@ -422,6 +429,15 @@ def unique_materialized_equality_target_eas(
             if (
                 transfer.selector_state_constant is not None
                 and len(transfer.target_eas) == 1
+            ):
+                state = int(transfer.selector_state_constant) & 0xFFFFFFFF
+                target = int(transfer.target_eas[0])
+        elif transfer.resolver_kind == "static_equality_candidate":
+            if (
+                transfer.selector_state_constant is not None
+                and len(transfer.target_eas) == 1
+                and int(transfer.target_eas[0])
+                in validated_candidate_target_eas
             ):
                 state = int(transfer.selector_state_constant) & 0xFFFFFFFF
                 target = int(transfer.target_eas[0])
@@ -636,6 +652,13 @@ _CC_PREDICATES = {
 }
 
 
+def condition_code_predicate(condition_code: int | None) -> PredicateKind | None:
+    """Translate one proven x86 condition-code nibble to portable semantics."""
+    if condition_code is None:
+        return None
+    return _CC_PREDICATES.get(int(condition_code))
+
+
 def _block_eas(block) -> frozenset[int]:
     """All native instruction anchors represented by a snapshot block."""
     eas = {int(block.start_ea)}
@@ -717,11 +740,19 @@ def lookup_singleton_transfer_target(
 ) -> int | None:
     """Resolve a one-target proof associated with one transition source.
 
-    This intentionally consumes neither multi-target records nor a source that
-    lacks a post-materialization anchor.  Both require additional structural
-    proof and therefore fail closed here.
+    This intentionally consumes neither multi-target records, state-keyed
+    records, nor a source that lacks a post-materialization anchor.  A target
+    attached to one selector state is not an unconditional singleton when a
+    caller asks about a different state; the state-aware lookup must own it.
     """
     if len(transfer.target_eas) != 1:
+        return None
+    if (
+        transfer.selector_state_constant is not None
+        or transfer.selector_state_var_reg is not None
+        or transfer.selector_compare_constant is not None
+        or transfer.selector_state_on_left is not None
+    ):
         return None
     source_serials = {int(source_block)}
     if via_block is not None:
@@ -778,7 +809,7 @@ def lookup_state_keyed_transfer_target(
             or transfer.selector_state_on_left is None
         ):
             return None
-        predicate = _CC_PREDICATES.get(transfer.condition_code)
+        predicate = condition_code_predicate(transfer.condition_code)
         if predicate is None:
             return None
         if transfer.selector_state_on_left:
@@ -896,11 +927,15 @@ def route_transfer_target_through_condition_chain(
     current = int(target_block)
     seen: set[int] = set()
     for _ in range(int(max_glue_hops) + 1):
-        if current in handler_serials:
-            return current
         if current in decision_dag.nodes:
+            # Range backfill can provisionally classify an internal comparison
+            # node as a handler.  In this resolver-routing context the explicit
+            # decision-DAG ownership is stronger: stopping on the alias would
+            # skip the comparison and select the wrong equality handler.
             routed = int(decision_dag.route_from(current, int(state_constant)))
             return routed if routed in handler_serials else None
+        if current in handler_serials:
+            return current
         if current in seen:
             return None
         seen.add(current)
@@ -916,6 +951,7 @@ __all__ = [
     "MaterializedStateRoute",
     "ResidualIndirectCallNeutralizationPlan",
     "TerminalReturnCarrierRequest",
+    "condition_code_predicate",
     "find_unique_target_block",
     "find_unique_target_entry_block",
     "lookup_state_keyed_transfer_target",

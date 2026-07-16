@@ -598,6 +598,15 @@ class SyntheticRegisterNonzeroCondition:
 
 
 @dataclass(frozen=True)
+class SyntheticStackValueEqualsCondition:
+    """Portable descriptor for a proven ``stack_cell == constant`` predicate."""
+
+    stack_stkoff: int
+    stack_size: int
+    value: int
+
+
+@dataclass(frozen=True)
 class PreserveLivePredicateCondition:
     """Retain the existing live conditional instruction at one exact EA.
 
@@ -850,6 +859,7 @@ __all__ = [
     "DuplicateReplayAndRedirect",
     "SyntheticCounterBoundCondition",
     "SyntheticRegisterNonzeroCondition",
+    "SyntheticStackValueEqualsCondition",
     "PreserveLivePredicateCondition",
     "LowerConditionalStateTransition",
     "NormalizeNWayDispatcherExit",

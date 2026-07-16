@@ -705,6 +705,122 @@ def test_capture_prefers_unique_native_stack_identity_over_fragment_basis(
     assert template.stable_stack_vd_to_ida == ((source_vd, 204),)
 
 
+def test_capture_prefers_pre_generation_native_stack_identity(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40D200
+    target_ea = 0x40DABB
+    source_vd = 176
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_native_instruction_stack_frame_offsets",
+        lambda _owner_ea, _instruction_ea: (240,),
+    )
+    source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_mov,
+                        target_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_S,
+                            stack_offset=source_vd,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        vd_to_ida_delta=-88,
+    )
+
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, target_ea + 1),),
+        native_stack_frame_offsets_by_ea={target_ea: (88,)},
+    )
+    template = detached_handler_island._DETACHED_SNIPPET_TEMPLATES[
+        (function_ea, target_ea)
+    ]
+    assert template.stable_stack_vd_to_ida == ((source_vd, 88),)
+    assert template.instruction_stack_vd_to_ida == (
+        (target_ea, source_vd, 88),
+    )
+
+
+@pytest.mark.parametrize("annotated", (False, True))
+def test_native_stack_identity_prefers_esp_displacement_and_spd(
+    monkeypatch,
+    annotated: bool,
+) -> None:
+    function_ea = 0x40D200
+    instruction_ea = 0x40DABB
+    instruction = SimpleNamespace(
+        ops=(
+            SimpleNamespace(
+                type=int(detached_handler_island.ida_ua.o_displ),
+                reg=4,
+                addr=0x58,
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        detached_handler_island.ida_ua,
+        "insn_t",
+        lambda: instruction,
+    )
+    monkeypatch.setattr(
+        detached_handler_island.ida_ua,
+        "decode_insn",
+        lambda decoded, ea: 2 if decoded is instruction and int(ea) == instruction_ea else 0,
+    )
+    monkeypatch.setattr(detached_handler_island.ida_bytes, "get_flags", lambda _ea: 0)
+    monkeypatch.setattr(
+        detached_handler_island.ida_bytes,
+        "is_stkvar",
+        lambda _flags, _index: annotated,
+    )
+    monkeypatch.setattr(
+        detached_handler_island.ida_frame,
+        "calc_stkvar_struc_offset",
+        lambda _function, _instruction, _index: 0xF0,
+    )
+    monkeypatch.setattr(
+        detached_handler_island.ida_funcs,
+        "get_func",
+        lambda ea: (
+            SimpleNamespace(frsize=0x88, frregs=0)
+            if int(ea) == function_ea
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        detached_handler_island.ida_frame,
+        "get_spd",
+        lambda _function, ea: -0x88 if int(ea) == instruction_ea else 0,
+    )
+    monkeypatch.setattr(
+        detached_handler_island.ida_idp,
+        "get_reg_name",
+        lambda reg, width: "esp" if int(reg) == 4 and int(width) == 4 else "",
+    )
+    monkeypatch.setattr(
+        detached_handler_island.ida_ida,
+        "inf_is_64bit",
+        lambda: False,
+    )
+
+    assert detached_handler_island._native_instruction_stack_frame_offsets(
+        function_ea,
+        instruction_ea,
+    ) == (0x58,)
+
+
 def test_same_fragment_vd_uses_instruction_specific_native_stack_identity(
     monkeypatch,
 ) -> None:
@@ -5086,6 +5202,176 @@ def test_resolver_cut_port_binds_exact_instruction_after_microblock_split(
             for instruction in block.instructions()
         )
     )
+    assert tuple(imported_cut.succset) == (1,)
+    assert int(imported_cut.tail.opcode) == int(ida_hexrays.m_goto)
+    assert len(result.applied_boundary_ports) == 1
+
+
+def test_resolver_cut_port_lowers_raw_one_way_call_to_goto(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+        make_resolver_cut_boundary_port,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    source_block_ea = 0x1000
+    resolver_ea = 0x100E
+    live_target_ea = 0x2000
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_block_ea,
+                (_Instruction(ida_hexrays.m_call, resolver_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+            _Block(
+                1,
+                live_target_ea,
+                (_Instruction(ida_hexrays.m_nop, live_target_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    port = make_resolver_cut_boundary_port(
+        source_block_ea=source_block_ea,
+        source_instruction_ea=resolver_ea,
+        target_ea=live_target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        provenance="static_fixpoint",
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        source_block_ea,
+        source,
+        ((source_block_ea, resolver_ea + 1),),
+        boundary_ports=(port,),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (source_block_ea,),
+        allow_raw_preopt_calls=True,
+    )
+
+    origins = dict(
+        detached_handler_island.imported_detached_snippet_instruction_origins(
+            destination
+        )
+    )
+    imported_cut = next(
+        block
+        for block in destination.blocks
+        if any(
+            origins.get(int(instruction.ea)) == resolver_ea
+            for instruction in block.instructions()
+        )
+    )
+    assert tuple(imported_cut.succset) == (1,)
+    assert int(imported_cut.tail.opcode) == int(ida_hexrays.m_goto)
+    assert all(
+        int(instruction.opcode)
+        not in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}
+        for instruction in imported_cut.instructions()
+    )
+    assert len(result.applied_boundary_ports) == 1
+
+
+def test_resolver_cut_port_lowers_preopt_transfer_envelope_to_goto(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+        make_resolver_cut_boundary_port,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    source_block_ea = 0x1000
+    resolver_ea = 0x100E
+    live_target_ea = 0x2000
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_block_ea,
+                (_Instruction(ida_hexrays.m_mov, resolver_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+            _Block(
+                1,
+                live_target_ea,
+                (_Instruction(ida_hexrays.m_nop, live_target_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    port = make_resolver_cut_boundary_port(
+        source_block_ea=source_block_ea,
+        source_instruction_ea=resolver_ea,
+        target_ea=live_target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        provenance="static_fixpoint",
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        source_block_ea,
+        source,
+        ((source_block_ea, resolver_ea + 1),),
+        boundary_ports=(port,),
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (source_block_ea,),
+        allow_raw_preopt_calls=True,
+    )
+
+    origins = dict(
+        detached_handler_island.imported_detached_snippet_instruction_origins(
+            destination
+        )
+    )
+    imported_cut = next(
+        block
+        for block in destination.blocks
+        if any(
+            origins.get(int(instruction.ea)) == resolver_ea
+            for instruction in block.instructions()
+        )
+    )
+    resolver_instructions = tuple(
+        instruction
+        for instruction in imported_cut.instructions()
+        if origins.get(int(instruction.ea)) == resolver_ea
+    )
+    assert len(resolver_instructions) == 1
+    assert int(resolver_instructions[0].opcode) == int(ida_hexrays.m_nop)
     assert tuple(imported_cut.succset) == (1,)
     assert int(imported_cut.tail.opcode) == int(ida_hexrays.m_goto)
     assert len(result.applied_boundary_ports) == 1

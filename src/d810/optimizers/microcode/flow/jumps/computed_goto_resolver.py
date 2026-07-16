@@ -87,14 +87,22 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     find_unique_target_block,
     find_unique_target_entry_block,
     route_materialized_transfer_chain,
+    route_transfer_target_through_condition_chain,
 )
+from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.analyses.control_flow.semantic_transition import StateWriteAnchor
 from d810.analyses.control_flow.state_machine_analysis import (
     _transfer_snapshot_constant_block,
 )
 from d810.analyses.value_flow.state_write_anchor import StateWriteAnchorFactCollector
 from d810.core.logging import getLogger
-from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    OperandKind,
+)
 from d810.hexrays.preanalysis.flowchart_preanalysis import (
     register_flowchart_preanalysis_handler,
     request_hexrays_redo,
@@ -120,6 +128,7 @@ from d810.hexrays.mutation.detached_handler_island import (
     detached_callinfo_template_eas,
     imported_detached_snippet_instruction_origins,
     last_imported_detached_snippet_instruction_origins,
+    native_stack_frame_offsets_for_ranges,
     prepare_detached_callinfo_template,
 )
 from d810.hexrays.preanalysis.indirect_jump_labels import (
@@ -181,6 +190,19 @@ class ComputedGotoResolution:
     #: entries.  These refill only missing cells during concrete corridor replay.
     corridor_register_snapshots: tuple[tuple[int, tuple[tuple[str, int], ...]], ...] = (
         field(default_factory=tuple)
+    )
+    #: Register values proven identical at every byte-materialized dispatcher
+    #: site.  This narrower consensus can seed detached leaves even when the
+    #: value is Top in unrelated pre-definition function states.
+    dispatcher_context_register_values: tuple[tuple[str, int], ...] = field(
+        default_factory=tuple
+    )
+    #: Native instruction EA -> stable IDA-frame offsets captured before byte
+    #: delivery and function-tail reanalysis can change the owning function's
+    #: transient SP model.  Detached explicit-range MBAs consume this evidence
+    #: instead of their standalone-frame annotations.
+    native_stack_frame_offsets: tuple[tuple[int, tuple[int, ...]], ...] = field(
+        default_factory=tuple
     )
 
     @property
@@ -1249,15 +1271,49 @@ def _function_context_register_values(
     )
 
 
+def _dispatcher_context_register_values(
+    entry_state: Mapping[int, Mapping[str, frozenset[int] | None]],
+    dispatcher_entries: Sequence[int],
+) -> tuple[tuple[str, int], ...]:
+    """Return singleton registers equal at every proven dispatcher entry."""
+    entries = tuple(dict.fromkeys(int(ea) for ea in dispatcher_entries))
+    if not entries:
+        return ()
+    states: list[Mapping[str, frozenset[int] | None]] = []
+    for entry_ea in entries:
+        state = entry_state.get(entry_ea)
+        if state is None:
+            return ()
+        states.append(state)
+    shared_registers = set(states[0])
+    for state in states[1:]:
+        shared_registers &= set(state)
+    result: list[tuple[str, int]] = []
+    for register in sorted(shared_registers):
+        values = [state.get(register) for state in states]
+        if any(value is None or len(value) != 1 for value in values):
+            continue
+        concrete = {next(iter(value)) for value in values if value is not None}
+        if len(concrete) == 1:
+            result.append((str(register), int(next(iter(concrete)))))
+    return tuple(result)
+
+
 def _static_resolver_fixpoint(
     function_ea: int,
     *,
     initial_register_values: tuple[tuple[str, int], ...] = (),
+    follow_indirect_targets: bool = True,
 ) -> tuple[dict, dict, dict, dict, int]:
     """Monotone forward-dataflow fixpoint from *function_ea* that JOINs register
     value-sets at merges. Returns
     ``(entry_state, resolved_sites, unresolved_sites, block_entry_of, steps)``
-    where ``resolved_sites`` maps each ``jmp reg`` EA to its sorted target list."""
+    where ``resolved_sites`` maps each ``jmp reg`` EA to its sorted target list.
+
+    When ``follow_indirect_targets`` is false, resolved indirect targets are
+    recorded but not enqueued.  Detached replay uses that bounded mode to stop
+    at the first computed-jump frontier instead of absorbing a target handler.
+    """
     import ida_ua  # type: ignore[import-untyped]
     import idaapi  # type: ignore[import-untyped]
 
@@ -1302,6 +1358,8 @@ def _static_resolver_fixpoint(
             if length <= 0:
                 break
             mnem = idaapi.print_insn_mnem(ea)
+            if not mnem:
+                break
             next_ea = ea + length
             if mnem == "jmp" and insn.ops[0].type == idaapi.o_reg:
                 reg = _sv_reg_name(insn.ops[0])
@@ -1313,7 +1371,8 @@ def _static_resolver_fixpoint(
                 else:
                     resolved_sites[ea] = sorted(targets)
                     unresolved_sites.pop(ea, None)
-                    succ_list.extend(resolved_sites[ea])
+                    if follow_indirect_targets:
+                        succ_list.extend(resolved_sites[ea])
                 exit_state = state
                 break
             if mnem == "jmp":
@@ -1361,6 +1420,8 @@ def _static_register_state_before_jmp(
         if length <= 0:
             return {}
         mnem = idaapi.print_insn_mnem(ea)
+        if not mnem:
+            return {}
         if mnem == "call":
             for register in _SV_CALLER_CLOBBERED:
                 state[register] = None
@@ -1384,6 +1445,8 @@ def _static_register_state_before_jmp(
 def _detached_static_terminal_transfers(
     resolution: ComputedGotoResolution,
     entry_eas: tuple[int, ...],
+    *,
+    entry_context_transfers: tuple[MaterializedIndirectTransfer, ...] = (),
 ) -> tuple[MaterializedIndirectTransfer, ...]:
     """Resolve detached native ``jmp reg`` sites with proven function context.
 
@@ -1395,6 +1458,31 @@ def _detached_static_terminal_transfers(
     context_register_values = tuple(resolution.function_context_register_values)
     transfers: list[MaterializedIndirectTransfer] = []
     for entry_ea in sorted(set(int(ea) for ea in entry_eas)):
+        target_snapshots = {
+            tuple(sorted(transfer.target_register_values))
+            for transfer in entry_context_transfers
+            if len(transfer.target_eas) == 1
+            and int(transfer.target_eas[0]) == int(entry_ea)
+            and transfer.target_register_values
+        }
+        target_context: dict[int, int] = {}
+        if target_snapshots:
+            snapshots = [dict(snapshot) for snapshot in target_snapshots]
+            shared_registers = set(snapshots[0])
+            for snapshot in snapshots[1:]:
+                shared_registers.intersection_update(snapshot)
+            target_context = {
+                int(register): int(snapshots[0][register])
+                for register in shared_registers
+                if all(
+                    int(snapshot[register]) == int(snapshots[0][register])
+                    for snapshot in snapshots[1:]
+                )
+            }
+        initial_registers = dict(context_register_values)
+        initial_registers.update(
+            _native_register_values(tuple(sorted(target_context.items())))
+        )
         (
             entry_state,
             resolved_sites,
@@ -1403,8 +1491,22 @@ def _detached_static_terminal_transfers(
             _steps,
         ) = _static_resolver_fixpoint(
             int(entry_ea),
-            initial_register_values=context_register_values,
+            initial_register_values=tuple(sorted(initial_registers.items())),
+            follow_indirect_targets=False,
         )
+        if resolved_sites:
+            logger.info(
+                "detached static replay: entry=0x%X initial=%s resolved=%s",
+                int(entry_ea),
+                [
+                    (name, hex(int(value)))
+                    for name, value in sorted(initial_registers.items())
+                ],
+                {
+                    hex(int(source_ea)): [hex(int(target)) for target in targets]
+                    for source_ea, targets in sorted(resolved_sites.items())
+                },
+            )
         for jmp_ea, target_eas in sorted(resolved_sites.items()):
             targets = tuple(int(target_ea) for target_ea in target_eas)
             if not targets:
@@ -1415,6 +1517,20 @@ def _detached_static_terminal_transfers(
                 entry_state.get(block_entry, {}),
                 int(jmp_ea),
             )
+            two_way = (
+                _replay_two_way(
+                    block_entry,
+                    entry_state.get(block_entry, {}),
+                    int(jmp_ea),
+                )
+                if len(targets) == 2
+                else None
+            )
+            if two_way is not None and {
+                int(two_way["true"]),
+                int(two_way["false"]),
+            } != set(targets):
+                two_way = None
             transfers.append(
                 MaterializedIndirectTransfer(
                     source_jmp_ea=int(jmp_ea),
@@ -1427,6 +1543,32 @@ def _detached_static_terminal_transfers(
                                 _sv_concrete_register_values(source_state)
                             ).items()
                         )
+                    ),
+                    condition_code=(
+                        int(two_way["cc"]) if two_way is not None else None
+                    ),
+                    true_target_ea=(
+                        int(two_way["true"]) if two_way is not None else None
+                    ),
+                    false_target_ea=(
+                        int(two_way["false"]) if two_way is not None else None
+                    ),
+                    selector_state_var_reg=(
+                        _native_register_mreg(
+                            two_way.get("selector_register_name")
+                        )
+                        if two_way is not None
+                        else None
+                    ),
+                    selector_compare_constant=(
+                        two_way.get("selector_compare_constant")
+                        if two_way is not None
+                        else None
+                    ),
+                    selector_state_on_left=(
+                        two_way.get("selector_state_on_left")
+                        if two_way is not None
+                        else None
                     ),
                     resolver_kind="detached_static_fixpoint",
                 )
@@ -1456,6 +1598,8 @@ def _replay_two_way(block_entry: int, entry_state0: dict, jmp_ea: int) -> dict |
         if length <= 0:
             return None
         mnem = idaapi.print_insn_mnem(ea)
+        if not mnem:
+            return None
         if ea == int(jmp_ea):
             break
         if mnem == "cmp":
@@ -1827,6 +1971,10 @@ def resolve_computed_gotos_static(function_ea: int) -> ComputedGotoResolution | 
             for ea, state in sorted(entry_state.items())
             if _sv_concrete_register_values(state)
         ),
+        dispatcher_context_register_values=_dispatcher_context_register_values(
+            entry_state,
+            tuple(int(plan.block_entry) for plan in plans),
+        ),
     )
 
 
@@ -1936,6 +2084,20 @@ def _native_register_state(mreg_values: Mapping[int, int]) -> dict[str, frozense
     return state
 
 
+def _native_register_values(
+    mreg_values: tuple[tuple[int, int], ...],
+) -> tuple[tuple[str, int], ...]:
+    """Convert exact Hex-Rays mreg values to static-resolver register values."""
+    state = _native_register_state(dict(mreg_values))
+    return tuple(
+        sorted(
+            (name, next(iter(values)))
+            for name, values in state.items()
+            if len(values) == 1
+        )
+    )
+
+
 def _is_concrete_handler_entry(
     ea: int,
     handler_eas: frozenset[int],
@@ -2038,6 +2200,13 @@ def _apply_concrete_equality_setcc(
     return (int(current_value) & 0xFFFFFF00) | bit
 
 
+class _ConcreteDispatchResult(NamedTuple):
+    """Exact first indirect target plus the register state at that transfer."""
+
+    target_ea: int
+    register_values: tuple[tuple[str, int], ...]
+
+
 def _resolve_concrete_dispatch_corridor(
     start_ea: int,
     *,
@@ -2047,7 +2216,8 @@ def _resolve_concrete_dispatch_corridor(
     dispatch_anchor_eas: frozenset[int] = frozenset(),
     max_instructions: int = 512,
     return_first_indirect_target: bool = False,
-) -> int | None:
+    return_first_indirect_result: bool = False,
+) -> int | _ConcreteDispatchResult | None:
     """Interpret a concrete x86 dispatcher corridor to one known handler EA.
 
     This is resolver evidence only.  It follows register arithmetic, table
@@ -2197,6 +2367,11 @@ def _resolve_concrete_dispatch_corridor(
             if target is None:
                 return None
             if return_first_indirect_target:
+                if return_first_indirect_result:
+                    return _ConcreteDispatchResult(
+                        int(target),
+                        _sv_concrete_register_values(state),
+                    )
                 return int(target)
             completed_dispatches += 1
             ea = int(target)
@@ -2562,6 +2737,44 @@ def _insn_writes_first_operand(insn, change_first_mask: int) -> bool:
     return bool(int(insn.get_canon_feature()) & int(change_first_mask))
 
 
+def _block_has_live_register_state_write(
+    block: BlockSnapshot,
+    *,
+    state_var_reg: int,
+    state_constant: int,
+    instruction_ea: int | None,
+) -> bool:
+    """Confirm that a cross-maturity anchor still names the live write.
+
+    State-write anchors can outlive the instruction shape that produced them.
+    In particular, a later snapshot may contain ``mov stack, state_reg`` at an
+    EA previously classified as ``mov #constant, state_reg``.  Such an anchor
+    must not publish an unowned route from a handler back to itself.
+    """
+    for instruction in block.insn_snapshots:
+        if instruction_ea is not None and int(instruction.ea) != int(
+            instruction_ea
+        ):
+            continue
+        if instruction.kind is not InsnKind.MOV:
+            continue
+        source = instruction.l
+        destination = instruction.d
+        if source is None or destination is None:
+            continue
+        if (
+            source.kind is OperandKind.NUMBER
+            and source.value is not None
+            and (int(source.value) & _MASK32)
+            == (int(state_constant) & _MASK32)
+            and destination.kind is OperandKind.REGISTER
+            and destination.reg is not None
+            and int(destination.reg) == int(state_var_reg)
+        ):
+            return True
+    return False
+
+
 def _build_materialized_state_routes(
     flow_graph: FlowGraph,
     *,
@@ -2588,6 +2801,7 @@ def _build_materialized_state_routes(
     handler_exit_state_resolver=None,
     terminal_target_resolver=None,
     state_register_name: str | None = None,
+    condition_chain_dag: DecisionDag | None = None,
 ) -> tuple[MaterializedStateRoute, ...]:
     """Build exact per-state logical-CFG routes from microcode snapshots.
 
@@ -2838,6 +3052,15 @@ def _build_materialized_state_routes(
                 and int(exact_target_serial) not in dispatcher_block_serials
             )
         ):
+            if int(exact_target_serial) == int(anchor.block_serial) and not (
+                _block_has_live_register_state_write(
+                    source_block,
+                    state_var_reg=int(state_var_reg),
+                    state_constant=state_constant,
+                    instruction_ea=anchor.instruction_ea,
+                )
+            ):
+                continue
             routes.add(
                 MaterializedStateRoute(
                     source_block_serial=int(anchor.block_serial),
@@ -3185,14 +3408,28 @@ def _build_materialized_state_routes(
                         router_block = flow_graph.get_block(int(target_serial))
                         if router_block is not None:
                             native_dispatch_start_ea = int(router_block.start_ea)
-                        target_serial = route_materialized_transfer_chain(
-                            flow_graph,
-                            transfers,
-                            start_block=int(target_serial),
-                            state_constant=state_constant,
-                            state_var_reg=int(state_var_reg),
-                            handler_serials=handler_serials,
+                        condition_chain_target = (
+                            route_transfer_target_through_condition_chain(
+                                flow_graph,
+                                condition_chain_dag,
+                                int(target_serial),
+                                state_constant,
+                                handler_serials,
+                            )
+                            if condition_chain_dag is not None
+                            else None
                         )
+                        if condition_chain_target is not None:
+                            target_serial = int(condition_chain_target)
+                        else:
+                            target_serial = route_materialized_transfer_chain(
+                                flow_graph,
+                                transfers,
+                                start_block=int(target_serial),
+                                state_constant=state_constant,
+                                state_var_reg=int(state_var_reg),
+                                handler_serials=handler_serials,
+                            )
                     if target_serial is None:
                         dispatch_mregs = dict(initial_mregs)
                         dispatch_mregs[int(state_var_reg)] = state_constant
@@ -3451,6 +3688,19 @@ def _residual_context_mregs(
     return result
 
 
+def _dispatcher_replay_context_mregs(
+    resolution: ComputedGotoResolution,
+) -> dict[int, int] | None:
+    """Combine whole-function and dispatcher-site context without conflicts."""
+    values_by_name = dict(resolution.function_context_register_values)
+    for register, value in resolution.dispatcher_context_register_values:
+        previous = values_by_name.get(str(register))
+        if previous is not None and int(previous) != int(value):
+            return None
+        values_by_name[str(register)] = int(value)
+    return _residual_context_mregs(tuple(sorted(values_by_name.items())))
+
+
 def _residual_fragment_ranges(
     resolution: ComputedGotoResolution,
 ) -> tuple[tuple[int, int], ...]:
@@ -3645,28 +3895,46 @@ def _native_equality_selector_is_materializable(selector_kind: str) -> bool:
 
 def _static_equality_route_candidate(
     row: _NativeEqualityRow,
-    plan: _PatchPlan,
+    plan: _PatchPlan | None,
     *,
     state_var_reg: int,
     context_mregs: dict[int, int],
     replay_match_target_ea: int | None = None,
     replay_nonmatch_target_ea: int | None = None,
+    match_target_register_values: tuple[tuple[str, int], ...] = (),
 ) -> MaterializedIndirectTransfer | None:
     """Preserve a native setcc route until CALLS can validate its handler.
 
     The candidate is ownership and provenance evidence, not a logical edge.
     It becomes a ``static_equality_route`` only after the selected target EA
-    maps to exactly one block in the live microcode CFG.
+    maps to exactly one block in the live microcode CFG.  A detached setcc
+    selector can be absent from the resolver's reachable patch plans; in that
+    case, exact two-arm replay is sufficient only when the matching arm is the
+    selector's immediate post-terminal handler and the other arm is distinct.
     """
     if row.selector_kind != "setcc":
         return None
-    if int(plan.jmp_ea) != int(row.terminal_jmp_ea):
-        return None
-    if int(plan.block_entry) != int(row.block_entry_ea):
-        return None
-    if len(plan.target_eas) != 1:
-        return None
-    selected_target_ea = int(plan.target_eas[0])
+    dispatcher_entry_ea = None
+    if plan is None:
+        if replay_match_target_ea is None or replay_nonmatch_target_ea is None:
+            return None
+        replay_match = int(replay_match_target_ea)
+        replay_nonmatch = int(replay_nonmatch_target_ea)
+        if (
+            replay_match != int(row.terminal_end_ea)
+            or replay_match == replay_nonmatch
+        ):
+            return None
+        selected_target_ea = replay_match
+        dispatcher_entry_ea = replay_nonmatch
+    else:
+        if int(plan.jmp_ea) != int(row.terminal_jmp_ea):
+            return None
+        if int(plan.block_entry) != int(row.block_entry_ea):
+            return None
+        if len(plan.target_eas) != 1:
+            return None
+        selected_target_ea = int(plan.target_eas[0])
     if replay_match_target_ea is not None or replay_nonmatch_target_ea is not None:
         if replay_match_target_ea is None or replay_nonmatch_target_ea is None:
             return None
@@ -3682,6 +3950,10 @@ def _static_equality_route_candidate(
             selected_target_ea = replay_match
         else:
             return None
+        if selected_target_ea == replay_match and replay_match == int(
+            row.terminal_end_ea
+        ):
+            dispatcher_entry_ea = replay_nonmatch
     return MaterializedIndirectTransfer(
         source_jmp_ea=int(row.terminal_jmp_ea),
         source_block_ea=int(row.block_entry_ea),
@@ -3690,8 +3962,15 @@ def _static_equality_route_candidate(
         selector_state_constant=int(row.state_constant) & _MASK32,
         selector_state_var_reg=int(state_var_reg),
         context_register_values=tuple(sorted(context_mregs.items())),
+        source_register_values=tuple(
+            sorted(_residual_context_mregs(match_target_register_values).items())
+        ),
+        target_register_values=tuple(
+            sorted(_residual_context_mregs(match_target_register_values).items())
+        ),
         resolver_kind="static_equality_candidate",
         materialized_region_end_ea=int(row.terminal_end_ea),
+        dispatcher_entry_ea=dispatcher_entry_ea,
     )
 
 
@@ -3924,12 +4203,50 @@ def _native_equality_state_target_rows(
     )
 
 
+def _corridor_entry_mregs(
+    resolution: ComputedGotoResolution,
+    entry_ea: int,
+) -> dict[int, int] | None:
+    """Combine invariant and exact path-local resolver state at one entry.
+
+    Path-local snapshots override function invariants. Conflicting snapshots
+    for the same native entry abstain instead of selecting one by tuple order.
+    """
+    context_mregs = _dispatcher_replay_context_mregs(resolution)
+    if context_mregs is None:
+        return None
+    snapshots: set[tuple[tuple[str, int], ...]] = set()
+    for source_ea, register_values in resolution.corridor_register_snapshots:
+        if int(source_ea) != int(entry_ea):
+            continue
+        snapshots.add(
+            tuple(
+                sorted(
+                    (str(name), int(value)) for name, value in register_values
+                )
+            )
+        )
+    if len(snapshots) > 1:
+        return None
+    if snapshots:
+        context_mregs.update(_residual_context_mregs(next(iter(snapshots))))
+    return context_mregs
+
+
 def _resolve_native_setcc_route_facts(
     resolution: ComputedGotoResolution,
     rows: tuple[_NativeEqualityRow, ...],
+    *,
+    route_resolver=None,
+    match_register_values_by_row: dict[
+        _NativeEqualityRow,
+        tuple[tuple[str, int], ...],
+    ]
+    | None = None,
 ) -> tuple[tuple[_NativeEqualityRow, int, int], ...]:
     """Replay setcc selectors before any byte patch invalidates their arms."""
-    context_mregs = _residual_context_mregs(resolution.function_context_register_values)
+    if route_resolver is None:
+        route_resolver = _resolve_concrete_dispatch_corridor
     facts: list[tuple[_NativeEqualityRow, int, int]] = []
     for row in rows:
         if row.selector_kind != "setcc":
@@ -3937,22 +4254,40 @@ def _resolve_native_setcc_route_facts(
         state_var_reg = _native_register_mreg(row.register_name)
         if state_var_reg is None:
             continue
-        match_mregs = dict(context_mregs)
+        entry_mregs = _corridor_entry_mregs(resolution, int(row.block_entry_ea))
+        if entry_mregs is None:
+            continue
+        match_mregs = dict(entry_mregs)
         match_mregs[int(state_var_reg)] = int(row.state_constant)
-        nonmatch_mregs = dict(context_mregs)
+        nonmatch_mregs = dict(entry_mregs)
         nonmatch_mregs[int(state_var_reg)] = int(row.state_constant) ^ 1
-        match_target = _resolve_concrete_dispatch_corridor(
+        match_result = route_resolver(
             int(row.block_entry_ea),
             initial_mregs=match_mregs,
             handler_eas=frozenset(),
             return_first_indirect_target=True,
+            **(
+                {"return_first_indirect_result": True}
+                if match_register_values_by_row is not None
+                else {}
+            ),
         )
-        nonmatch_target = _resolve_concrete_dispatch_corridor(
+        nonmatch_result = route_resolver(
             int(row.block_entry_ea),
             initial_mregs=nonmatch_mregs,
             handler_eas=frozenset(),
             return_first_indirect_target=True,
         )
+        if match_register_values_by_row is not None:
+            if not isinstance(match_result, _ConcreteDispatchResult):
+                continue
+            match_register_values_by_row[row] = tuple(
+                match_result.register_values
+            )
+            match_target = int(match_result.target_ea)
+        else:
+            match_target = match_result
+        nonmatch_target = nonmatch_result
         if (
             match_target is None
             or nonmatch_target is None
@@ -4081,6 +4416,11 @@ def _materialize_static_equality_fragments(
     *,
     native_rows: tuple[_NativeEqualityRow, ...] | None = None,
     native_setcc_routes: tuple[tuple[_NativeEqualityRow, int, int], ...] = (),
+    native_setcc_match_register_values: Mapping[
+        _NativeEqualityRow,
+        tuple[tuple[str, int], ...],
+    ]
+    | None = None,
 ) -> tuple[int, tuple[MaterializedIndirectTransfer, ...]]:
     """Resolve and byte-materialize detached equality-leaf computed gotos.
 
@@ -4103,7 +4443,9 @@ def _materialize_static_equality_fragments(
         )
         + 0x100
     )
-    context_mregs = _residual_context_mregs(resolution.function_context_register_values)
+    context_mregs = _dispatcher_replay_context_mregs(resolution)
+    if context_mregs is None:
+        context_mregs = {}
     facts_by_branch: dict[int, set[tuple[_NativeEqualityRow, int, int]]] = {}
     route_candidates: list[MaterializedIndirectTransfer] = []
     setcc_replay_facts: dict[_NativeEqualityRow, set[tuple[int, int]]] = {}
@@ -4127,7 +4469,7 @@ def _materialize_static_equality_fragments(
                 for plan in resolution.patch_plans
                 if int(plan.jmp_ea) == int(row.terminal_jmp_ea)
             )
-            if len(matching_plans) == 1:
+            if len(matching_plans) <= 1:
                 replay_facts = setcc_replay_facts.get(row, set())
                 replay_match_target_ea = None
                 replay_nonmatch_target_ea = None
@@ -4137,18 +4479,26 @@ def _materialize_static_equality_fragments(
                     )
                 route_candidate = _static_equality_route_candidate(
                     row,
-                    matching_plans[0],
+                    matching_plans[0] if matching_plans else None,
                     state_var_reg=int(state_var_reg),
                     context_mregs=context_mregs,
                     replay_match_target_ea=replay_match_target_ea,
                     replay_nonmatch_target_ea=replay_nonmatch_target_ea,
+                    match_target_register_values=(
+                        native_setcc_match_register_values.get(row, ())
+                        if native_setcc_match_register_values is not None
+                        else ()
+                    ),
                 )
                 if route_candidate is not None:
                     route_candidates.append(route_candidate)
             continue
-        match_mregs = dict(context_mregs)
+        entry_mregs = _corridor_entry_mregs(resolution, int(row.block_entry_ea))
+        if entry_mregs is None:
+            continue
+        match_mregs = dict(entry_mregs)
         match_mregs[int(state_var_reg)] = int(row.state_constant)
-        nonmatch_mregs = dict(context_mregs)
+        nonmatch_mregs = dict(entry_mregs)
         nonmatch_mregs[int(state_var_reg)] = int(row.state_constant) ^ 1
         match_target = _resolve_concrete_dispatch_corridor(
             int(row.block_entry_ea),
@@ -6247,9 +6597,28 @@ def _materialize_static(resolution: ComputedGotoResolution) -> int:
         int(resolution.function_ea),
         envelope_end_ea=equality_envelope_end,
     )
+    native_setcc_match_register_values: dict[
+        _NativeEqualityRow,
+        tuple[tuple[str, int], ...],
+    ] = {}
     native_setcc_routes = _resolve_native_setcc_route_facts(
         resolution,
         native_equality_rows,
+        match_register_values_by_row=native_setcc_match_register_values,
+    )
+    logger.info(
+        "computed-goto native setcc replay: rows=%d facts=%s",
+        sum(row.selector_kind == "setcc" for row in native_equality_rows),
+        [
+            (
+                hex(int(row.branch_ea)),
+                hex(int(row.terminal_jmp_ea)),
+                hex(int(row.state_constant) & _MASK32),
+                hex(int(match_target)),
+                hex(int(nonmatch_target)),
+            )
+            for row, match_target, nonmatch_target in native_setcc_routes
+        ],
     )
     native_handler_entry_routes = _recover_prepatch_handler_entry_routes(
         resolution,
@@ -6278,6 +6647,9 @@ def _materialize_static(resolution: ComputedGotoResolution) -> int:
         resolution,
         native_rows=native_equality_rows,
         native_setcc_routes=native_setcc_routes,
+        native_setcc_match_register_values=(
+            native_setcc_match_register_values
+        ),
     )
 
     seg = ida_segment.getseg(int(resolution.function_ea))
@@ -6603,6 +6975,28 @@ def resolve_and_materialize(
             resolution = static
     if resolution is None:
         return None
+    if resolution.patch_plans and not resolution.native_stack_frame_offsets:
+        stack_envelope_end = (
+            max(
+                (
+                    int(ea)
+                    for ea in (
+                        *resolution.reachable_eas,
+                        *resolution.block_entries,
+                    )
+                ),
+                default=int(function_ea),
+            )
+            + 0x100
+        )
+        native_stack_offsets = native_stack_frame_offsets_for_ranges(
+            int(function_ea),
+            ((int(function_ea), int(stack_envelope_end)),),
+        )
+        resolution = replace(
+            resolution,
+            native_stack_frame_offsets=tuple(sorted(native_stack_offsets.items())),
+        )
     materialised = materialize_computed_gotos(resolution)
     logger.info(
         "computed-goto: func=0x%x sites=%d targets=%d materialised=%d reachable=%d arch=%s",
@@ -6845,6 +7239,69 @@ def prepare_terminal_return_carrier_templates(function_ea: int) -> int:
         _SNIPPET_CAPTURE_PROFILE_EA = None
 
 
+def _unique_native_register_indirect_exit(
+    ranges: tuple[tuple[int, int], ...],
+) -> tuple[int, int] | None:
+    """Return one native range start and its unique ``jmp reg`` exit."""
+    import ida_ua  # type: ignore[import-untyped]
+    import idaapi  # type: ignore[import-untyped]
+
+    exits: set[tuple[int, int]] = set()
+    insn = ida_ua.insn_t()
+    for start_ea, end_ea in ranges:
+        ea = int(start_ea)
+        while ea < int(end_ea):
+            size = int(ida_ua.decode_insn(insn, ea))
+            if size <= 0:
+                break
+            if (
+                (idaapi.print_insn_mnem(ea) or "").lower() == "jmp"
+                and insn.ops[0].type == idaapi.o_reg
+            ):
+                exits.add((int(start_ea), ea))
+            ea += size
+    return next(iter(exits)) if len(exits) == 1 else None
+
+
+def _plan_detached_resolver_cut_boundary_ports(
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    target_ea: int,
+    ranges: tuple[tuple[int, int], ...],
+    exit_finder=None,
+):
+    """Bind one imported handler's unique indirect exit to its proven router."""
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+        make_resolver_cut_boundary_port,
+    )
+
+    if exit_finder is None:
+        exit_finder = _unique_native_register_indirect_exit
+    candidates = {
+        int(transfer.dispatcher_entry_ea)
+        for transfer in transfers
+        if transfer.resolver_kind == "static_equality_candidate"
+        and transfer.dispatcher_entry_ea is not None
+        and len(transfer.target_eas) == 1
+        and int(transfer.target_eas[0]) == int(target_ea)
+    }
+    native_exit = exit_finder(ranges)
+    if len(candidates) != 1 or native_exit is None:
+        return ()
+    source_block_ea, source_instruction_ea = native_exit
+    return (
+        make_resolver_cut_boundary_port(
+            source_block_ea=int(source_block_ea),
+            source_instruction_ea=int(source_instruction_ea),
+            target_ea=next(iter(candidates)),
+            source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            provenance="static_equality_candidate_dispatcher_cut",
+        ),
+    )
+
+
 def prepare_detached_handler_snippets(
     function_ea: int,
     *,
@@ -6937,6 +7394,50 @@ def prepare_detached_handler_snippets(
         ),
         live_target_eas=live_target_eas,
     )
+    logger.info(
+        "detached snippet planning: func=0x%X transfers=%d candidates=%d "
+        "candidate_rows=%s plans=%s",
+        key,
+        len(transfers),
+        sum(
+            transfer.resolver_kind == "static_equality_candidate"
+            for transfer in transfers
+        ),
+        [
+            (
+                hex(int(transfer.source_jmp_ea)),
+                tuple(hex(int(ea)) for ea in transfer.target_eas),
+                (
+                    None
+                    if transfer.selector_state_constant is None
+                    else hex(int(transfer.selector_state_constant) & _MASK32)
+                ),
+                int(transfer.source_jmp_ea) in frozenset(
+                    int(ea)
+                    for row in transfers
+                    for ea in (int(row.source_jmp_ea), *row.materialized_anchor_eas)
+                ),
+                (
+                    None
+                    if live_target_eas is None
+                    else tuple(
+                        int(ea) in live_target_eas for ea in transfer.target_eas
+                    )
+                ),
+            )
+            for transfer in transfers
+            if transfer.resolver_kind == "static_equality_candidate"
+        ],
+        [
+            (
+                hex(int(plan.source_ea)),
+                hex(int(plan.target_ea)),
+                hex(int(plan.state_constant) & _MASK32),
+                plan.evidence_kind,
+            )
+            for plan in route_plans
+        ],
+    )
     target_eas = tuple(sorted({int(plan.target_ea) for plan in route_plans}))
     terminal_carrier_requests = get_terminal_return_carrier_requests(key)
     if not target_eas and not terminal_carrier_requests:
@@ -6980,6 +7481,19 @@ def prepare_detached_handler_snippets(
                     int(target_ea),
                 )
                 continue
+            current_stack_frame_offsets = native_stack_frame_offsets_for_ranges(
+                key,
+                merged_ranges,
+            )
+            native_stack_frame_offsets_by_ea = {
+                **current_stack_frame_offsets,
+                **dict(resolution.native_stack_frame_offsets),
+            }
+            boundary_ports = _plan_detached_resolver_cut_boundary_ports(
+                transfers,
+                target_ea=int(target_ea),
+                ranges=merged_ranges,
+            )
             need_replacement_template = (
                 len(merged_ranges) > 1
                 or detached_snippet_requires_analyzed_calls(
@@ -7021,11 +7535,16 @@ def prepare_detached_handler_snippets(
                     int(target_ea),
                     snippet,
                     merged_ranges,
+                    boundary_ports=boundary_ports,
+                    native_stack_frame_offsets_by_ea=(
+                        native_stack_frame_offsets_by_ea
+                    ),
                 ):
                     captured += 1
                     terminal_transfers = _detached_static_terminal_transfers(
                         resolution,
                         (int(target_ea),),
+                        entry_context_transfers=transfers,
                     )
                     if terminal_transfers:
                         record_materialized_indirect_transfers(
@@ -7108,6 +7627,10 @@ def prepare_detached_handler_snippets(
                         int(target_ea),
                         replacement,
                         merged_ranges,
+                        boundary_ports=boundary_ports,
+                        native_stack_frame_offsets_by_ea=(
+                            native_stack_frame_offsets_by_ea
+                        ),
                     )
                 ):
                     captured += 1
@@ -7450,6 +7973,7 @@ def _on_build_callinfo(
             local_transfers = _detached_static_terminal_transfers(
                 resolution,
                 (int(block.start),),
+                entry_context_transfers=recorded_transfers,
             )
             if local_transfers:
                 combined_transfers = tuple(

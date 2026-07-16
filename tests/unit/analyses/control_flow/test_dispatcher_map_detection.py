@@ -371,6 +371,49 @@ def test_computed_goto_loop_header_prefers_state_write_successor_of_two_way_funn
     ) == 30
 
 
+def test_computed_goto_loop_header_keeps_two_way_root_when_both_arms_have_state_writers():
+    """Both state-fed arms are BST subtrees, so their parent remains the root."""
+
+    def state_write(ea: int) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=2,
+            ea=ea,
+            operands=(
+                MopSnapshot(kind=OperandKind.NUMBER, value=C1, size=4),
+                MopSnapshot(kind=OperandKind.REGISTER, reg=REG_SV, size=4),
+            ),
+            l=MopSnapshot(kind=OperandKind.NUMBER, value=C1, size=4),
+            d=MopSnapshot(kind=OperandKind.REGISTER, reg=REG_SV, size=4),
+            kind=InsnKind.MOV,
+        )
+
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (11, 10), (), _reg_ne_check(C1, 10)),
+            2: _blk(2, (12, 10), (), _reg_ne_check(C2, 10)),
+            3: _blk(3, (13, 10), (), _reg_ne_check(C2 + 1, 10)),
+            10: _blk(10, (20, 30), (1, 2, 3)),
+            11: _blk(11, (), (1,)),
+            12: _blk(12, (), (2,)),
+            13: _blk(13, (), (3,)),
+            20: _blk(20, (), (10, 41, 42)),
+            30: _blk(30, (), (10, 43)),
+            41: _blk(41, (20,), (), state_write(0x4100)),
+            42: _blk(42, (20,), (), state_write(0x4200)),
+            43: _blk(43, (30,), (), state_write(0x4300)),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+
+    assert _recover_computed_goto_loop_header(
+        graph,
+        frozenset({1, 2, 3}),
+        fallback=1,
+        state_identity=("reg", REG_SV),
+    ) == 10
+
+
 def test_dispatcher_entry_prefers_majority_redispatch_hub_over_busy_subtree_root():
     """A high-indegree range subtree is not the whole BST's loop header."""
     graph = FlowGraph(
@@ -560,6 +603,19 @@ def _reg_ne_check(const: int, target: int) -> InsnSnapshot:
     )
 
 
+def _load_stack_state_into_reg(stkoff: int, ea: int) -> InsnSnapshot:
+    source = MopSnapshot(kind=OperandKind.STACK, stkoff=stkoff, size=4)
+    destination = MopSnapshot(kind=OperandKind.REGISTER, reg=REG_SV, size=4)
+    return InsnSnapshot(
+        opcode=2,
+        ea=ea,
+        operands=(source, destination),
+        l=source,
+        d=destination,
+        kind=InsnKind.MOV,
+    )
+
+
 def _reg_chain_graph() -> FlowGraph:
     # Same shape as _chain_graph() but the comparisons key on a REGISTER with no
     # stack home anywhere -> _resolve_state_identity_to_stkoff returns None.
@@ -586,6 +642,53 @@ def test_register_state_var_threads_state_var_reg():
     # ...but the state var is a register with no stack home:
     assert dmap.state_var_stkoff is None
     assert dmap.state_var_reg == REG_SV
+
+
+def test_register_state_var_is_not_assigned_an_ambiguous_stack_home():
+    """One-off loads from precomputed state slots do not make any slot the home.
+
+    Rhadamanthys precomputes several conditional next states on the stack, then
+    loads each choice into the long-lived state register from a different
+    handler.  Every source has the same frequency, so choosing the first source
+    by insertion order misclassifies the register dispatcher as stack-resident.
+    """
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (1, 2), (), _reg_ne_check(C1, 2)),
+            1: _blk(1, (), (0,), _load_stack_state_into_reg(0x40, 0x1100)),
+            2: _blk(2, (3, 4), (0,), _reg_ne_check(C2, 4)),
+            3: _blk(3, (), (2,), _load_stack_state_into_reg(0x44, 0x1200)),
+            4: _blk(4, (), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    dmap = build_state_dispatcher_map_from_flow_graph(graph)
+
+    assert dmap is not None
+    assert dmap.state_var_stkoff is None
+    assert dmap.state_var_reg == REG_SV
+
+
+def test_register_state_var_keeps_a_unique_dominant_stack_home():
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (1, 2), (), _reg_ne_check(C1, 2)),
+            1: _blk(1, (), (0,), _load_stack_state_into_reg(0x40, 0x1100)),
+            2: _blk(2, (3, 4), (0,), _reg_ne_check(C2, 4)),
+            3: _blk(3, (), (2,), _load_stack_state_into_reg(0x40, 0x1200)),
+            4: _blk(4, (), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    dmap = build_state_dispatcher_map_from_flow_graph(graph)
+
+    assert dmap is not None
+    assert dmap.state_var_stkoff == 0x40
+    assert dmap.state_var_reg is None
 
 
 def test_recover_dispatcher_surfaces_state_var_reg():

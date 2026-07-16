@@ -8,9 +8,12 @@ import ida_bytes
 import ida_frame
 import ida_funcs
 import ida_hexrays
+import ida_ida
 import ida_idaapi
+import ida_idp
 import ida_range
 import ida_ua
+import idautils
 
 from d810.core.typing import Callable, Collection, Mapping
 
@@ -76,8 +79,10 @@ def _native_instruction_stack_frame_offsets(
 
     A detached explicit-range MBA can choose a different ``tmpstk_size`` from
     the owning function.  Its ``mop_S`` VD offset is therefore not a stable
-    identity.  IDA's native stack-variable annotation, after resolver tail
-    ownership and SP facts have been established, is the stable coordinate.
+    identity.  IDA's native stack-variable annotation is authoritative when
+    present.  Resolver-owned detached tails are often not annotated, so an
+    ESP/RSP displacement is projected through IDA's native SP delta and the
+    owning function frame size as an equally stable fallback.
     """
     function = ida_funcs.get_func(int(function_ea))
     if function is None:
@@ -88,21 +93,83 @@ def _native_instruction_stack_frame_offsets(
         return ()
     flags = ida_bytes.get_flags(native_ea)
     offsets: list[int] = []
+    pointer_size = 8 if ida_ida.inf_is_64bit() else 4
+    displacement_bits = pointer_size * 8
+    displacement_mask = (1 << displacement_bits) - 1
+    displacement_sign = 1 << (displacement_bits - 1)
+    persistent_frame_size = int(function.frsize) + int(function.frregs)
     for operand_index, operand in enumerate(instruction.ops):
         if int(operand.type) == int(ida_ua.o_void):
             break
-        if not ida_bytes.is_stkvar(flags, operand_index):
-            continue
-        frame_offset = int(
-            ida_frame.calc_stkvar_struc_offset(
-                function,
-                instruction,
-                operand_index,
+        annotated_frame_offset: int | None = None
+        if ida_bytes.is_stkvar(flags, operand_index):
+            frame_offset = int(
+                ida_frame.calc_stkvar_struc_offset(
+                    function,
+                    instruction,
+                    operand_index,
+                )
             )
+            if frame_offset != int(ida_idaapi.BADADDR):
+                annotated_frame_offset = frame_offset
+        if int(operand.type) not in {
+            int(ida_ua.o_displ),
+            int(ida_ua.o_phrase),
+        }:
+            if annotated_frame_offset is not None:
+                offsets.append(annotated_frame_offset)
+            continue
+        register_name = ida_idp.get_reg_name(int(operand.reg), pointer_size)
+        if str(register_name or "").lower() not in {"sp", "esp", "rsp"}:
+            if annotated_frame_offset is not None:
+                offsets.append(annotated_frame_offset)
+            continue
+        raw_displacement = (
+            int(operand.addr) & displacement_mask
+            if int(operand.type) == int(ida_ua.o_displ)
+            else 0
         )
-        if frame_offset != int(ida_idaapi.BADADDR):
+        displacement = (
+            raw_displacement - (1 << displacement_bits)
+            if raw_displacement & displacement_sign
+            else raw_displacement
+        )
+        try:
+            stack_pointer_delta = int(ida_frame.get_spd(function, native_ea))
+        except Exception:
+            if annotated_frame_offset is not None:
+                offsets.append(annotated_frame_offset)
+            continue
+        frame_offset = persistent_frame_size + stack_pointer_delta + displacement
+        if frame_offset >= 0:
             offsets.append(frame_offset)
+        elif annotated_frame_offset is not None:
+            offsets.append(annotated_frame_offset)
     return tuple(dict.fromkeys(offsets))
+
+
+def native_stack_frame_offsets_for_ranges(
+    function_ea: int,
+    ranges: Collection[tuple[int, int]],
+) -> dict[int, tuple[int, ...]]:
+    """Capture native stack identities before explicit-range generation.
+
+    Hex-Rays may transiently annotate a detached range as a standalone
+    function while generating its MBA.  Snapshot the owning function's SP
+    coordinate first so those temporary annotations cannot replace it.
+    """
+    result: dict[int, tuple[int, ...]] = {}
+    for start_ea, end_ea in ranges:
+        for instruction_ea in idautils.Heads(int(start_ea), int(end_ea)):
+            if not ida_bytes.is_code(ida_bytes.get_flags(int(instruction_ea))):
+                continue
+            offsets = _native_instruction_stack_frame_offsets(
+                int(function_ea),
+                int(instruction_ea),
+            )
+            if offsets:
+                result[int(instruction_ea)] = offsets
+    return result
 
 
 def _instructions(block: object) -> tuple[object, ...]:
@@ -991,6 +1058,35 @@ def _normalize_capture_boundary_ports(
         return None
 
 
+def _resolver_cut_target_for_synthetic_successor(
+    boundary_ports: DetachedSnippetBoundaryPorts
+    | tuple[
+        DetachedSnippetDirectBoundaryPort | DetachedSnippetConditionalBoundaryPort,
+        ...,
+    ],
+    source_instruction_ea: int,
+) -> int | None:
+    """Resolve one synthetic snippet exit from an explicit resolver cut."""
+    direct = (
+        boundary_ports.direct
+        if isinstance(boundary_ports, DetachedSnippetBoundaryPorts)
+        else tuple(
+            port
+            for port in boundary_ports
+            if isinstance(port, DetachedSnippetDirectBoundaryPort)
+        )
+    )
+    targets = {
+        int(port.target_ea)
+        for port in direct
+        if port.delivery_mode == "terminal_goto"
+        and port.source_owner == DetachedSnippetBoundaryPortOwner.IMPORTED
+        and port.target_owner == DetachedSnippetBoundaryPortOwner.LIVE
+        and int(port.source_instruction_ea) == int(source_instruction_ea)
+    }
+    return next(iter(targets)) if len(targets) == 1 else None
+
+
 def _capture_detached_snippet_template(
     function_ea: int,
     target_ea: int,
@@ -999,6 +1095,7 @@ def _capture_detached_snippet_template(
     template_cache: dict[tuple[int, int], DetachedSnippetTemplate],
     boundary_ports: DetachedSnippetBoundaryPorts,
     owned_block_entry_eas: Collection[int] | None,
+    native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]],
 ) -> bool:
     """Cache one explicit-range MBA and its optional stable frame identities."""
     normalized_ranges = tuple(
@@ -1085,10 +1182,14 @@ def _capture_detached_snippet_template(
             source_vd_offsets = tuple(
                 dict.fromkeys(int(operand.s.off) for operand in stack_operands)
             )
-            native_frame_offsets = _native_instruction_stack_frame_offsets(
-                int(function_ea),
+            native_frame_offsets = native_stack_frame_offsets_by_ea.get(
                 int(instruction.ea),
             )
+            if native_frame_offsets is None:
+                native_frame_offsets = _native_instruction_stack_frame_offsets(
+                    int(function_ea),
+                    int(instruction.ea),
+                )
             native_frame_identity = (
                 int(native_frame_offsets[0])
                 if len(source_vd_offsets) == 1 and len(native_frame_offsets) == 1
@@ -1183,6 +1284,11 @@ def _capture_detached_snippet_template(
                 if successor_block is not None
                 else None
             )
+            if successor_ea is None and block.tail is not None:
+                successor_ea = _resolver_cut_target_for_synthetic_successor(
+                    boundary_ports,
+                    int(block.tail.ea),
+                )
             if successor_ea is None:
                 logger.info(
                     "detached snippet capture abstained: target=0x%X "
@@ -1273,6 +1379,21 @@ def _capture_detached_snippet_template(
             int(target_ea),
         )
         return False
+    if stack_map:
+        logger.info(
+            "detached snippet capture stack identities: target=0x%X "
+            "raw=%s stable=%s instruction=%s",
+            int(target_ea),
+            sorted(stack_map.items()),
+            sorted(
+                (source_vd, sorted(ida_offsets))
+                for source_vd, ida_offsets in stable_identities_by_vd.items()
+            ),
+            sorted(
+                (instruction_ea, source_vd, ida_offset)
+                for (instruction_ea, source_vd), ida_offset in instruction_stack_map.items()
+            ),
+        )
     template_boundary_ports = _capture_template_boundary_ports(
         normalized_templates,
         boundary_ports,
@@ -1323,6 +1444,7 @@ def capture_detached_snippet_template(
         ...,
     ] = (),
     owned_block_entry_eas: Collection[int] | None = None,
+    native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]] | None = None,
 ) -> bool:
     """Cache one LOCOPT template used for missing detached handlers."""
     normalized_boundary_ports = _normalize_capture_boundary_ports(boundary_ports)
@@ -1336,6 +1458,11 @@ def capture_detached_snippet_template(
         _DETACHED_SNIPPET_TEMPLATES,
         normalized_boundary_ports,
         owned_block_entry_eas,
+        (
+            {}
+            if native_stack_frame_offsets_by_ea is None
+            else native_stack_frame_offsets_by_ea
+        ),
     )
 
 
@@ -1351,6 +1478,7 @@ def capture_detached_replacement_snippet_template(
         ...,
     ] = (),
     owned_block_entry_eas: Collection[int] | None = None,
+    native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]] | None = None,
 ) -> bool:
     """Cache one CALLS template whose detached conditional arm must survive."""
     normalized_boundary_ports = _normalize_capture_boundary_ports(boundary_ports)
@@ -1364,6 +1492,11 @@ def capture_detached_replacement_snippet_template(
         _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES,
         normalized_boundary_ports,
         owned_block_entry_eas,
+        (
+            {}
+            if native_stack_frame_offsets_by_ea is None
+            else native_stack_frame_offsets_by_ea
+        ),
     )
 
 
@@ -3758,8 +3891,13 @@ def _apply_boundary_port_batch(
     created: Mapping[tuple[int, int], object],
     *,
     transparent_helpers: Collection[object] = (),
+    pending_instruction_origins: Mapping[tuple[int, int], int] | None = None,
 ) -> tuple[DetachedSnippetBoundaryPortResult, ...] | None:
     applied: list[DetachedSnippetBoundaryPortResult] = []
+    instruction_origins = (
+        {} if pending_instruction_origins is None else pending_instruction_origins
+    )
+    mba_identity = stable_mba_identity(mba)
     transparent_helper_serials = {int(block.serial) for block in transparent_helpers}
     for mutation in batch.direct:
         delivery_modes = {record.port.delivery_mode for record in mutation.records}
@@ -3807,6 +3945,68 @@ def _apply_boundary_port_batch(
                 return None
         semantic_successors = set(edge_source_by_semantic_successor)
         modifier = DeferredGraphModifier(mba)
+        if delivery_mode == "terminal_goto" and not old_successors:
+            source_instruction_eas = {
+                int(record.port.source_instruction_ea)
+                for record in mutation.records
+            }
+            if len(source_instruction_eas) != 1:
+                return None
+            source_instruction_ea = next(iter(source_instruction_eas))
+            cut_instructions = tuple(
+                instruction
+                for instruction in _instructions(endpoint)
+                if (
+                    int(instruction.ea) == source_instruction_ea
+                    or instruction_origins.get(
+                        (mba_identity, int(instruction.ea))
+                    )
+                    == source_instruction_ea
+                )
+                and int(instruction.opcode)
+                in {
+                    int(ida_hexrays.m_mov),
+                    int(ida_hexrays.m_call),
+                    int(ida_hexrays.m_icall),
+                    int(ida_hexrays.m_ijmp),
+                }
+            )
+            logger.info(
+                "resolver-cut call lowering preflight: "
+                "endpoint=blk%d@0x%X instruction=0x%X "
+                "ops=%s exact_calls=%d successors=%s target=blk%d@0x%X",
+                int(endpoint.serial),
+                int(mutation.endpoint.native_ea),
+                source_instruction_ea,
+                [
+                    (
+                        int(instruction.opcode),
+                        int(instruction.ea),
+                        instruction_origins.get(
+                            (mba_identity, int(instruction.ea))
+                        ),
+                    )
+                    for instruction in _instructions(endpoint)
+                ],
+                len(cut_instructions),
+                sorted(current_successors),
+                int(target.serial),
+                int(mutation.target.native_ea),
+            )
+            if cut_instructions:
+                if (
+                    len(cut_instructions) != 1
+                    or not modifier.lower_proven_indirect_transfer_to_goto_now(
+                        endpoint,
+                        target,
+                        int(cut_instructions[0].ea),
+                    )
+                ):
+                    return None
+                applied.extend(
+                    _boundary_port_result(record) for record in mutation.records
+                )
+                continue
         if not current_successors:
             restored = (
                 modifier.restore_pruned_call_continuation_now(endpoint, target)
@@ -3817,12 +4017,10 @@ def _apply_boundary_port_batch(
                 return None
             expected = 0
         elif not old_successors:
-            modifier.queue_terminal_goto_change(
-                block_serial=int(endpoint.serial),
-                goto_target=int(target.serial),
-                description="resolver boundary terminal port",
-            )
-            expected = 1
+            if semantic_successors == {int(target.serial)}:
+                expected = 0
+            else:
+                return None
         elif old_successors == semantic_successors:
             if len(semantic_successors) == 1:
                 redirect_endpoint = edge_source_by_semantic_successor[
@@ -4690,6 +4888,7 @@ def _materialize_detached_snippet_templates(
         boundary_port_batch,
         created,
         transparent_helpers=tuple(imported_fallthrough_helpers),
+        pending_instruction_origins=pending_instruction_origins,
     )
     if applied_boundary_ports is None:
         logger.error(
@@ -5852,6 +6051,7 @@ __all__ = [
     "materialize_detached_handler_island",
     "materialize_detached_replacement_snippet_templates",
     "materialize_detached_snippet_templates",
+    "native_stack_frame_offsets_for_ranges",
     "reconcile_imported_callinfo_with_live_native_calls",
     "redirect_live_target_predecessors",
     "restore_call_result_carriers",
