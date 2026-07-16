@@ -194,7 +194,14 @@ class GuiAutomationBootstrap:
         self._started_at = runtime.monotonic()
 
     def start(self) -> None:
-        self._timer = self.runtime.register_timer(POLL_INTERVAL_MS, self.poll)
+        try:
+            timer = self.runtime.register_timer(POLL_INTERVAL_MS, self.poll)
+            if timer is None:
+                raise RuntimeError("register_timer returned no timer object")
+        except Exception as exc:
+            self._finish(self._failure("timer registration failed", exc))
+            return
+        self._timer = timer
 
     def _finish(self, result: gui_logic.GuiAutomationResult) -> None:
         self.finished = True
