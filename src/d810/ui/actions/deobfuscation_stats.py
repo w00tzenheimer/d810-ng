@@ -1,6 +1,6 @@
-"""Deobfuscation statistics action.
+"""Compatibility action for the function-centric deobfuscation workbench.
 
-Shows a dialog with rule-fire counts for the last decompilation.
+The stable Stats action ID now opens the workbench focused on evidence.
 """
 from __future__ import annotations
 
@@ -32,11 +32,11 @@ def _get_current_func_ea(ctx: typing.Any, idaapi_shim: typing.Any) -> int | None
 
 
 class DeobfuscationStats(D810ActionHandler):
-    """Show a dialog with rule-fire counts for the last decompilation."""
+    """Open the deobfuscation workbench through the stable Stats action ID."""
 
     ACTION_ID = "d810ng:deobfuscation_stats"
-    ACTION_TEXT = "Deobfuscation stats..."
-    ACTION_TOOLTIP = "Show deobfuscation statistics for the last run"
+    ACTION_TEXT = "Deobfuscation workbench..."
+    ACTION_TOOLTIP = "Inspect function pipeline, outcomes, and evidence"
     SUPPORTED_VIEWS = frozenset({"pseudocode"})
     MENU_ORDER = 20
 
@@ -78,9 +78,9 @@ class DeobfuscationStats(D810ActionHandler):
         )
         logger.debug("Stats:\n%s", formatted)
 
-        # Show stats in dockable panel (singleton)
+        # Show the workbench in its evidence-focused compatibility mode.
         try:
-            from d810.ui.stats_dialog import DeobfuscationStatsPanel
+            from d810.ui.workbench_panel import DeobfuscationWorkbenchPanel
 
             # If panel was closed by IDA, discard it and create fresh
             cls = DeobfuscationStats
@@ -89,11 +89,11 @@ class DeobfuscationStats(D810ActionHandler):
 
             # Create panel on first use
             if cls._panel is None:
-                cls._panel = DeobfuscationStatsPanel(self._state)
+                cls._panel = DeobfuscationWorkbenchPanel(self._state)
 
-            # Update function context and show (CTO pattern)
+            # Update function context and retain the historical evidence focus.
             cls._panel.set_function(func_ea, func_name)
-            cls._panel.show()
+            cls._panel.show(focus_section="evidence")
         except ImportError:
             # Fallback to simple message if IDA not available
             idaapi_shim.info(formatted)

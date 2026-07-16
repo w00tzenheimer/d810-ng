@@ -5,7 +5,11 @@ and registered in the D810ActionHandler registry.
 """
 from __future__ import annotations
 
+import sys
+from types import ModuleType, SimpleNamespace
+
 from d810.ui.actions import D810ActionHandler, load_builtin_actions
+from d810.ui.actions.deobfuscation_stats import DeobfuscationStats
 
 load_builtin_actions()
 
@@ -115,3 +119,64 @@ class TestActionMigration:
         for action_cls in DISASM_ACTIONS:
             assert hasattr(action_cls, "ACTION_ID")
             assert action_cls.ACTION_ID
+
+
+def test_stats_compatibility_action_opens_evidence_focused_workbench(
+    monkeypatch,
+) -> None:
+    created: list[object] = []
+
+    class FakePanel:
+        def __init__(self, state) -> None:
+            self.state = state
+            self._closed = False
+            self.function_calls: list[tuple[int | None, str | None]] = []
+            self.show_calls: list[str | None] = []
+            created.append(self)
+
+        def set_function(self, func_ea, func_name) -> None:
+            self.function_calls.append((func_ea, func_name))
+
+        def show(self, focus_section=None) -> bool:
+            self.show_calls.append(focus_section)
+            return True
+
+    class LegacyPanel(FakePanel):
+        pass
+
+    workbench_module = ModuleType("d810.ui.workbench_panel")
+    workbench_module.DeobfuscationWorkbenchPanel = FakePanel
+    legacy_module = ModuleType("d810.ui.stats_dialog")
+    legacy_module.DeobfuscationStatsPanel = LegacyPanel
+    monkeypatch.setitem(sys.modules, "d810.ui.workbench_panel", workbench_module)
+    monkeypatch.setitem(sys.modules, "d810.ui.stats_dialog", legacy_module)
+
+    idaapi = SimpleNamespace(
+        get_widget_vdui=lambda widget: SimpleNamespace(
+            cfunc=SimpleNamespace(entry_ea=0x401000)
+        ),
+        get_func=lambda ea: object(),
+        get_func_name=lambda ea: "target",
+        warning=lambda message: None,
+        info=lambda message: None,
+    )
+    stats = SimpleNamespace(last_report=lambda: {})
+    state = SimpleNamespace(manager=SimpleNamespace(stats=stats))
+    action = DeobfuscationStats(state, ida_modules={"idaapi": idaapi})
+    ctx = SimpleNamespace(widget=object())
+    DeobfuscationStats._panel = None
+
+    assert DeobfuscationStats.ACTION_ID == "d810ng:deobfuscation_stats"
+    assert action.execute(ctx) == 1
+    first = DeobfuscationStats._panel
+    assert type(first) is FakePanel
+    assert first.function_calls == [(0x401000, "target")]
+    assert first.show_calls == ["evidence"]
+
+    first._closed = True
+    assert action.execute(ctx) == 1
+    second = DeobfuscationStats._panel
+    assert type(second) is FakePanel
+    assert second is not first
+    assert len(created) == 2
+    DeobfuscationStats._panel = None
