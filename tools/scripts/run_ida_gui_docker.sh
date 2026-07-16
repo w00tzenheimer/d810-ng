@@ -20,6 +20,8 @@ Options:
   --open-config        Open and focus the D-810 Configuration dock at startup.
   --open-workbench     Open and focus the D810 workbench at startup.
   --function FUNCTION  Exact function name or integer EA for the workbench.
+  --mcp                Start the mounted MCP plugin for a named action.
+  --mcp-port PORT      Loopback host port for MCP. Default: 13337.
   -h, --help           Show this help.
   --                   Pass all remaining arguments to IDA unchanged.
 
@@ -36,6 +38,8 @@ Environment:
   D810_GUI_DISPLAY       Container X11 display.
                          Default: host.docker.internal:0
   D810_XHOST_BIN         XQuartz xhost client. Default: /opt/X11/bin/xhost
+  D810_MCP_PLUGIN_DIR    MCP plugin source override. Default:
+                         D810_IDA_USER_DIR/plugins/ida-pro-mcp
 
 Mounts:
   selected checkout             -> /work
@@ -44,6 +48,8 @@ Mounts:
   configured D810 log directory -> /root/.idapro/logs
   The image-owned ida.reg is intentionally not replaced.
   D810_REPO_ROOT/samples/bins   -> /samples/bins read-only (when present)
+  MCP plugin source            -> /root/.idapro/plugins/ida-pro-mcp
+                                  read-only (only with --mcp)
 
 Safety:
   The GUI image must carry org.d810.gui-runtime=x11-dev-emulation-z3-v1.
@@ -97,6 +103,9 @@ OPEN_CONFIG=""
 OPEN_WORKBENCH=""
 FUNCTION_SET=""
 FUNCTION_VALUE=""
+MCP_ENABLED=""
+MCP_PORT_SET=""
+MCP_PORT_VALUE="13337"
 IDA_ARGS=()
 unset D810_GUI_AUTOMATION_REQUEST
 while [ "$#" -gt 0 ]; do
@@ -139,6 +148,17 @@ while [ "$#" -gt 0 ]; do
       FUNCTION_VALUE="$2"
       shift 2
       ;;
+    --mcp)
+      MCP_ENABLED=1
+      shift
+      ;;
+    --mcp-port)
+      [ -z "$MCP_PORT_SET" ] || fail "--mcp-port may be specified only once"
+      [ "$#" -ge 2 ] || fail "$1 requires a decimal port"
+      MCP_PORT_SET=1
+      MCP_PORT_VALUE="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -160,6 +180,25 @@ if [ -n "$OPEN_CONFIG" ] || [ -n "$OPEN_WORKBENCH" ]; then
 fi
 if [ -n "$FUNCTION_SET" ] && [ -z "$OPEN_WORKBENCH" ]; then
   fail "--function requires --open-workbench"
+fi
+if [ -n "$MCP_PORT_SET" ] && [ -z "$MCP_ENABLED" ]; then
+  fail "--mcp-port requires --mcp"
+fi
+if [ -n "$MCP_ENABLED" ] && [ -z "$NAMED_AUTOMATION" ]; then
+  fail "--mcp requires --open-config or --open-workbench"
+fi
+MCP_HOST_PORT=""
+if [ -n "$MCP_ENABLED" ]; then
+  case "$MCP_PORT_VALUE" in
+    ""|*[!0-9]*)
+      fail "--mcp-port must be a decimal port from 1024 through 65535: $MCP_PORT_VALUE"
+      ;;
+  esac
+  [ "${#MCP_PORT_VALUE}" -le 5 ] \
+    || fail "--mcp-port must be a decimal port from 1024 through 65535: $MCP_PORT_VALUE"
+  MCP_HOST_PORT=$((10#$MCP_PORT_VALUE))
+  [ "$MCP_HOST_PORT" -ge 1024 ] && [ "$MCP_HOST_PORT" -le 65535 ] \
+    || fail "--mcp-port must be a decimal port from 1024 through 65535: $MCP_PORT_VALUE"
 fi
 if [ -n "$NAMED_AUTOMATION" ] && [ "${#IDA_ARGS[@]}" -gt 0 ]; then
   for IDA_ARG in "${IDA_ARGS[@]}"; do
@@ -236,6 +275,21 @@ XHOST_BIN="${D810_XHOST_BIN-/opt/X11/bin/xhost}"
 
 IDA_USER_DIR="$(canonical_dir "$IDA_USER_PATH")" \
   || fail "IDA user directory not found: $IDA_USER_PATH"
+
+MCP_PLUGIN_DIR=""
+MCP_ENDPOINT=""
+if [ -n "$MCP_ENABLED" ]; then
+  MCP_PLUGIN_PATH="${D810_MCP_PLUGIN_DIR-$IDA_USER_DIR/plugins/ida-pro-mcp}"
+  [ -n "$MCP_PLUGIN_PATH" ] \
+    || fail "D810_MCP_PLUGIN_DIR is set but empty"
+  MCP_PLUGIN_DIR="$(canonical_dir "$MCP_PLUGIN_PATH")" \
+    || fail "MCP plugin source not found: $MCP_PLUGIN_PATH"
+  [ -f "$MCP_PLUGIN_DIR/ida-plugin.json" ] \
+    || fail "MCP plugin descriptor not found: $MCP_PLUGIN_DIR/ida-plugin.json"
+  [ -f "$MCP_PLUGIN_DIR/src/ida_pro_mcp/ida_mcp.py" ] \
+    || fail "MCP plugin entry point not found: $MCP_PLUGIN_DIR/src/ida_pro_mcp/ida_mcp.py"
+  MCP_ENDPOINT="http://127.0.0.1:$MCP_HOST_PORT/mcp"
+fi
 
 D810_CONFIG_PATH="$IDA_USER_DIR/cfg/d810"
 mkdir -p "$D810_CONFIG_PATH"
@@ -349,7 +403,8 @@ if [ -n "$NAMED_AUTOMATION" ]; then
       "$FUNCTION_SET" \
       "$FUNCTION_VALUE" \
       "$IDA_DATABASE_COPY" \
-      "$IDA_DATABASE_CONTAINER_PATH" <<'PY'
+      "$IDA_DATABASE_CONTAINER_PATH" \
+      "$MCP_ENDPOINT" <<'PY'
 import datetime
 import hashlib
 import json
@@ -380,6 +435,7 @@ open_workbench = sys.argv[3] == "1"
 selector = parse_function_selector(sys.argv[5] if sys.argv[4] == "1" else None)
 database_host_path = sys.argv[6]
 database_container_path = sys.argv[7]
+mcp_endpoint = sys.argv[8] or None
 request_id = secrets.token_hex(16)
 created_at_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
 created_at_utc = created_at_utc.replace("+00:00", "Z")
@@ -407,7 +463,7 @@ document = {
                 sha256_file(database_host_path) if database_host_path else None
             ),
         },
-        "mcp_endpoint": None,
+        "mcp_endpoint": mcp_endpoint,
     },
 }
 destination = automation_dir / f"automation-request-{request.request_id}.json"
@@ -451,7 +507,7 @@ fi
 EXTRA_ENV_ARGS=()
 for ENV_NAME in ${!D810_@}; do
   case "$ENV_NAME" in
-    D810_GUI_DOCKER_IMAGE|D810_DOCKER_MEMORY|D810_REPO_ROOT|D810_WORKTREE_ROOT|D810_IDA_USER_DIR|D810_GUI_DISPLAY|D810_XHOST_BIN)
+    D810_GUI_DOCKER_IMAGE|D810_DOCKER_MEMORY|D810_REPO_ROOT|D810_WORKTREE_ROOT|D810_IDA_USER_DIR|D810_GUI_DISPLAY|D810_XHOST_BIN|D810_MCP_PLUGIN_DIR)
       continue
       ;;
   esac
@@ -482,6 +538,11 @@ fi
 if [ -n "$MOUNT_LOGS_COMPAT" ]; then
   printf '  logs:     persistent D810 logs enabled (-l compatibility)\n'
 fi
+if [ -n "$MCP_ENABLED" ]; then
+  printf '  mcp plugin: %s -> /root/.idapro/plugins/ida-pro-mcp (read-only)\n' \
+    "$MCP_PLUGIN_DIR"
+  printf '  mcp endpoint: %s\n' "$MCP_ENDPOINT"
+fi
 printf '  display:   %s\n' "$GUI_DISPLAY"
 if [ "${#IDA_ARGS[@]}" -gt 0 ]; then
   printf '  ida args:'
@@ -491,6 +552,11 @@ else
   printf '  ida args:  (none)\n'
 fi
 printf '\n'
+
+CONTAINER_PYTHONPATH="/root/.idapro/plugins/d810/src:/app/ida/python"
+if [ -n "$MCP_ENABLED" ]; then
+  CONTAINER_PYTHONPATH="/root/.idapro/plugins/ida-pro-mcp/src/ida_pro_mcp:$CONTAINER_PYTHONPATH"
+fi
 
 DOCKER_ARGS=(
   run --rm
@@ -502,12 +568,20 @@ DOCKER_ARGS=(
   -e "IDA_PREFIX=/app/ida"
   -e "IDA_INSTALL_DIR=/app/ida"
   -e "D810_LIBCLANG_PATH=/app/ida/libclang.so"
-  -e "PYTHONPATH=/root/.idapro/plugins/d810/src:/app/ida/python"
+  -e "PYTHONPATH=$CONTAINER_PYTHONPATH"
   -v "$WORK_DIR:/work"
   -v "$D810_CONFIG_DIR:/root/.idapro/cfg/d810"
   -v "$D810_LOG_DIR:/root/.idapro/logs"
   -v "$WORK_DIR:/root/.idapro/plugins/d810"
 )
+if [ -n "$MCP_ENABLED" ]; then
+  DOCKER_ARGS+=(
+    -e "IDA_MCP_HOST=0.0.0.0"
+    -e "IDA_MCP_PORT=13337"
+    -p "127.0.0.1:$MCP_HOST_PORT:13337"
+    -v "$MCP_PLUGIN_DIR:/root/.idapro/plugins/ida-pro-mcp:ro"
+  )
+fi
 if [ "${#EXTRA_ENV_ARGS[@]}" -gt 0 ]; then
   DOCKER_ARGS+=( "${EXTRA_ENV_ARGS[@]}" )
 fi

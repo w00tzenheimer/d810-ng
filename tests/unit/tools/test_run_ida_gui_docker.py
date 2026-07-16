@@ -66,6 +66,21 @@ def _run(
     ida_user = tmp_path / "ida-user"
     ida_user.mkdir()
     (ida_user / "idapro.hexlic").write_text("license", encoding="utf-8")
+    mcp_source = tmp_path / "mcp source"
+    (mcp_source / "src" / "ida_pro_mcp").mkdir(parents=True)
+    (mcp_source / "ida-plugin.json").write_text(
+        '{"plugin": {"entryPoint": "src/ida_pro_mcp/ida_mcp.py"}}\n',
+        encoding="utf-8",
+    )
+    (mcp_source / "src" / "ida_pro_mcp" / "ida_mcp.py").write_text(
+        "def PLUGIN_ENTRY():\n    return None\n",
+        encoding="utf-8",
+    )
+    (ida_user / "plugins").mkdir()
+    (ida_user / "plugins" / "ida-pro-mcp").symlink_to(
+        mcp_source,
+        target_is_directory=True,
+    )
     d810_config = ida_user / "cfg" / "d810"
     d810_config.mkdir(parents=True)
     d810_logs = ida_user / "logs"
@@ -124,6 +139,7 @@ printf '%s\\n' "${MOCK_XHOST_ACCESS:-INET:localhost}"
         "D810_IDA_USER_DIR",
         "D810_GUI_DISPLAY",
         "D810_XHOST_BIN",
+        "D810_MCP_PLUGIN_DIR",
         "MOCK_IMAGE_EXISTS",
         "MOCK_GUI_RUNTIME_LABEL",
         "MOCK_XHOST_FAIL",
@@ -163,6 +179,7 @@ printf '%s\\n' "${MOCK_XHOST_ACCESS:-INET:localhost}"
         "ida_user": ida_user,
         "d810_config": d810_config,
         "d810_logs": d810_logs,
+        "mcp_source": mcp_source,
     }
     return result, _parse_docker_calls(docker_log), paths
 
@@ -228,6 +245,157 @@ def test_default_launch_mounts_root_checkout_portable_d810_state_and_samples(
     assert f"checkout:  {paths['repo']}" in result.stdout
     assert f"d810 cfg:  {paths['d810_config']}" in result.stdout
     assert f"d810 logs: {paths['d810_logs']}" in result.stdout
+
+
+def test_plain_launch_has_no_mcp_mount_environment_publication_or_intent(
+    tmp_path: Path,
+) -> None:
+    result, calls, paths = _run(tmp_path, "--open-config")
+
+    assert result.returncode == 0, result.stderr
+    _request_path, document = _automation_request(paths["repo"])
+    assert document["context"]["mcp_endpoint"] is None
+    run = calls[-1]
+    assert not any("ida-pro-mcp" in value for value in run)
+    assert not any(value.startswith("IDA_MCP_") for value in run)
+    assert "-p" not in run
+    assert "mcp plugin:" not in result.stdout
+    assert "mcp endpoint:" not in result.stdout
+
+
+def test_mcp_mounts_resolved_source_read_only_and_publishes_only_loopback(
+    tmp_path: Path,
+) -> None:
+    result, calls, paths = _run(tmp_path, "--mcp", "--open-config")
+
+    assert result.returncode == 0, result.stderr
+    request_path, document = _automation_request(paths["repo"])
+    assert document["context"]["mcp_endpoint"] == "http://127.0.0.1:13337/mcp"
+    run = calls[-1]
+    _assert_pair(
+        run,
+        "-v",
+        f"{paths['mcp_source'].resolve()}:/root/.idapro/plugins/ida-pro-mcp:ro",
+    )
+    _assert_pair(run, "-e", "IDA_MCP_HOST=0.0.0.0")
+    _assert_pair(run, "-e", "IDA_MCP_PORT=13337")
+    _assert_pair(run, "-p", "127.0.0.1:13337:13337")
+    _assert_pair(
+        run,
+        "-e",
+        "PYTHONPATH=/root/.idapro/plugins/ida-pro-mcp/src/ida_pro_mcp:"
+        "/root/.idapro/plugins/d810/src:/app/ida/python",
+    )
+    assert not any(
+        value.endswith(":13337") and not value.startswith("127.0.0.1:")
+        for index, value in enumerate(run)
+        if index > 0 and run[index - 1] == "-p"
+    )
+    assert _automation_environment(run).endswith(request_path.name)
+    assert (
+        f"mcp plugin: {paths['mcp_source'].resolve()} -> "
+        "/root/.idapro/plugins/ida-pro-mcp (read-only)"
+    ) in result.stdout
+    assert "mcp endpoint: http://127.0.0.1:13337/mcp" in result.stdout
+
+
+def test_mcp_port_and_source_override_preserve_fixed_container_port(
+    tmp_path: Path,
+) -> None:
+    override = tmp_path / "override mcp"
+    (override / "src" / "ida_pro_mcp").mkdir(parents=True)
+    (override / "ida-plugin.json").write_text("{}\n", encoding="utf-8")
+    (override / "src" / "ida_pro_mcp" / "ida_mcp.py").write_text(
+        "def PLUGIN_ENTRY():\n    return None\n",
+        encoding="utf-8",
+    )
+    result, calls, paths = _run(
+        tmp_path,
+        "--mcp",
+        "--mcp-port",
+        "14444",
+        "--open-workbench",
+        extra_env={"D810_MCP_PLUGIN_DIR": str(override)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    _request_path, document = _automation_request(paths["repo"])
+    assert document["context"]["mcp_endpoint"] == "http://127.0.0.1:14444/mcp"
+    run = calls[-1]
+    _assert_pair(
+        run,
+        "-v",
+        f"{override.resolve()}:/root/.idapro/plugins/ida-pro-mcp:ro",
+    )
+    _assert_pair(run, "-e", "IDA_MCP_PORT=13337")
+    _assert_pair(run, "-p", "127.0.0.1:14444:13337")
+    assert not any(str(override) in value for value in run if value.startswith("D810_"))
+
+
+@pytest.mark.parametrize("port", ("", "1023", "65536", "1e4", "+13337", "13337.0"))
+def test_mcp_rejects_invalid_host_ports(tmp_path: Path, port: str) -> None:
+    result, calls, _paths = _run(
+        tmp_path,
+        "--mcp",
+        "--mcp-port",
+        port,
+        "--open-config",
+    )
+
+    assert result.returncode != 0
+    assert "--mcp-port" in result.stderr
+    assert calls == []
+
+
+def test_mcp_rejects_duplicate_port_flags(tmp_path: Path) -> None:
+    result, calls, _paths = _run(
+        tmp_path,
+        "--mcp",
+        "--mcp-port",
+        "13337",
+        "--mcp-port",
+        "14444",
+        "--open-config",
+    )
+
+    assert result.returncode != 0
+    assert "--mcp-port may be specified only once" in result.stderr
+    assert calls == []
+
+
+def test_mcp_port_requires_mcp_opt_in(tmp_path: Path) -> None:
+    result, calls, _paths = _run(
+        tmp_path,
+        "--mcp-port",
+        "14444",
+        "--open-config",
+    )
+
+    assert result.returncode != 0
+    assert "--mcp-port requires --mcp" in result.stderr
+    assert calls == []
+
+
+def test_mcp_requires_a_closed_named_action(tmp_path: Path) -> None:
+    result, calls, _paths = _run(tmp_path, "--mcp")
+
+    assert result.returncode != 0
+    assert "--mcp requires --open-config or --open-workbench" in result.stderr
+    assert calls == []
+
+
+def test_mcp_missing_plugin_source_fails_before_docker(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-mcp"
+    result, calls, _paths = _run(
+        tmp_path,
+        "--mcp",
+        "--open-config",
+        extra_env={"D810_MCP_PLUGIN_DIR": str(missing)},
+    )
+
+    assert result.returncode != 0
+    assert f"MCP plugin source not found: {missing}" in result.stderr
+    assert calls == []
 
 
 def test_default_image_is_the_baked_d810_x11_runtime(tmp_path: Path) -> None:

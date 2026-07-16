@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import datetime
 import importlib
+import importlib.util
 import json
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import time
@@ -16,6 +18,11 @@ from d810.ui import gui_automation_logic as gui_logic
 
 
 POLL_INTERVAL_MS = 250
+MCP_ENTRY_PATH = pathlib.Path(
+    "/root/.idapro/plugins/ida-pro-mcp/src/ida_pro_mcp/ida_mcp.py"
+)
+_MCP_ENDPOINT_PATTERN = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})/mcp\Z")
+_D810_MCP_PLUGIN: object | None = None
 
 
 class BootstrapRuntime:
@@ -25,6 +32,8 @@ class BootstrapRuntime:
         self,
         *,
         plugin_loaded: typing.Callable[[], bool],
+        mcp_running: typing.Callable[[], bool],
+        start_mcp: typing.Callable[[], None],
         dispatch: typing.Callable[
             [gui_logic.GuiAutomationRequest],
             gui_logic.GuiAutomationResult,
@@ -34,6 +43,8 @@ class BootstrapRuntime:
         utc_now: typing.Callable[[], str],
     ) -> None:
         self.plugin_loaded = plugin_loaded
+        self.mcp_running = mcp_running
+        self.start_mcp = start_mcp
         self.dispatch = dispatch
         self.register_timer = register_timer
         self.monotonic = monotonic
@@ -110,7 +121,23 @@ def _request_from_document(
     context = document["context"]
     if not isinstance(context, dict):
         raise TypeError("automation request context must be a JSON object")
+    _mcp_endpoint(context)
     return request, context
+
+
+def _mcp_endpoint(context: dict[str, object]) -> str | None:
+    endpoint = context.get("mcp_endpoint")
+    if endpoint is None:
+        return None
+    if type(endpoint) is not str:
+        raise TypeError("MCP endpoint must be a string or null")
+    match = _MCP_ENDPOINT_PATTERN.fullmatch(endpoint)
+    if match is None:
+        raise ValueError("MCP endpoint must use loopback HTTP and the /mcp path")
+    port = int(match.group(1), 10)
+    if not 1024 <= port <= 65535:
+        raise ValueError("MCP endpoint port must be from 1024 through 65535")
+    return endpoint
 
 
 def _load_request(
@@ -188,7 +215,9 @@ class GuiAutomationBootstrap:
         self.audit_path = audit_path
         self.runtime = runtime
         self.filesystem = filesystem
+        self.mcp_endpoint = _mcp_endpoint(context)
         self.finished = False
+        self._mcp_checked = False
         self._dispatch_started = False
         self._timer: object | None = None
         self._started_at = runtime.monotonic()
@@ -247,6 +276,17 @@ class GuiAutomationBootstrap:
         if not plugin_loaded:
             return POLL_INTERVAL_MS
 
+        if self.mcp_endpoint is not None and not self._mcp_checked:
+            self._mcp_checked = True
+            try:
+                if not self.runtime.mcp_running():
+                    self.runtime.start_mcp()
+                    if not self.runtime.mcp_running():
+                        raise RuntimeError("MCP server did not report running")
+            except Exception as exc:
+                self._finish(self._failure("bootstrap MCP startup failed", exc))
+                return -1
+
         if self._dispatch_started:
             return -1
         self._dispatch_started = True
@@ -297,6 +337,39 @@ def _live_dispatch(
     return adapter.run_named_commands(request)
 
 
+def _live_mcp_running() -> bool:
+    server = getattr(_D810_MCP_PLUGIN, "mcp", None)
+    if server is None:
+        loaded_package = sys.modules.get("ida_mcp")
+        server = getattr(loaded_package, "MCP_SERVER", None)
+    return bool(getattr(server, "_running", False))
+
+
+def _live_start_mcp() -> None:
+    global _D810_MCP_PLUGIN
+    if _live_mcp_running():
+        return
+
+    plugin_package_path = str(MCP_ENTRY_PATH.parent)
+    if plugin_package_path not in sys.path:
+        sys.path.insert(0, plugin_package_path)
+    spec = importlib.util.spec_from_file_location(
+        "_d810_ida_pro_mcp_entry",
+        MCP_ENTRY_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load MCP plugin entry point: {MCP_ENTRY_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    plugin_entry = getattr(module, "PLUGIN_ENTRY", None)
+    if not callable(plugin_entry):
+        raise RuntimeError("MCP plugin has no callable PLUGIN_ENTRY")
+    plugin = plugin_entry()
+    plugin.init()
+    plugin.start_server()
+    _D810_MCP_PLUGIN = plugin
+
+
 def _utc_now() -> str:
     value = datetime.datetime.now(datetime.timezone.utc).isoformat()
     return value.replace("+00:00", "Z")
@@ -307,6 +380,8 @@ def _live_runtime() -> BootstrapRuntime:
 
     return BootstrapRuntime(
         plugin_loaded=_live_plugin_loaded,
+        mcp_running=_live_mcp_running,
+        start_mcp=_live_start_mcp,
         dispatch=_live_dispatch,
         register_timer=ida_kernwin.register_timer,
         monotonic=time.monotonic,
