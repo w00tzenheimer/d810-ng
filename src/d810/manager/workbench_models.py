@@ -29,6 +29,12 @@ class SnapshotFreshness(str, enum.Enum):
     UNAVAILABLE = "unavailable"
 
 
+class ArtifactFreshness(str, enum.Enum):
+    CURRENT = "current"
+    STALE = "stale"
+    MISSING = "missing"
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class FunctionRef:
     ea: int
@@ -144,6 +150,15 @@ class BaselineRef:
     fingerprint: str | None
     path: str | None
     generation: int | None
+    function_ea: int | None = None
+    idb_identity: str | None = None
+    type_generation: str | None = None
+    hexrays_version: str | None = None
+    captured_at: float | None = None
+    pseudocode: str | None = None
+    line_count: int = 0
+    character_count: int = 0
+    content_sha256: str | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -152,6 +167,39 @@ class D810OutputRef:
     fingerprint: str | None
     path: str | None
     generation: int | None
+    function_ea: int | None = None
+    idb_identity: str | None = None
+    type_generation: str | None = None
+    hexrays_version: str | None = None
+    captured_at: float | None = None
+    pseudocode: str | None = None
+    line_count: int = 0
+    character_count: int = 0
+    content_sha256: str | None = None
+    runtime_path: str | None = None
+    runtime_pass_ids: tuple[str, ...] = ()
+    runtime_generation: int | None = None
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ComparisonMetric:
+    name: str
+    native_value: int
+    d810_value: int
+    delta: int
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class WorkbenchComparisonSnapshot:
+    function_ea: int
+    baseline: BaselineRef
+    d810_output: D810OutputRef
+    baseline_freshness: ArtifactFreshness
+    d810_freshness: ArtifactFreshness
+    baseline_stale_reasons: tuple[str, ...]
+    d810_stale_reasons: tuple[str, ...]
+    text_changed: bool | None
+    metrics: tuple[ComparisonMetric, ...]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -195,9 +243,11 @@ class WorkbenchCommandResult:
 
 __all__ = [
     "ArtifactRef",
+    "ArtifactFreshness",
     "AttackSummary",
     "BaselineRef",
     "ConsumerOutcomeSnapshot",
+    "ComparisonMetric",
     "CountEntry",
     "D810OutputRef",
     "DeobfuscationWorkbenchSnapshot",
@@ -211,5 +261,6 @@ __all__ = [
     "StatisticsSummary",
     "WorkbenchCommandRequest",
     "WorkbenchCommandResult",
+    "WorkbenchComparisonSnapshot",
     "WorkbenchDiagnostic",
 ]

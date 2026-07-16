@@ -3,9 +3,11 @@ from __future__ import annotations
 
 __all__ = [
     "ArtifactRef",
+    "ArtifactFreshness",
     "AttackSummary",
     "BaselineRef",
     "ConsumerOutcomeSnapshot",
+    "ComparisonMetric",
     "CountEntry",
     "D810_LOG_DIR_NAME",
     "D810Manager",
@@ -27,6 +29,7 @@ __all__ = [
     "StatisticsSummary",
     "WorkbenchCommandRequest",
     "WorkbenchCommandResult",
+    "WorkbenchComparisonSnapshot",
     "WorkbenchDiagnostic",
     "d810_hooks_suppressed",
     "maybe_run_tail_distinct",
@@ -34,9 +37,11 @@ __all__ = [
 
 _WORKBENCH_MODEL_NAMES = {
     "ArtifactRef",
+    "ArtifactFreshness",
     "AttackSummary",
     "BaselineRef",
     "ConsumerOutcomeSnapshot",
+    "ComparisonMetric",
     "CountEntry",
     "D810OutputRef",
     "DeobfuscationWorkbenchSnapshot",
@@ -50,6 +55,7 @@ _WORKBENCH_MODEL_NAMES = {
     "StatisticsSummary",
     "WorkbenchCommandRequest",
     "WorkbenchCommandResult",
+    "WorkbenchComparisonSnapshot",
     "WorkbenchDiagnostic",
 }
 

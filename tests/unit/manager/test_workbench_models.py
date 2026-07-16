@@ -213,3 +213,70 @@ def test_workbench_command_request_and_result_are_frozen_and_generation_bound() 
     assert not hasattr(result, "__dict__")
     assert request.__dataclass_params__.frozen is True
     assert result.__dataclass_params__.frozen is True
+
+
+def test_comparison_records_carry_complete_identity_and_metrics() -> None:
+    baseline = models.BaselineRef(
+        available=True,
+        fingerprint="sha256:function",
+        path=None,
+        generation=3,
+        function_ea=0x401000,
+        idb_identity="idb:sample",
+        type_generation="types:7",
+        hexrays_version="9.2",
+        captured_at=123.5,
+        pseudocode="int f() { return 1; }\n",
+        line_count=1,
+        character_count=22,
+        content_sha256="sha256:native",
+    )
+    output = models.D810OutputRef(
+        available=True,
+        fingerprint="sha256:function",
+        path=None,
+        generation=4,
+        function_ea=0x401000,
+        idb_identity="idb:sample",
+        type_generation="types:7",
+        hexrays_version="9.2",
+        captured_at=124.5,
+        pseudocode="int f() { return 2; }\n",
+        line_count=1,
+        character_count=22,
+        content_sha256="sha256:d810",
+        runtime_path="/configs/default_ollvm_v2.json",
+        runtime_pass_ids=("first", "second"),
+        runtime_generation=4,
+    )
+    comparison = models.WorkbenchComparisonSnapshot(
+        function_ea=0x401000,
+        baseline=baseline,
+        d810_output=output,
+        baseline_freshness=models.ArtifactFreshness.CURRENT,
+        d810_freshness=models.ArtifactFreshness.CURRENT,
+        baseline_stale_reasons=(),
+        d810_stale_reasons=(),
+        text_changed=True,
+        metrics=(models.ComparisonMetric("characters", 22, 22, 0),),
+    )
+
+    assert comparison.baseline.idb_identity == comparison.d810_output.idb_identity
+    assert comparison.d810_output.runtime_pass_ids == ("first", "second")
+    assert comparison.metrics[0].delta == 0
+    assert tuple(item.value for item in models.ArtifactFreshness) == (
+        "current",
+        "stale",
+        "missing",
+    )
+    assert not hasattr(comparison, "__dict__")
+    assert comparison.__dataclass_params__.frozen is True
+
+
+def test_extended_comparison_fields_preserve_legacy_four_argument_callers() -> None:
+    baseline = models.BaselineRef(False, None, None, None)
+    output = models.D810OutputRef(False, None, None, None)
+
+    assert baseline.function_ea is None
+    assert baseline.pseudocode is None
+    assert output.runtime_pass_ids == ()
