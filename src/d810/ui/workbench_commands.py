@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from d810.core.provider_phase import provider_phase_snapshot_from_level
 from d810.manager.workbench_models import (
     OutcomeStatus,
@@ -37,19 +39,40 @@ class WorkbenchCommandAdapter:
         self._state = state
         self._idaapi = idaapi_shim
         self._ctx = ctx
+        original_widget = getattr(ctx, "widget", None)
+        get_widget_vdui = getattr(idaapi_shim, "get_widget_vdui", None)
+        vdui = get_widget_vdui(original_widget) if callable(get_widget_vdui) else None
+        stable_widget = getattr(vdui, "ct", None) if vdui is not None else None
+        self._widget = original_widget if stable_widget is None else stable_widget
+
+    def _current_vdui(self) -> object | None:
+        get_widget_vdui = getattr(self._idaapi, "get_widget_vdui", None)
+        if not callable(get_widget_vdui) or self._widget is None:
+            return None
+        return get_widget_vdui(self._widget)
+
+    def _action_context(self) -> object:
+        if self._widget is getattr(self._ctx, "widget", None):
+            return self._ctx
+        return SimpleNamespace(widget=self._widget)
 
     def analyze(
         self,
         request: WorkbenchCommandRequest,
     ) -> WorkbenchCommandResult:
-        widget = getattr(self._ctx, "widget", None)
-        vdui = self._idaapi.get_widget_vdui(widget)
+        vdui = self._current_vdui()
         cfunc = getattr(vdui, "cfunc", None) if vdui is not None else None
         target = getattr(cfunc, "mba", None) if cfunc is not None else None
         if target is None:
             return _failed_result(
                 request,
                 "Analyze requires a current pseudocode function with microcode",
+            )
+        entry_ea = getattr(cfunc, "entry_ea", None)
+        if entry_ea is not None and int(entry_ea) != request.function_ea:
+            return _failed_result(
+                request,
+                "Analyze pseudocode widget now shows a different function",
             )
         provider_level = getattr(target, "maturity", None)
         if provider_level is None:
@@ -78,7 +101,7 @@ class WorkbenchCommandAdapter:
                 self._state,
                 ida_modules={"idaapi": self._idaapi},
             )
-            return action.execute(self._ctx) == 1
+            return action.execute(self._action_context()) == 1
 
         return self._state.execute_workbench_deobfuscate(
             request,
@@ -96,7 +119,7 @@ class WorkbenchCommandAdapter:
                 self._state,
                 ida_modules={"idaapi": self._idaapi},
             )
-            return action.execute(self._ctx) == 1
+            return action.execute(self._action_context()) == 1
 
         return self._state.execute_workbench_function_override(
             request,

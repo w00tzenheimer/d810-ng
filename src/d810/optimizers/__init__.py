@@ -7,4 +7,16 @@ This module provides the foundational components for the d810 optimization syste
 - Centralized optimization manager
 """
 
-__all__ = []
+from d810._vendor.ida_reloader.ida_reloader import Scanner
+
+
+def load_optimizer_registries(*, scanner=Scanner) -> None:
+    """Import every optimizer module so registry-backed hooks are complete."""
+    scanner.scan(
+        __path__,
+        prefix=f"{__name__}.",
+        skip_packages=False,
+    )
+
+
+__all__ = ["load_optimizer_registries"]

@@ -626,17 +626,17 @@ Status: complete through live Docker/XQuartz acceptance on 2026-07-16.
 
 ### Slice 2: scoped workbench interaction (`tcvpu-z1b4`)
 
-Status: terminal-complete through `ea212f738`; live command acceptance pending.
+Status: complete through live Docker/XQuartz command acceptance on 2026-07-16.
 
-- [ ] Prove `Analyze` invokes recon collection only and does not mutate
+- [x] Prove `Analyze` invokes recon collection only and does not mutate
   microcode or start the D810 optimizer.
-- [ ] Prove `Deobfuscate` delegates to the existing manager lifecycle exactly
+- [x] Prove `Deobfuscate` delegates to the existing manager lifecycle exactly
   once.
-- [ ] Prove `Function override` opens and saves through the existing function
+- [x] Prove `Function override` opens and saves through the existing function
   rule/tag/note store; do not create a parallel override database.
-- [ ] Change function/generation during an action and verify stale completion is
+- [x] Change function/generation during an action and verify stale completion is
   rejected and rendered stale.
-- [ ] Restart D810 and verify the saved function override is reused.
+- [x] Restart D810 and verify the saved function override is reused.
 
 ### Slice 3: native decompile comparison (`tcvpu-guv6`)
 
