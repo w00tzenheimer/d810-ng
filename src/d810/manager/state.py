@@ -38,7 +38,11 @@ from d810.manager.project_runtime import (
     clone_runtime_project as clone_runtime_project_command,
     save_legacy_project as save_legacy_project_command,
 )
-from d810.manager.workbench_models import DeobfuscationWorkbenchSnapshot
+from d810.manager.workbench_models import (
+    DeobfuscationWorkbenchSnapshot,
+    WorkbenchCommandRequest,
+    WorkbenchCommandResult,
+)
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
@@ -272,6 +276,41 @@ class D810State(metaclass=SingletonMeta):
             project_snapshot=project_snapshot,
             runtime_project=runtime_project,
             facts=facts,
+        )
+
+    def execute_workbench_analyze(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        target: object,
+        provider_phase: object,
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_analyze(
+            request,
+            target=target,
+            provider_phase=provider_phase,
+        )
+
+    def execute_workbench_deobfuscate(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        lifecycle: typing.Callable[[], bool],
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_deobfuscate(
+            request,
+            lifecycle=lifecycle,
+        )
+
+    def execute_workbench_function_override(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        lifecycle: typing.Callable[[], bool],
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_function_override(
+            request,
+            lifecycle=lifecycle,
         )
 
     def clone_current_runtime_project(
