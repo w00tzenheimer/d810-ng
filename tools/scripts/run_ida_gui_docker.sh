@@ -103,12 +103,12 @@ Safety:
       -t idapro-9.3-speedups:x11-arm64 .
   A /samples/bins/*.i64 argument is copied to the selected checkout's
   .tmp/ida-gui directory. IDA opens the /work copy and cannot modify the source.
-  The canonical witness is /samples/bins/libobfuscated.dll.i64.
+  The canonical witness is /samples/bins/libobfuscated.dll.2026-06-03.i64.
 
 Fresh example:
   run_ida_gui_docker.sh -w truthful-config-v2-project-ui \
     --open-config --open-workbench --function 0x401000 --mcp \
-    -- /samples/bins/libobfuscated.dll.i64
+    -- /samples/bins/libobfuscated.dll.2026-06-03.i64
 
 Existing-session example:
   run_ida_gui_docker.sh -w truthful-config-v2-project-ui \

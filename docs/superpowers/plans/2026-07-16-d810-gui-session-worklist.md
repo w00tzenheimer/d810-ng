@@ -403,12 +403,12 @@ truthy value.
   workbench and rejects an empty request.
 - `audit_document(request, result, context)` returns only JSON-native values.
 
-- [ ] Write failing table-driven tests for the two command names, deterministic
+- [x] Write failing table-driven tests for the two command names, deterministic
   ordering, selectors, timeouts, partial failure, and exact schema-v1 output.
-- [ ] Add immutable models and pure functions without importing IDA, Qt,
+- [x] Add immutable models and pure functions without importing IDA, Qt,
   sqlite3, Docker, or MCP.
-- [ ] Prove unknown command strings and malformed selectors fail closed.
-- [ ] Run:
+- [x] Prove unknown command strings and malformed selectors fail closed.
+- [x] Run:
 
   ```bash
   PYTHONPATH=src pyenv exec python -m pytest \
@@ -435,19 +435,19 @@ truthy value.
   `d810-ng Deobfuscation Workbench`.
 - All IDA work runs on the IDA main thread. No pure module imports IDA.
 
-- [ ] Write failing adapter tests with fake state, function resolver, widget
+- [x] Write failing adapter tests with fake state, function resolver, widget
   registry, action invoker, and main-thread scheduler.
-- [ ] Make config automation reuse `D810GUI.show_windows()`; do not construct a
+- [x] Make config automation reuse `D810GUI.show_windows()`; do not construct a
   second config form.
-- [ ] Make workbench automation reuse the stable Stats action and current
+- [x] Make workbench automation reuse the stable Stats action and current
   workbench singleton; do not duplicate its snapshot/command logic.
-- [ ] Verify success from actual widget state and captured function identity.
-- [ ] Verify a missing plugin state, missing function, Hex-Rays failure,
+- [x] Verify success from actual widget state and captured function identity.
+- [x] Verify a missing plugin state, missing function, Hex-Rays failure,
   action failure, and widget timeout each produce a structured failed result
   without terminating IDA.
-- [ ] Add an AST/source contract proving the adapter imports
+- [x] Add an AST/source contract proving the adapter imports
   `gui_automation_logic` while the pure logic file imports neither IDA nor Qt.
-- [ ] Run:
+- [x] Run:
 
   ```bash
   PYTHONPATH=src pyenv exec python -m pytest \
@@ -471,21 +471,22 @@ truthy value.
 - The launcher writes a validated request JSON below `.tmp/ida-gui`.
 - It passes only `-S/work/tools/scripts/ida_gui_bootstrap.py` to IDA and points
   the bootstrap to the request with `D810_GUI_AUTOMATION_REQUEST`.
-- The bootstrap polls with an IDA timer until `__main__.D810.plugin` is loaded,
+- `D810Plugin.late_init()` starts the existing core state once. The bootstrap
+  then polls with an IDA timer until `__main__.D810.plugin` reports loaded,
   dispatches once, writes the audit atomically, and unregisters itself.
 - The bootstrap never reloads D810 as a side effect of opening a dock.
 
-- [ ] Extend the subprocess harness with failing tests for `--open-config`,
+- [x] Extend the subprocess harness with failing tests for `--open-config`,
   `--open-workbench`, both-command ordering, `--function`, empty commands, and
   exact request/IDA arguments.
-- [ ] Unit-test bootstrap polling, one-shot dispatch, 30-second timeout,
+- [x] Unit-test bootstrap polling, one-shot dispatch, 30-second timeout,
   exception capture, and atomic audit output with fake timer and clock seams.
-- [ ] Parse named flags before `--`; preserve every post-`--` IDA argument.
-- [ ] Reject a caller-provided conflicting `-S` argument when named startup
+- [x] Parse named flags before `--`; preserve every post-`--` IDA argument.
+- [x] Reject a caller-provided conflicting `-S` argument when named startup
   automation is active.
-- [ ] Keep plain launch behavior byte-for-byte compatible when no named command
+- [x] Keep plain launch behavior byte-for-byte compatible when no named command
   is requested.
-- [ ] Run:
+- [x] Run:
 
   ```bash
   PYTHONPATH=src pyenv exec python -m pytest \
@@ -516,18 +517,18 @@ truthy value.
 - Docker publication is exactly
   `-p 127.0.0.1:<host-port>:13337`.
 
-- [ ] Write failing launcher tests proving there is no MCP mount, environment,
+- [x] Write failing launcher tests proving there is no MCP mount, environment,
   or port without `--mcp`.
-- [ ] Write failing tests for the exact read-only plugin mount and loopback
+- [x] Write failing tests for the exact read-only plugin mount and loopback
   publication with `--mcp`.
-- [ ] Reject missing MCP source, invalid ports, duplicate port flags, and MCP
+- [x] Reject missing MCP source, invalid ports, duplicate port flags, and MCP
   flags in `--connect` mode where they do not apply.
-- [ ] Start the server in the bootstrap through the MCP package's public server
+- [x] Start the server in the bootstrap through the MCP package's public server
   initialization path, in its background thread, and record server-start
   success/failure in the audit.
-- [ ] Do not open the MCP configuration dialog and do not expose a generic
+- [x] Do not open the MCP configuration dialog and do not expose a generic
   Python execution flag.
-- [ ] Verify with `docker inspect` that the host binding IP is `127.0.0.1`.
+- [x] Verify with `docker inspect` that the host binding IP is `127.0.0.1`.
 
 ### Task E: Explicit existing-session client
 
@@ -548,17 +549,17 @@ truthy value.
   operation is importing and calling `run_named_commands` with decoded,
   validated request data.
 
-- [ ] Write a local fake HTTP server that captures complete JSON-RPC requests
+- [x] Write a local fake HTTP server that captures complete JSON-RPC requests
   and returns success, tool error, malformed JSON, HTTP failure, and timeout.
-- [ ] Prove the client rejects non-loopback endpoint hosts, endpoint userinfo,
+- [x] Prove the client rejects non-loopback endpoint hosts, endpoint userinfo,
   fragments, unknown commands, and raw post-`--` IDA arguments.
-- [ ] Prove arbitrary selector text remains data and never appears in the
+- [x] Prove arbitrary selector text remains data and never appears in the
   Python source portion of the `py_eval` request.
-- [ ] Decode the MCP structured result, validate it as a D810 automation result,
+- [x] Decode the MCP structured result, validate it as a D810 automation result,
   and write the same schema-v1 audit used by fresh launch.
-- [ ] Return zero only when all requested commands succeed. Do not stop or
+- [x] Return zero only when all requested commands succeed. Do not stop or
   otherwise mutate the MCP server lifecycle.
-- [ ] Run:
+- [x] Run:
 
   ```bash
   PYTHONPATH=src pyenv exec python -m pytest \
@@ -575,14 +576,14 @@ truthy value.
 - Update: `docs/superpowers/plans/2026-07-16-worktree-aware-ida-gui-docker-launcher.md`
 - Update: `.tickets/d81-kcin.md`
 
-- [ ] Make `--help` document fresh launch, `--connect`, `--open-config`,
+- [x] Make `--help` document fresh launch, `--connect`, `--open-config`,
   `--open-workbench`, `--function`, `--mcp`, loopback binding, audit paths, and
   the DLL sample.
-- [ ] Print a launch/connect plan before acting, including selected worktree,
+- [x] Print a launch/connect plan before acting, including selected worktree,
   copied IDB, named commands, function selector, endpoint, and audit path.
-- [ ] Add subprocess contract tests for every help and plan field.
-- [ ] Run the focused GUI automation tests, then the full unit/boundary gates.
-- [ ] Commit automation separately from live visual acceptance so regressions
+- [x] Add subprocess contract tests for every help and plan field.
+- [x] Run the focused GUI automation tests, then the full unit/boundary gates.
+- [x] Commit automation separately from live visual acceptance so regressions
   are bisectable.
 
 ---
@@ -604,7 +605,7 @@ Status: terminal-complete and live config rendering accepted.
 - [x] Make unsafe config-v2 edits read-only and duplication lossless.
 - [x] Fix virtualenv-backed IDAPython Qt detection.
 - [x] Render the live configuration dock without callback errors.
-- [ ] Add the named `--open-config` automation/audit lane before closing the
+- [x] Add the named `--open-config` automation/audit lane before closing the
   ticket so future acceptance is reproducible.
 
 ### Slice 1: read-only workbench (`tcvpu-nyvc`)
