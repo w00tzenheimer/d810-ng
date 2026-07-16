@@ -47,6 +47,7 @@ from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 from d810.hexrays.lifecycle import DecompilationEvent, HEXRAYS_MICROCODE_PROVIDER
+from d810.optimizers import load_optimizer_registries
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
@@ -809,6 +810,7 @@ class D810Manager:
         if self._started:
             self.stop()
         logger.debug("Starting manager...")
+        load_optimizer_registries()
         # Ensure side-effect registrants are loaded before manager construction.
         from d810.optimizers.microcode.instructions.pattern_matching import (  # noqa: F401
             experimental,

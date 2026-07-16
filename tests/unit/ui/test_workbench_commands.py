@@ -96,6 +96,69 @@ def test_analyze_without_current_mba_returns_failed_result() -> None:
     assert result.refresh_requested is False
 
 
+def test_adapter_reacquires_vdui_from_stable_widget_after_action_context_expires() -> (
+    None
+):
+    original_widget = object()
+    stable_widget = object()
+    mba = SimpleNamespace(maturity=5)
+    vdui = SimpleNamespace(
+        ct=stable_widget,
+        cfunc=SimpleNamespace(entry_ea=0x401000, mba=mba),
+    )
+    original_lookups = 0
+    manager_calls: list[object] = []
+
+    def get_widget_vdui(widget):
+        nonlocal original_lookups
+        if widget is stable_widget:
+            return vdui
+        if widget is original_widget:
+            original_lookups += 1
+            return vdui if original_lookups == 1 else None
+        return None
+
+    state = SimpleNamespace(
+        execute_workbench_analyze=lambda request, *, target, provider_phase: (
+            manager_calls.append((target, provider_phase)) or _result(request)
+        )
+    )
+    adapter = command_module.WorkbenchCommandAdapter(
+        state,
+        SimpleNamespace(get_widget_vdui=get_widget_vdui),
+        SimpleNamespace(widget=original_widget),
+    )
+
+    result = adapter.analyze(_request("analyze"))
+
+    assert result.succeeded is True
+    assert manager_calls[0][0] is mba
+    assert adapter._widget is stable_widget
+    assert original_lookups == 1
+
+
+def test_analyze_rejects_widget_that_navigated_to_a_different_function() -> None:
+    mba = SimpleNamespace(maturity=5)
+    vdui = SimpleNamespace(
+        cfunc=SimpleNamespace(entry_ea=0x402000, mba=mba),
+    )
+    state = SimpleNamespace(
+        execute_workbench_analyze=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("manager should not analyze the wrong function")
+        )
+    )
+    adapter = command_module.WorkbenchCommandAdapter(
+        state,
+        SimpleNamespace(get_widget_vdui=lambda widget: vdui),
+        SimpleNamespace(widget=object()),
+    )
+
+    result = adapter.analyze(_request("analyze"))
+
+    assert result.status is OutcomeStatus.FAILED
+    assert "different function" in result.message
+
+
 def test_deobfuscate_reuses_existing_action_exactly_once(monkeypatch) -> None:
     action_calls: list[object] = []
     state_calls: list[object] = []
