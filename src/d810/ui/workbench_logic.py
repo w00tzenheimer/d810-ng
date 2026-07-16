@@ -7,11 +7,14 @@ import enum
 import json
 
 from d810.manager.workbench_models import (
+    ArtifactFreshness,
+    ComparisonMetric,
     DeobfuscationWorkbenchSnapshot,
     OutcomeStatus,
     SnapshotFreshness,
     WorkbenchCommandRequest,
     WorkbenchCommandResult,
+    WorkbenchComparisonSnapshot,
 )
 
 
@@ -48,6 +51,35 @@ class WorkbenchActionState:
     label: str
     enabled: bool
     reason: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ComparisonArtifactView:
+    label: str
+    text: str
+    freshness: ArtifactFreshness
+    status: str
+    reasons: tuple[str, ...]
+    is_current: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ComparisonMetricView:
+    label: str
+    native_value: int
+    d810_value: int
+    delta: int
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ComparisonView:
+    function_ea: int
+    native: ComparisonArtifactView
+    d810: ComparisonArtifactView
+    comparable: bool
+    text_changed: bool | None
+    metrics: tuple[ComparisonMetricView, ...]
+    summary: str
 
 
 _STATUS_PRESENTATIONS = {
@@ -374,6 +406,78 @@ def filter_workbench_rows(
     )
 
 
+def _comparison_artifact_view(
+    *,
+    label: str,
+    text: str | None,
+    available: bool,
+    freshness: ArtifactFreshness,
+    reasons: tuple[str, ...],
+) -> ComparisonArtifactView:
+    is_current = available and freshness is ArtifactFreshness.CURRENT
+    if is_current:
+        status = "Current"
+    elif freshness is ArtifactFreshness.STALE:
+        status = "Stale"
+    else:
+        status = "Missing"
+    return ComparisonArtifactView(
+        label=label,
+        text=text or "",
+        freshness=freshness,
+        status=status,
+        reasons=reasons,
+        is_current=is_current,
+    )
+
+
+def _comparison_metric_view(metric: ComparisonMetric) -> ComparisonMetricView:
+    return ComparisonMetricView(
+        label=metric.name,
+        native_value=metric.native_value,
+        d810_value=metric.d810_value,
+        delta=metric.delta,
+    )
+
+
+def comparison_view(snapshot: WorkbenchComparisonSnapshot) -> ComparisonView:
+    """Project comparison evidence without making a correctness claim."""
+    native = _comparison_artifact_view(
+        label="Native",
+        text=snapshot.baseline.pseudocode,
+        available=snapshot.baseline.available,
+        freshness=snapshot.baseline_freshness,
+        reasons=snapshot.baseline_stale_reasons,
+    )
+    d810 = _comparison_artifact_view(
+        label="D810",
+        text=snapshot.d810_output.pseudocode,
+        available=snapshot.d810_output.available,
+        freshness=snapshot.d810_freshness,
+        reasons=snapshot.d810_stale_reasons,
+    )
+    comparable = native.is_current and d810.is_current
+    if not comparable:
+        summary = "Comparison unavailable until both artifacts are current."
+    elif snapshot.text_changed:
+        summary = "Pseudocode text differs."
+    else:
+        summary = "Pseudocode text matches."
+    return ComparisonView(
+        function_ea=snapshot.function_ea,
+        native=native,
+        d810=d810,
+        comparable=comparable,
+        text_changed=snapshot.text_changed if comparable else None,
+        metrics=(
+            tuple(_comparison_metric_view(metric) for metric in snapshot.metrics)
+            if comparable
+            else ()
+        ),
+        summary=summary,
+    )
+
+
 def action_states(
     snapshot: DeobfuscationWorkbenchSnapshot,
 ) -> tuple[WorkbenchActionState, ...]:
@@ -410,7 +514,7 @@ def action_states(
             override_reason,
         ),
         WorkbenchActionState(
-            "compare", "Compare", False, "Native comparison is delivered in Slice 3."
+            "compare", "Compare", engine_ready, engine_reason
         ),
         WorkbenchActionState(
             "recipe", "Recipe", False, "Recipe composition is delivered in Slice 4."
@@ -497,12 +601,16 @@ def export_evidence_json(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
 
 
 __all__ = [
+    "ComparisonArtifactView",
+    "ComparisonMetricView",
+    "ComparisonView",
     "StatusPresentation",
     "WorkbenchActionState",
     "WorkbenchRow",
     "WorkbenchSection",
     "action_states",
     "command_request",
+    "comparison_view",
     "detail_text",
     "export_evidence_json",
     "filter_workbench_rows",

@@ -7,10 +7,12 @@ import json
 from pathlib import Path
 
 from d810.manager.workbench_models import (
+    ArtifactFreshness,
     ArtifactRef,
     AttackSummary,
     BaselineRef,
     ConsumerOutcomeSnapshot,
+    ComparisonMetric,
     D810OutputRef,
     DeobfuscationWorkbenchSnapshot,
     FunctionRef,
@@ -21,6 +23,7 @@ from d810.manager.workbench_models import (
     SnapshotFreshness,
     StatisticsSummary,
     WorkbenchCommandResult,
+    WorkbenchComparisonSnapshot,
 )
 from d810.ui import workbench_logic as logic
 
@@ -177,7 +180,8 @@ def test_current_started_snapshot_enables_scoped_slice_two_actions() -> None:
     assert states["analyze"].enabled is True
     assert states["deobfuscate"].enabled is True
     assert states["function_override"].enabled is True
-    for action_id in ("compare", "recipe", "diagnostics"):
+    assert states["compare"].enabled is True
+    for action_id in ("recipe", "diagnostics"):
         assert states[action_id].enabled is False
         assert states[action_id].reason
 
@@ -203,6 +207,113 @@ def test_stale_snapshot_marks_pipeline_consumers_and_disables_scoped_actions() -
     assert states["analyze"].enabled is False
     assert states["deobfuscate"].enabled is False
     assert states["function_override"].enabled is False
+    assert states["compare"].enabled is False
+
+
+def _comparison(
+    *,
+    baseline_freshness: ArtifactFreshness = ArtifactFreshness.CURRENT,
+    d810_freshness: ArtifactFreshness = ArtifactFreshness.CURRENT,
+) -> WorkbenchComparisonSnapshot:
+    baseline = BaselineRef(
+        True,
+        "sha256:abc",
+        None,
+        4,
+        function_ea=0x401000,
+        pseudocode="native();\n",
+        line_count=1,
+        character_count=10,
+    )
+    output = D810OutputRef(
+        True,
+        "sha256:abc",
+        None,
+        4,
+        function_ea=0x401000,
+        pseudocode="d810();\n",
+        line_count=1,
+        character_count=8,
+    )
+    baseline_reasons = (
+        ()
+        if baseline_freshness is ArtifactFreshness.CURRENT
+        else ("Type generation changed",)
+    )
+    output_reasons = (
+        ()
+        if d810_freshness is ArtifactFreshness.CURRENT
+        else ("Runtime generation changed",)
+    )
+    return WorkbenchComparisonSnapshot(
+        function_ea=0x401000,
+        baseline=baseline,
+        d810_output=output,
+        baseline_freshness=baseline_freshness,
+        d810_freshness=d810_freshness,
+        baseline_stale_reasons=baseline_reasons,
+        d810_stale_reasons=output_reasons,
+        text_changed=(
+            True
+            if baseline_freshness is ArtifactFreshness.CURRENT
+            and d810_freshness is ArtifactFreshness.CURRENT
+            else None
+        ),
+        metrics=(
+            ComparisonMetric("Lines", 1, 1, 0),
+            ComparisonMetric("Characters", 10, 8, -2),
+        )
+        if baseline_freshness is ArtifactFreshness.CURRENT
+        and d810_freshness is ArtifactFreshness.CURRENT
+        else (),
+    )
+
+
+def test_comparison_view_projects_current_labeled_text_and_metrics() -> None:
+    view = logic.comparison_view(_comparison())
+
+    assert view.comparable is True
+    assert view.native.label == "Native"
+    assert view.native.text == "native();\n"
+    assert view.native.freshness is ArtifactFreshness.CURRENT
+    assert view.d810.label == "D810"
+    assert view.d810.text == "d810();\n"
+    assert view.text_changed is True
+    assert [metric.label for metric in view.metrics] == ["Lines", "Characters"]
+    assert view.metrics[1].delta == -2
+    assert "correct" not in view.summary.casefold()
+
+
+def test_comparison_view_exposes_stale_reasons_and_suppresses_metrics() -> None:
+    view = logic.comparison_view(
+        _comparison(d810_freshness=ArtifactFreshness.STALE)
+    )
+
+    assert view.comparable is False
+    assert view.native.is_current is True
+    assert view.d810.is_current is False
+    assert view.d810.reasons == ("Runtime generation changed",)
+    assert view.metrics == ()
+    assert view.text_changed is None
+    assert "stale" in view.d810.status.casefold()
+
+
+def test_comparison_view_labels_missing_artifact_without_placeholder_truth() -> None:
+    comparison = dataclasses.replace(
+        _comparison(),
+        baseline=BaselineRef(False, None, None, None, function_ea=0x401000),
+        baseline_freshness=ArtifactFreshness.MISSING,
+        baseline_stale_reasons=("Native baseline has not been captured",),
+        text_changed=None,
+        metrics=(),
+    )
+
+    view = logic.comparison_view(comparison)
+
+    assert view.comparable is False
+    assert view.native.text == ""
+    assert view.native.is_current is False
+    assert view.native.reasons == ("Native baseline has not been captured",)
 
 
 def test_command_request_binds_current_function_identity() -> None:
