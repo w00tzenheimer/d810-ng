@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 
 from d810.core.config import ProjectConfiguration
+from d810.core.config_v2_defaults import is_bundled_project_config
 from d810.core.project_config_persistence import (
     ProjectConfigurationWriteError,
     write_project_document_atomically,
@@ -130,6 +131,11 @@ class ConfigV2EditingService:
         destination: pathlib.Path,
     ) -> ConfigV2ProjectDraft:
         source = pathlib.Path(runtime_project.path).resolve()
+        destination_path = pathlib.Path(destination).expanduser().resolve()
+        if is_bundled_project_config(runtime_project) and destination_path == source:
+            raise ConfigV2EditError(
+                "bundled runtime projects cannot be overwritten; choose a user destination"
+            )
         try:
             raw = source.read_bytes()
             document = json.loads(raw.decode("utf-8"))
@@ -142,7 +148,7 @@ class ConfigV2EditingService:
             draft_id=str(uuid.uuid4()),
             revision=0,
             source_path=source,
-            destination_path=pathlib.Path(destination).expanduser().resolve(),
+            destination_path=destination_path,
             source_sha256=hashlib.sha256(raw).hexdigest(),
             original_document_json=canonical,
             document_json=canonical,
@@ -354,7 +360,6 @@ class ConfigV2EditingService:
                 entry = copy.deepcopy(candidates.pop(0))
                 canonical = config.to_dict()
                 entry["options"] = copy.deepcopy(canonical["options"])
-                entry["rules"] = copy.deepcopy(canonical["rules"])
             else:
                 entry = config.to_dict()
             materialized.append(entry)

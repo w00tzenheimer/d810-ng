@@ -54,7 +54,11 @@ from d810.families.state_machine_cff import approov as approov_pipeline
 from d810.families.state_machine_cff import tigress as tigress_pipeline
 from d810.families.state_machine_cff import ApproovFamily
 from d810.families.state_machine_cff import TigressFamily
-from d810.families.registry import select_family, registered_families
+from d810.families.registry import (
+    effective_family_selection_config,
+    registered_families,
+    select_family,
+)
 from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.ir.maturity import IRMaturity
@@ -2691,6 +2695,23 @@ def test_select_family_default_empty_policy_is_registration_order(monkeypatch):
     monkeypatch.setattr("d810.families.registry.registered_families", lambda: (a, b))
     assert select_family("G", project_config=None) is a
     assert select_family("G", project_config={}) is a
+
+
+def test_effective_family_selection_config_preserves_rule_options_and_project_policy():
+    assert effective_family_selection_config(
+        project_config={
+            "pipeline_v2_mode": "config-v2",
+            "router_resolution": {"require": "tigress"},
+        },
+        rule_config={
+            "recovery_engine": "reduced_product",
+            "router_resolution": {"require": "hodur"},
+        },
+    ) == {
+        "recovery_engine": "reduced_product",
+        "pipeline_v2_mode": "config-v2",
+        "router_resolution": {"require": "tigress"},
+    }
 
 
 def test_select_family_require_restricts_to_named_family(monkeypatch):

@@ -31,6 +31,26 @@ def _calls(node: ast.AST) -> set[str]:
     return result
 
 
+def _assigned_strings(path: Path, name: str) -> set[str]:
+    for node in _tree(path).body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in node.targets
+        ):
+            continue
+        value = node.value
+        if isinstance(value, ast.Call) and value.args:
+            value = value.args[0]
+        return {
+            item.value
+            for item in ast.walk(value)
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        }
+    raise AssertionError(f"{name} not found")
+
+
 def test_manager_owns_config_v2_editor_and_exposes_structured_operations():
     path = _ROOT / "src/d810/manager/manager.py"
     assert "ConfigV2EditingService" in _calls(_method(path, "D810Manager", "__post_init__"))
@@ -61,3 +81,31 @@ def test_state_save_registers_and_reloads_through_normal_project_lifecycle():
     assert "add_project" in calls
     assert "update_project" in calls
     assert "load_project" in calls
+
+
+def test_live_block_optimizer_retains_router_resolution_project_config():
+    path = _ROOT / "src/d810/hexrays/hooks/optblock_adapter.py"
+
+    assert "router_resolution" in _assigned_strings(path, "_PROJECT_CONFIG_KEYS")
+
+
+def test_live_unflattener_merges_project_policy_before_family_selection():
+    path = (
+        _ROOT
+        / "src/d810/optimizers/microcode/flow/flattening/state_machine_cff_unflattener.py"
+    )
+    method = _method(path, "StateMachineCffUnflattener", "run_state_machine_unflatten")
+
+    assert "effective_family_selection_config" in _calls(method)
+    select_calls = [
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_select_family"
+    ]
+    assert len(select_calls) == 1
+    assert any(
+        isinstance(argument, ast.Name) and argument.id == "family_config"
+        for argument in select_calls[0].args
+    )
