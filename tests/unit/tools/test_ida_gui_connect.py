@@ -120,6 +120,15 @@ class _FakeMcpHandler(BaseHTTPRequestHandler):
         ):
             self._write(200, b"{")
             return
+        if request["method"] == "tools/call" and self.server.scenario == "slow-header":
+            try:
+                self.connection.sendall(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+                for _ in range(20):
+                    self.connection.sendall(b"x")
+                    time.sleep(0.02)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            return
         if (
             request["method"] == "initialize"
             and self.server.scenario == "duplicate-key"
@@ -133,6 +142,28 @@ class _FakeMcpHandler(BaseHTTPRequestHandler):
             self._write(
                 200,
                 b'{"jsonrpc":"2.0","id":1,"result":{"value":NaN}}',
+            )
+            return
+        if request["method"] == "initialize" and self.server.scenario in (
+            "positive-overflow",
+            "negative-overflow",
+        ):
+            number = (
+                b"1e400" if self.server.scenario == "positive-overflow" else b"-1e400"
+            )
+            self._write(
+                200,
+                b'{"jsonrpc":"2.0","id":1,"result":'
+                b'{"protocolVersion":"2025-06-18","capabilities":{"value":'
+                + number
+                + b'},"serverInfo":{"name":"fake-ida","version":"1"}}}',
+            )
+            return
+        if request["method"] == "initialize" and self.server.scenario == "deep-json":
+            nested = b"[" * 10_000 + b"0" + b"]" * 10_000
+            self._write(
+                200,
+                b'{"jsonrpc":"2.0","id":1,"result":' + nested + b"}",
             )
             return
 
@@ -462,6 +493,46 @@ def test_localhost_connection_uses_resolved_numeric_endpoint_but_audits_original
     assert audit["mcp_endpoint"] == endpoint
 
 
+def test_blocking_localhost_resolver_is_bounded_by_the_overall_deadline(
+    tmp_path: Path,
+) -> None:
+    connector = _connector()
+    release = threading.Event()
+    finished = threading.Event()
+    calls = 0
+
+    def resolver(host: str, port: int, *, type: int) -> list[tuple[object, ...]]:
+        nonlocal calls
+        calls += 1
+        assert (host, type) == ("localhost", socket.SOCK_STREAM)
+        try:
+            release.wait(timeout=0.35)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+        finally:
+            finished.set()
+
+    started = time.monotonic()
+    try:
+        with _fake_server() as server:
+            with pytest.raises(connector.McpClientError, match="resolution timed out"):
+                connector.connect_named_commands(
+                    _request(),
+                    endpoint=f"http://localhost:{server.server_port}/mcp",
+                    worktree=tmp_path,
+                    audit_dir=tmp_path / ".tmp" / "ida-gui",
+                    http_timeout=0.08,
+                    resolver=resolver,
+                )
+            assert server.requests == []
+    finally:
+        release.set()
+    elapsed = time.monotonic() - started
+
+    assert finished.wait(timeout=0.25)
+    assert elapsed < 0.25
+    assert calls == 1
+
+
 @pytest.mark.parametrize(
     "endpoint",
     (
@@ -559,6 +630,31 @@ def test_slow_drip_response_cannot_extend_rpc_past_total_deadline(
     ]
 
 
+def test_slow_incomplete_response_headers_cannot_extend_overall_deadline(
+    tmp_path: Path,
+) -> None:
+    connector = _connector()
+    started = time.monotonic()
+    with _fake_server("slow-header") as server:
+        with pytest.raises(connector.McpClientError, match="timed out"):
+            connector.connect_named_commands(
+                _request(),
+                endpoint=_endpoint(server),
+                worktree=tmp_path,
+                audit_dir=tmp_path / ".tmp" / "ida-gui",
+                http_timeout=0.08,
+            )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.25
+    assert [item["method"] for item in server.requests] == [
+        "initialize",
+        "ping",
+        "tools/call",
+    ]
+    assert [item["method"] for item in server.requests].count("tools/call") == 1
+
+
 @pytest.mark.parametrize("scenario", ("boolean-id", "float-id"))
 def test_response_id_must_be_an_exact_builtin_integer(
     tmp_path: Path,
@@ -612,6 +708,42 @@ def test_response_json_rejects_duplicate_keys_and_non_finite_numbers(
 ) -> None:
     connector = _connector()
     with _fake_server(scenario) as server:
+        with pytest.raises(connector.McpClientError, match="not valid JSON"):
+            connector.connect_named_commands(
+                _request(),
+                endpoint=_endpoint(server),
+                worktree=tmp_path,
+                audit_dir=tmp_path / ".tmp" / "ida-gui",
+                http_timeout=0.5,
+            )
+
+    assert [item["method"] for item in server.requests] == ["initialize"]
+
+
+@pytest.mark.parametrize("scenario", ("positive-overflow", "negative-overflow"))
+def test_response_json_rejects_exponent_overflow_as_non_finite(
+    tmp_path: Path,
+    scenario: str,
+) -> None:
+    connector = _connector()
+    with _fake_server(scenario) as server:
+        with pytest.raises(connector.McpClientError, match="non-finite JSON number"):
+            connector.connect_named_commands(
+                _request(),
+                endpoint=_endpoint(server),
+                worktree=tmp_path,
+                audit_dir=tmp_path / ".tmp" / "ida-gui",
+                http_timeout=0.5,
+            )
+
+    assert [item["method"] for item in server.requests] == ["initialize"]
+
+
+def test_deeply_nested_response_json_is_normalized_as_a_client_error(
+    tmp_path: Path,
+) -> None:
+    connector = _connector()
+    with _fake_server("deep-json") as server:
         with pytest.raises(connector.McpClientError, match="not valid JSON"):
             connector.connect_named_commands(
                 _request(),

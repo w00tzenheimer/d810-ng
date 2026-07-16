@@ -9,12 +9,14 @@ import datetime
 import http.client
 import ipaddress
 import json
+import math
 import os
 import pathlib
 import secrets
 import socket
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
@@ -80,6 +82,51 @@ _ConnectionFactory = Callable[..., http.client.HTTPConnection]
 _Clock = Callable[[], float]
 
 
+def _run_with_deadline(
+    operation: Callable[[], object],
+    *,
+    deadline: float,
+    clock: _Clock,
+    timeout_message: str,
+    cancel: Callable[[], None] | None = None,
+) -> object:
+    """Bound one blocking standard-library operation by an absolute deadline."""
+    completed = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            outcome["value"] = operation()
+        except BaseException as exc:
+            outcome["error"] = exc
+        finally:
+            completed.set()
+
+    remaining = deadline - clock()
+    if remaining <= 0:
+        raise McpClientError(timeout_message)
+    worker = threading.Thread(target=run, daemon=True, name="d810-mcp-deadline")
+    worker.start()
+    if not completed.wait(timeout=remaining):
+        if cancel is not None:
+            try:
+                cancel()
+            except OSError:
+                pass
+        raise McpClientError(timeout_message)
+    if clock() >= deadline:
+        if cancel is not None:
+            try:
+                cancel()
+            except OSError:
+                pass
+        raise McpClientError(timeout_message)
+    error = outcome.get("error")
+    if isinstance(error, BaseException):
+        raise error
+    return outcome.get("value")
+
+
 def _parse_endpoint(endpoint: str) -> urllib.parse.SplitResult:
     if type(endpoint) is not str:
         raise TypeError("MCP endpoint must be a string")
@@ -127,6 +174,8 @@ def resolve_endpoint(
     endpoint: str,
     *,
     resolver: _Resolver = socket.getaddrinfo,
+    deadline: float | None = None,
+    clock: _Clock = time.monotonic,
 ) -> str:
     """Pin a localhost endpoint once and return a canonical numeric URL."""
     parsed = _parse_endpoint(endpoint)
@@ -145,7 +194,17 @@ def resolve_endpoint(
             raise McpClientError("MCP endpoint host is not an approved loopback")
         port = parsed.port if parsed.port is not None else 80
         try:
-            answers = resolver(host, port, type=socket.SOCK_STREAM)
+            if deadline is None:
+                answers = resolver(host, port, type=socket.SOCK_STREAM)
+            else:
+                answers = _run_with_deadline(
+                    lambda: resolver(host, port, type=socket.SOCK_STREAM),
+                    deadline=deadline,
+                    clock=clock,
+                    timeout_message="MCP endpoint resolution timed out",
+                )
+            if not isinstance(answers, Sequence):
+                raise TypeError("resolver did not return an address sequence")
             candidates: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
             for answer in answers:
                 family = answer[0]
@@ -206,6 +265,13 @@ def _reject_json_constant(value: str) -> object:
     raise ValueError(f"non-finite JSON number: {value}")
 
 
+def _strict_json_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"non-finite JSON number: {value}")
+    return number
+
+
 def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
@@ -223,8 +289,9 @@ def _load_json(content: bytes | str, description: str) -> object:
             content,
             object_pairs_hook=_strict_object,
             parse_constant=_reject_json_constant,
+            parse_float=_strict_json_float,
         )
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (RecursionError, UnicodeDecodeError, ValueError) as exc:
         raise McpClientError(f"{description} is not valid JSON: {exc}") from exc
 
 
@@ -232,7 +299,8 @@ def _post_json(
     endpoint: str,
     document: dict[str, object],
     *,
-    timeout: float,
+    timeout: float | None = None,
+    deadline: float | None = None,
     connection_factory: _ConnectionFactory = http.client.HTTPConnection,
     clock: _Clock = time.monotonic,
 ) -> bytes:
@@ -252,80 +320,135 @@ def _post_json(
     except (TypeError, ValueError) as exc:
         raise McpClientError(f"MCP {method} transport URL is invalid: {exc}") from exc
 
-    deadline = clock() + timeout
-    connection: http.client.HTTPConnection | None = None
-    response: http.client.HTTPResponse | None = None
+    if deadline is None:
+        if timeout is None:
+            raise TypeError("MCP request requires a timeout or absolute deadline")
+        deadline = clock() + timeout
+    elif timeout is not None:
+        raise TypeError("MCP request accepts only one deadline source")
+
+    holder_lock = threading.Lock()
+    holder: dict[str, object] = {}
+    cancelled = threading.Event()
 
     def set_remaining_timeout(transport: socket.socket) -> None:
+        if cancelled.is_set():
+            raise McpClientError(f"MCP {method} timed out")
         remaining = deadline - clock()
         if remaining <= 0:
             raise McpClientError(f"MCP {method} timed out")
         transport.settimeout(remaining)
 
-    try:
-        remaining = deadline - clock()
-        if remaining <= 0:
-            raise McpClientError(f"MCP {method} timed out")
-        connection = connection_factory(
-            host,
-            port,
-            timeout=remaining,
-        )
-        connection.connect()
-        transport = connection.sock
-        if transport is None:
-            raise McpClientError(f"MCP request failed during {method}: no socket")
+    def cancel() -> None:
+        cancelled.set()
+        with holder_lock:
+            transport = holder.get("transport")
+            connection = holder.get("connection")
+        shutdown = getattr(transport, "shutdown", None)
+        if callable(shutdown):
+            try:
+                shutdown(socket.SHUT_RDWR)
+            except (OSError, ValueError):
+                pass
+        close_transport = getattr(transport, "close", None)
+        if callable(close_transport):
+            try:
+                close_transport()
+            except (OSError, ValueError):
+                pass
+        close_connection = getattr(connection, "close", None)
+        if callable(close_connection):
+            try:
+                close_connection()
+            except (OSError, ValueError):
+                pass
 
-        set_remaining_timeout(transport)
-        connection.request(
-            "POST",
-            parsed.path,
-            body=body,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
-        )
-        set_remaining_timeout(transport)
-        response = connection.getresponse()
-        set_remaining_timeout(transport)
-        status = response.status
-        if status != 200:
-            raise McpClientError(f"MCP {method} failed with HTTP {status}")
-
-        content_parts: list[bytes] = []
-        content_size = 0
-        while not response.isclosed():
-            set_remaining_timeout(transport)
-            chunk = response.read1(
-                min(64 * 1024, MAX_RESPONSE_BYTES + 1 - content_size)
-            )
-            if clock() >= deadline:
+    def exchange() -> object:
+        connection: http.client.HTTPConnection | None = None
+        response: http.client.HTTPResponse | None = None
+        try:
+            remaining = deadline - clock()
+            if remaining <= 0:
                 raise McpClientError(f"MCP {method} timed out")
-            if not chunk:
-                break
-            content_parts.append(chunk)
-            content_size += len(chunk)
-            if content_size > MAX_RESPONSE_BYTES:
-                raise McpClientError(f"MCP {method} response exceeds size limit")
-        return b"".join(content_parts)
-    except McpClientError:
-        raise
-    except (TimeoutError, socket.timeout) as exc:
-        raise McpClientError(f"MCP {method} timed out") from exc
-    except (http.client.HTTPException, OSError, UnicodeError, ValueError) as exc:
-        raise McpClientError(f"MCP request failed during {method}: {exc}") from exc
-    finally:
-        if response is not None:
-            try:
-                response.close()
-            except OSError:
-                pass
-        if connection is not None:
-            try:
-                connection.close()
-            except OSError:
-                pass
+            connection = connection_factory(
+                host,
+                port,
+                timeout=remaining,
+            )
+            with holder_lock:
+                holder["connection"] = connection
+            if cancelled.is_set():
+                raise McpClientError(f"MCP {method} timed out")
+            connection.connect()
+            transport = connection.sock
+            if transport is None:
+                raise McpClientError(f"MCP request failed during {method}: no socket")
+            with holder_lock:
+                holder["transport"] = transport
+
+            set_remaining_timeout(transport)
+            connection.request(
+                "POST",
+                parsed.path,
+                body=body,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+            )
+            set_remaining_timeout(transport)
+            response = connection.getresponse()
+            set_remaining_timeout(transport)
+            status = response.status
+            if status != 200:
+                raise McpClientError(f"MCP {method} failed with HTTP {status}")
+
+            content_parts: list[bytes] = []
+            content_size = 0
+            while not response.isclosed():
+                set_remaining_timeout(transport)
+                chunk = response.read1(
+                    min(64 * 1024, MAX_RESPONSE_BYTES + 1 - content_size)
+                )
+                if clock() >= deadline:
+                    raise McpClientError(f"MCP {method} timed out")
+                if not chunk:
+                    break
+                content_parts.append(chunk)
+                content_size += len(chunk)
+                if content_size > MAX_RESPONSE_BYTES:
+                    raise McpClientError(f"MCP {method} response exceeds size limit")
+            return b"".join(content_parts)
+        except McpClientError:
+            raise
+        except (TimeoutError, socket.timeout) as exc:
+            raise McpClientError(f"MCP {method} timed out") from exc
+        except (http.client.HTTPException, OSError, UnicodeError, ValueError) as exc:
+            raise McpClientError(f"MCP request failed during {method}: {exc}") from exc
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except OSError:
+                    pass
+            if connection is not None:
+                try:
+                    connection.close()
+                except OSError:
+                    pass
+            with holder_lock:
+                holder.clear()
+
+    content = _run_with_deadline(
+        exchange,
+        deadline=deadline,
+        clock=clock,
+        timeout_message=f"MCP {method} timed out",
+        cancel=cancel,
+    )
+    if not isinstance(content, bytes):
+        raise McpClientError(f"MCP {method} response body is invalid")
+    return content
 
 
 def _rpc_call(
@@ -334,7 +457,7 @@ def _rpc_call(
     method: str,
     *,
     params: dict[str, object] | None,
-    timeout: float,
+    deadline: float,
     connection_factory: _ConnectionFactory = http.client.HTTPConnection,
     clock: _Clock = time.monotonic,
 ) -> object:
@@ -348,7 +471,7 @@ def _rpc_call(
     raw_response = _post_json(
         endpoint,
         document,
-        timeout=timeout,
+        deadline=deadline,
         connection_factory=connection_factory,
         clock=clock,
     )
@@ -561,7 +684,13 @@ def connect_named_commands(
     expected_audit_dir = resolved_worktree / ".tmp" / "ida-gui"
     if resolved_audit_dir != expected_audit_dir:
         raise ValueError("audit directory must be the worktree .tmp/ida-gui path")
-    transport_endpoint = resolve_endpoint(endpoint, resolver=resolver)
+    deadline = clock() + float(http_timeout)
+    transport_endpoint = resolve_endpoint(
+        endpoint,
+        resolver=resolver,
+        deadline=deadline,
+        clock=clock,
+    )
 
     initialize = _rpc_call(
         transport_endpoint,
@@ -572,7 +701,7 @@ def connect_named_commands(
             "capabilities": {},
             "clientInfo": {"name": "d810-gui-connect", "version": "1"},
         },
-        timeout=float(http_timeout),
+        deadline=deadline,
         connection_factory=connection_factory,
         clock=clock,
     )
@@ -585,7 +714,7 @@ def connect_named_commands(
         2,
         "ping",
         params=None,
-        timeout=float(http_timeout),
+        deadline=deadline,
         connection_factory=connection_factory,
         clock=clock,
     )
@@ -599,7 +728,7 @@ def connect_named_commands(
             "name": "py_eval",
             "arguments": {"code": build_remote_code(request)},
         },
-        timeout=float(http_timeout),
+        deadline=deadline,
         connection_factory=connection_factory,
         clock=clock,
     )
