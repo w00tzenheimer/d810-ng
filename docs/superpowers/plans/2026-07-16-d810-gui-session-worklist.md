@@ -610,19 +610,19 @@ Status: terminal-complete and live config rendering accepted.
 
 ### Slice 1: read-only workbench (`tcvpu-nyvc`)
 
-Status: terminal-complete through `3667b9245`; live acceptance pending.
+Status: complete through live Docker/XQuartz acceptance on 2026-07-16.
 
-- [ ] Launch with `--open-workbench --function FUNCTION_NAME_OR_EA` and verify
+- [x] Launch with `--open-workbench --function FUNCTION_NAME_OR_EA` and verify
   the dock opens on the requested function.
-- [ ] Verify function name/EA, source/runtime project, attack summary, ordered
+- [x] Verify function name/EA, source/runtime project, attack summary, ordered
   stages, outcomes, rule scope, statistics, and artifacts are truthful.
-- [ ] Verify filtering, row selection, details, refresh, function following,
+- [x] Verify filtering, row selection, details, refresh, function following,
   theme readability, and dock restoration.
-- [ ] Export evidence and compare it byte-for-byte with the pure deterministic
+- [x] Export evidence and compare it byte-for-byte with the pure deterministic
   exporter output.
-- [ ] Close/reopen the dock and verify singleton recreation has no stale Qt
+- [x] Close/reopen the dock and verify singleton recreation has no stale Qt
   references or shutdown crash.
-- [ ] Capture an X11 screenshot plus the automation audit artifact.
+- [x] Capture an X11 screenshot plus the automation audit artifact.
 
 ### Slice 2: scoped workbench interaction (`tcvpu-z1b4`)
 

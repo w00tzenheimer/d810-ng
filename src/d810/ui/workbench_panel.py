@@ -46,7 +46,6 @@ if IDA_AVAILABLE:
         except AttributeError:
             return int(QtCore.Qt.UserRole)
 
-
     class DeobfuscationWorkbenchPanel(ida_kernwin.PluginForm):
         """Persistent native dock that renders manager-owned snapshots."""
 
@@ -172,11 +171,27 @@ if IDA_AVAILABLE:
             try:
                 self.filter_edit.textChanged.disconnect()
                 self.tree.selectionModel().selectionChanged.disconnect()
-                for button in self.action_buttons.values():
-                    button.clicked.disconnect()
+                for action_id in (
+                    "refresh",
+                    "export",
+                    "analyze",
+                    "deobfuscate",
+                    "function_override",
+                ):
+                    self.action_buttons[action_id].clicked.disconnect()
             except (RuntimeError, TypeError):
                 pass
             self.parent = None
+
+        def close(self) -> None:
+            """Close the owned dock before its action module is unloaded."""
+            if self._closed:
+                return
+            self._closed = True
+            if self.GetWidget() is None:
+                self.parent = None
+                return
+            self.Close(ida_kernwin.PluginForm.WCLS_SAVE)
 
         def Show(self) -> bool:
             return ida_kernwin.PluginForm.Show(
@@ -305,8 +320,11 @@ if IDA_AVAILABLE:
                 f"Function: {function_name} @ 0x{snapshot.function.ea:X} "
                 f"(generation {snapshot.generation})"
             )
-            routed = " routed from " + snapshot.runtime.source_name \
-                if snapshot.runtime.routed else ""
+            routed = (
+                " routed from " + snapshot.runtime.source_name
+                if snapshot.runtime.routed
+                else ""
+            )
             self.runtime_label.setText(
                 f"Runtime: {snapshot.runtime.runtime_name}{routed} "
                 f"[{snapshot.runtime.mode}]"
@@ -418,7 +436,6 @@ if IDA_AVAILABLE:
             except OSError as exc:
                 logger.warning("Failed to export workbench evidence: %s", exc)
                 ida_kernwin.warning(f"Failed to export workbench evidence: {exc}")
-
 
 else:
 

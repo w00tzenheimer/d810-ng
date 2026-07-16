@@ -3,6 +3,7 @@
 Verifies that all 8 actions are properly migrated to the new framework
 and registered in the D810ActionHandler registry.
 """
+
 from __future__ import annotations
 
 import sys
@@ -189,3 +190,24 @@ def test_stats_compatibility_action_opens_evidence_focused_workbench(
     assert second is not first
     assert len(created) == 2
     DeobfuscationStats._panel = None
+
+
+def test_stats_action_teardown_closes_and_releases_workbench_panel() -> None:
+    class FakePanel:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    panel = FakePanel()
+    state = SimpleNamespace(manager=object())
+    action = DeobfuscationStats(state, ida_modules={})
+    DeobfuscationStats._panel = panel
+
+    action.term()
+
+    assert panel.close_calls == 1
+    assert DeobfuscationStats._panel is None
+    action.term()
+    assert panel.close_calls == 1
