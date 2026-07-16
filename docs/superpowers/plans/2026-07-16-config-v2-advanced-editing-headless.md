@@ -47,3 +47,26 @@ action enablement; Qt remains deferred.
 ### Task 6: Enable project-profile action through pure UI logic
 
 ### Task 7: Run focused/full tests, architecture gates, and graph refresh
+
+## Implementation evidence (2026-07-15)
+
+The headless Slice 5 workflow is implemented. A manager-owned immutable editor
+supports only the declared description, ordered registered-pass selection,
+per-pass rule selection, and routing serializers. It preserves unknown document,
+migration, pass, rule, contract, and option fields; rejects bundled in-place
+overwrites; validates the complete config-v2 pipeline and live activation; saves
+through validated temporary reload plus atomic replace; and reloads through the
+normal state lifecycle. Pure UI logic enables project-profile save only for a
+current valid draft.
+
+The live routing seam is also connected: `router_resolution` now survives the
+block-manager project-config allowlist, and family selection merges rule-local
+options with project-level routing policy taking precedence. This retains
+options such as `recovery_engine` while applying `prefer`, `require`, and `deny`.
+
+Fresh focused verification completed with `164 passed`; the full unit suite
+completed with `5891 passed, 29 skipped, 9 warnings, 162 subtests passed`.
+`sg scan`, `lint-imports`, and `git diff --check` were clean.
+
+Open boundary: Qt field editors and live IDA save/reload acceptance remain
+deferred. The ticket stays open until that adapter work is performed.

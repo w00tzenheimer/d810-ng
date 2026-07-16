@@ -18,3 +18,9 @@ Plan and execute selected/bulk snapshot and database cleanup with active-session
 
 Supports selected snapshots, delete all snapshots in one database, keep latest N, older-than, selected databases, all closed databases, and vacuum; active databases are skipped; unknown snapshot-owned tables fail closed; dependent rows delete by exact snapshot ID with parent last in one rollback-safe transaction; quarantine and vacuum outcomes are explicit; temporary SQLite fixture coverage passes.
 
+## Implementation status (2026-07-15)
+
+All headless cleanup scopes are implemented with active-path/TOCTOU protection,
+schema-owned exact deletion, rollback and integrity checks, separate WAL/vacuum
+outcomes, and reversible database/sidecar quarantine. The ticket remains open
+for the deferred Qt confirmations and live IDA acceptance.
