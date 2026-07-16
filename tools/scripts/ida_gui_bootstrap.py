@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime
 import importlib
-import importlib.util
 import json
 import os
 import pathlib
@@ -18,11 +17,9 @@ from d810.ui import gui_automation_logic as gui_logic
 
 
 POLL_INTERVAL_MS = 250
-MCP_ENTRY_PATH = pathlib.Path(
-    "/root/.idapro/plugins/ida-pro-mcp/src/ida_pro_mcp/ida_mcp.py"
-)
+MCP_PACKAGE_PATH = pathlib.Path("/root/.idapro/plugins/ida-pro-mcp/src/ida_pro_mcp")
 _MCP_ENDPOINT_PATTERN = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})/mcp\Z")
-_D810_MCP_PLUGIN: object | None = None
+_D810_MCP_SERVER: object | None = None
 
 
 class BootstrapRuntime:
@@ -338,7 +335,7 @@ def _live_dispatch(
 
 
 def _live_mcp_running() -> bool:
-    server = getattr(_D810_MCP_PLUGIN, "mcp", None)
+    server = _D810_MCP_SERVER
     if server is None:
         loaded_package = sys.modules.get("ida_mcp")
         server = getattr(loaded_package, "MCP_SERVER", None)
@@ -346,28 +343,23 @@ def _live_mcp_running() -> bool:
 
 
 def _live_start_mcp() -> None:
-    global _D810_MCP_PLUGIN
+    global _D810_MCP_SERVER
     if _live_mcp_running():
         return
 
-    plugin_package_path = str(MCP_ENTRY_PATH.parent)
+    plugin_package_path = str(MCP_PACKAGE_PATH)
     if plugin_package_path not in sys.path:
         sys.path.insert(0, plugin_package_path)
-    spec = importlib.util.spec_from_file_location(
-        "_d810_ida_pro_mcp_entry",
-        MCP_ENTRY_PATH,
+    package = importlib.import_module("ida_mcp")
+    server = package.MCP_SERVER
+    package.init_caches()
+    server.serve(
+        os.environ.get("IDA_MCP_HOST", "127.0.0.1"),
+        int(os.environ.get("IDA_MCP_PORT", "13337"), 10),
+        background=True,
+        request_handler=package.IdaMcpHttpRequestHandler,
     )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load MCP plugin entry point: {MCP_ENTRY_PATH}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    plugin_entry = getattr(module, "PLUGIN_ENTRY", None)
-    if not callable(plugin_entry):
-        raise RuntimeError("MCP plugin has no callable PLUGIN_ENTRY")
-    plugin = plugin_entry()
-    plugin.init()
-    plugin.start_server()
-    _D810_MCP_PLUGIN = plugin
+    _D810_MCP_SERVER = server
 
 
 def _utc_now() -> str:

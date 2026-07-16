@@ -349,6 +349,59 @@ def test_live_running_probe_reuses_server_started_by_loaded_mcp_plugin() -> None
             bootstrap.sys.modules["ida_mcp"] = previous
 
 
+def test_live_mcp_start_uses_retained_headless_package_without_plugin_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bootstrap = _bootstrap()
+    events: list[object] = []
+
+    class FakeServer:
+        def __init__(self) -> None:
+            self._running = False
+
+        def serve(self, host: str, port: int, **kwargs: object) -> None:
+            events.append(("serve", host, port, kwargs))
+            self._running = True
+
+    server = FakeServer()
+    handler = type("IdaMcpHttpRequestHandler", (), {})
+    package = ModuleType("ida_mcp")
+    package.MCP_SERVER = server
+    package.IdaMcpHttpRequestHandler = handler
+    package.init_caches = lambda: events.append("init-caches")
+    package.PLUGIN_ENTRY = lambda: pytest.fail("plugin entry must not be used")
+    package.unload_package = lambda _name: pytest.fail("package must not be unloaded")
+
+    def import_package(name: str) -> ModuleType:
+        events.append(("import", name))
+        assert name == "ida_mcp"
+        return package
+
+    monkeypatch.setattr(bootstrap.importlib, "import_module", import_package)
+    monkeypatch.setattr(bootstrap.sys, "path", list(bootstrap.sys.path))
+    monkeypatch.setenv("IDA_MCP_HOST", "0.0.0.0")
+    monkeypatch.setenv("IDA_MCP_PORT", "13337")
+
+    bootstrap._live_start_mcp()
+    bootstrap._live_start_mcp()
+
+    assert events == [
+        ("import", "ida_mcp"),
+        "init-caches",
+        (
+            "serve",
+            "0.0.0.0",
+            13337,
+            {
+                "background": True,
+                "request_handler": handler,
+            },
+        ),
+    ]
+    assert bootstrap._D810_MCP_SERVER is server
+    assert bootstrap._live_mcp_running() is True
+
+
 def test_mcp_start_exception_is_a_terminal_failure_without_dispatch() -> None:
     bootstrap = _bootstrap()
     session, timer, filesystem = _session(
@@ -423,12 +476,16 @@ def test_mcp_endpoint_intent_is_strictly_loopback_http(endpoint: object) -> None
         )
 
 
-def test_live_mcp_path_uses_public_background_server_without_dialog_or_stop() -> None:
+def test_live_mcp_path_uses_headless_package_without_plugin_lifecycle() -> None:
     source = BOOTSTRAP_PATH.read_text(encoding="utf-8")
 
-    assert "PLUGIN_ENTRY" in source
-    assert ".init()" in source
-    assert ".start_server()" in source
+    assert 'importlib.import_module("ida_mcp")' in source
+    assert ".init_caches()" in source
+    assert ".serve(" in source
+    assert "PLUGIN_ENTRY" not in source
+    assert "plugin.init()" not in source
+    assert "plugin.start_server()" not in source
+    assert "unload_package" not in source
     assert "McpConfigDialog" not in source
     assert "run_plugin" not in source
     assert "stop_server" not in source
