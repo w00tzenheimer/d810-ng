@@ -8,6 +8,12 @@
 
 **Tech Stack:** Bash 3.2-compatible arrays, Docker Desktop, XQuartz, pytest, Python `subprocess` and `pathlib`.
 
+## Execution correction
+
+Live acceptance disproved the original whole-`~/.idapro` mount: it shadowed the image's Linux `ida.reg` with the host macOS registry and made IDAPython report that `Python3TargetDLL` was not configured. The implemented launcher therefore mounts only `cfg/d810` and the configured D810 log directory, preserving function overrides and diagnostic databases without replacing the container runtime registry.
+
+The final safety contract also mounts canonical `samples/bins` read-only and copies a `/samples/bins/*.i64` argument into the selected worktree's `.tmp/ida-gui/` directory before launch. IDA receives the `/work` copy even when options precede the database. The focused contract suite grew from ten to eleven tests to cover this behavior plus the compatible `-l`, memory, debug, diagnostic snapshot, fact-lifecycle, and `D810_*` forwarding seams from `run_system_tests_docker.sh`.
+
 ## Global Constraints
 
 - Implement on `diff/truthful-config-v2-project-ui` in `/Users/mahmoud/src/idapro/d810/.worktrees/truthful-config-v2-project-ui`.

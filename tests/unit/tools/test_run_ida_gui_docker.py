@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -61,6 +62,14 @@ def _run(
     ida_user = tmp_path / "ida-user"
     ida_user.mkdir()
     (ida_user / "idapro.hexlic").write_text("license", encoding="utf-8")
+    d810_config = ida_user / "cfg" / "d810"
+    d810_config.mkdir(parents=True)
+    d810_logs = ida_user / "logs"
+    d810_logs.mkdir()
+    (d810_config / "options.json").write_text(
+        json.dumps({"log_dir": str(d810_logs)}) + "\n",
+        encoding="utf-8",
+    )
 
     script = tmp_path / "run_ida_gui_docker.sh"
     shutil.copy2(LAUNCHER, script)
@@ -104,12 +113,16 @@ printf '%s\\n' "${MOCK_XHOST_ACCESS:-INET:localhost}"
         "D810_REPO_ROOT",
         "D810_WORKTREE_ROOT",
         "D810_GUI_DOCKER_IMAGE",
+        "D810_DOCKER_MEMORY",
         "D810_IDA_USER_DIR",
         "D810_GUI_DISPLAY",
         "D810_XHOST_BIN",
         "MOCK_IMAGE_EXISTS",
         "MOCK_XHOST_FAIL",
         "MOCK_XHOST_ACCESS",
+        "D810_DEBUG_LOGGING",
+        "D810_DIAG_SNAPSHOT",
+        "D810_FACT_LIFECYCLE",
     ):
         env.pop(name, None)
     env.update(
@@ -139,6 +152,8 @@ printf '%s\\n' "${MOCK_XHOST_ACCESS:-INET:localhost}"
         "outside": outside,
         "samples": samples,
         "ida_user": ida_user,
+        "d810_config": d810_config,
+        "d810_logs": d810_logs,
     }
     return result, _parse_docker_calls(docker_log), paths
 
@@ -150,7 +165,7 @@ def _assert_pair(args: list[str], flag: str, value: str) -> None:
     ), (flag, value, args)
 
 
-def test_default_launch_mounts_root_checkout_user_state_and_samples(
+def test_default_launch_mounts_root_checkout_portable_d810_state_and_samples(
     tmp_path: Path,
 ) -> None:
     result, calls, paths = _run(tmp_path)
@@ -159,6 +174,8 @@ def test_default_launch_mounts_root_checkout_user_state_and_samples(
     assert calls[0] == ["image", "inspect", GUI_IMAGE]
     run = calls[1]
     assert run[:2] == ["run", "--rm"]
+    _assert_pair(run, "--memory", "4g")
+    _assert_pair(run, "-w", "/work")
     for value in (
         "MODE=x11",
         "DISPLAY=host.docker.internal:0",
@@ -168,18 +185,22 @@ def test_default_launch_mounts_root_checkout_user_state_and_samples(
         _assert_pair(run, "-e", value)
     for value in (
         f"{paths['repo']}:/work",
-        f"{paths['ida_user']}:/root/.idapro",
+        f"{paths['d810_config']}:/root/.idapro/cfg/d810",
+        f"{paths['d810_logs']}:/root/.idapro/logs",
+        f"{paths['d810_logs']}:{paths['d810_logs']}",
         f"{paths['repo']}:/root/.idapro/plugins/d810",
-        f"{paths['samples']}:/samples/bins",
+        f"{paths['samples']}:/samples/bins:ro",
     ):
         _assert_pair(run, "-v", value)
+    assert f"{paths['ida_user']}:/root/.idapro" not in run
     _assert_pair(run, "--entrypoint", "/app/ida/entrypoint.sh")
     assert run[-1] == GUI_IMAGE
     assert f"checkout:  {paths['repo']}" in result.stdout
-    assert f"ida state: {paths['ida_user']}" in result.stdout
+    assert f"d810 cfg:  {paths['d810_config']}" in result.stdout
+    assert f"d810 logs: {paths['d810_logs']}" in result.stdout
 
 
-def test_worktree_launch_preserves_ida_arguments_and_mounts_selected_plugin(
+def test_worktree_launch_copies_sample_database_and_preserves_other_ida_arguments(
     tmp_path: Path,
 ) -> None:
     result, calls, paths = _run(
@@ -187,8 +208,8 @@ def test_worktree_launch_preserves_ida_arguments_and_mounts_selected_plugin(
         "-w",
         WORKTREE_NAME,
         "--",
-        "/samples/bins/database with space.i64",
         "-A",
+        "/samples/bins/database with space.i64",
     )
 
     assert result.returncode == 0, result.stderr
@@ -199,11 +220,40 @@ def test_worktree_launch_preserves_ida_arguments_and_mounts_selected_plugin(
         "-v",
         f"{paths['worktree']}:/root/.idapro/plugins/d810",
     )
+    copies = list((paths["worktree"] / ".tmp" / "ida-gui").glob("*.i64"))
+    assert len(copies) == 1
+    assert copies[0].read_text(encoding="utf-8") == "sample"
+    assert (paths["samples"] / "database with space.i64").read_text(
+        encoding="utf-8"
+    ) == "sample"
     image_index = run.index(GUI_IMAGE)
     assert run[image_index + 1 :] == [
-        "/samples/bins/database with space.i64",
         "-A",
+        f"/work/.tmp/ida-gui/{copies[0].name}",
     ]
+
+
+def test_system_runner_compatible_runtime_options_are_forwarded(tmp_path: Path) -> None:
+    result, calls, _paths = _run(
+        tmp_path,
+        "-l",
+        "--enable-debug-logging",
+        "--enable-diag-snapshot",
+        "--disable-fact-lifecycle",
+        extra_env={"D810_DOCKER_MEMORY": "6g", "D810_CUSTOM_GUI_TEST": "yes"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    run = calls[-1]
+    _assert_pair(run, "--memory", "6g")
+    for value in (
+        "D810_DEBUG_LOGGING=1",
+        "D810_DIAG_SNAPSHOT=1",
+        "D810_FACT_LIFECYCLE=0",
+        "D810_CUSTOM_GUI_TEST=yes",
+    ):
+        _assert_pair(run, "-e", value)
+    assert "logs:     persistent D810 logs enabled (-l compatibility)" in result.stdout
 
 
 def test_alternate_worktree_root_is_honored(tmp_path: Path) -> None:
@@ -291,5 +341,9 @@ def test_help_documents_worktrees_state_and_sample_mount(tmp_path: Path) -> None
     assert "-w, --worktree" in result.stdout
     assert "D810_WORKTREE_ROOT" in result.stdout
     assert "D810_IDA_USER_DIR" in result.stdout
+    assert "--enable-debug-logging" in result.stdout
+    assert "--enable-diag-snapshot" in result.stdout
+    assert "--disable-fact-lifecycle" in result.stdout
+    assert "copy" in result.stdout.lower()
     assert "/samples/bins" in result.stdout
     assert calls == []

@@ -28,3 +28,7 @@ Implementation plan saved at docs/superpowers/plans/2026-07-15-truthful-config-v
 **2026-07-15T23:52:40Z**
 
 Automated Slice 0 gates passed in diff/truthful-config-v2-project-ui through f31191d24: 127 focused tests; 5728 unit tests passed, 29 skipped, 9 baseline warnings, 162 subtests; ast-grep/import-linter/diff gates clean; OLLVM probe is exact 11/180/6; graph refreshed. Live IDA/Qt acceptance is intentionally deferred after the wrong IDA process was targeted; ticket remains open.
+
+**2026-07-16T17:05:00Z**
+
+Added and live-tested `tools/scripts/run_ida_gui_docker.sh` for worktree-aware XQuartz acceptance. The launcher preserves the image-owned Linux IDA registry, reuses host `cfg/d810`, `d810_function_rules.db`, and diagnostic logs through scoped mounts, mounts canonical samples read-only, and opens a byte-verified copy under the selected worktree. Eleven launcher contract tests pass. Live IDA 9.3 opened `/work/.tmp/ida-gui/libobfuscated.dll.2026-06-03.docker.on4e5h.i64` from `idapro-9.3:x11-arm64` with D810 loaded from `/root/.idapro/plugins/d810`; Docker reported the source sample mount `rw=false`, and the canonical database SHA-256 remained `61678430e3fe08f6bb23f41752faa22b57c805e8261277660933d01e3c046dab` before and after. This establishes the GUI test lane; the original truthful-config-v2 visual behavior still requires explicit workbench inspection, so the ticket remains open.
