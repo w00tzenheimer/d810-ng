@@ -25,6 +25,8 @@ __all__ = [
     "RuntimeConfigRef",
     "SnapshotFreshness",
     "StatisticsSummary",
+    "WorkbenchCommandRequest",
+    "WorkbenchCommandResult",
     "WorkbenchDiagnostic",
     "d810_hooks_suppressed",
     "maybe_run_tail_distinct",
@@ -46,6 +48,8 @@ _WORKBENCH_MODEL_NAMES = {
     "RuntimeConfigRef",
     "SnapshotFreshness",
     "StatisticsSummary",
+    "WorkbenchCommandRequest",
+    "WorkbenchCommandResult",
     "WorkbenchDiagnostic",
 }
 
