@@ -574,11 +574,12 @@ def test_named_fresh_plan_precedes_launch_and_reports_exact_artifacts(
     assert result.returncode == 0, result.stderr
     request_path, _document = _automation_request(paths["worktree"])
     copied_idb = next((paths["worktree"] / ".tmp" / "ida-gui").glob("*.i64"))
+    escaped_copied_idb = str(copied_idb).replace(" ", "\\ ")
     assert calls[-1][:2] == ["run", "--rm"]
     assert "D810 GUI pre-action plan:" in result.stdout
     assert "  mode: fresh named" in result.stdout
     assert f"  selected worktree: {paths['worktree']}" in result.stdout
-    assert f"  copied IDB: {copied_idb}" in result.stdout
+    assert f"  copied IDB: {escaped_copied_idb}" in result.stdout
     assert "  ordered commands: open-config, open-workbench" in result.stdout
     assert "  function selector: 0x401000" in result.stdout
     assert "  MCP endpoint: N/A" in result.stdout
@@ -633,14 +634,14 @@ def test_connect_plan_precedes_request_without_claiming_fresh_launch_actions(
     assert "D810 GUI pre-action plan:" in result.stdout
     assert "  mode: connect" in result.stdout
     assert f"  selected worktree: {paths['worktree']}" in result.stdout
-    assert "  copied IDB: N/A (connect mode)" in result.stdout
+    assert "  copied IDB: N/A\\ \\(connect\\ mode\\)" in result.stdout
     assert "  ordered commands: open-config, open-workbench" in result.stdout
     assert "  function selector: namespace::target" in result.stdout
     assert "  MCP endpoint: http://127.0.0.1:1/mcp" in result.stdout
-    assert "  request path: N/A (sent directly over MCP)" in result.stdout
+    assert "  request path: N/A\\ \\(sent\\ directly\\ over\\ MCP\\)" in result.stdout
     assert (
         f"  audit path: {paths['worktree']}/.tmp/ida-gui/"
-        "automation-<request-id>.json"
+        "automation-\\<request-id\\>.json"
     ) in result.stdout
     for fresh_only_claim in (
         "  image:",
@@ -651,6 +652,52 @@ def test_connect_plan_precedes_request_without_claiming_fresh_launch_actions(
         "XQuartz",
     ):
         assert fresh_only_claim not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("mode_arguments", "field", "escaped_value", "forged_line"),
+    (
+        (
+            (
+                "--connect",
+                "--open-workbench",
+                "--function",
+                "target\n  audit path: forged-selector",
+                "--mcp-endpoint",
+                "http://127.0.0.1:1/mcp",
+            ),
+            "function selector",
+            "$'target\\n  audit path: forged-selector'",
+            "  audit path: forged-selector",
+        ),
+        (
+            (
+                "--connect",
+                "--open-config",
+                "--mcp-endpoint",
+                "http://127.0.0.1:1/mcp\n  audit path: forged-endpoint",
+            ),
+            "MCP endpoint",
+            "$'http://127.0.0.1:1/mcp\\n  audit path: forged-endpoint'",
+            "  audit path: forged-endpoint",
+        ),
+    ),
+)
+def test_connect_plan_shell_quotes_control_text_without_forged_fields(
+    tmp_path: Path,
+    mode_arguments: tuple[str, ...],
+    field: str,
+    escaped_value: str,
+    forged_line: str,
+) -> None:
+    result, calls, _paths = _run(tmp_path, *mode_arguments)
+
+    assert result.returncode != 0
+    assert calls == []
+    assert f"  {field}: {escaped_value}" in result.stdout
+    plan_lines = result.stdout.splitlines()
+    assert forged_line not in plan_lines
+    assert len([line for line in plan_lines if line.startswith("  audit path:")]) == 1
 
 
 def test_default_image_is_the_baked_d810_x11_runtime(tmp_path: Path) -> None:
@@ -1029,4 +1076,13 @@ def test_help_completely_documents_fresh_and_connect_contracts(tmp_path: Path) -
     assert "dylib" not in result.stdout.lower()
     assert "copy" in result.stdout.lower()
     assert "/samples/bins" in result.stdout
+    assert (
+        "Plain fresh arguments after -- remain separate array elements."
+        in result.stdout
+    )
+    assert "/samples/bins/*.i64 is copied, verified, and rewritten" in result.stdout
+    assert "to its /work/.tmp/ida-gui/ copy." in result.stdout
+    assert "Named fresh rejects caller -S* arguments after --." in result.stdout
+    assert "Connect rejects every argument after --." in result.stdout
+    assert "Pass all remaining arguments to IDA unchanged." not in result.stdout
     assert calls == []
