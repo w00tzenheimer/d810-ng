@@ -134,7 +134,9 @@ def test_status_presentations_cover_every_approved_outcome() -> None:
 
 def test_rows_preserve_pipeline_order_and_keep_consumers_supporting() -> None:
     rows = logic.project_workbench_rows(_snapshot())
-    pipeline = tuple(row for row in rows if row.section is logic.WorkbenchSection.PIPELINE)
+    pipeline = tuple(
+        row for row in rows if row.section is logic.WorkbenchSection.PIPELINE
+    )
     supporting = tuple(
         row for row in rows if row.section is logic.WorkbenchSection.SUPPORTING
     )
@@ -146,8 +148,10 @@ def test_rows_preserve_pipeline_order_and_keep_consumers_supporting() -> None:
     )
     assert all("rule_scope" not in row.key for row in pipeline)
     assert any(row.key == "consumer:rule_scope" for row in supporting)
-    assert next(row for row in supporting if row.key == "consumer:rule_scope").status \
+    assert (
+        next(row for row in supporting if row.key == "consumer:rule_scope").status
         is OutcomeStatus.ABSTAINED
+    )
 
 
 def test_context_rows_keep_source_and_runtime_truth_distinct() -> None:
@@ -158,6 +162,28 @@ def test_context_rows_keep_source_and_runtime_truth_distinct() -> None:
     assert "default_ollvm.json" in runtime.detail
     assert "/configs/default_ollvm_v2.json" in runtime.detail
     assert "config-v2" in runtime.detail
+
+
+def test_context_runtime_labels_saved_function_recipe_scope() -> None:
+    snapshot = _snapshot()
+    scoped = dataclasses.replace(
+        snapshot,
+        runtime=dataclasses.replace(
+            snapshot.runtime,
+            recipe_scope="function-recipe",
+            pass_ids=("jump-fixer",),
+        ),
+    )
+
+    runtime = next(
+        row
+        for row in logic.project_workbench_rows(scoped)
+        if row.key == "context:runtime"
+    )
+
+    assert "function recipe" in runtime.summary
+    assert "scope: function-recipe" in runtime.detail
+    assert "passes: jump-fixer" in runtime.detail
 
 
 def test_filter_is_case_insensitive_searches_status_and_preserves_order() -> None:
@@ -181,9 +207,10 @@ def test_current_started_snapshot_enables_scoped_slice_two_actions() -> None:
     assert states["deobfuscate"].enabled is True
     assert states["function_override"].enabled is True
     assert states["compare"].enabled is True
-    for action_id in ("recipe", "diagnostics"):
-        assert states[action_id].enabled is False
-        assert states[action_id].reason
+    assert states["recipe"].enabled is True
+    assert states["recipe"].reason == ""
+    assert states["diagnostics"].enabled is False
+    assert states["diagnostics"].reason
 
 
 def test_stale_snapshot_marks_pipeline_consumers_and_disables_scoped_actions() -> None:
@@ -260,12 +287,14 @@ def _comparison(
             else None
         ),
         metrics=(
-            ComparisonMetric("Lines", 1, 1, 0),
-            ComparisonMetric("Characters", 10, 8, -2),
-        )
-        if baseline_freshness is ArtifactFreshness.CURRENT
-        and d810_freshness is ArtifactFreshness.CURRENT
-        else (),
+            (
+                ComparisonMetric("Lines", 1, 1, 0),
+                ComparisonMetric("Characters", 10, 8, -2),
+            )
+            if baseline_freshness is ArtifactFreshness.CURRENT
+            and d810_freshness is ArtifactFreshness.CURRENT
+            else ()
+        ),
     )
 
 
@@ -285,9 +314,7 @@ def test_comparison_view_projects_current_labeled_text_and_metrics() -> None:
 
 
 def test_comparison_view_exposes_stale_reasons_and_suppresses_metrics() -> None:
-    view = logic.comparison_view(
-        _comparison(d810_freshness=ArtifactFreshness.STALE)
-    )
+    view = logic.comparison_view(_comparison(d810_freshness=ArtifactFreshness.STALE))
 
     assert view.comparable is False
     assert view.native.is_current is True
@@ -342,22 +369,34 @@ def test_command_completion_requires_exact_identity_and_acceptance() -> None:
     )
 
     assert logic.should_accept_command_result(snapshot, result) is True
-    assert logic.should_accept_command_result(
-        snapshot,
-        dataclasses.replace(result, accepted=False),
-    ) is False
-    assert logic.should_accept_command_result(
-        snapshot,
-        dataclasses.replace(result, function_ea=0x402000),
-    ) is False
-    assert logic.should_accept_command_result(
-        snapshot,
-        dataclasses.replace(result, requested_generation=3),
-    ) is False
-    assert logic.should_accept_command_result(
-        snapshot,
-        dataclasses.replace(result, function_fingerprint="sha256:other"),
-    ) is False
+    assert (
+        logic.should_accept_command_result(
+            snapshot,
+            dataclasses.replace(result, accepted=False),
+        )
+        is False
+    )
+    assert (
+        logic.should_accept_command_result(
+            snapshot,
+            dataclasses.replace(result, function_ea=0x402000),
+        )
+        is False
+    )
+    assert (
+        logic.should_accept_command_result(
+            snapshot,
+            dataclasses.replace(result, requested_generation=3),
+        )
+        is False
+    )
+    assert (
+        logic.should_accept_command_result(
+            snapshot,
+            dataclasses.replace(result, function_fingerprint="sha256:other"),
+        )
+        is False
+    )
 
 
 def test_evidence_export_is_canonical_deterministic_json() -> None:
@@ -475,6 +514,7 @@ def test_evidence_export_is_canonical_deterministic_json() -> None:
             "hook_mode": "config-v2",
             "mode": "config-v2",
             "pass_ids": ["first", "second"],
+            "recipe_scope": "project",
             "routed": True,
             "runtime_name": "default_ollvm_v2.json",
             "runtime_path": "/configs/default_ollvm_v2.json",
@@ -506,8 +546,7 @@ def test_logic_module_has_no_ida_qt_or_non_model_ui_dependencies() -> None:
             imports.add(node.module)
 
     assert not any(
-        name.startswith(("ida", "PyQt", "PySide", "shiboken"))
-        for name in imports
+        name.startswith(("ida", "PyQt", "PySide", "shiboken")) for name in imports
     )
     assert not any(
         name.startswith("d810.ui.") and name != "d810.ui.workbench_logic"

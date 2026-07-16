@@ -175,7 +175,10 @@ def _rule_scope_detail(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
 def _statistics_detail(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
     stats = snapshot.statistics
     lines = [
-        *(f"optimizer {entry.name}: {entry.count}" for entry in stats.optimizer_matches),
+        *(
+            f"optimizer {entry.name}: {entry.count}"
+            for entry in stats.optimizer_matches
+        ),
         *(f"rule {entry.name}: {entry.count}" for entry in stats.rule_matches),
         *(
             f"cfg {entry.name}: {entry.uses} uses, {entry.total_patches} patches"
@@ -194,6 +197,9 @@ def project_workbench_rows(
     context_status = _context_status(snapshot)
     runtime = snapshot.runtime
     attack = snapshot.attack
+    recipe_scope_suffix = (
+        " (function recipe)" if runtime.recipe_scope == "function-recipe" else ""
+    )
     rows: list[WorkbenchRow] = [
         _row(
             key="context:function",
@@ -216,12 +222,14 @@ def project_workbench_rows(
                 f"{runtime.runtime_name} from {runtime.source_name}"
                 if runtime.routed
                 else runtime.runtime_name
-            ),
+            )
+            + recipe_scope_suffix,
             detail=(
                 f"source: {runtime.source_path}\n"
                 f"runtime: {runtime.runtime_path}\n"
                 f"mode: {runtime.mode}\n"
                 f"hook mode: {runtime.hook_mode or 'none'}\n"
+                f"scope: {runtime.recipe_scope}\n"
                 f"passes: {', '.join(runtime.pass_ids) or 'none'}"
             ),
             status=context_status,
@@ -327,9 +335,7 @@ def project_workbench_rows(
                 section=WorkbenchSection.EVIDENCE,
                 ordinal=0,
                 label="Native baseline",
-                summary=(
-                    snapshot.baseline.path or "No baseline captured"
-                ),
+                summary=(snapshot.baseline.path or "No baseline captured"),
                 detail=f"fingerprint: {snapshot.baseline.fingerprint or 'unavailable'}",
                 status=(
                     OutcomeStatus.READY
@@ -400,9 +406,7 @@ def filter_workbench_rows(
         row
         for row in rows
         if normalized
-        in "\n".join(
-            (row.label, row.summary, row.detail, row.status.value)
-        ).casefold()
+        in "\n".join((row.label, row.summary, row.detail, row.status.value)).casefold()
     )
 
 
@@ -493,14 +497,14 @@ def action_states(
         )
     )
     override_reason = (
-        "" if current else "Refresh the stale workbench snapshot before editing overrides."
+        ""
+        if current
+        else "Refresh the stale workbench snapshot before editing overrides."
     )
     return (
         WorkbenchActionState("refresh", "Refresh", True, ""),
         WorkbenchActionState("export", "Export evidence", True, ""),
-        WorkbenchActionState(
-            "analyze", "Analyze", engine_ready, engine_reason
-        ),
+        WorkbenchActionState("analyze", "Analyze", engine_ready, engine_reason),
         WorkbenchActionState(
             "deobfuscate",
             "Deobfuscate",
@@ -513,11 +517,16 @@ def action_states(
             current,
             override_reason,
         ),
+        WorkbenchActionState("compare", "Compare", engine_ready, engine_reason),
         WorkbenchActionState(
-            "compare", "Compare", engine_ready, engine_reason
-        ),
-        WorkbenchActionState(
-            "recipe", "Recipe", False, "Recipe composition is delivered in Slice 4."
+            "recipe",
+            "Recipe",
+            current,
+            (
+                ""
+                if current
+                else "Refresh the stale workbench snapshot before editing a recipe."
+            ),
         ),
         WorkbenchActionState(
             "diagnostics",
@@ -592,12 +601,15 @@ def _jsonable(value: object) -> object:
 
 def export_evidence_json(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
     """Return a stable UTF-8 JSON representation with one trailing newline."""
-    return json.dumps(
-        _jsonable(snapshot),
-        indent=2,
-        sort_keys=True,
-        ensure_ascii=False,
-    ) + "\n"
+    return (
+        json.dumps(
+            _jsonable(snapshot),
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
 
 
 __all__ = [

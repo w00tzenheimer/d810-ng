@@ -654,21 +654,23 @@ Status: complete through live Docker/XQuartz acceptance on 2026-07-16.
 
 ### Slice 4: registered-pass Recipe Composer (`tcvpu-004o`)
 
-Status: headless catalog, drafts, preflight, apply/save, and sibling recipe
-persistence are implemented; Qt/live acceptance pending.
+Status: complete through live Docker/XQuartz acceptance on 2026-07-16. Evidence
+is recorded in `.tickets/tcvpu-004o.md`; the named-command audit is
+`.tmp/ida-gui/automation-0a26502ee9d75ad062bcee3a90757fa1.json` and the final
+Qt widget capture is `.tmp/ida-gui/live-recipe-slice4-post-review.png`.
 
-- [ ] Add a thin Recipe Composer dock/section backed only by the existing
+- [x] Add a thin Recipe Composer dock/section backed only by the existing
   recipe service and `workbench_recipe_logic.py`.
-- [ ] List registered stable pass IDs and explain each pass's owned transforms.
+- [x] List registered stable pass IDs and explain each pass's owned transforms.
   Do not present transforms as independently runnable unless registered.
-- [ ] Verify add, remove, enable, disable, reorder, template load, and reset are
+- [x] Verify add, remove, enable, disable, reorder, template load, and reset are
   deterministic.
-- [ ] Block unknown passes, options, missing contracts, and invalid order before
+- [x] Block unknown passes, options, missing contracts, and invalid order before
   execution with a specific preflight explanation.
-- [ ] Save a full typed recipe beside the existing function override record,
+- [x] Save a full typed recipe beside the existing function override record,
   then prove rule/tag/note values are unchanged.
-- [ ] Apply a valid recipe exactly once and reject a stale-generation apply.
-- [ ] Keep project-profile save disabled until Slice 5's serializer boundary is
+- [x] Apply a valid recipe exactly once and reject a stale-generation apply.
+- [x] Keep project-profile save disabled until Slice 5's serializer boundary is
   live-accepted.
 
 ### Slice 5: v2-aware advanced project editing (`tcvpu-qzth`)

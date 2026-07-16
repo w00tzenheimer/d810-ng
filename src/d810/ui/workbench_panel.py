@@ -64,6 +64,7 @@ if IDA_AVAILABLE:
             self._row_by_key: dict[str, WorkbenchRow] = {}
             self._command_adapter: typing.Any = None
             self._comparison_dialog: typing.Any = None
+            self._recipe_panel: typing.Any = None
             self._pending_focus: WorkbenchSection | None = None
             self._closed = False
             self.parent: typing.Any = None
@@ -135,6 +136,7 @@ if IDA_AVAILABLE:
 
                 button.clicked.connect(_dispatch)
             self.action_buttons["compare"].clicked.connect(self._run_comparison)
+            self.action_buttons["recipe"].clicked.connect(self._run_recipe)
 
         def OnCreate(self, form: typing.Any) -> None:
             self.parent = self.FormToPyQtWidget(form)
@@ -181,6 +183,7 @@ if IDA_AVAILABLE:
                     "deobfuscate",
                     "function_override",
                     "compare",
+                    "recipe",
                 ):
                     self.action_buttons[action_id].clicked.disconnect()
             except (RuntimeError, TypeError):
@@ -188,6 +191,9 @@ if IDA_AVAILABLE:
             if self._comparison_dialog is not None:
                 self._comparison_dialog.close()
                 self._comparison_dialog = None
+            if self._recipe_panel is not None:
+                self._recipe_panel.close()
+                self._recipe_panel = None
             self.parent = None
 
         def close(self) -> None:
@@ -316,6 +322,35 @@ if IDA_AVAILABLE:
             dialog.show()
             dialog.raise_()
             dialog.activateWindow()
+
+        def _run_recipe(self, checked: bool = False) -> None:
+            del checked
+            snapshot = self._snapshot
+            adapter = self._command_adapter
+            if snapshot is None or adapter is None:
+                return
+            recipe = getattr(adapter, "recipe", None)
+            if not callable(recipe):
+                return
+            try:
+                recipe_adapter = recipe(snapshot)
+            except Exception as exc:
+                logger.warning("Recipe Composer failed: %s", exc)
+                self.detail.setPlainText(f"Recipe Composer failed: {exc}")
+                return
+            self._show_recipe(recipe_adapter)
+
+        def _show_recipe(self, recipe_adapter: typing.Any) -> None:
+            from d810.ui.workbench_recipe_panel import WorkbenchRecipePanel
+
+            if self._recipe_panel is not None:
+                self._recipe_panel.close()
+            panel = WorkbenchRecipePanel(
+                recipe_adapter,
+                refresh_workbench=self.refresh,
+            )
+            self._recipe_panel = panel
+            panel.show()
 
         def refresh(self) -> None:
             if self._func_ea is None:

@@ -205,6 +205,28 @@ def test_compare_rejects_pseudocode_widget_for_another_function() -> None:
         adapter.compare(SimpleNamespace(function=SimpleNamespace(ea=0x401000)))
 
 
+def test_recipe_returns_thin_live_adapter_for_the_current_snapshot(monkeypatch) -> None:
+    created: list[object] = []
+
+    class FakeRecipeAdapter:
+        def __init__(self, state, idaapi_shim, ctx, snapshot) -> None:
+            created.append((state, idaapi_shim, ctx, snapshot))
+
+    module = ModuleType("d810.ui.workbench_recipe_commands")
+    module.WorkbenchRecipeAdapter = FakeRecipeAdapter
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    state = object()
+    shim = SimpleNamespace(get_widget_vdui=lambda widget: None)
+    ctx = SimpleNamespace(widget=object())
+    snapshot = object()
+    adapter = command_module.WorkbenchCommandAdapter(state, shim, ctx)
+
+    result = adapter.recipe(snapshot)
+
+    assert isinstance(result, FakeRecipeAdapter)
+    assert created == [(state, shim, ctx, snapshot)]
+
+
 def test_deobfuscate_reuses_existing_action_exactly_once(monkeypatch) -> None:
     action_calls: list[object] = []
     state_calls: list[object] = []

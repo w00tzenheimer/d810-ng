@@ -1,4 +1,5 @@
 """Runtime project state for the D810 plugin."""
+
 from __future__ import annotations
 
 import contextlib
@@ -50,6 +51,10 @@ from d810.manager.config_v2_edit_models import (
     ConfigV2FieldSerializer,
     ConfigV2ProjectDraft,
     ConfigV2ProjectValidation,
+)
+from d810.passes.function_recipe_runtime import (
+    activate_function_recipe_runtime,
+    build_recipe_runtime_project,
 )
 from d810.manager.workbench_models import (
     BaselineRef,
@@ -148,11 +153,6 @@ class D810State(metaclass=SingletonMeta):
         self.project_manager.delete(config)
 
     def load_project(self, project_index: int) -> ProjectConfiguration:
-        old_project_name = (
-            self.current_project.path.name
-            if getattr(self, "current_project", None) is not None
-            else None
-        )
         next_project = self.project_manager.get(project_index)
         default_selection = select_config_v2_default_project(next_project)
         runtime_project = (
@@ -160,6 +160,28 @@ class D810State(metaclass=SingletonMeta):
             if default_selection is not None
             else next_project
         )
+        return self._activate_runtime_project(
+            project_index=project_index,
+            source_project=next_project,
+            runtime_project=runtime_project,
+            default_selection=default_selection,
+        )
+
+    def _activate_runtime_project(
+        self,
+        *,
+        project_index: int,
+        source_project: ProjectConfiguration,
+        runtime_project: ProjectConfiguration,
+        default_selection: ConfigV2DefaultSelection | None,
+    ) -> ProjectConfiguration:
+        """Configure one explicit source/runtime pair without rediscovering it."""
+        old_project_name = (
+            self.current_project.path.name
+            if getattr(self, "current_project", None) is not None
+            else None
+        )
+        next_project = source_project
         emit_project_reloading(
             old_project_name=old_project_name,
             new_project_name=next_project.path.name,
@@ -251,9 +273,7 @@ class D810State(metaclass=SingletonMeta):
                     cfg.get("idb_key", self.current_project.path.name)
                 ),
                 pass_scheduler=self.manager.block_pass_scheduler,
-                function_priors_provider=(
-                    self.manager.function_analysis_priors_for_ea
-                ),
+                function_priors_provider=(self.manager.function_analysis_priors_for_ea),
             )
             self.manager._compile_rule_scope()
         if getattr(self, "gui", None) is not None:
@@ -495,6 +515,24 @@ class D810State(metaclass=SingletonMeta):
             raise RuntimeError("No runtime project is available for the recipe")
         return self.manager.create_workbench_recipe_draft(snapshot, runtime_project)
 
+    def create_saved_workbench_recipe_draft(
+        self,
+        *,
+        function_ea: int,
+        function_fingerprint: str | None,
+        workbench_generation: int = 0,
+    ) -> PipelineRecipeDraft | None:
+        snapshot = self.current_project_runtime_snapshot
+        if snapshot is None:
+            raise RuntimeError("No runtime project is available for the recipe")
+        return self.manager.create_saved_workbench_recipe_draft(
+            function_ea=function_ea,
+            function_fingerprint=function_fingerprint,
+            workbench_generation=workbench_generation,
+            source_path=str(snapshot.source.path),
+            runtime_path=str(snapshot.runtime.path),
+        )
+
     def validate_workbench_recipe(
         self,
         draft: PipelineRecipeDraft,
@@ -569,6 +607,53 @@ class D810State(metaclass=SingletonMeta):
     def clear_workbench_function_recipe(self, function_ea: int) -> bool:
         return self.manager.clear_workbench_function_recipe(function_ea)
 
+    @contextlib.contextmanager
+    def activate_workbench_recipe(
+        self,
+        draft: PipelineRecipeDraft,
+    ):
+        """Run one synchronous decompile under an in-memory function recipe."""
+        if not self.manager.started:
+            raise RuntimeError("D810 must be started before activating a recipe")
+        source_project = self.current_project
+        runtime_project = self.current_runtime_project
+        if runtime_project is None:
+            raise RuntimeError("No runtime project is available for recipe activation")
+        project_index = self.current_project_index
+        default_selection = self.last_config_v2_default_selection
+        pass_configs_json = self.manager.recipe_service.serialize_enabled_configs(draft)
+        recipe_project = build_recipe_runtime_project(
+            runtime_project,
+            self.manager.recipe_service.deserialize_configs(pass_configs_json),
+            function_ea=draft.function_ea,
+        )
+
+        def activate_recipe() -> None:
+            self._activate_runtime_project(
+                project_index=project_index,
+                source_project=source_project,
+                runtime_project=recipe_project,
+                default_selection=None,
+            )
+
+        def restore_project() -> None:
+            self._activate_runtime_project(
+                project_index=project_index,
+                source_project=source_project,
+                runtime_project=runtime_project,
+                default_selection=default_selection,
+            )
+
+        with activate_function_recipe_runtime(
+            recipe_project,
+            stop_runtime=self.stop_d810,
+            start_runtime=self.start_d810,
+            runtime_started=lambda: bool(self.manager.started),
+            activate_recipe=activate_recipe,
+            restore_project=restore_project,
+        ):
+            yield recipe_project
+
     def execute_workbench_apply_recipe_once(
         self,
         request: RecipeCommandRequest,
@@ -584,6 +669,12 @@ class D810State(metaclass=SingletonMeta):
             lifecycle=lifecycle,
         )
 
+    def workbench_recipe_request_is_current(
+        self,
+        request: RecipeCommandRequest,
+    ) -> bool:
+        return self.manager.workbench_service.recipe_request_is_current(request)
+
     def execute_workbench_save_function_recipe(
         self,
         request: RecipeCommandRequest,
@@ -594,6 +685,19 @@ class D810State(metaclass=SingletonMeta):
             request,
             draft,
             validation,
+        )
+
+    def analyze_workbench_recipe(
+        self,
+        *,
+        function_ea: int,
+        target: object,
+        provider_phase: object,
+    ) -> object:
+        return self.manager.analyze_workbench_recipe(
+            function_ea=function_ea,
+            target=target,
+            provider_phase=provider_phase,
         )
 
     def execute_workbench_analyze(

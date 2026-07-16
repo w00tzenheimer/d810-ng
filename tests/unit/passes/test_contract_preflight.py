@@ -9,6 +9,7 @@ from d810.passes.contract_preflight import (
     preflight_pipeline_contract,
 )
 from d810.passes.pass_pipeline import (
+    AnalysisContract,
     FactRequirement,
     PassContract,
     PassOutputs,
@@ -141,9 +142,7 @@ def test_preflight_aliases_legacy_facts_and_evidence_to_canonical_requirements()
         "needs_canonical_context",
         requires=PassRequires(
             facts=FactRequirement(
-                required=frozenset(
-                    {"recovered.state_transition", "role.dispatcher"}
-                )
+                required=frozenset({"recovered.state_transition", "role.dispatcher"})
             ),
             evidence=frozenset({"ir.branch_target", "ir.state_variable_write"}),
         ),
@@ -190,6 +189,34 @@ def test_pipeline_preflight_declared_outputs_can_satisfy_later_fact_requirement(
     assert result.satisfied
     assert [item.satisfied for item in result.results] == [True, True]
     assert facts.available_facts() == ()
+
+
+def test_pipeline_preflight_declared_analyses_can_satisfy_later_requirement():
+    facts = AnalysisManager("G0")
+    first = PassSpec(
+        "recover_dispatcher",
+        _raising_factory,
+        no_caps,
+        default,
+        analyses=AnalysisContract(provided=frozenset({"recover_dispatcher"})),
+    )
+    second = PassSpec(
+        "recover_transitions",
+        _raising_factory,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(
+                analyses=frozenset({"recover_dispatcher"}),
+            ),
+        ),
+    )
+
+    result = preflight_pipeline_contract((first, second), facts)
+
+    assert result.satisfied
+    assert [item.satisfied for item in result.results] == [True, True]
+    assert facts.available_analyses() == ()
 
 
 def test_pipeline_preflight_declared_canonical_outputs_satisfy_legacy_requirement():
@@ -243,9 +270,7 @@ def test_pipeline_preflight_declared_ollvm_candidate_evidence_feeds_later_valida
     result = preflight_pipeline_contract((first, second), facts)
 
     assert result.satisfied
-    assert result.results[0].declared_output_evidence == (
-        "ir.memory_def.candidate",
-    )
+    assert result.results[0].declared_output_evidence == ("ir.memory_def.candidate",)
     assert [item.satisfied for item in result.results] == [True, True]
     assert facts.available_facts() == ()
     assert facts.available_evidence() == ()

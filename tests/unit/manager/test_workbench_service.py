@@ -143,7 +143,9 @@ class _Report:
         self.provenance_dict = provenance
 
 
-def _project_context(tmp_path: Path) -> tuple[ProjectRuntimeSnapshot, ProjectConfiguration]:
+def _project_context(
+    tmp_path: Path,
+) -> tuple[ProjectRuntimeSnapshot, ProjectConfiguration]:
     source_path = tmp_path / "default_ollvm.json"
     runtime_path = tmp_path / "default_ollvm_v2.json"
     source_path.write_text("{}", encoding="utf-8")
@@ -288,6 +290,26 @@ def test_collect_projects_runtime_identity_order_and_not_run_without_facts(
     assert snapshot.engine_started is True
 
 
+def test_collect_preserves_effective_recipe_scope_and_projection_error(
+    tmp_path: Path,
+) -> None:
+    project_snapshot, runtime_project = _project_context(tmp_path)
+    service = _service(_manager(tmp_path))
+
+    snapshot = service.collect(
+        function_ea=0x401000,
+        function_name="target",
+        function_fingerprint="sha256:abc",
+        project_snapshot=project_snapshot,
+        runtime_project=runtime_project,
+        runtime_scope="function-recipe-blocked",
+        initial_errors=("function recipe: stale fingerprint",),
+    )
+
+    assert snapshot.runtime.recipe_scope == "function-recipe-blocked"
+    assert snapshot.collection_errors[0] == "function recipe: stale fingerprint"
+
+
 def test_preflight_distinguishes_ready_and_blocked_with_structured_diagnostics(
     tmp_path: Path,
 ) -> None:
@@ -370,9 +392,7 @@ def test_attack_consumers_rule_scope_statistics_and_artifacts_are_truthful(
         "status": "Unchanged",
     }
 
-    assert snapshot.rule_scope.project_instruction_rules == (
-        "ProjectInstructionRule",
-    )
+    assert snapshot.rule_scope.project_instruction_rules == ("ProjectInstructionRule",)
     assert snapshot.rule_scope.project_block_rules == ("ProjectBlockRule",)
     assert snapshot.rule_scope.function_enabled_rules == ("FunctionRule",)
     assert snapshot.rule_scope.function_disabled_rules == ("UnsafeRule",)
@@ -496,9 +516,7 @@ def test_state_facade_supplies_current_runtime_context_without_parsing() -> None
     assert "get_workbench_snapshot" in calls
     assert "pass_specs_from_project_config" not in calls
     attributes = {
-        node.attr
-        for node in ast.walk(method)
-        if isinstance(node, ast.Attribute)
+        node.attr for node in ast.walk(method) if isinstance(node, ast.Attribute)
     }
     assert "current_project_runtime_snapshot" in attributes
     assert "current_runtime_project" in attributes
@@ -580,7 +598,9 @@ def test_analyze_calls_read_only_manager_seam_once_and_requests_refresh(
     target = object()
     provider_phase = object()
     calls: list[dict[str, object]] = []
-    manager.analyze_workbench_function = lambda **kwargs: calls.append(kwargs) or object()
+    manager.analyze_workbench_function = (
+        lambda **kwargs: calls.append(kwargs) or object()
+    )
 
     result = service.execute_analyze(
         _request(snapshot, "analyze"),
