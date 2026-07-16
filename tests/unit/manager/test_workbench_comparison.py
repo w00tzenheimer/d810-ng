@@ -7,6 +7,7 @@ import pytest
 from d810.manager.workbench_comparison import (
     ComparisonIdentity,
     WorkbenchComparisonService,
+    function_byte_fingerprint,
 )
 from d810.manager.workbench_models import ArtifactFreshness
 
@@ -33,6 +34,12 @@ def _captured_service() -> WorkbenchComparisonService:
     service.capture_baseline(identity, "int f() {\r\n  return 1;\r\n}\r\n\r\n")
     service.capture_d810_output(identity, "int f() {\n  return 2;\n}\n")
     return service
+
+
+def test_function_byte_fingerprint_uses_the_shared_sha256_identity_format() -> None:
+    assert function_byte_fingerprint(b"\x01\x02\x03\x04") == (
+        "sha256:9f64a747e1b97f131fabb6b447296c9b" "6f0201e79fb3c5356e6c77e89b6a806a"
+    )
 
 
 def test_capture_normalizes_text_and_records_deterministic_metadata() -> None:
@@ -70,7 +77,11 @@ def test_compare_returns_current_evidence_and_non_semantic_metrics() -> None:
 @pytest.mark.parametrize(
     ("change", "reason", "stale_side"),
     (
-        ({"function_fingerprint": "fingerprint:two"}, "Function fingerprint changed", "both"),
+        (
+            {"function_fingerprint": "fingerprint:two"},
+            "Function fingerprint changed",
+            "both",
+        ),
         ({"decompilation_generation": 8}, "Decompilation generation changed", "both"),
         ({"idb_identity": "idb:other"}, "IDB identity changed", "both"),
         ({"type_generation": "types:5"}, "Type generation changed", "both"),
@@ -111,8 +122,6 @@ def test_compare_reports_missing_artifacts_without_inventing_metrics() -> None:
     assert comparison.baseline_stale_reasons == (
         "Native baseline has not been captured",
     )
-    assert comparison.d810_stale_reasons == (
-        "D810 output has not been captured",
-    )
+    assert comparison.d810_stale_reasons == ("D810 output has not been captured",)
     assert comparison.text_changed is None
     assert comparison.metrics == ()

@@ -51,9 +51,9 @@ def ensure_hexrays_available(force_load: bool = False) -> bool:
     return False
 
 
-# NOTE: the decompiler load is DEFERRED off plugin init(): it happens in
-# start_d810() (and best-effort in the GUI popup-hook install), so opening an
-# IDB no longer force-loads hexx64 during the plugin lifecycle.
+# NOTE: the decompiler load is DEFERRED off plugin init(): late_init() starts
+# D810 after IDA has completed the plugin-init path, and start_d810() loads the
+# matching decompiler on demand immediately before installing microcode hooks.
 
 
 class _UIHooks(idaapi.UI_Hooks):
@@ -116,12 +116,13 @@ class D810Plugin(
     @override
     def late_init(self):
         super().late_init()
-        if not self.plugin.is_loaded():
+        loaded = self.plugin.is_loaded()
+        if not loaded:
             self.plugin.load()
-        # Do NOT force-init the decompiler here. Under deferred loading it may
-        # not be loaded yet, and the previous code called term() and then fell
-        # through -- leaving a half-torn-down plugin. The decompiler is loaded
-        # on demand in start_d810().
+            loaded = self.plugin.is_loaded()
+        manager = getattr(self.plugin, "manager", None)
+        if loaded and manager is not None and not manager.started:
+            self.plugin.start_d810()
         print(f"{self.wanted_name} initialized (version {D810_VERSION})")
 
     @override

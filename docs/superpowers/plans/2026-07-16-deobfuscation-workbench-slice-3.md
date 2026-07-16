@@ -12,7 +12,7 @@
 - Text equality is not semantic correctness. Report line/character metrics and freshness only; do not label a changed text correct.
 - Current identity requires function EA/fingerprint, IDB identity, type generation, and Hex-Rays version. D810 additionally requires runtime path/pass IDs/generation.
 - Never reuse a baseline after identity drift. Return explicit stale reasons.
-- No live IDA execution in this implementation session.
+- Live acceptance uses only the Docker/XQuartz copied-IDB lane.
 
 ### Task 1: Expand immutable comparison records
 
@@ -51,7 +51,7 @@
 ### Task 5: Verify
 
 - Run focused comparison/workbench/action tests, full unit suite, architecture gates, prohibited-import scan, and graph update.
-- Record evidence on `tcvpu-guv6`; keep live comparison acceptance open.
+- Record evidence on `tcvpu-guv6` and close only after live comparison acceptance.
 
 ## Automated evidence (2026-07-16)
 
@@ -67,14 +67,18 @@
 - The injected capture adapter enters `d810_hooks_suppressed(manager)` once,
   decompiles once inside it, renders the existing D810 `cfunc` without another
   mutation lifecycle, and never assigns persistent `manager.started` state.
-- Focused comparison/workbench tests: `55 passed`.
-- Full unit suite: `5800 passed, 29 skipped, 9 known contract-vocabulary
+- The Qt panel owns a modeless, read-only Native/D810 tab dialog and closes it
+  during panel teardown. Fresh `late_init()` starts D810 exactly once after a
+  successful state load, so Compare is enabled without a bootstrap reload.
+- Focused final comparison/lifecycle/action tests: `50 passed`.
+- Full unit suite: `6094 passed, 29 skipped, 9 known contract-vocabulary
   warnings, 162 subtests passed`.
 - `sg scan --config sgconfig.yml --report-style short`: clean.
 - `PYTHONPATH=src lint-imports --config .importlinter`: 13 contracts kept,
   0 broken.
 - `git diff --check`: clean. `graphify update .` completed.
-
-Qt widget/layout integration and live native-vs-D810 acceptance remain deferred
-by user direction. No IDA process was launched, inspected, or modified during
-this slice.
+- Live Docker/XQuartz acceptance used the copied IDB recorded by
+  `.tmp/ida-gui/automation-0aebed31038fd1918ca1110e9c4cf813.json`.
+  Both artifacts carried the concrete function fingerprint, IDB/type/Hex-Rays
+  identities, runtime/pass identity, and generation; the visible result is in
+  `.tmp/ida-gui/live-comparison-slice3-final.png`.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import dataclasses
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,8 @@ from d810.manager.workbench_models import (
 from d810.ui.workbench_comparison import (
     WorkbenchComparisonAdapter,
     WorkbenchComparisonCaptureError,
+    compute_ida_function_fingerprint,
+    create_ida_comparison_adapter,
 )
 
 
@@ -150,6 +153,37 @@ def test_capture_rejects_missing_native_result_without_persisting() -> None:
     assert captures == []
 
 
+def test_capture_rechecks_live_identity_after_native_decompile() -> None:
+    type_generations = iter(("types:before", "types:after"))
+    identities: dict[str, object] = {}
+    comparison = object()
+    state = SimpleNamespace(
+        capture_workbench_baseline=lambda identity, text: identities.update(
+            captured=identity
+        ),
+        capture_workbench_d810_output=lambda identity, text: None,
+        get_workbench_comparison=lambda identity: (
+            identities.update(compared=identity) or comparison
+        ),
+    )
+    adapter = WorkbenchComparisonAdapter(
+        state=state,
+        manager=SimpleNamespace(started=True),
+        hooks_suppressed=lambda manager: contextlib.nullcontext(),
+        decompile=lambda function_ea: object(),
+        render_pseudocode=lambda cfunc: "text",
+        idb_identity=lambda: "idb",
+        type_generation=lambda: next(type_generations),
+        hexrays_version=lambda: "9.3",
+    )
+
+    result = adapter.capture(_snapshot(), current_cfunc=object())
+
+    assert result is comparison
+    assert identities["captured"].type_generation == "types:before"
+    assert identities["compared"].type_generation == "types:after"
+
+
 def test_capture_rejects_missing_current_d810_cfunc_before_decompile() -> None:
     calls: list[int] = []
     adapter = WorkbenchComparisonAdapter(
@@ -217,9 +251,89 @@ def test_adapter_never_assigns_persistent_started_state() -> None:
     assert not any(
         isinstance(target, ast.Attribute) and target.attr == "started"
         for node in assignments
-        for target in (
-            node.targets
-            if isinstance(node, ast.Assign)
-            else (node.target,)
-        )
+        for target in (node.targets if isinstance(node, ast.Assign) else (node.target,))
     )
+
+
+def test_ida_factory_uses_uncached_decompile_and_real_identity_providers() -> None:
+    calls: list[tuple[object, ...]] = []
+    captured: dict[str, object] = {}
+
+    class Line:
+        def __init__(self, text: str) -> None:
+            self.line = text
+
+    class Cfunc:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def get_pseudocode(self):
+            return [Line(self._text)]
+
+    native_cfunc = Cfunc("<native>")
+    state = SimpleNamespace(
+        manager=SimpleNamespace(started=False),
+        capture_workbench_baseline=lambda identity, text: captured.update(
+            baseline_identity=identity,
+            baseline_text=text,
+        ),
+        capture_workbench_d810_output=lambda identity, text: captured.update(
+            output_identity=identity,
+            output_text=text,
+        ),
+        get_workbench_comparison=lambda identity: object(),
+    )
+    shim = SimpleNamespace(
+        DECOMP_NO_CACHE=0x20,
+        PATH_TYPE_IDB=7,
+        decompile=lambda ea, flags: (
+            calls.append(("decompile", ea, flags)) or native_cfunc
+        ),
+        tag_remove=lambda text: text.strip("<>"),
+        get_path=lambda path_type: (
+            calls.append(("get_path", path_type)) or "/tmp/sample.i64"
+        ),
+        get_idb_ctime=lambda: 123,
+        retrieve_input_file_sha256=lambda: bytes.fromhex("ab" * 32),
+        inf_get_database_change_count=lambda: 9,
+        get_ordinal_count=lambda: 42,
+        get_hexrays_version=lambda: "9.3.0",
+    )
+
+    adapter = create_ida_comparison_adapter(
+        state=state,
+        idaapi_shim=shim,
+        hooks_suppressed=lambda manager: contextlib.nullcontext(),
+    )
+    adapter.capture(_snapshot(), current_cfunc=Cfunc("<d810>"))
+
+    assert ("decompile", 0x401000, 0x20) in calls
+    identity = captured["baseline_identity"]
+    assert identity == captured["output_identity"]
+    assert identity.idb_identity == (
+        "idb:/tmp/sample.i64;ctime:123;input-sha256:" + "ab" * 32
+    )
+    assert identity.type_generation == "db-change:9;ordinals:42"
+    assert identity.hexrays_version == "9.3.0"
+    assert captured["baseline_text"] == "native"
+    assert captured["output_text"] == "d810"
+
+
+def test_ida_function_fingerprint_hashes_the_exact_function_byte_range() -> None:
+    calls: list[tuple[int, int]] = []
+    function = SimpleNamespace(start_ea=0x401000, end_ea=0x401004)
+    shim = SimpleNamespace(
+        get_bytes=lambda start, size: calls.append((start, size)) or b"\x01\x02\x03\x04"
+    )
+
+    fingerprint = compute_ida_function_fingerprint(function, shim)
+
+    assert calls == [(0x401000, 4)]
+    assert fingerprint == "sha256:" + hashlib.sha256(b"\x01\x02\x03\x04").hexdigest()
+
+
+def test_ida_function_fingerprint_is_unavailable_when_bytes_cannot_be_read() -> None:
+    function = SimpleNamespace(start_ea=0x401000, end_ea=0x401004)
+    shim = SimpleNamespace(get_bytes=lambda start, size: None)
+
+    assert compute_ida_function_fingerprint(function, shim) is None

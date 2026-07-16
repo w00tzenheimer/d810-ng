@@ -131,13 +131,13 @@ def test_stats_compatibility_action_opens_evidence_focused_workbench(
         def __init__(self, state) -> None:
             self.state = state
             self._closed = False
-            self.function_calls: list[tuple[int | None, str | None]] = []
+            self.function_calls: list[tuple[int | None, str | None, str | None]] = []
             self.show_calls: list[str | None] = []
             self.command_adapters: list[object] = []
             created.append(self)
 
-        def set_function(self, func_ea, func_name) -> None:
-            self.function_calls.append((func_ea, func_name))
+        def set_function(self, func_ea, func_name, fingerprint=None) -> None:
+            self.function_calls.append((func_ea, func_name, fingerprint))
 
         def show(self, focus_section=None) -> bool:
             self.show_calls.append(focus_section)
@@ -160,8 +160,9 @@ def test_stats_compatibility_action_opens_evidence_focused_workbench(
         get_widget_vdui=lambda widget: SimpleNamespace(
             cfunc=SimpleNamespace(entry_ea=0x401000)
         ),
-        get_func=lambda ea: object(),
+        get_func=lambda ea: SimpleNamespace(start_ea=ea, end_ea=ea + 4),
         get_func_name=lambda ea: "target",
+        get_bytes=lambda start, size: b"abcd",
         warning=lambda message: None,
         info=lambda message: None,
     )
@@ -175,7 +176,14 @@ def test_stats_compatibility_action_opens_evidence_focused_workbench(
     assert action.execute(ctx) == 1
     first = DeobfuscationStats._panel
     assert type(first) is FakePanel
-    assert first.function_calls == [(0x401000, "target")]
+    assert first.function_calls == [
+        (
+            0x401000,
+            "target",
+            "sha256:88d4266fd4e6338d13b845fcf289579d"
+            "209c897823b9217da3e161936f031589",
+        )
+    ]
     assert first.show_calls == ["evidence"]
     assert len(first.command_adapters) == 1
     adapter = first.command_adapters[0]

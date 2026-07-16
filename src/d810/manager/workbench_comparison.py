@@ -43,6 +43,12 @@ def _content_sha256(pseudocode: str) -> str:
     return f"sha256:{digest}"
 
 
+def function_byte_fingerprint(content: bytes) -> str:
+    """Return the stable fingerprint format used by workbench function identity."""
+    digest = hashlib.sha256(bytes(content)).hexdigest()
+    return f"sha256:{digest}"
+
+
 def _missing_baseline(function_ea: int) -> BaselineRef:
     return BaselineRef(
         available=False,
@@ -186,9 +192,7 @@ class WorkbenchComparisonService:
                 reason for changed, reason in runtime_checks if changed
             )
             output_freshness = (
-                ArtifactFreshness.STALE
-                if output_reasons
-                else ArtifactFreshness.CURRENT
+                ArtifactFreshness.STALE if output_reasons else ArtifactFreshness.CURRENT
             )
         else:
             output_reasons = ("D810 output has not been captured",)
@@ -231,4 +235,8 @@ class WorkbenchComparisonService:
         )
 
 
-__all__ = ["ComparisonIdentity", "WorkbenchComparisonService"]
+__all__ = [
+    "ComparisonIdentity",
+    "WorkbenchComparisonService",
+    "function_byte_fingerprint",
+]

@@ -640,17 +640,17 @@ Status: complete through live Docker/XQuartz command acceptance on 2026-07-16.
 
 ### Slice 3: native decompile comparison (`tcvpu-guv6`)
 
-Status: implementation plan exists; complete headless and live gates remain.
+Status: complete through live Docker/XQuartz acceptance on 2026-07-16.
 
-- [ ] Implement the identity-bearing native and D810 comparison artifacts per
+- [x] Implement the identity-bearing native and D810 comparison artifacts per
   `docs/superpowers/plans/2026-07-16-deobfuscation-workbench-slice-3.md` using
   test-first steps.
-- [ ] Capture one native decompile with D810 hooks suppressed without changing
+- [x] Capture one native decompile with D810 hooks suppressed without changing
   persistent engine state.
-- [ ] Verify baseline and D810 output carry function fingerprint, IDB identity,
+- [x] Verify baseline and D810 output carry function fingerprint, IDB identity,
   type information, Hex-Rays version, runtime project, and generation.
-- [ ] Verify an identity/generation mismatch is labeled stale, never current.
-- [ ] Exercise Compare in live IDA and capture the result/audit evidence.
+- [x] Verify an identity/generation mismatch is labeled stale, never current.
+- [x] Exercise Compare in live IDA and capture the result/audit evidence.
 
 ### Slice 4: registered-pass Recipe Composer (`tcvpu-004o`)
 
