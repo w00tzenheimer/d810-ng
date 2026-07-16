@@ -80,6 +80,7 @@ class DeobfuscationStats(D810ActionHandler):
 
         # Show the workbench in its evidence-focused compatibility mode.
         try:
+            from d810.ui.workbench_commands import WorkbenchCommandAdapter
             from d810.ui.workbench_panel import DeobfuscationWorkbenchPanel
 
             # If panel was closed by IDA, discard it and create fresh
@@ -92,6 +93,9 @@ class DeobfuscationStats(D810ActionHandler):
                 cls._panel = DeobfuscationWorkbenchPanel(self._state)
 
             # Update function context and retain the historical evidence focus.
+            cls._panel.set_command_adapter(
+                WorkbenchCommandAdapter(self._state, idaapi_shim, ctx)
+            )
             cls._panel.set_function(func_ea, func_name)
             cls._panel.show(focus_section="evidence")
         except ImportError:

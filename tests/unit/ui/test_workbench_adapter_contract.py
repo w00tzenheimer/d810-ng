@@ -67,6 +67,27 @@ def test_set_function_retains_identity_and_refreshes() -> None:
     assert "refresh" in _call_names(method)
 
 
+def test_panel_accepts_command_adapter_and_dispatches_through_pure_freshness_logic() -> None:
+    setter = _method("set_command_adapter")
+    dispatch = _method("_run_command")
+    calls = _call_names(dispatch)
+
+    assert "_command_adapter" in _assigned_attributes(setter)
+    assert "command_request" in calls
+    assert "stale_snapshot" in calls
+    assert "should_accept_command_result" in calls
+    assert "project_workbench_rows" in calls
+    assert "action_states" in calls
+    assert "refresh" in calls
+
+
+def test_panel_exposes_function_override_alongside_scoped_commands() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+
+    assert '("function_override", "Function override")' in source
+    assert 'self._run_command(action_id)' in source
+
+
 def test_show_uses_persistent_dock_and_accepts_evidence_focus() -> None:
     method = _method("show")
     parameter_names = {argument.arg for argument in method.args.args}

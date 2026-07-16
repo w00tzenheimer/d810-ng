@@ -11,10 +11,13 @@ from d810.ui.workbench_logic import (
     WorkbenchRow,
     WorkbenchSection,
     action_states,
+    command_request,
     detail_text,
     export_evidence_json,
     filter_workbench_rows,
     project_workbench_rows,
+    should_accept_command_result,
+    stale_snapshot,
 )
 
 logger = getLogger("D810.ui")
@@ -59,6 +62,7 @@ if IDA_AVAILABLE:
             self._rows: tuple[WorkbenchRow, ...] = ()
             self._visible_rows: tuple[WorkbenchRow, ...] = ()
             self._row_by_key: dict[str, WorkbenchRow] = {}
+            self._command_adapter: typing.Any = None
             self._pending_focus: WorkbenchSection | None = None
             self._closed = False
             self.parent: typing.Any = None
@@ -100,6 +104,7 @@ if IDA_AVAILABLE:
                 ("export", "Export evidence"),
                 ("analyze", "Analyze"),
                 ("deobfuscate", "Deobfuscate"),
+                ("function_override", "Function override"),
                 ("compare", "Compare"),
                 ("recipe", "Recipe"),
                 ("diagnostics", "Diagnostics"),
@@ -116,6 +121,18 @@ if IDA_AVAILABLE:
             )
             self.action_buttons["refresh"].clicked.connect(self.refresh)
             self.action_buttons["export"].clicked.connect(self._export_evidence)
+            for action_id in ("analyze", "deobfuscate", "function_override"):
+                button = self.action_buttons[action_id]
+
+                def _dispatch(
+                    checked: bool = False,
+                    *,
+                    action_id: str = action_id,
+                ) -> None:
+                    del checked
+                    self._run_command(action_id)
+
+                button.clicked.connect(_dispatch)
 
         def OnCreate(self, form: typing.Any) -> None:
             self.parent = self.FormToPyQtWidget(form)
@@ -206,6 +223,47 @@ if IDA_AVAILABLE:
             self._func_name = str(func_name or "")
             self._fingerprint = fingerprint
             self.refresh()
+
+        def set_command_adapter(self, adapter: typing.Any) -> None:
+            self._command_adapter = adapter
+
+        def _run_command(self, action_id: str) -> None:
+            snapshot = self._snapshot
+            adapter = self._command_adapter
+            if snapshot is None or adapter is None:
+                return
+            handler = getattr(adapter, action_id, None)
+            if not callable(handler):
+                return
+
+            request = command_request(snapshot, action_id)
+            stale = stale_snapshot(snapshot)
+            stale_rows = project_workbench_rows(stale)
+            self._snapshot = stale
+            self._rows = stale_rows
+            self._visible_rows = filter_workbench_rows(
+                stale_rows,
+                self.filter_edit.text(),
+            )
+            self._row_by_key = {row.key: row for row in stale_rows}
+            self._render_context()
+            self._render_rows(self._visible_rows)
+            self._render_action_states(action_states(stale))
+
+            try:
+                result = handler(request)
+            except Exception as exc:
+                logger.warning("Workbench command %s failed: %s", action_id, exc)
+                self.detail.setPlainText(f"{action_id} failed: {exc}")
+                return
+
+            if not should_accept_command_result(snapshot, result):
+                self.detail.setPlainText(result.message)
+                return
+            if result.refresh_requested:
+                self.refresh()
+            else:
+                self.detail.setPlainText(result.message)
 
         def refresh(self) -> None:
             if self._func_ea is None:
