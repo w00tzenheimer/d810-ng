@@ -46,6 +46,12 @@ from d810.manager.workbench_models import (
     WorkbenchCommandResult,
     WorkbenchComparisonSnapshot,
 )
+from d810.manager.workbench_recipe_models import (
+    FunctionPipelineOverride,
+    PassCatalogEntry,
+    PipelineRecipeDraft,
+    RecipeValidation,
+)
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
@@ -301,6 +307,42 @@ class D810State(metaclass=SingletonMeta):
         identity: ComparisonIdentity,
     ) -> WorkbenchComparisonSnapshot:
         return self.manager.get_workbench_comparison(identity)
+
+    def get_workbench_recipe_catalog(self) -> tuple[PassCatalogEntry, ...]:
+        return self.manager.get_workbench_recipe_catalog()
+
+    def create_workbench_recipe_draft(
+        self,
+        snapshot: DeobfuscationWorkbenchSnapshot,
+    ) -> PipelineRecipeDraft:
+        runtime_project = self.current_runtime_project
+        if runtime_project is None:
+            raise RuntimeError("No runtime project is available for the recipe")
+        return self.manager.create_workbench_recipe_draft(snapshot, runtime_project)
+
+    def validate_workbench_recipe(
+        self,
+        draft: PipelineRecipeDraft,
+        *,
+        facts: object | None = None,
+    ) -> RecipeValidation:
+        return self.manager.validate_workbench_recipe(draft, facts=facts)
+
+    def save_workbench_function_recipe(
+        self,
+        draft: PipelineRecipeDraft,
+        validation: RecipeValidation,
+    ) -> FunctionPipelineOverride:
+        return self.manager.save_workbench_function_recipe(draft, validation)
+
+    def get_workbench_function_recipe(
+        self,
+        function_ea: int,
+    ) -> FunctionPipelineOverride | None:
+        return self.manager.get_workbench_function_recipe(function_ea)
+
+    def clear_workbench_function_recipe(self, function_ea: int) -> bool:
+        return self.manager.clear_workbench_function_recipe(function_ea)
 
     def execute_workbench_analyze(
         self,
