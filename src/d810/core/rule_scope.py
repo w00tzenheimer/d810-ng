@@ -18,6 +18,7 @@ class RuleScopeEvent(enum.Enum):
     PROJECT_RULES_RELOADED = "project_rules_reloaded"
     IDB_OVERLAY_RELOADED = "idb_overlay_reloaded"
     FUNCTION_OVERRIDE_UPDATED = "function_override_updated"
+    FUNCTION_RECIPE_UPDATED = "function_recipe_updated"
     FUNCTION_TAGS_UPDATED = "function_tags_updated"
     INFERENCE_APPLIED = "inference_applied"
     INFERENCE_CLEARED = "inference_cleared"
@@ -324,6 +325,7 @@ class RuleScopeService:
     def invalidate(self, payload: RuleScopeInvalidation) -> None:
         partial_reasons = {
             RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
+            RuleScopeEvent.FUNCTION_RECIPE_UPDATED,
             RuleScopeEvent.FUNCTION_TAGS_UPDATED,
             RuleScopeEvent.HINTS_APPLIED,
         }

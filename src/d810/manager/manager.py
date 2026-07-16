@@ -58,6 +58,9 @@ from d810.passes.recon_runtime_factory import (
 from d810.passes.scheduler import PassScheduler
 from d810.passes.store import shutdown_all_writers
 from d810.manager.flowgraph_ready import FlowGraphReadySubscriber
+from d810.manager.function_recipe_runtime import (
+    FunctionRecipeRuntime,
+)
 from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
 from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
 from d810.manager.profiling import ProfilingController
@@ -74,6 +77,15 @@ from d810.manager.workbench_models import (
     WorkbenchComparisonSnapshot,
 )
 from d810.manager.workbench_service import WorkbenchService
+from d810.manager.workbench_recipe_models import (
+    FunctionPipelineOverride,
+    PassCatalogEntry,
+    PipelineRecipeDraft,
+    RecipeValidation,
+)
+from d810.manager.workbench_recipe_service import RecipeService
+from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
+from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
 
 
 D810_LOG_DIR_NAME = "d810_logs"
@@ -142,6 +154,8 @@ class D810Manager:
     profiling: ProfilingController = dataclasses.field(init=False)
     rule_scope_runtime: RuleScopeRuntime = dataclasses.field(init=False)
     comparison_service: WorkbenchComparisonService = dataclasses.field(init=False)
+    recipe_service: RecipeService = dataclasses.field(init=False)
+    function_recipe_runtime: FunctionRecipeRuntime = dataclasses.field(init=False)
     workbench_service: WorkbenchService = dataclasses.field(init=False)
     instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
@@ -168,7 +182,14 @@ class D810Manager:
             config_provider=lambda: self.config,
         )
         self.comparison_service = WorkbenchComparisonService()
-        self.workbench_service = WorkbenchService(self)
+        workbench_registry = operational_config_v2_pass_registry()
+        self.recipe_service = RecipeService(workbench_registry)
+        self.function_recipe_runtime = FunctionRecipeRuntime(
+            storage_provider=lambda: self.rule_scope_runtime.storage,
+            event_emitter=self.event_emitter,
+            project_name_provider=lambda: str(self.config.get("project_name", "")),
+        )
+        self.workbench_service = WorkbenchService(self, registry=workbench_registry)
 
     @property
     def started(self):
@@ -234,6 +255,52 @@ class D810Manager:
     ) -> WorkbenchComparisonSnapshot:
         """Compare captured evidence only when its full identity is current."""
         return self.comparison_service.compare(identity)
+
+    def get_workbench_recipe_catalog(self) -> tuple[PassCatalogEntry, ...]:
+        return self.recipe_service.catalog()
+
+    def create_workbench_recipe_draft(
+        self,
+        snapshot: DeobfuscationWorkbenchSnapshot,
+        runtime_project: object,
+    ) -> PipelineRecipeDraft:
+        return self.recipe_service.create_draft(
+            function_ea=snapshot.function.ea,
+            function_fingerprint=snapshot.function.fingerprint,
+            workbench_generation=snapshot.generation,
+            source_path=snapshot.runtime.source_path,
+            runtime_path=snapshot.runtime.runtime_path,
+            configs=pipeline_configs_from_project_config(runtime_project),
+        )
+
+    def validate_workbench_recipe(
+        self,
+        draft: PipelineRecipeDraft,
+        *,
+        facts: object | None = None,
+    ) -> RecipeValidation:
+        return self.recipe_service.validate(draft, facts=facts)
+
+    def get_workbench_function_recipe(
+        self,
+        function_ea: int,
+    ) -> FunctionPipelineOverride | None:
+        return self.function_recipe_runtime.get(function_ea)
+
+    def save_workbench_function_recipe(
+        self,
+        draft: PipelineRecipeDraft,
+        validation: RecipeValidation,
+    ) -> FunctionPipelineOverride:
+        pass_configs_json = self.recipe_service.serialize_enabled_configs(draft)
+        return self.function_recipe_runtime.save(
+            draft,
+            validation,
+            pass_configs_json=pass_configs_json,
+        )
+
+    def clear_workbench_function_recipe(self, function_ea: int) -> bool:
+        return self.function_recipe_runtime.clear(function_ea)
 
     def get_workbench_snapshot(
         self,
