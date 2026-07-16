@@ -46,3 +46,19 @@ pass. Live IDA output reports `D810 initialized (version 0.6.6)` from the
 selected worktree without the prior traceback, and the opened worktree copy
 still matches the canonical source SHA-256. The ticket remains open for visual
 workbench acceptance.
+
+**2026-07-16T18:10:32Z**
+
+Live config-window acceptance exposed a virtualenv-specific Qt detection bug:
+IDAPython reported `sys.executable=/app/ida/.venv/bin/python3`, so `qt_shim`
+misclassified GUI IDA as headless and substituted its proxy layouts. The first
+real nested layout call then failed with `AttributeError: 'QVBoxLayout' object
+has no attribute 'addLayout'`. Replaced the executable-name heuristic with
+IDA's own `idaapi.is_idaq()` oracle and added a regression for virtualenv-backed
+IDAPython. The live post-fix probe reports `qt_available=true`, binding
+`PySide6`, layout module `PySide6.QtWidgets`, and `addLayout=true`. The D-810
+Configuration dock now renders the routed OLLVM source/runtime identities, 11
+effective passes, and 180 instruction / 6 block expanded rules without the
+callback traceback. Verification: 5906 unit tests passed, 29 skipped, 9
+unchanged contract-vocabulary warnings, and 162 subtests; ast-grep, all 13
+import contracts, and diff checks are clean.
