@@ -38,6 +38,7 @@ from d810.manager.project_runtime import (
     clone_runtime_project as clone_runtime_project_command,
     save_legacy_project as save_legacy_project_command,
 )
+from d810.manager.workbench_models import DeobfuscationWorkbenchSnapshot
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
@@ -250,6 +251,28 @@ class D810State(metaclass=SingletonMeta):
         if snapshot is None:
             raise RuntimeError("No project runtime snapshot is available")
         return snapshot
+
+    def get_workbench_snapshot(
+        self,
+        function_ea: int,
+        function_name: str = "",
+        function_fingerprint: str | None = None,
+        *,
+        facts: typing.Any | None = None,
+    ) -> DeobfuscationWorkbenchSnapshot:
+        """Collect workbench truth for the current source/runtime project pair."""
+        project_snapshot = self.current_project_runtime_snapshot
+        runtime_project = self.current_runtime_project
+        if project_snapshot is None or runtime_project is None:
+            raise RuntimeError("No runtime project is available for the workbench")
+        return self.manager.get_workbench_snapshot(
+            function_ea=function_ea,
+            function_name=function_name,
+            function_fingerprint=function_fingerprint,
+            project_snapshot=project_snapshot,
+            runtime_project=runtime_project,
+            facts=facts,
+        )
 
     def clone_current_runtime_project(
         self,
