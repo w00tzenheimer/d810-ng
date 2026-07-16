@@ -142,6 +142,7 @@ def recipe_action_states(
     *,
     workbench_current: bool,
     engine_started: bool,
+    project_profile_save_available: bool = False,
 ) -> tuple[RecipeActionState, ...]:
     exact_validation = (
         validation.draft_id == draft.draft_id
@@ -162,6 +163,13 @@ def recipe_action_states(
     else:
         apply_reason = validation_reason
     save_enabled = workbench_current and valid
+    project_save_enabled = save_enabled and project_profile_save_available
+    if not project_profile_save_available:
+        project_save_reason = "A lossless config-v2 serializer is not available for this project."
+    elif not workbench_current:
+        project_save_reason = stale_reason
+    else:
+        project_save_reason = validation_reason
     return (
         RecipeActionState("reset", "Reset to effective pipeline", workbench_current, "" if workbench_current else stale_reason),
         RecipeActionState("analyze", "Analyze recipe", workbench_current, "" if workbench_current else stale_reason),
@@ -175,8 +183,8 @@ def recipe_action_states(
         RecipeActionState(
             "save_project",
             "Save as project profile",
-            False,
-            "Lossless project-profile editing is delivered in Slice 5.",
+            project_save_enabled,
+            "" if project_save_enabled else project_save_reason,
         ),
     )
 

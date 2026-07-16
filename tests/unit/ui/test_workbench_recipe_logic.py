@@ -128,9 +128,21 @@ def test_recipe_action_enablement_requires_current_valid_started_identity() -> N
     assert ready["apply_once"].enabled is True
     assert ready["save_function"].enabled is True
     assert ready["save_project"].enabled is False
-    assert "Slice 5" in ready["save_project"].reason
+    assert "serializer" in ready["save_project"].reason
     assert blocked["apply_once"].enabled is False
     assert blocked["save_function"].enabled is False
+
+    project_ready = {
+        item.action_id: item
+        for item in logic.recipe_action_states(
+            _draft(),
+            _validation(),
+            workbench_current=True,
+            engine_started=False,
+            project_profile_save_available=True,
+        )
+    }
+    assert project_ready["save_project"].enabled is True
 
 
 def test_recipe_command_request_and_completion_bind_exact_draft_identity() -> None:

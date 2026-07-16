@@ -46,6 +46,11 @@ from d810.manager.project_runtime import (
     clone_runtime_project as clone_runtime_project_command,
     save_legacy_project as save_legacy_project_command,
 )
+from d810.manager.config_v2_edit_models import (
+    ConfigV2FieldSerializer,
+    ConfigV2ProjectDraft,
+    ConfigV2ProjectValidation,
+)
 from d810.manager.workbench_models import (
     BaselineRef,
     D810OutputRef,
@@ -381,6 +386,102 @@ class D810State(metaclass=SingletonMeta):
             checkpoint_wal=checkpoint_wal,
             vacuum_after=vacuum_after,
         )
+
+    def get_config_v2_serializer_manifest(self) -> tuple[ConfigV2FieldSerializer, ...]:
+        return self.manager.get_config_v2_serializer_manifest()
+
+    def create_config_v2_project_draft(
+        self, destination: pathlib.Path
+    ) -> ConfigV2ProjectDraft:
+        runtime_project = self.current_runtime_project
+        if runtime_project is None:
+            raise RuntimeError("No runtime project is available for config-v2 editing")
+        return self.manager.create_config_v2_project_draft(
+            runtime_project,
+            destination=destination,
+        )
+
+    def validate_config_v2_project_draft(
+        self, draft: ConfigV2ProjectDraft
+    ) -> ConfigV2ProjectValidation:
+        return self.manager.validate_config_v2_project_draft(draft)
+
+    def set_config_v2_description(
+        self, draft: ConfigV2ProjectDraft, description: str
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.set_config_v2_description(draft, description)
+
+    def add_config_v2_pass(
+        self,
+        draft: ConfigV2ProjectDraft,
+        pass_id: str,
+        *,
+        index: int | None = None,
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.add_config_v2_pass(draft, pass_id, index=index)
+
+    def remove_config_v2_pass(
+        self, draft: ConfigV2ProjectDraft, pass_index: int
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.remove_config_v2_pass(draft, pass_index)
+
+    def reorder_config_v2_pass(
+        self, draft: ConfigV2ProjectDraft, pass_index: int, new_index: int
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.reorder_config_v2_pass(draft, pass_index, new_index)
+
+    def set_config_v2_pass_rules(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        pass_index: int,
+        include: typing.Sequence[str],
+        exclude: typing.Sequence[str],
+        options: typing.Mapping[str, object],
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.set_config_v2_pass_rules(
+            draft,
+            pass_index=pass_index,
+            include=include,
+            exclude=exclude,
+            options=options,
+        )
+
+    def set_config_v2_routing_override(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        prefer: typing.Mapping[str, float],
+        require: str | None,
+        deny: typing.Sequence[str],
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.set_config_v2_routing_override(
+            draft,
+            prefer=prefer,
+            require=require,
+            deny=deny,
+        )
+
+    def materialize_recipe_as_config_v2(
+        self,
+        draft: ConfigV2ProjectDraft,
+        recipe: PipelineRecipeDraft,
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.materialize_recipe_as_config_v2(draft, recipe)
+
+    def save_and_reload_config_v2_project(
+        self,
+        draft: ConfigV2ProjectDraft,
+        validation: ConfigV2ProjectValidation,
+    ) -> ProjectConfiguration:
+        saved = self.manager.save_config_v2_project(draft, validation)
+        name = saved.path.name
+        if name in self.project_manager.project_names():
+            previous = self.project_manager.get(name)
+            self.update_project(previous, saved)
+        else:
+            self.add_project(saved)
+        return self.load_project(self.project_manager.index(name))
 
     def get_workbench_recipe_catalog(self) -> tuple[PassCatalogEntry, ...]:
         return self.manager.get_workbench_recipe_catalog()
