@@ -11,6 +11,7 @@ from d810.core import (
     typing,
 )
 from d810.core.logging import getLogger
+from d810.core.observability import get_active_diag_path
 from d810.core.project import (
     emit_recon_fact_collector_registration,
 )
@@ -28,6 +29,16 @@ from d810.backends.hexrays.registration import (
     ensure_hexrays_fact_lifter_registered,
 )
 from d810.diagnostics.post_d810_handoff import detect_post_d810_handoff_violations
+from d810.diagnostics.workbench_cleanup import DiagnosticCleanupService
+from d810.diagnostics.workbench_inventory import DiagnosticInventoryService
+from d810.diagnostics.workbench_models import (
+    DiagnosticCleanupPlan,
+    DiagnosticCleanupResult,
+    DiagnosticDatabaseSummary,
+    DiagnosticRecord,
+    DiagnosticSnapshotSummary,
+    DiagnosticViewKind,
+)
 from d810.evaluator.hexrays_microcode.dispatcher_artifacts import (
     plan_dispatcher_state_return_carrier_artifact,
 )
@@ -96,6 +107,11 @@ D810_LOG_DIR_NAME = "d810_logs"
 logger = getLogger("D810")
 
 
+def _active_diagnostic_paths() -> tuple[str, ...]:
+    path = get_active_diag_path()
+    return (path,) if path is not None else ()
+
+
 def maybe_run_tail_distinct(mba: typing.Any) -> None:
     """Env-gated hook: ``D810_TAIL_DISTINCT_BYTE`` topology-only experiment.
 
@@ -136,6 +152,9 @@ def _maturity_name(maturity: int) -> str:
 @dataclasses.dataclass
 class D810Manager:
     log_dir: pathlib.Path
+    diagnostic_active_paths_provider: typing.Callable[[], typing.Any] = (
+        dataclasses.field(default=_active_diagnostic_paths, repr=False)
+    )
     stats: OptimizationStatistics = dataclasses.field(
         default_factory=OptimizationStatistics
     )
@@ -161,6 +180,10 @@ class D810Manager:
     function_recipe_runtime: FunctionRecipeRuntime = dataclasses.field(init=False)
     recipe_command_service: WorkbenchRecipeCommandService = dataclasses.field(init=False)
     workbench_service: WorkbenchService = dataclasses.field(init=False)
+    diagnostic_inventory_service: DiagnosticInventoryService = dataclasses.field(
+        init=False
+    )
+    diagnostic_cleanup_service: DiagnosticCleanupService = dataclasses.field(init=False)
     instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
@@ -196,6 +219,14 @@ class D810Manager:
         self.workbench_service = WorkbenchService(self, registry=workbench_registry)
         self.recipe_command_service = WorkbenchRecipeCommandService(
             identity_is_current=self.workbench_service.recipe_request_is_current,
+        )
+        self.diagnostic_inventory_service = DiagnosticInventoryService(
+            roots=(self.log_dir,),
+            active_paths_provider=self.diagnostic_active_paths_provider,
+        )
+        self.diagnostic_cleanup_service = DiagnosticCleanupService(
+            active_paths_provider=self.diagnostic_active_paths_provider,
+            quarantine_directory=self.log_dir / "diagnostic_quarantine",
         )
 
     @property
@@ -239,6 +270,72 @@ class D810Manager:
         if runtime is None:
             return ()
         return tuple(runtime.outcome_log.get_func_reports(int(function_ea)))
+
+    def get_diagnostic_databases(self) -> tuple[DiagnosticDatabaseSummary, ...]:
+        return self.diagnostic_inventory_service.databases()
+
+    def get_diagnostic_snapshots(
+        self, path: pathlib.Path | str
+    ) -> tuple[DiagnosticSnapshotSummary, ...]:
+        return self.diagnostic_inventory_service.snapshots(path)
+
+    def get_diagnostic_records(
+        self,
+        path: pathlib.Path | str,
+        snapshot_id: int,
+        kind: DiagnosticViewKind,
+    ) -> tuple[DiagnosticRecord, ...]:
+        return self.diagnostic_inventory_service.records(path, snapshot_id, kind)
+
+    def plan_diagnostic_selected_snapshots(
+        self, path: pathlib.Path | str, snapshot_ids: typing.Sequence[int]
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_selected_snapshots(
+            path, snapshot_ids
+        )
+
+    def plan_diagnostic_all_snapshots(
+        self, path: pathlib.Path | str
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_all_snapshots(path)
+
+    def plan_diagnostic_keep_latest(
+        self, path: pathlib.Path | str, keep: int
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_keep_latest(path, keep)
+
+    def plan_diagnostic_older_than(
+        self, path: pathlib.Path | str, recorded_before: float
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_older_than(path, recorded_before)
+
+    def plan_diagnostic_selected_databases(
+        self, paths: typing.Iterable[pathlib.Path | str]
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_selected_databases(paths)
+
+    def plan_diagnostic_all_closed_databases(
+        self, paths: typing.Iterable[pathlib.Path | str]
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_all_closed_databases(paths)
+
+    def plan_diagnostic_vacuum(
+        self, paths: typing.Iterable[pathlib.Path | str]
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_vacuum(paths)
+
+    def execute_diagnostic_cleanup(
+        self,
+        plan: DiagnosticCleanupPlan,
+        *,
+        checkpoint_wal: bool = True,
+        vacuum_after: bool = False,
+    ) -> DiagnosticCleanupResult:
+        return self.diagnostic_cleanup_service.execute(
+            plan,
+            checkpoint_wal=checkpoint_wal,
+            vacuum_after=vacuum_after,
+        )
 
     def capture_workbench_baseline(
         self,

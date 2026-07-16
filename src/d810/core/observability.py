@@ -170,6 +170,7 @@ _session_lock = threading.Lock()
 _session_open_handler: Callable[[int], None] | None = None
 _session_close_handler: Callable[[], None] | None = None
 _diag_conn_provider: Callable[..., Any] | None = None
+_diag_path_provider: Callable[[], str | None] | None = None
 
 
 def register_diag_session_handlers(
@@ -197,6 +198,14 @@ def register_diag_conn_provider(fn: Callable[..., Any]) -> None:
     global _diag_conn_provider
     with _session_lock:
         _diag_conn_provider = fn
+
+
+def register_diag_path_provider(fn: Callable[[], str | None]) -> None:
+    """Register a non-creating provider for the active capture DB path."""
+
+    global _diag_path_provider
+    with _session_lock:
+        _diag_path_provider = fn
 
 
 def _ensure_backend_loaded() -> None:
@@ -279,6 +288,22 @@ def get_active_diag_conn(func_ea: int = 0) -> Any:
         return None
 
 
+def get_active_diag_path() -> str | None:
+    """Return the active capture DB path without opening a diagnostic DB."""
+
+    _ensure_backend_loaded()
+    provider = _diag_path_provider
+    if provider is None:
+        return None
+    try:
+        return provider()
+    except Exception:
+        _logger.warning(
+            "diag path provider raised; treating as no active path", exc_info=True,
+        )
+        return None
+
+
 _snapshot_id_resolver: Callable[["SnapshotRef"], int | None] | None = None
 
 
@@ -322,10 +347,12 @@ __all__ = [
     "close_observability_session",
     "emit",
     "get_active_diag_conn",
+    "get_active_diag_path",
     "has_subscribers",
     "new_snapshot_key",
     "open_observability_session",
     "register_diag_conn_provider",
+    "register_diag_path_provider",
     "register_diag_session_handlers",
     "register_snapshot_id_resolver",
     "reset_diagnostic_bus",

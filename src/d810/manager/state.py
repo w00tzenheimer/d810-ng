@@ -31,6 +31,14 @@ from d810.core.registry import SingletonMeta
 from d810.core.rule_scope import RuleScopeEvent
 from d810.core.stats import OptimizationStatistics
 from d810.core.typing import TYPE_CHECKING
+from d810.diagnostics.workbench_models import (
+    DiagnosticCleanupPlan,
+    DiagnosticCleanupResult,
+    DiagnosticDatabaseSummary,
+    DiagnosticRecord,
+    DiagnosticSnapshotSummary,
+    DiagnosticViewKind,
+)
 from d810.mba.rules import VerifiableRule
 from d810.manager.project_runtime import (
     ProjectRuntimeSnapshot,
@@ -309,6 +317,70 @@ class D810State(metaclass=SingletonMeta):
         identity: ComparisonIdentity,
     ) -> WorkbenchComparisonSnapshot:
         return self.manager.get_workbench_comparison(identity)
+
+    def get_diagnostic_databases(self) -> tuple[DiagnosticDatabaseSummary, ...]:
+        return self.manager.get_diagnostic_databases()
+
+    def get_diagnostic_snapshots(
+        self, path: pathlib.Path | str
+    ) -> tuple[DiagnosticSnapshotSummary, ...]:
+        return self.manager.get_diagnostic_snapshots(path)
+
+    def get_diagnostic_records(
+        self,
+        path: pathlib.Path | str,
+        snapshot_id: int,
+        kind: DiagnosticViewKind,
+    ) -> tuple[DiagnosticRecord, ...]:
+        return self.manager.get_diagnostic_records(path, snapshot_id, kind)
+
+    def plan_diagnostic_selected_snapshots(
+        self, path: pathlib.Path | str, snapshot_ids: typing.Sequence[int]
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_selected_snapshots(path, snapshot_ids)
+
+    def plan_diagnostic_all_snapshots(
+        self, path: pathlib.Path | str
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_all_snapshots(path)
+
+    def plan_diagnostic_keep_latest(
+        self, path: pathlib.Path | str, keep: int
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_keep_latest(path, keep)
+
+    def plan_diagnostic_older_than(
+        self, path: pathlib.Path | str, recorded_before: float
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_older_than(path, recorded_before)
+
+    def plan_diagnostic_selected_databases(
+        self, paths: typing.Iterable[pathlib.Path | str]
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_selected_databases(paths)
+
+    def plan_diagnostic_all_closed_databases(
+        self, paths: typing.Iterable[pathlib.Path | str]
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_all_closed_databases(paths)
+
+    def plan_diagnostic_vacuum(
+        self, paths: typing.Iterable[pathlib.Path | str]
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_vacuum(paths)
+
+    def execute_diagnostic_cleanup(
+        self,
+        plan: DiagnosticCleanupPlan,
+        *,
+        checkpoint_wal: bool = True,
+        vacuum_after: bool = False,
+    ) -> DiagnosticCleanupResult:
+        return self.manager.execute_diagnostic_cleanup(
+            plan,
+            checkpoint_wal=checkpoint_wal,
+            vacuum_after=vacuum_after,
+        )
 
     def get_workbench_recipe_catalog(self) -> tuple[PassCatalogEntry, ...]:
         return self.manager.get_workbench_recipe_catalog()
