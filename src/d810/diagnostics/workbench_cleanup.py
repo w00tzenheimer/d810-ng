@@ -490,6 +490,25 @@ class DiagnosticCleanupService:
     def _quarantine_target(
         self, target: DiagnosticCleanupTarget
     ) -> DiagnosticOperationOutcome:
+        try:
+            current = self._target(target.path, None)
+        except DiagnosticCleanupPlanError as error:
+            return self._outcome(
+                DiagnosticOperation.QUARANTINE,
+                target.path,
+                DiagnosticOperationStatus.FAILED,
+                str(error),
+            )
+        if (
+            current.snapshot_ids != target.snapshot_ids
+            or current.estimated_rows != target.estimated_rows
+        ):
+            return self._outcome(
+                DiagnosticOperation.QUARANTINE,
+                target.path,
+                DiagnosticOperationStatus.FAILED,
+                "cleanup plan is stale; database contents changed before quarantine",
+            )
         source = Path(target.path)
         root = self._quarantine_directory or source.parent / ".d810-quarantine"
         root.mkdir(parents=True, exist_ok=True)
@@ -576,7 +595,19 @@ class DiagnosticCleanupService:
                 quarantine.append(self._quarantine_target(target))
                 continue
             if plan.scope is DiagnosticCleanupScope.VACUUM:
-                vacuum.append(self._vacuum_outcome(target.path))
+                try:
+                    self._target(target.path, None)
+                except DiagnosticCleanupPlanError as error:
+                    vacuum.append(
+                        self._outcome(
+                            DiagnosticOperation.VACUUM,
+                            target.path,
+                            DiagnosticOperationStatus.FAILED,
+                            str(error),
+                        )
+                    )
+                else:
+                    vacuum.append(self._vacuum_outcome(target.path))
                 continue
 
             logical_outcome = self._delete_target(target)

@@ -76,6 +76,7 @@ class DiagnosticField:
     name: str
     value: Any
     display: str
+    anchor_ea: int | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -86,6 +87,7 @@ class DiagnosticRecord:
     ordinal: int
     fields: tuple[DiagnosticField, ...]
     warnings: tuple[str, ...]
+    anchor_ea: int | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

@@ -128,12 +128,35 @@ def test_structured_views_anchor_every_block_identity_and_omit_unanchored_serial
 
     first = {field.name: field for field in block_records[0].fields}
     assert first["serial"].display == "blk7@0x401010"
+    assert block_records[0].anchor_ea == 0x401010
     assert first["succs"].display == "blk8@0x401020"
     edge = {field.name: field for field in state_records[0].fields}
     assert edge["source_block"].display == "blk7@0x401010"
     assert edge["target_entry"].value is None
     assert edge["target_entry"].display == "<block anchor unavailable>"
     assert state_records[0].warnings == ("Block anchor unavailable for target_entry",)
+
+
+def test_supported_legacy_state_cfg_tables_remain_structurally_inspectable(tmp_path: Path):
+    path = _database(
+        tmp_path / "legacy.diag.sqlite3",
+        ((1, "one", "0x401000", 0x401000, "M1", "post_d810", 1, 20.0),),
+    )
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE dag_nodes (snapshot_id INTEGER, entry_block INTEGER)")
+    connection.execute("INSERT INTO blocks VALUES (?,?,?,?)", (1, 7, "0x401010", "[]"))
+    connection.execute("INSERT INTO dag_nodes VALUES (?,?)", (1, 7))
+    connection.commit()
+    connection.close()
+
+    records = DiagnosticInventoryService(roots=(tmp_path,)).records(
+        path, 1, DiagnosticViewKind.STATE_MACHINE
+    )
+
+    assert records[0].source_table == "dag_nodes"
+    assert {field.name: field.display for field in records[0].fields}["entry_block"] == (
+        "blk7@0x401010"
+    )
 
 
 def test_unreadable_or_non_database_file_is_reported_without_mutation(tmp_path: Path):

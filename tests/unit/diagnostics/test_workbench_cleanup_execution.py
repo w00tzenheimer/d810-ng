@@ -102,6 +102,30 @@ def test_schema_drift_after_plan_fails_closed_and_preserves_rows(tmp_path: Path)
     assert _ids(path) == (1, 2)
 
 
+def test_schema_drift_blocks_quarantine_and_vacuum_after_plan(tmp_path: Path):
+    quarantine_path = _full_owned_database(tmp_path / "quarantine-drift.diag.sqlite3")
+    vacuum_path = _full_owned_database(tmp_path / "vacuum-drift.diag.sqlite3")
+    service = DiagnosticCleanupService(
+        active_paths_provider=lambda: (), quarantine_directory=tmp_path / "quarantine"
+    )
+    quarantine_plan = service.plan_selected_databases((quarantine_path,))
+    vacuum_plan = service.plan_vacuum((vacuum_path,))
+    for path in (quarantine_path, vacuum_path):
+        connection = sqlite3.connect(path)
+        connection.execute("CREATE TABLE mystery (snapshot_id INTEGER, payload TEXT)")
+        connection.commit()
+        connection.close()
+
+    quarantine_result = service.execute(quarantine_plan)
+    vacuum_result = service.execute(vacuum_plan)
+
+    assert quarantine_result.quarantine[0].status is DiagnosticOperationStatus.FAILED
+    assert "mystery" in quarantine_result.quarantine[0].detail
+    assert quarantine_path.exists()
+    assert vacuum_result.vacuum[0].status is DiagnosticOperationStatus.FAILED
+    assert "mystery" in vacuum_result.vacuum[0].detail
+
+
 def test_integrity_failure_rolls_back_complete_operation(tmp_path: Path):
     path = _full_owned_database(tmp_path / "rollback.diag.sqlite3")
 
@@ -201,15 +225,22 @@ def test_database_cleanup_moves_database_and_sidecars_to_quarantine(tmp_path: Pa
     path = _full_owned_database(tmp_path / "delete.diag.sqlite3")
     wal = Path(str(path) + "-wal")
     shm = Path(str(path) + "-shm")
-    wal.write_bytes(b"wal")
-    shm.write_bytes(b"shm")
+    live_files = sqlite3.connect(path)
+    live_files.execute("PRAGMA journal_mode=WAL")
+    live_files.execute("UPDATE snapshots SET timestamp=timestamp WHERE id=1")
+    live_files.commit()
+    assert wal.exists()
+    assert shm.exists()
     quarantine = tmp_path / "quarantine"
     service = DiagnosticCleanupService(
         active_paths_provider=lambda: (), quarantine_directory=quarantine
     )
     plan = service.plan_selected_databases((path,))
 
-    result = service.execute(plan)
+    try:
+        result = service.execute(plan)
+    finally:
+        live_files.close()
 
     assert result.quarantine[0].status is DiagnosticOperationStatus.SUCCEEDED
     assert result.quarantine[0].affected == 3
