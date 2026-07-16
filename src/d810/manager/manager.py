@@ -63,10 +63,15 @@ from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
 from d810.manager.profiling import ProfilingController
 from d810.manager.project_runtime import ProjectRuntimeSnapshot
 from d810.manager.rule_scope_runtime import RuleScopeRuntime
+from d810.manager.workbench_comparison import (
+    ComparisonIdentity,
+    WorkbenchComparisonService,
+)
 from d810.manager.workbench_models import (
     BaselineRef,
     D810OutputRef,
     DeobfuscationWorkbenchSnapshot,
+    WorkbenchComparisonSnapshot,
 )
 from d810.manager.workbench_service import WorkbenchService
 
@@ -136,6 +141,7 @@ class D810Manager:
     )
     profiling: ProfilingController = dataclasses.field(init=False)
     rule_scope_runtime: RuleScopeRuntime = dataclasses.field(init=False)
+    comparison_service: WorkbenchComparisonService = dataclasses.field(init=False)
     workbench_service: WorkbenchService = dataclasses.field(init=False)
     instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
@@ -161,6 +167,7 @@ class D810Manager:
             project_name_provider=lambda: str(self.config.get("project_name", "")),
             config_provider=lambda: self.config,
         )
+        self.comparison_service = WorkbenchComparisonService()
         self.workbench_service = WorkbenchService(self)
 
     @property
@@ -204,6 +211,29 @@ class D810Manager:
         if runtime is None:
             return ()
         return tuple(runtime.outcome_log.get_func_reports(int(function_ea)))
+
+    def capture_workbench_baseline(
+        self,
+        identity: ComparisonIdentity,
+        pseudocode: str,
+    ) -> BaselineRef:
+        """Store one native Hex-Rays baseline as immutable evidence."""
+        return self.comparison_service.capture_baseline(identity, pseudocode)
+
+    def capture_workbench_d810_output(
+        self,
+        identity: ComparisonIdentity,
+        pseudocode: str,
+    ) -> D810OutputRef:
+        """Store one normal D810 output as immutable evidence."""
+        return self.comparison_service.capture_d810_output(identity, pseudocode)
+
+    def get_workbench_comparison(
+        self,
+        identity: ComparisonIdentity,
+    ) -> WorkbenchComparisonSnapshot:
+        """Compare captured evidence only when its full identity is current."""
+        return self.comparison_service.compare(identity)
 
     def get_workbench_snapshot(
         self,

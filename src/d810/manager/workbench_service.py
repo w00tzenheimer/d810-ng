@@ -254,6 +254,15 @@ class WorkbenchService:
             statistics = StatisticsSummary((), (), (), 0, (), 0)
             errors.append(f"statistics: {exc}")
 
+        if baseline is None or latest_output is None:
+            comparison_service = getattr(self._manager, "comparison_service", None)
+            if comparison_service is not None:
+                stored_baseline, stored_output = comparison_service.refs(function_ea)
+                if baseline is None:
+                    baseline = stored_baseline
+                if latest_output is None:
+                    latest_output = stored_output
+
         return DeobfuscationWorkbenchSnapshot(
             generation=generation,
             function=FunctionRef(
