@@ -26,8 +26,8 @@ Options:
                        Set D810_DIAG_SNAPSHOT=1 in the container.
   --disable-fact-lifecycle
                        Set D810_FACT_LIFECYCLE=0 in the container.
-  --open-config        Open and focus the D-810 Configuration dock at startup.
-  --open-workbench     Open and focus the D810 workbench at startup.
+  --open-config        Open and focus the D-810 Configuration dock in the target IDA session.
+  --open-workbench     Open and focus the D810 workbench in the target IDA session.
   --function FUNCTION  Exact function name or integer EA for the workbench;
                        without it, the workbench uses IDA's current function.
   --connect            Run named actions in an existing loopback MCP IDA session.
@@ -677,34 +677,34 @@ PLAN_REQUEST_PATH="${AUTOMATION_REQUEST_HOST_PATH:-N/A}"
 PLAN_AUDIT_PATH="${AUTOMATION_AUDIT_PATH:-N/A}"
 print_pre_action_plan
 
-printf '%s plan:\n' "$0"
-printf '  image:     %s\n' "$DOCKER_IMAGE"
-printf '  runtime:   %s=%s\n' "$GUI_RUNTIME_LABEL_KEY" "$GUI_RUNTIME_LABEL"
-printf '  memory:    %s\n' "$DOCKER_MEMORY"
-printf '  checkout:  %s\n' "$WORK_DIR"
-printf '  plugin:    %s -> /root/.idapro/plugins/d810\n' "$WORK_DIR"
+printf '%q plan:\n' "$0"
+printf '  image:     %q\n' "$DOCKER_IMAGE"
+printf '  runtime:   %q=%q\n' "$GUI_RUNTIME_LABEL_KEY" "$GUI_RUNTIME_LABEL"
+printf '  memory:    %q\n' "$DOCKER_MEMORY"
+printf '  checkout:  %q\n' "$WORK_DIR"
+printf '  plugin:    %q -> /root/.idapro/plugins/d810\n' "$WORK_DIR"
 printf '  ida reg:   image-owned (preserves Linux IDAPython target)\n'
-printf '  d810 cfg:  %s -> /root/.idapro/cfg/d810 (read-write)\n' "$D810_CONFIG_DIR"
-printf '  d810 logs: %s -> /root/.idapro/logs (read-write)\n' "$D810_LOG_DIR"
+printf '  d810 cfg:  %q -> /root/.idapro/cfg/d810 (read-write)\n' "$D810_CONFIG_DIR"
+printf '  d810 logs: %q -> /root/.idapro/logs (read-write)\n' "$D810_LOG_DIR"
 if [ "$D810_CONTAINER_LOG_DIR" != "/root/.idapro/logs" ]; then
-  printf '  log alias: %s -> %s (matches options.json)\n' \
+  printf '  log alias: %q -> %q (matches options.json)\n' \
     "$D810_LOG_DIR" "$D810_CONTAINER_LOG_DIR"
 fi
 if [ -d "$SAMPLES_DIR" ]; then
-  printf '  samples:   %s -> /samples/bins (read-only)\n' "$SAMPLES_DIR"
+  printf '  samples:   %q -> /samples/bins (read-only)\n' "$SAMPLES_DIR"
 fi
 if [ -n "$IDA_DATABASE_COPY" ]; then
-  printf '  db copy:   %s\n' "$IDA_DATABASE_COPY"
+  printf '  db copy:   %q\n' "$IDA_DATABASE_COPY"
 fi
 if [ -n "$MOUNT_LOGS_COMPAT" ]; then
   printf '  logs:     persistent D810 logs enabled (-l compatibility)\n'
 fi
 if [ -n "$MCP_ENABLED" ]; then
-  printf '  mcp plugin: %s -> /root/.idapro/plugins/ida-pro-mcp (read-only)\n' \
+  printf '  mcp plugin: %q -> /root/.idapro/plugins/ida-pro-mcp (read-only)\n' \
     "$MCP_PLUGIN_DIR"
-  printf '  mcp endpoint: %s\n' "$MCP_ENDPOINT"
+  printf '  mcp endpoint: %q\n' "$MCP_ENDPOINT"
 fi
-printf '  display:   %s\n' "$GUI_DISPLAY"
+printf '  display:   %q\n' "$GUI_DISPLAY"
 if [ "${#IDA_ARGS[@]}" -gt 0 ]; then
   printf '  ida args:'
   printf ' %q' "${IDA_ARGS[@]}"
