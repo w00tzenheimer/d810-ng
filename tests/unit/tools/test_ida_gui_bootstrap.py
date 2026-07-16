@@ -62,7 +62,9 @@ class FakeTimerRuntime:
         self.dispatch_calls: list[object] = []
         self.dispatch_result = None
         self.dispatch_error: Exception | None = None
+        self.registration_error: Exception | None = None
         self.timer = object()
+        self.register_result = self.timer
         self.runtime = bootstrap.BootstrapRuntime(
             plugin_loaded=self.plugin_loaded,
             dispatch=self.dispatch,
@@ -83,8 +85,10 @@ class FakeTimerRuntime:
 
     def register_timer(self, interval: int, callback):
         self.registered_intervals.append(interval)
+        if self.registration_error is not None:
+            raise self.registration_error
         self.callback = callback
-        return self.timer
+        return self.register_result
 
     def fire(self) -> int:
         result = self.callback()
@@ -144,6 +148,8 @@ def _session(
     bootstrap: ModuleType,
     *,
     document: dict[str, object] | None = None,
+    register_result=...,
+    registration_error: Exception | None = None,
 ):
     request_path = Path("/work/.tmp/ida-gui/automation-request-request-bootstrap.json")
     filesystem = FakeFilesystem(
@@ -151,6 +157,9 @@ def _session(
         _request_document() if document is None else document,
     )
     timer = FakeTimerRuntime(bootstrap)
+    if register_result is not ...:
+        timer.register_result = register_result
+    timer.registration_error = registration_error
     session = bootstrap.start_bootstrap(
         request_path,
         runtime=timer.runtime,
@@ -180,6 +189,47 @@ def test_module_import_is_ida_free_and_live_calls_are_deferred_to_seams() -> Non
     )
 
     assert not any(name.startswith("ida") for name in top_level_imports)
+
+
+def test_timer_registration_returning_none_publishes_atomic_failed_audit() -> None:
+    bootstrap = _bootstrap()
+    session, timer, filesystem = _session(bootstrap, register_result=None)
+
+    audit = _audit(filesystem)
+    assert audit["schema_version"] == 1
+    assert audit["status"] == "failed"
+    assert audit["error"] == (
+        "timer registration failed: register_timer returned no timer object"
+    )
+    assert audit["commands"][0]["status"] == "failed"
+    assert session.finished is True
+    assert timer.dispatch_calls == []
+    assert timer.unregistered == []
+    assert timer.callback() == -1
+    audit_path = Path("/work/.tmp/ida-gui/automation-request-bootstrap.json")
+    temporary_path = audit_path.with_name(f".{audit_path.name}.atomic.tmp")
+    assert filesystem.replacements == [(temporary_path, audit_path)]
+
+
+def test_timer_registration_exception_publishes_atomic_failed_audit() -> None:
+    bootstrap = _bootstrap()
+    session, timer, filesystem = _session(
+        bootstrap,
+        registration_error=RuntimeError("timer service unavailable"),
+    )
+
+    audit = _audit(filesystem)
+    assert audit["schema_version"] == 1
+    assert audit["status"] == "failed"
+    assert audit["error"] == ("timer registration failed: timer service unavailable")
+    assert audit["commands"][0]["status"] == "failed"
+    assert session.finished is True
+    assert timer.dispatch_calls == []
+    assert timer.callback is None
+    assert timer.unregistered == []
+    audit_path = Path("/work/.tmp/ida-gui/automation-request-bootstrap.json")
+    temporary_path = audit_path.with_name(f".{audit_path.name}.atomic.tmp")
+    assert filesystem.replacements == [(temporary_path, audit_path)]
 
 
 def test_polling_waits_for_loaded_plugin_then_dispatches_exactly_once() -> None:
