@@ -48,9 +48,11 @@ def _parse_docker_calls(path: Path) -> list[list[str]]:
     for line in path.read_text(encoding="utf-8").splitlines():
         if line == "CALL":
             calls.append([])
-        else:
-            assert line.startswith("ARG="), line
+        elif line.startswith("ARG="):
             calls[-1].append(line.removeprefix("ARG="))
+        else:
+            assert calls and calls[-1], line
+            calls[-1][-1] += f"\n{line}"
     return calls
 
 
@@ -313,7 +315,7 @@ def test_mcp_mounts_resolved_source_read_only_and_publishes_only_loopback(
     )
     assert _automation_environment(run).endswith(request_path.name)
     assert (
-        f"mcp plugin: {paths['mcp_source'].resolve()} -> "
+        f"mcp plugin: {str(paths['mcp_source'].resolve()).replace(' ', '\\ ')} -> "
         "/root/.idapro/plugins/ida-pro-mcp (read-only)"
     ) in result.stdout
     assert "mcp endpoint: http://127.0.0.1:13337/mcp" in result.stdout
@@ -698,6 +700,40 @@ def test_connect_plan_shell_quotes_control_text_without_forged_fields(
     plan_lines = result.stdout.splitlines()
     assert forged_line not in plan_lines
     assert len([line for line in plan_lines if line.startswith("  audit path:")]) == 1
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected_line", "forged_line", "structured_prefix"),
+    (
+        (
+            {"D810_DOCKER_MEMORY": "4g\n  display: forged-memory"},
+            "  memory:    $'4g\\n  display: forged-memory'",
+            "  display: forged-memory",
+            "  display:",
+        ),
+        (
+            {"D810_GUI_DISPLAY": ("host.docker.internal:0\n  image: forged-display")},
+            "  display:   $'host.docker.internal:0\\n  image: forged-display'",
+            "  image: forged-display",
+            "  image:",
+        ),
+    ),
+)
+def test_fresh_detailed_plan_shell_quotes_environment_control_text(
+    tmp_path: Path,
+    environment: dict[str, str],
+    expected_line: str,
+    forged_line: str,
+    structured_prefix: str,
+) -> None:
+    result, calls, _paths = _run(tmp_path, extra_env=environment)
+
+    assert result.returncode == 0, result.stderr
+    assert calls[-1][:2] == ["run", "--rm"]
+    assert expected_line in result.stdout
+    plan_lines = result.stdout.splitlines()
+    assert forged_line not in plan_lines
+    assert len([line for line in plan_lines if line.startswith(structured_prefix)]) == 1
 
 
 def test_default_image_is_the_baked_d810_x11_runtime(tmp_path: Path) -> None:
@@ -1085,4 +1121,13 @@ def test_help_completely_documents_fresh_and_connect_contracts(tmp_path: Path) -
     assert "Named fresh rejects caller -S* arguments after --." in result.stdout
     assert "Connect rejects every argument after --." in result.stdout
     assert "Pass all remaining arguments to IDA unchanged." not in result.stdout
+    assert (
+        "--open-config        Open and focus the D-810 Configuration dock in the "
+        "target IDA session."
+    ) in result.stdout
+    assert (
+        "--open-workbench     Open and focus the D810 workbench in the target IDA "
+        "session."
+    ) in result.stdout
+    assert "at startup" not in result.stdout
     assert calls == []
