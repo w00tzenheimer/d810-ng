@@ -21,6 +21,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     plan_terminal_return_carrier_requests,
     plan_resolver_proven_indirect_call_neutralizations,
     route_materialized_transfer_chain,
+    route_transfer_target_through_condition_chain,
     plan_residual_state_route_bridges,
     unique_materialized_equality_target_eas,
 )
@@ -157,6 +158,27 @@ def test_equality_target_projection_uses_condition_chain_fallback() -> None:
     assert unique_materialized_equality_target_eas((transfer,), 20) == {
         state: 0x40BCA3,
     }
+
+
+def test_equality_candidate_requires_registered_live_target() -> None:
+    state = 0xAB7BA295
+    target_ea = 0x40DD70
+    candidate = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40DD6E,
+        source_block_ea=0x40DD58,
+        materialized_anchor_eas=(),
+        target_eas=(target_ea,),
+        selector_state_var_reg=28,
+        selector_state_constant=state,
+        resolver_kind="static_equality_candidate",
+    )
+
+    assert unique_materialized_equality_target_eas((candidate,), 28) == {}
+    assert unique_materialized_equality_target_eas(
+        (candidate,),
+        28,
+        validated_candidate_target_eas=frozenset({target_ea}),
+    ) == {state: target_ea}
 
 
 def test_static_handler_entry_route_outranks_condition_chain_leaf() -> None:
@@ -1242,6 +1264,42 @@ def test_materialized_transfer_chain_walks_detached_bst_to_known_handler():
     ) == 3
 
 
+def test_materialized_transfer_chain_does_not_erase_state_key_mismatch():
+    graph = FlowGraph(
+        blocks={
+            1: _block(1, 0x1000, (0x1002,)),
+            2: _block(2, 0x2000),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    keyed_singleton = MaterializedIndirectTransfer(
+        source_jmp_ea=0x1010,
+        source_block_ea=0x1000,
+        materialized_anchor_eas=(0x1002,),
+        target_eas=(0x2000,),
+        selector_state_constant=0xE0606B6D,
+        resolver_kind="static_equality_route",
+    )
+
+    assert route_materialized_transfer_chain(
+        graph,
+        (keyed_singleton,),
+        start_block=1,
+        state_constant=0xE0606B6D,
+        state_var_reg=20,
+        handler_serials=frozenset({2}),
+    ) == 2
+    assert route_materialized_transfer_chain(
+        graph,
+        (keyed_singleton,),
+        start_block=1,
+        state_constant=0xDC71BBC5,
+        state_var_reg=20,
+        handler_serials=frozenset({2}),
+    ) is None
+
+
 def _condition_chain_graph() -> FlowGraph:
     return FlowGraph(
         blocks={
@@ -1274,6 +1332,33 @@ def _condition_chain_dag() -> DecisionDag:
         },
         root=2,
     )
+
+
+def test_condition_chain_router_ownership_wins_over_range_handler_alias() -> None:
+    graph = FlowGraph(
+        blocks={
+            1: _block(1, 0x1000, succs=(2,)),
+            2: _block(2, 0x2000, succs=(3, 4)),
+            3: _block(3, 0x3000),
+            4: _block(4, 0x4000),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    dag = DecisionDag(
+        32,
+        {2: RouteComparison(2, "jz", 0xDEAD, 3, 4)},
+        root=2,
+    )
+
+    assert route_transfer_target_through_condition_chain(
+        graph,
+        dag,
+        target_block=1,
+        state_constant=0xDEAD,
+        # Interval backfill can alias a router as a provisional handler.
+        handler_serials=frozenset({2, 3, 4}),
+    ) == 3
 
 
 @pytest.mark.parametrize(

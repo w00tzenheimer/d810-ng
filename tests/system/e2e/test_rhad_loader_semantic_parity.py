@@ -63,8 +63,20 @@ def _run_worker(binary: pathlib.Path, output_path: pathlib.Path) -> None:
             try:
                 mark_indirect_dispatcher(_FUNCTION_EA)
                 ida_hexrays.clear_cached_cfuncs()
-                first_round = ida_hexrays.decompile(_FUNCTION_EA)
-                assert first_round is not None
+                first_failure = ida_hexrays.hexrays_failure_t()
+                first_round = ida_hexrays.decompile(_FUNCTION_EA, first_failure)
+                assert first_round is not None, (
+                    "first decompile failed: "
+                    f"code={int(first_failure.code)} "
+                    f"ea=0x{int(first_failure.errea):X} "
+                    f"description={first_failure.desc()!r}"
+                )
+                assert int(first_failure.code) == 0, (
+                    "first decompile returned a cfunc with a failure: "
+                    f"code={int(first_failure.code)} "
+                    f"ea=0x{int(first_failure.errea):X} "
+                    f"description={first_failure.desc()!r}"
+                )
                 assert (
                     cg.prepare_detached_handler_snippets(
                         _FUNCTION_EA,

@@ -10,6 +10,7 @@ import pytest
 from d810.core.maturity_labels import IDA_MMAT_LOCOPT, IDA_MMAT_PREOPTIMIZED
 from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     ComputedGotoResolution,
+    _ConcreteDispatchResult,
     _ConcreteHandlerStateWrite,
     _build_conditional_handler_state_routes,
     _build_materialized_state_routes,
@@ -32,6 +33,7 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     _exact_equality_fragment_transfers,
     _equality_transfers_activated_by_targets,
     _exact_equality_native_target,
+    _dispatcher_context_register_values,
     _function_context_register_values,
     _is_concrete_handler_entry,
     _is_ignorable_corridor_store,
@@ -44,12 +46,14 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     _plan_misrouted_exact_state_route_patches,
     _plan_exact_state_write_route_patches,
     _plan_all_residual_state_route_patches,
+    _plan_detached_resolver_cut_boundary_ports,
     _build_residual_state_route_evidence,
     _residual_predicate_inherited_states,
     _partition_residual_route_branches,
     recover_conditional_handler_bridge_transfers_from_mba,
     _recover_condition_chain_handler_transfers_from_mba,
     _recover_static_handler_entry_route_transfers,
+    _resolve_native_setcc_route_facts,
     _select_register_indirect_patch_region,
     _choose_dispatch_patch_region,
     _claim_exact_function_tail_range,
@@ -67,6 +71,9 @@ from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
 from d810.hexrays.hooks.optimization_suppression import (
     d810_optimization_is_suppressed,
 )
+from d810.hexrays.mutation.detached_handler_island import (
+    _resolver_cut_target_for_synthetic_successor,
+)
 from d810.analyses.control_flow.minimal_state_recovery import StateWriteTransition
 from d810.analyses.control_flow.call_abi import (
     StackCallAbiEvidence,
@@ -78,6 +85,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     TerminalReturnCarrierRequest,
 )
 from d810.analyses.control_flow.semantic_transition import StateWriteAnchor
+from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
 from d810.capabilities.dispatcher import RouterKind
 from d810.ir.flowgraph import (
     BlockKind,
@@ -85,6 +93,8 @@ from d810.ir.flowgraph import (
     FlowGraph,
     InsnKind,
     InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
 )
 
 
@@ -752,7 +762,11 @@ def test_build_callinfo_derives_exact_detached_reentry_before_calls(
     monkeypatch.setattr(
         computed_goto_resolver,
         "_detached_static_terminal_transfers",
-        lambda _resolution, entry_eas: (exact,) if entry_eas == (0x1010,) else (),
+        lambda _resolution, entry_eas, *, entry_context_transfers=(): (
+            (exact,)
+            if entry_eas == (0x1010,) and entry_context_transfers == ()
+            else ()
+        ),
     )
     monkeypatch.setattr(
         computed_goto_resolver,
@@ -1490,7 +1504,9 @@ def test_detached_static_terminal_transfers_seed_each_island_from_function_conte
         entry_ea: int,
         *,
         initial_register_values: tuple[tuple[str, int], ...] = (),
+        follow_indirect_targets: bool = True,
     ) -> tuple[dict, dict, dict, dict, int]:
+        assert not follow_indirect_targets
         calls.append((entry_ea, initial_register_values))
         return (
             {0x40C703: {"ebx": frozenset({source_state})}},
@@ -1523,6 +1539,101 @@ def test_detached_static_terminal_transfers_seed_each_island_from_function_conte
     assert transfer.target_eas == (0x40AF00,)
     assert transfer.source_register_values == ((20, source_state),)
     assert transfer.resolver_kind == "detached_static_fixpoint"
+
+
+def test_detached_static_terminal_transfers_replay_exact_target_context_and_polarity(
+    monkeypatch,
+) -> None:
+    resolution = ComputedGotoResolution(
+        function_ea=0x401000,
+        jmp_targets={},
+        reachable_eas=(0x401000,),
+        arch="x86",
+        executed_insns=1,
+        seeds_run=0,
+        function_context_register_values=(("ebx", 0x1000),),
+    )
+    entry_ea = 0x402000
+    terminal_ea = 0x402010
+    target_context = MaterializedIndirectTransfer(
+        source_jmp_ea=0x401100,
+        source_block_ea=0x4010F0,
+        materialized_anchor_eas=(),
+        target_eas=(entry_ea,),
+        target_register_values=((32, 0x5000), (36, 0x6000)),
+        resolver_kind="static_equality_candidate",
+    )
+    calls: list[tuple[int, tuple[tuple[str, int], ...]]] = []
+
+    def fixpoint(
+        start_ea: int,
+        *,
+        initial_register_values: tuple[tuple[str, int], ...] = (),
+        follow_indirect_targets: bool = True,
+    ) -> tuple[dict, dict, dict, dict, int]:
+        assert not follow_indirect_targets
+        calls.append((start_ea, initial_register_values))
+        return (
+            {entry_ea: {"eax": frozenset({0})}},
+            {terminal_ea: [0x403000, 0x404000]},
+            {},
+            {terminal_ea: entry_ea},
+            7,
+        )
+
+    monkeypatch.setattr(computed_goto_resolver, "_static_resolver_fixpoint", fixpoint)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_register_values",
+        lambda values: tuple(
+            (name, value)
+            for mreg, value in values
+            for name in ({32: "edi", 36: "esi"}[mreg],)
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_static_register_state_before_jmp",
+        lambda *_args: {"eax": frozenset({0x403000, 0x404000})},
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_replay_two_way",
+        lambda *_args: {
+            "cc": 12,
+            "true": 0x403000,
+            "false": 0x404000,
+            "selector_register_name": "ebp",
+            "selector_compare_constant": 0x12345678,
+            "selector_state_on_left": True,
+        },
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_residual_context_mregs",
+        lambda _values: {},
+    )
+
+    (transfer,) = computed_goto_resolver._detached_static_terminal_transfers(
+        resolution,
+        (entry_ea,),
+        entry_context_transfers=(target_context,),
+    )
+
+    assert calls == [
+        (
+            entry_ea,
+            (("ebx", 0x1000), ("edi", 0x5000), ("esi", 0x6000)),
+        )
+    ]
+    assert transfer.source_jmp_ea == terminal_ea
+    assert transfer.target_eas == (0x403000, 0x404000)
+    assert transfer.condition_code == 12
+    assert transfer.true_target_ea == 0x403000
+    assert transfer.false_target_ea == 0x404000
+    assert transfer.selector_compare_constant == 0x12345678
+    assert transfer.selector_state_on_left is True
 
 
 def test_static_absorb_set_includes_resolver_proven_terminal_targets() -> None:
@@ -2012,6 +2123,23 @@ def test_function_context_register_values_abstain_on_conflicting_or_unknown_valu
     assert _function_context_register_values(states) == ()
 
 
+def test_dispatcher_context_register_values_require_consensus_at_every_site():
+    states = {
+        0x1000: {"ebx": frozenset({0xD197A4AF}), "eax": None},
+        0x1010: {"ebx": frozenset({0xD197A4AF}), "eax": frozenset({1})},
+        0x1020: {"ebx": None, "eax": frozenset({2})},
+        0x2000: {"ebx": frozenset({0xDEADBEEF})},
+    }
+
+    assert _dispatcher_context_register_values(states, (0x1000, 0x1010)) == (
+        ("ebx", 0xD197A4AF),
+    )
+    assert _dispatcher_context_register_values(
+        states,
+        (0x1000, 0x1010, 0x1020),
+    ) == ()
+
+
 def test_encode_two_way_branch_preserves_conditional_arm_polarity():
     body = _encode_two_way_branch(
         branch_ea=0x1000,
@@ -2218,6 +2346,130 @@ def test_setcc_equality_candidate_uses_replay_proven_post_terminal_match():
     assert candidate.selector_state_constant == 0x13B0D3B2
     assert candidate.target_eas == (0x40AE3E,)
     assert candidate.materialized_region_end_ea == 0x40AE3E
+    assert candidate.dispatcher_entry_ea == 0x40A5F0
+
+    ports = _plan_detached_resolver_cut_boundary_ports(
+        (candidate,),
+        target_ea=0x40AE3E,
+        ranges=((0x40AE3E, 0x40AE60),),
+        exit_finder=lambda _ranges: (0x40AE50, 0x40AE5E),
+    )
+    assert len(ports) == 1
+    assert ports[0].source_instruction_ea == 0x40AE5E
+    assert ports[0].target_ea == 0x40A5F0
+    assert ports[0].resolver_kind == "static_equality_candidate_dispatcher_cut"
+    assert _resolver_cut_target_for_synthetic_successor(
+        ports,
+        0x40AE5E,
+    ) == 0x40A5F0
+
+
+def test_setcc_equality_candidate_uses_replay_without_patch_plan():
+    row = _NativeEqualityRow(
+        "ebp",
+        0xDC71BBC5,
+        0x40E14B,
+        0x40E14B,
+        0x40E153,
+        3,
+        4,
+        0x40E161,
+        0x40E163,
+        "setcc",
+    )
+
+    candidate = _static_equality_route_candidate(
+        row,
+        None,
+        state_var_reg=28,
+        context_mregs={},
+        replay_match_target_ea=0x40E163,
+        replay_nonmatch_target_ea=0x40D370,
+    )
+
+    assert candidate is not None
+    assert candidate.selector_state_constant == 0xDC71BBC5
+    assert candidate.source_jmp_ea == 0x40E161
+    assert candidate.source_block_ea == 0x40E14B
+    assert candidate.target_eas == (0x40E163,)
+    assert candidate.dispatcher_entry_ea == 0x40D370
+
+
+def test_setcc_replay_uses_exact_corridor_entry_snapshot(monkeypatch):
+    row = _NativeEqualityRow(
+        "ebp",
+        0xB13A6E93,
+        0x40DAAB,
+        0x40DAA3,
+        0x40DAAB,
+        3,
+        4,
+        0x40DAB9,
+        0x40DABB,
+        "setcc",
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40D200,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+        corridor_register_snapshots=(
+            (0x40DAA3, (("ebx", 0xD1978CAF),)),
+        ),
+    )
+    seen_initial_values = []
+    match_register_values_by_row = {}
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_register_mreg",
+        lambda name: {"ebp": 20, "ebx": 36}.get(name),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_residual_context_mregs",
+        lambda values: {
+            {"ebp": 20, "ebx": 36}[name]: value for name, value in values
+        },
+    )
+
+    def resolve_route(
+        _start_ea,
+        *,
+        initial_mregs,
+        handler_eas,
+        return_first_indirect_target,
+        return_first_indirect_result=False,
+    ):
+        assert not handler_eas
+        assert return_first_indirect_target
+        values = frozenset(initial_mregs.values())
+        seen_initial_values.append(values)
+        assert 0xD1978CAF in values
+        target = 0x40DABB if 0xB13A6E93 in values else 0x40D370
+        if return_first_indirect_result:
+            state = (
+                0xB13A6E93
+                if 0xB13A6E93 in values
+                else 0xB13A6E92
+            )
+            return _ConcreteDispatchResult(
+                target,
+                (("ebp", state), ("ebx", 0xD1978CAF)),
+            )
+        return target
+
+    assert _resolve_native_setcc_route_facts(
+        resolution,
+        (row,),
+        route_resolver=resolve_route,
+        match_register_values_by_row=match_register_values_by_row,
+    ) == ((row, 0x40DABB, 0x40D370),)
+    assert len(seen_initial_values) == 2
+    assert match_register_values_by_row == {
+        row: (("ebp", 0xB13A6E93), ("ebx", 0xD1978CAF)),
+    }
 
 
 def test_setcc_equality_candidate_rejects_unproven_post_terminal_match():
@@ -2615,6 +2867,134 @@ def test_materialized_state_anchor_canonicalizes_coarse_route_to_live_exact_hand
     )
 
     assert routes == (MaterializedStateRoute(82, state, 226),)
+
+
+def test_materialized_state_anchor_rejects_stale_unowned_self_route():
+    state = 0x699BC698
+    write_ea = 0x40EAA7
+    graph = FlowGraph(
+        blocks={
+            31: _block(31, 0x40D370),
+            233: BlockSnapshot(
+                serial=233,
+                block_type=0,
+                succs=(31,),
+                preds=(),
+                flags=0,
+                start_ea=0x40EA9B,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0,
+                        ea=write_ea,
+                        operands=(),
+                        kind=InsnKind.MOV,
+                        l=MopSnapshot(
+                            kind=OperandKind.STACK,
+                            stkoff=0x44C,
+                            size=4,
+                        ),
+                        d=MopSnapshot(
+                            kind=OperandKind.REGISTER,
+                            reg=28,
+                            size=4,
+                        ),
+                    ),
+                ),
+            ),
+        },
+        entry_serial=233,
+        func_ea=0x40D200,
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40D36E,
+        source_block_ea=0x40D370,
+        materialized_anchor_eas=(),
+        target_eas=(0x40EA9B,),
+        selector_state_var_reg=28,
+        selector_state_constant=state,
+        resolver_kind="static_equality_route",
+    )
+
+    assert _build_materialized_state_routes(
+        graph,
+        state_write_anchors=(
+            StateWriteAnchor(
+                233,
+                state,
+                state_var_reg=28,
+                instruction_ea=write_ea,
+            ),
+        ),
+        out_reg_maps={233: {28: state}},
+        dispatcher_entry_serial=31,
+        state_var_reg=28,
+        handler_serials=frozenset({233}),
+        transfers=(transfer,),
+    ) == ()
+
+
+def test_materialized_state_anchor_keeps_live_constant_self_route():
+    state = 0x699BC698
+    write_ea = 0x40EAA7
+    graph = FlowGraph(
+        blocks={
+            31: _block(31, 0x40D370),
+            233: BlockSnapshot(
+                serial=233,
+                block_type=0,
+                succs=(31,),
+                preds=(),
+                flags=0,
+                start_ea=0x40EA9B,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0,
+                        ea=write_ea,
+                        operands=(),
+                        kind=InsnKind.MOV,
+                        l=MopSnapshot(
+                            kind=OperandKind.NUMBER,
+                            value=state,
+                            size=4,
+                        ),
+                        d=MopSnapshot(
+                            kind=OperandKind.REGISTER,
+                            reg=28,
+                            size=4,
+                        ),
+                    ),
+                ),
+            ),
+        },
+        entry_serial=233,
+        func_ea=0x40D200,
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40D36E,
+        source_block_ea=0x40D370,
+        materialized_anchor_eas=(),
+        target_eas=(0x40EA9B,),
+        selector_state_var_reg=28,
+        selector_state_constant=state,
+        resolver_kind="static_equality_route",
+    )
+
+    assert _build_materialized_state_routes(
+        graph,
+        state_write_anchors=(
+            StateWriteAnchor(
+                233,
+                state,
+                state_var_reg=28,
+                instruction_ea=write_ea,
+            ),
+        ),
+        out_reg_maps={233: {28: state}},
+        dispatcher_entry_serial=31,
+        state_var_reg=28,
+        handler_serials=frozenset({233}),
+        transfers=(transfer,),
+    ) == (MaterializedStateRoute(233, state, 233),)
 
 
 def test_materialized_state_anchor_prefers_imported_replacement_over_native_handler():
@@ -3773,6 +4153,57 @@ def test_materialized_state_routes_continue_from_internal_router_block():
         handler_targets={incoming_state: 77},
         handler_target_resolver=lambda _state: 9,
         handler_state_resolver=replay_handler_state,
+        state_register_name="ebx",
+    )
+
+    assert routes == (
+        MaterializedStateRoute(
+            77,
+            next_state,
+            154,
+            source_handler_serial=77,
+            handler_exit_proven=True,
+        ),
+    )
+
+
+def test_materialized_state_routes_evaluate_condition_chain_after_glue():
+    incoming_state = 0x4A7ECCB8
+    next_state = 0xDC71BBC5
+    graph = FlowGraph(
+        blocks={
+            8: _block(8, 0x4000),
+            9: _block(9, 0x5000, succs=(10,)),
+            10: _block(10, 0x6000, succs=(154, 155)),
+            77: _block(77, 0x7000),
+            154: _block(154, 0x8000),
+            155: _block(155, 0x9000),
+        },
+        entry_serial=77,
+        func_ea=0x1000,
+    )
+    decision_dag = DecisionDag(
+        32,
+        {10: RouteComparison(10, "jz", next_state, 154, 155)},
+        root=10,
+    )
+
+    routes = _build_materialized_state_routes(
+        graph,
+        state_write_anchors=(),
+        out_reg_maps={},
+        dispatcher_entry_serial=8,
+        state_var_reg=20,
+        handler_serials=frozenset({77, 154, 155}),
+        dispatcher_block_serials=frozenset({8, 9, 10}),
+        transfers=(),
+        handler_states={77: (incoming_state,)},
+        handler_targets={incoming_state: 77, next_state: 9},
+        handler_state_resolver=lambda *_args, **_kwargs: _ConcreteHandlerStateWrite(
+            next_state,
+            0x7000,
+        ),
+        condition_chain_dag=decision_dag,
         state_register_name="ebx",
     )
 

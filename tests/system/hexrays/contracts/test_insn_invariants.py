@@ -20,6 +20,7 @@ _HR = inv.ida_hexrays
 class _Mop:
     t: int
     size: int = 4
+    type: Any = None
     b: int | None = None
     r: int | None = None
     g: int | None = None
@@ -110,6 +111,32 @@ def _mop_n(size: int = 4) -> _Mop:
 
 def _mop_f(size: int = 0) -> _Mop:
     return _Mop(t=int(getattr(_HR, "mop_f", 8)), size=size)
+
+
+@dataclass
+class _TypeInfo:
+    size: int
+
+    def get_size(self) -> int:
+        return self.size
+
+
+@dataclass
+class _CallInfo:
+    args: list[_Mop]
+
+
+def _mop_f_with_arg(*, operand_size: int, type_size: int) -> _Mop:
+    argument = _Mop(
+        t=int(_HR.mop_r),
+        size=operand_size,
+        type=_TypeInfo(type_size),
+    )
+    return _Mop(
+        t=int(_HR.mop_f),
+        size=0,
+        f=_CallInfo(args=[argument]),
+    )
 
 
 def _mop_d(insn: _Insn, size: int = 4) -> _Mop:
@@ -356,6 +383,54 @@ class TestInsnCallValidity:
         mba = _simple_mba([insn])
         viols = inv.insn_call_validity(mba, phase="test")
         assert inv.MINSN_50773_ARGLIST_ON_NONCALL not in _codes(viols)
+
+    @pytest.mark.parametrize("nested", (False, True), ids=("top", "nested"))
+    def test_50735_call_argument_size_must_match_type_size(self, nested: bool):
+        call_ea = 0x401035
+        call = _Insn(
+            int(_HR.m_call),
+            ea=call_ea,
+            l=_mop_r(4),
+            d=_mop_f_with_arg(operand_size=4, type_size=8),
+        )
+        top = (
+            _Insn(
+                int(_HR.m_mov),
+                ea=0x401030,
+                l=_mop_d(call),
+                d=_mop_r(4),
+            )
+            if nested
+            else call
+        )
+        mba = _simple_mba([top])
+
+        viols = inv.insn_call_validity(mba, phase="test")
+
+        matching = [
+            violation
+            for violation in viols
+            if violation.code == inv.MINSN_50735_CALL_ARGUMENT_SIZE_MISMATCH
+        ]
+        assert len(matching) == 1
+        assert matching[0].insn_ea == call_ea
+        assert matching[0].details["verify_code"] == 50735
+        assert matching[0].details["argument_index"] == 0
+        assert matching[0].details["operand_size"] == 4
+        assert matching[0].details["type_size"] == 8
+
+    def test_50735_accepts_matching_call_argument_size(self):
+        call = _Insn(
+            int(_HR.m_call),
+            ea=0x401035,
+            l=_mop_r(4),
+            d=_mop_f_with_arg(operand_size=4, type_size=4),
+        )
+        mba = _simple_mba([call])
+
+        viols = inv.insn_call_validity(mba, phase="test")
+
+        assert inv.MINSN_50735_CALL_ARGUMENT_SIZE_MISMATCH not in _codes(viols)
 
     def test_50773_arglist_on_noncall_detected(self):
         m_mov = int(getattr(_HR, "m_mov", 21))

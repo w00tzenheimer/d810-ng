@@ -2649,6 +2649,76 @@ class DeferredGraphModifier:
         self.mark_blocks_dirty_now(source, target)
         return True
 
+    def lower_proven_indirect_transfer_to_goto_now(
+        self,
+        source: ida_hexrays.mblock_t,
+        target: ida_hexrays.mblock_t,
+        indirect_instruction_ea: int,
+    ) -> bool:
+        """Lower one resolver-proven indirect transfer to ``m_goto``.
+
+        At PREOPT Hex-Rays can represent a native ``jmp reg`` as a raw
+        ``m_mov`` envelope that later fuses into ``m_call``/``m_icall``.  A
+        resolver-cut boundary port proves that this exact native-origin
+        instruction is a transfer, not a semantic call.  Replace only that
+        instruction and preserve an existing proven edge when present.
+        """
+        instructions = self._block_instructions(source)
+        candidates = tuple(
+            instruction
+            for instruction in instructions
+            if int(instruction.ea) == int(indirect_instruction_ea)
+            and int(instruction.opcode)
+            in {
+                int(ida_hexrays.m_mov),
+                int(ida_hexrays.m_call),
+                int(ida_hexrays.m_icall),
+                int(ida_hexrays.m_ijmp),
+            }
+        )
+        if len(candidates) != 1:
+            return False
+        indirect_instruction = candidates[0]
+
+        successors = tuple(int(serial) for serial in source.succset)
+        if successors not in ((), (int(target.serial),)):
+            return False
+
+        instruction_index = instructions.index(indirect_instruction)
+        trailing = instructions[instruction_index + 1 :]
+        if trailing:
+            if (
+                len(trailing) != 1
+                or int(trailing[0].opcode) != int(ida_hexrays.m_goto)
+                or int(trailing[0].l.t) != int(ida_hexrays.mop_b)
+                or int(trailing[0].l.b) != int(target.serial)
+            ):
+                return False
+
+        source.make_nop(indirect_instruction)
+        if not trailing:
+            insert_goto_instruction(
+                source,
+                int(target.serial),
+                nop_previous_instruction=False,
+            )
+        if not successors:
+            source.succset.push_back(int(target.serial))
+            if int(source.serial) not in {
+                int(predecessor) for predecessor in target.predset
+            }:
+                target.predset.push_back(int(source.serial))
+        source.type = int(ida_hexrays.BLT_1WAY)
+        source.flags |= int(ida_hexrays.MBL_GOTO)
+        if not any(
+            int(instruction.opcode)
+            in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}
+            for instruction in self._block_instructions(source)
+        ):
+            source.flags &= ~int(ida_hexrays.MBL_CALL)
+        self.mark_blocks_dirty_now(source, target)
+        return True
+
     def restore_pruned_call_continuation_now(
         self,
         source: ida_hexrays.mblock_t,
@@ -7070,6 +7140,45 @@ class DeferredGraphModifier:
             return None
         return result
 
+    def _materialize_stack_value_equals_condition(
+        self, condition_operand: object
+    ) -> object | None:
+        """Materialize a proven ``stack_cell == constant`` boolean."""
+        stack_stkoff = getattr(condition_operand, "stack_stkoff", None)
+        stack_size = getattr(condition_operand, "stack_size", None)
+        value = getattr(condition_operand, "value", None)
+        if stack_stkoff is None or stack_size is None or value is None:
+            return None
+        size = int(stack_size)
+        if size <= 0:
+            return None
+        safe_ea = int(getattr(self.mba, "entry_ea", 0) or 0) or 1
+        try:
+            compare = ida_hexrays.minsn_t(safe_ea)
+            compare.opcode = ida_hexrays.m_setz
+            compare.l = ida_hexrays.mop_t()
+            compare.l.make_stkvar(self.mba, int(stack_stkoff))
+            compare.l.size = size
+            compare.r = ida_hexrays.mop_t()
+            compare.r.make_number(
+                int(value) & ((1 << (8 * size)) - 1),
+                size,
+                safe_ea,
+            )
+            compare.d = ida_hexrays.mop_t()
+            compare.d.size = 1
+            wrapped = ida_hexrays.mop_t()
+            wrapped.create_from_insn(compare)
+        except Exception as exc:  # noqa: BLE001 - synthesis is best-effort
+            logger.warning(
+                "conditional_state_transition: stack-value synthesis failed: %s",
+                exc,
+            )
+            return None
+        if int(getattr(wrapped, "t", ida_hexrays.mop_z)) == int(ida_hexrays.mop_z):
+            return None
+        return wrapped
+
     def _materialize_register_state_write(
         self,
         *,
@@ -7094,6 +7203,15 @@ class DeferredGraphModifier:
         """Clone a proof-supplied condition operand into an owned ``mop_t``."""
         if condition_operand is None:
             return None
+        if (
+            getattr(condition_operand, "stack_stkoff", None) is not None
+            and getattr(condition_operand, "stack_size", None) is not None
+            and getattr(condition_operand, "value", None) is not None
+            and not callable(getattr(condition_operand, "to_mop", None))
+        ):
+            return self._materialize_stack_value_equals_condition(
+                condition_operand
+            )
         if (
             getattr(condition_operand, "predicate_reg", None) is not None
             and getattr(condition_operand, "predicate_size", None) is not None

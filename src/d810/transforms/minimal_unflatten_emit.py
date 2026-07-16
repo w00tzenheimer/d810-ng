@@ -60,9 +60,11 @@ from d810.analyses.control_flow.minimal_state_recovery import (
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
+    condition_code_predicate,
     find_unique_target_entry_block,
     lookup_state_keyed_transfer_target,
     plan_resolver_proven_indirect_call_neutralizations,
+    unique_materialized_equality_target_eas,
 )
 from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
@@ -85,11 +87,12 @@ from d810.core.observability_recon import (
     observe_exit_path_shortcut_decisions,
 )
 from d810.ir.block_identity import block_label
-from d810.ir.flowgraph import BlockKind, InsnKind
+from d810.ir.flowgraph import BlockKind, InsnKind, OperandKind
 from d810.ir.semantics import PredicateKind
 from d810.transforms.exit_path_liveness_policy import (
     exit_path_blocks_live_violations,
     evaluate_exit_path_shortcut,
+    live_in_variables,
 )
 from d810.transforms.graph_modification import (
     ConvertToGoto,
@@ -102,6 +105,7 @@ from d810.transforms.graph_modification import (
     ScalarizeLocalAliasAccess,
     SyntheticCounterBoundCondition,
     SyntheticRegisterNonzeroCondition,
+    SyntheticStackValueEqualsCondition,
     ZeroStateWrite,
 )
 from d810.transforms.plan import PatchPlan, compile_patch_plan
@@ -127,6 +131,7 @@ __all__ = [
     "build_exact_terminal_state_route_redirects",
     "build_source_keyed_handler_redirects",
     "build_materialized_conditional_handler_bridges",
+    "build_stack_carried_state_selector_lowerings",
     "build_resolver_proven_indirect_call_neutralizations",
     "build_shared_merge_conditional_redirects",
     "build_loop_guard_exit_redirects",
@@ -376,6 +381,7 @@ def _apply_entry_bridge(
     entry_bridge_exit_path_blocks: tuple[int, ...],
     entry_bridge_requires_witness: bool,
     allow_multi_entry_witness_fallback: bool,
+    cut_exit_path_uses: bool,
     _add,
 ) -> None:
     """Apply entry-bridge redirects, gated on exact branch witness resolution.
@@ -399,6 +405,7 @@ def _apply_entry_bridge(
                 state_var_stkoff,
                 source_blocks=tuple(sorted(int(p) for p in prologue_preds)),
                 old_target=int(disp),
+                cut_exit_path_uses=cut_exit_path_uses,
             )
             reason = (
                 "no_provider_exit_path_liveness_unsafe"
@@ -498,6 +505,7 @@ def _apply_entry_bridge(
                 state_var_stkoff,
                 source_blocks=tuple(sorted(int(p) for p in prologue_preds)),
                 old_target=int(disp),
+                cut_exit_path_uses=cut_exit_path_uses,
             )
             _observe_exit_path_shortcut_decision(
                 flow_graph,
@@ -966,6 +974,708 @@ def _recover_register_conditional_entry(
     return routes
 
 
+def _strict_one_way_path_enters_region(
+    flow_graph,
+    start_serial: int,
+    region_serials: frozenset[int],
+    *,
+    state_var_reg: int,
+    resolver_cut_endpoint_serials: frozenset[int] = frozenset(),
+    max_hops: int = 8,
+) -> frozenset[tuple[str, int]] | None:
+    """Prove a transparent route and return register defs it bypasses.
+
+    Hex-Rays can split one conditional arm into a one-way trampoline before
+    the comparison-tree block.  Optional NOPs, one terminal GOTO, and
+    register-to-register copies are structurally transparent.  Copy
+    destinations are returned so the caller can independently prove they are
+    dead at every direct handler target before bypassing them.
+    """
+    current = int(start_serial)
+    region = frozenset(int(serial) for serial in region_serials)
+    seen: set[int] = set()
+    bypassed_definitions: set[tuple[str, int]] = set()
+    for _hop in range(int(max_hops) + 1):
+        if current in region:
+            return frozenset(bypassed_definitions)
+        if current in seen:
+            return None
+        seen.add(current)
+        block = flow_graph.get_block(current)
+        if block is None or int(block.nsucc) != 1:
+            return None
+        semantic_insns = tuple(
+            instruction
+            for instruction in block.insn_snapshots
+            if instruction.kind is not InsnKind.NOP
+        )
+        goto_insns = tuple(
+            instruction
+            for instruction in semantic_insns
+            if instruction.kind is InsnKind.GOTO
+        )
+        register_copies = tuple(
+            instruction
+            for instruction in semantic_insns
+            if instruction.kind is InsnKind.MOV
+            and instruction.l is not None
+            and instruction.l.kind is OperandKind.REGISTER
+            and instruction.d is not None
+            and instruction.d.kind is OperandKind.REGISTER
+            and instruction.d.reg is not None
+            and int(instruction.d.reg) != int(state_var_reg)
+        )
+        standard_transparent = (
+            len(goto_insns) <= 1
+            and len(goto_insns) + len(register_copies) == len(semantic_insns)
+            and (not goto_insns or semantic_insns[-1] is goto_insns[0])
+        )
+        if standard_transparent:
+            pass
+        elif current in resolver_cut_endpoint_serials:
+            if len(goto_insns) != 1 or semantic_insns[-1] is not goto_insns[0]:
+                return None
+            pure_definitions: set[tuple[str, int]] = set()
+            for instruction in semantic_insns[:-1]:
+                if instruction.kind in {
+                    InsnKind.CALL,
+                    InsnKind.COND_JUMP,
+                    InsnKind.EQUALITY_JUMP,
+                    InsnKind.GOTO,
+                    InsnKind.INDIRECT_JUMP,
+                    InsnKind.RET,
+                    InsnKind.STORE,
+                    InsnKind.TABLE_JUMP,
+                }:
+                    return None
+                destination = instruction.d
+                if (
+                    destination is None
+                    or destination.kind is not OperandKind.REGISTER
+                    or destination.reg is None
+                    or int(destination.reg) == int(state_var_reg)
+                ):
+                    return None
+                pure_definitions.add(("reg", int(destination.reg)))
+            bypassed_definitions.update(pure_definitions)
+        else:
+            return None
+        successor = int(block.succs[0])
+        if goto_insns:
+            destination = goto_insns[0].d
+            if (
+                destination is not None
+                and destination.block_ref is not None
+                and int(destination.block_ref) != successor
+            ):
+                return None
+        bypassed_definitions.update(
+            ("reg", int(instruction.d.reg)) for instruction in register_copies
+        )
+        current = successor
+    return None
+
+
+def _strict_paths_converge_on_indirect_endpoint(
+    flow_graph,
+    start_serials: tuple[int, ...],
+    *,
+    state_var_reg: int,
+    expected_endpoint_serial: int | None = None,
+    max_hops: int = 8,
+) -> tuple[frozenset[tuple[str, int]], ...] | None:
+    """Prove pure one-way arms converge on one unresolved indirect jump.
+
+    Detached PREOPT snippets can retain the native computed-jump router after
+    the state-cell load has already folded into the branch at the snippet
+    root.  Bypassing that router is safe only when every arm reaches the same
+    terminal indirect jump through NOPs, terminal GOTOs, and register copies.
+    Copy destinations are returned for the caller's handler-liveness veto.
+    """
+    if len(start_serials) < 2:
+        return None
+
+    endpoints: list[int] = []
+    path_definitions: list[frozenset[tuple[str, int]]] = []
+    for start_serial in start_serials:
+        current = int(start_serial)
+        seen: set[int] = set()
+        definitions: set[tuple[str, int]] = set()
+        endpoint: int | None = None
+        for _hop in range(int(max_hops) + 1):
+            if current in seen:
+                return None
+            seen.add(current)
+            block = flow_graph.get_block(current)
+            if block is None:
+                return None
+            semantic_insns = tuple(
+                instruction
+                for instruction in block.insn_snapshots
+                if instruction.kind is not InsnKind.NOP
+            )
+            if int(block.nsucc) == 0:
+                if (
+                    len(semantic_insns) != 1
+                    or semantic_insns[0].kind is not InsnKind.INDIRECT_JUMP
+                ):
+                    return None
+                endpoint = current
+                break
+            if int(block.nsucc) != 1:
+                return None
+            goto_insns = tuple(
+                instruction
+                for instruction in semantic_insns
+                if instruction.kind is InsnKind.GOTO
+            )
+            register_copies = tuple(
+                instruction
+                for instruction in semantic_insns
+                if instruction.kind is InsnKind.MOV
+                and instruction.l is not None
+                and instruction.l.kind is OperandKind.REGISTER
+                and instruction.d is not None
+                and instruction.d.kind is OperandKind.REGISTER
+                and instruction.d.reg is not None
+                and int(instruction.d.reg) != int(state_var_reg)
+            )
+            if (
+                len(goto_insns) > 1
+                or len(goto_insns) + len(register_copies) != len(semantic_insns)
+                or (goto_insns and semantic_insns[-1] is not goto_insns[0])
+            ):
+                return None
+            successor = int(block.succs[0])
+            if goto_insns:
+                destination = goto_insns[0].d
+                if (
+                    destination is not None
+                    and destination.block_ref is not None
+                    and int(destination.block_ref) != successor
+                ):
+                    return None
+            definitions.update(
+                ("reg", int(instruction.d.reg))
+                for instruction in register_copies
+            )
+            current = successor
+        if endpoint is None:
+            return None
+        endpoints.append(endpoint)
+        path_definitions.append(frozenset(definitions))
+
+    if len(set(endpoints)) != 1:
+        return None
+    if (
+        expected_endpoint_serial is not None
+        and endpoints[0] != int(expected_endpoint_serial)
+    ):
+        return None
+    return tuple(path_definitions)
+
+
+def _resolver_cut_endpoint_serials(
+    flow_graph,
+    evidence_rows: tuple[AppliedDetachedSnippetDirectBoundaryPort, ...],
+    router_blocks: frozenset[int],
+) -> frozenset[int]:
+    """Imported endpoints whose exact resolver target enters this router."""
+
+    def matching_blocks(anchor_eas: tuple[int, ...]) -> set[int]:
+        anchors = {int(ea) for ea in anchor_eas}
+        return {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if any(int(insn.ea) in anchors for insn in block.insn_snapshots)
+        }
+
+    endpoints: set[int] = set()
+    for evidence in evidence_rows:
+        if evidence.port.delivery_mode != "terminal_goto":
+            continue
+        endpoint_blocks = matching_blocks(evidence.endpoint_anchor_eas)
+        target_blocks = matching_blocks(evidence.target_anchor_eas)
+        if logger.info_on:
+            logger.info(
+                "resolver-cut endpoint mapping: source=0x%X endpoint_anchors=%s "
+                "endpoint_blocks=%s target=0x%X target_anchors=%s target_blocks=%s",
+                int(evidence.port.source_instruction_ea),
+                tuple(hex(int(ea)) for ea in evidence.endpoint_anchor_eas),
+                tuple(
+                    _format_block_label(flow_graph, serial)
+                    for serial in sorted(endpoint_blocks)
+                ),
+                int(evidence.port.target_ea),
+                tuple(hex(int(ea)) for ea in evidence.target_anchor_eas),
+                tuple(
+                    _format_block_label(flow_graph, serial)
+                    for serial in sorted(target_blocks)
+                ),
+            )
+        if len(endpoint_blocks) != 1 or len(target_blocks) != 1:
+            continue
+        endpoint_root = next(iter(endpoint_blocks))
+        target_block = next(iter(target_blocks))
+        if target_block not in router_blocks:
+            continue
+        corridor: set[int] = set()
+        visiting: set[int] = set()
+        memo: dict[int, bool] = {}
+
+        def reaches_exact_target(serial: int) -> bool:
+            serial = int(serial)
+            if serial == target_block:
+                return True
+            if serial in memo:
+                return memo[serial]
+            if serial in visiting or serial in router_blocks or len(corridor) >= 32:
+                return False
+            block = flow_graph.get_block(serial)
+            if block is None or int(block.nsucc) == 0:
+                return False
+            visiting.add(serial)
+            corridor.add(serial)
+            valid_path = all(
+                reaches_exact_target(int(successor))
+                for successor in block.succs
+            )
+            visiting.remove(serial)
+            memo[serial] = valid_path
+            return valid_path
+
+        if not reaches_exact_target(endpoint_root):
+            continue
+        endpoints.update(corridor)
+    return frozenset(endpoints)
+
+
+def _resolver_proven_live_terminal_endpoint_serials(
+    flow_graph,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    imported_endpoint_serials: frozenset[int],
+) -> frozenset[int]:
+    """Return unique live ``ijmp`` endpoints with exact two-arm replay.
+
+    PREOPT import can clone the handler that owns an equality state while the
+    original live handler still owns a folded stack predicate.  A detached
+    static replay authorizes that original handler only when it names one
+    unambiguous live indirect-jump instruction and proves both branch arms.
+    Imported resolver-cut endpoints are excluded so clone ownership cannot
+    replace the live dispatcher frontier.
+    """
+    endpoints: set[int] = set()
+    for transfer in transfers:
+        true_target_ea = transfer.true_target_ea
+        false_target_ea = transfer.false_target_ea
+        if (
+            transfer.resolver_kind != "detached_static_fixpoint"
+            or condition_code_predicate(transfer.condition_code) is None
+            or true_target_ea is None
+            or false_target_ea is None
+            or int(true_target_ea) == int(false_target_ea)
+            or {int(true_target_ea), int(false_target_ea)}
+            != {int(target_ea) for target_ea in transfer.target_eas}
+        ):
+            continue
+        matching = {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if int(block.serial) not in imported_endpoint_serials
+            and any(
+                instruction.kind is InsnKind.INDIRECT_JUMP
+                and int(instruction.ea) == int(transfer.source_jmp_ea)
+                for instruction in block.insn_snapshots
+            )
+        }
+        if len(matching) == 1:
+            endpoints.update(matching)
+    return frozenset(endpoints)
+
+
+def build_stack_carried_state_selector_lowerings(
+    flow_graph,
+    dispatcher,
+    *,
+    state_var_reg: int | None,
+    dispatcher_region_serials: frozenset[int],
+    handler_serials: frozenset[int],
+    materialized_state_routes: tuple[MaterializedStateRoute, ...] = (),
+    materialized_indirect_transfers: tuple[MaterializedIndirectTransfer, ...] = (),
+    imported_direct_boundary_evidence: tuple[
+        AppliedDetachedSnippetDirectBoundaryPort, ...
+    ] = (),
+    handler_entry_eas_by_serial: Mapping[int, int] | None = None,
+) -> list[object]:
+    """Lower a two-valued stack-ferried state at its live handler consumer.
+
+    A prologue diamond may select one of two dispatcher states into a stack
+    cell.  Much later, a handler reloads that cell into the register-resident
+    state variable and enters the comparison tree.  Recover the two constants
+    from the unique reaching-definition diamond and replace the handler's
+    router edge with ``stack_cell == state`` routed directly to both handlers.
+
+    The proof is intentionally strict: one cell write in the whole snapshot,
+    one canonical two-arm merge, two distinct folded constants, one consumer
+    load, and two known handler targets.  Any ambiguity abstains.
+    """
+    if state_var_reg is None or not dispatcher_region_serials or not handler_serials:
+        return []
+
+    state_register = int(state_var_reg)
+    router_blocks = frozenset(int(serial) for serial in dispatcher_region_serials)
+    resolver_cut_endpoints = _resolver_cut_endpoint_serials(
+        flow_graph,
+        imported_direct_boundary_evidence,
+        router_blocks,
+    )
+    resolver_proven_terminal_endpoints = (
+        _resolver_proven_live_terminal_endpoint_serials(
+            flow_graph,
+            materialized_indirect_transfers,
+            imported_endpoint_serials=resolver_cut_endpoints,
+        )
+    )
+    handler_entry_eas = handler_entry_eas_by_serial or {}
+    equality_targets = unique_materialized_equality_target_eas(
+        materialized_indirect_transfers,
+        state_register,
+        validated_candidate_target_eas=frozenset(
+            int(ea) for ea in handler_entry_eas.values()
+        ),
+    )
+    exact_handler_targets: dict[int, int] = {}
+    for state, target_ea in equality_targets.items():
+        matching_serials = {
+            int(serial)
+            for serial, entry_ea in handler_entry_eas.items()
+            if int(entry_ea) == int(target_ea)
+            and flow_graph.get_block(int(serial)) is not None
+        }
+        if len(matching_serials) == 1:
+            exact_handler_targets[int(state) & 0xFFFFFFFF] = next(
+                iter(matching_serials)
+            )
+    known_handlers = frozenset(
+        {
+            *(int(serial) for serial in handler_serials),
+            *(int(serial) for serial in exact_handler_targets.values()),
+        }
+    )
+    fixpoint = run_snapshot_constant_fixpoint(flow_graph, -1)
+    if logger.info_on:
+        logger.info(
+            "stack-carried selector scan: state_reg=%d handlers=%d routers=%d",
+            state_register,
+            len(known_handlers),
+            len(router_blocks),
+        )
+    writes_by_stkoff: dict[int, list[tuple[object, object]]] = {}
+    for block in flow_graph.blocks.values():
+        for instruction in block.insn_snapshots:
+            destination = instruction.d
+            if (
+                instruction.kind is InsnKind.MOV
+                and destination is not None
+                and destination.kind is OperandKind.STACK
+                and destination.stkoff is not None
+            ):
+                writes_by_stkoff.setdefault(int(destination.stkoff), []).append(
+                    (block, instruction)
+                )
+
+    route_targets: dict[int, set[int]] = {
+        int(state): {int(target)}
+        for state, target in exact_handler_targets.items()
+    }
+    for route in materialized_state_routes:
+        state = int(route.state_constant) & 0xFFFFFFFF
+        # A unique imported equality target is the exact owner of this state.
+        # Later route recovery can still retain the pre-import comparison leaf
+        # as a snapshot-local endpoint; unioning that stale owner with the exact
+        # target would turn a proven two-arm selector into an ambiguity.
+        if state in exact_handler_targets:
+            continue
+        target = int(route.target_handler_serial)
+        if target not in known_handlers:
+            continue
+        route_targets.setdefault(
+            state,
+            set(),
+        ).add(target)
+
+    def resolve_state_target(state: int) -> int | None:
+        state_u = int(state) & 0xFFFFFFFF
+        exact = route_targets.get(state_u, set())
+        if len(exact) > 1:
+            return None
+        if exact:
+            return next(iter(exact))
+        target = dispatcher.lookup(state_u)
+        if target is None or int(target) not in known_handlers:
+            return None
+        return int(target)
+
+    lowerings: list[object] = []
+    for consumer in flow_graph.blocks.values():
+        if int(consumer.serial) not in known_handlers or int(consumer.nsucc) != 2:
+            continue
+        loads = []
+        for instruction in consumer.insn_snapshots:
+            source = instruction.l
+            destination = instruction.d
+            if (
+                instruction.kind is InsnKind.MOV
+                and source is not None
+                and source.kind is OperandKind.STACK
+                and source.stkoff is not None
+                and destination is not None
+                and destination.kind is OperandKind.REGISTER
+                and destination.reg is not None
+                and int(destination.reg) == state_register
+            ):
+                loads.append(instruction)
+        tail = consumer.insn_snapshots[-1] if consumer.insn_snapshots else None
+        if tail is None or not tail.is_conditional_jump or int(tail.ea) <= 0:
+            if logger.info_on:
+                logger.info(
+                    "stack-carried selector abstained: source=%s "
+                    "tail_kind=%s tail_ea=0x%X conditional=%s",
+                    _format_block_label(flow_graph, int(consumer.serial)),
+                    None if tail is None else tail.kind.value,
+                    0 if tail is None else int(tail.ea),
+                    False if tail is None else tail.is_conditional_jump,
+                )
+            continue
+        direct_stack_operands = tuple(
+            operand
+            for operand in (tail.l, tail.r)
+            if operand is not None
+            and operand.kind is OperandKind.STACK
+            and operand.stkoff is not None
+        )
+        direct_number_operands = tuple(
+            operand
+            for operand in (tail.l, tail.r)
+            if operand is not None and operand.kind is OperandKind.NUMBER
+        )
+        direct_folded_stack_source = (
+            len(loads) == 0
+            and len(direct_stack_operands) == 1
+            and len(direct_number_operands) == 1
+        )
+        if len(loads) == 1:
+            stack_source = loads[0].l
+        elif direct_folded_stack_source:
+            stack_source = direct_stack_operands[0]
+        else:
+            continue
+        if stack_source is None or stack_source.stkoff is None:
+            continue
+        successor_paths = tuple(
+            (
+                int(successor),
+                _strict_one_way_path_enters_region(
+                    flow_graph,
+                    int(successor),
+                    router_blocks,
+                    state_var_reg=state_register,
+                    resolver_cut_endpoint_serials=resolver_cut_endpoints,
+                ),
+            )
+            for successor in consumer.succs
+        )
+        if not all(proof is not None for _successor, proof in successor_paths):
+            converged_definitions = None
+            if direct_folded_stack_source and int(
+                consumer.serial
+            ) in exact_handler_targets.values():
+                converged_definitions = _strict_paths_converge_on_indirect_endpoint(
+                    flow_graph,
+                    tuple(int(successor) for successor in consumer.succs),
+                    state_var_reg=state_register,
+                )
+            elif direct_folded_stack_source:
+                terminal_proofs = []
+                for endpoint_serial in sorted(resolver_proven_terminal_endpoints):
+                    proof = _strict_paths_converge_on_indirect_endpoint(
+                        flow_graph,
+                        tuple(int(successor) for successor in consumer.succs),
+                        state_var_reg=state_register,
+                        expected_endpoint_serial=endpoint_serial,
+                    )
+                    if proof is not None:
+                        terminal_proofs.append(proof)
+                if len(terminal_proofs) == 1:
+                    converged_definitions = terminal_proofs[0]
+            if converged_definitions is None:
+                if logger.info_on:
+                    logger.info(
+                        "stack-carried selector abstained: source=%s "
+                        "dispatcher_paths=%s",
+                        _format_block_label(flow_graph, int(consumer.serial)),
+                        [
+                            (
+                                _format_block_label(flow_graph, successor),
+                                proof is not None,
+                                tuple(
+                                    instruction.kind.value
+                                    for instruction in (
+                                        flow_graph.get_block(successor).insn_snapshots
+                                        if flow_graph.get_block(successor) is not None
+                                        else ()
+                                    )
+                                ),
+                            )
+                            for successor, proof in successor_paths
+                        ],
+                    )
+                continue
+            successor_paths = tuple(
+                (int(successor), definitions)
+                for successor, definitions in zip(
+                    consumer.succs,
+                    converged_definitions,
+                )
+            )
+        stack_offset = int(stack_source.stkoff)
+        stores = writes_by_stkoff.get(stack_offset, [])
+        if logger.info_on:
+            logger.info(
+                "stack-carried selector candidate: source=%s cell=%d writes=%d",
+                _format_block_label(flow_graph, int(consumer.serial)),
+                stack_offset,
+                len(stores),
+            )
+        if len(stores) != 1:
+            continue
+        store_block, store_instruction = stores[0]
+        store_source = store_instruction.l
+        if (
+            store_source is None
+            or store_source.kind is not OperandKind.REGISTER
+            or store_source.reg is None
+        ):
+            continue
+        carrier_register = int(store_source.reg)
+        store_predecessors = tuple(int(pred) for pred in store_block.preds)
+        if len(store_predecessors) != 2:
+            continue
+
+        diamond_roots = []
+        for branch_serial in store_predecessors:
+            other_serial = next(
+                pred for pred in store_predecessors if pred != branch_serial
+            )
+            branch_block = flow_graph.get_block(branch_serial)
+            other_block = flow_graph.get_block(other_serial)
+            if branch_block is None or other_block is None:
+                continue
+            if (
+                int(branch_block.nsucc) == 2
+                and set(int(successor) for successor in branch_block.succs)
+                == {int(store_block.serial), other_serial}
+                and tuple(int(successor) for successor in other_block.succs)
+                == (int(store_block.serial),)
+            ):
+                diamond_roots.append(branch_serial)
+        if len(diamond_roots) != 1:
+            if logger.info_on:
+                logger.info(
+                    "stack-carried selector abstained: source=%s cell=%d "
+                    "diamond_roots=%s",
+                    _format_block_label(flow_graph, int(consumer.serial)),
+                    stack_offset,
+                    diamond_roots,
+                )
+            continue
+
+        states = {
+            int(fixpoint.out_reg_maps.get(pred, {}).get(carrier_register))
+            & 0xFFFFFFFF
+            for pred in store_predecessors
+            if carrier_register in fixpoint.out_reg_maps.get(pred, {})
+        }
+        if len(states) != 2:
+            if logger.info_on:
+                logger.info(
+                    "stack-carried selector abstained: source=%s cell=%d "
+                    "folded_states=%s",
+                    _format_block_label(flow_graph, int(consumer.serial)),
+                    stack_offset,
+                    [hex(state) for state in sorted(states)],
+                )
+            continue
+        true_state, false_state = sorted(states)
+        true_target = resolve_state_target(true_state)
+        false_target = resolve_state_target(false_state)
+        if (
+            true_target is None
+            or false_target is None
+            or int(true_target) == int(false_target)
+        ):
+            if logger.info_on:
+                logger.info(
+                    "stack-carried selector abstained: source=%s cell=%d "
+                    "states=(0x%X,0x%X) targets=(%s,%s)",
+                    _format_block_label(flow_graph, int(consumer.serial)),
+                    stack_offset,
+                    true_state,
+                    false_state,
+                    true_target,
+                    false_target,
+                )
+            continue
+        bypassed_register_definitions = frozenset(
+            definition
+            for _successor, definitions in successor_paths
+            for definition in (definitions or ())
+        )
+        if bypassed_register_definitions:
+            live_in = live_in_variables(
+                flow_graph,
+                None,
+                cut_entry_blocks=router_blocks,
+            )
+            target_live = live_in.get(int(true_target), set()) | live_in.get(
+                int(false_target), set()
+            )
+            unsafe = bypassed_register_definitions & target_live
+            if unsafe:
+                if logger.info_on:
+                    logger.info(
+                        "stack-carried selector abstained: source=%s "
+                        "targets=(%s,%s) bypassed_live_defs=%s",
+                        _format_block_label(flow_graph, int(consumer.serial)),
+                        _format_block_label(flow_graph, int(true_target)),
+                        _format_block_label(flow_graph, int(false_target)),
+                        sorted(unsafe),
+                    )
+                continue
+        lowerings.append(
+            LowerConditionalStateTransition(
+                source_serial=int(consumer.serial),
+                old_dispatcher_serial=int(consumer.succs[0]),
+                rewrite_from_ea=int(tail.ea),
+                condition_operand=SyntheticStackValueEqualsCondition(
+                    stack_stkoff=stack_offset,
+                    stack_size=max(1, int(stack_source.size)),
+                    value=true_state,
+                ),
+                false_target_serial=int(false_target),
+                true_target_serial=int(true_target),
+                proof_id=(
+                    "stack_carried_state_selector:"
+                    f"source_ea=0x{int(consumer.start_ea):X}:"
+                    f"store_ea=0x{int(store_instruction.ea):X}"
+                ),
+                reason="resolver_proven_stack_carried_state_selector",
+            )
+        )
+    return lowerings
+
+
 def build_state_write_redirects(
     flow_graph,
     dispatcher,
@@ -982,6 +1692,7 @@ def build_state_write_redirects(
     entry_bridge_requires_witness: bool = False,
     strict_pre_header_prologue: bool = False,
     allow_multi_entry_entry_bridge: bool = False,
+    entry_bridge_cut_exit_path_uses: bool = False,
     materialized_state_routes: tuple[MaterializedStateRoute, ...] = (),
     materialized_indirect_transfers: tuple[MaterializedIndirectTransfer, ...] = (),
     condition_chain_handlers: frozenset[int] = frozenset(),
@@ -1257,7 +1968,7 @@ def build_state_write_redirects(
     # handler states, so the proven single-initial-state path below is untouched
     # for every non-conditional entry.
     conditional_entry_arms: set[int] = set()
-    if disp is not None and len(prologue_preds) >= 2:
+    if disp is not None and initial_state is None and len(prologue_preds) >= 2:
         arm_routes: list[tuple[int, int]] = []  # (write_block, handler)
         for t in transitions:
             wb = int(t.write_block)
@@ -1289,6 +2000,7 @@ def build_state_write_redirects(
     register_entry_arms: set[int] = set()
     if (
         disp is not None
+        and initial_state is None
         and state_var_reg is not None
         and not conditional_entry_arms
         and conditional_entry_bridge is None
@@ -1333,6 +2045,7 @@ def build_state_write_redirects(
                 entry_bridge_exit_path_blocks,
                 entry_bridge_requires_witness,
                 multi_entry_entry_bridge_safe,
+                entry_bridge_cut_exit_path_uses,
                 _add,
             )
 
@@ -4159,6 +4872,9 @@ def _recover_initial_state(
     transitions: tuple[StateWriteTransition, ...],
     dispatcher_entry_serial: int,
     pre_header_serial: int | None,
+    *,
+    state_var_stkoff: int | None = None,
+    state_var_reg: int | None = None,
 ) -> int | None:
     """Derive the initial dispatcher state from the prologue's state-write fold.
 
@@ -4185,7 +4901,79 @@ def _recover_initial_state(
         vb = int(t.via_block) if t.via_block is not None else None
         if wb in prologue_preds or (vb is not None and vb in prologue_preds):
             return int(t.next_state)
-    return None
+
+    # A materialized comparison tree can place pure routing blocks between the
+    # prologue's state write and the recovered dispatcher entry.  Transition
+    # recovery intentionally scans dispatcher back-edges, so that earlier entry
+    # write may not appear in ``transitions``.  Walk backwards only through the
+    # entry-reachable prefix (the dispatcher is a cut) and require every path's
+    # first state write to prove the same constant.
+    if state_var_stkoff is None and state_var_reg is None:
+        return None
+
+    entry_prefix = _entry_prefix_blocks(flow_graph, dispatcher_entry_serial)
+    pending = [(serial, frozenset()) for serial in sorted(prologue_preds)]
+    constants: set[int] = set()
+    while pending:
+        serial, path = pending.pop()
+        if serial in path:
+            return None
+        block = flow_graph.get_block(serial)
+        if block is None:
+            return None
+        found_write = False
+        for instruction in reversed(block.insn_snapshots):
+            if instruction.kind is not InsnKind.MOV:
+                continue
+            destination = instruction.d
+            writes_register = (
+                state_var_reg is not None
+                and destination.kind is OperandKind.REGISTER
+                and destination.reg == int(state_var_reg)
+            )
+            writes_stack = (
+                state_var_stkoff is not None
+                and destination.kind is OperandKind.STACK
+                and destination.stkoff == int(state_var_stkoff)
+            )
+            if not writes_register and not writes_stack:
+                continue
+            found_write = True
+            value = _mop_number_value(instruction.l)
+            if value is None:
+                return None
+            constants.add(int(value) & 0xFFFFFFFF)
+            if len(constants) != 1:
+                return None
+            break
+        if found_write:
+            continue
+        predecessors = [
+            int(predecessor)
+            for predecessor in block.preds
+            if int(predecessor) in entry_prefix
+        ]
+        if not predecessors:
+            return None
+        next_path = path | {serial}
+        pending.extend((predecessor, next_path) for predecessor in predecessors)
+    return next(iter(constants)) if len(constants) == 1 else None
+
+
+def _entry_prefix_blocks(flow_graph, dispatcher_entry_serial: int) -> set[int]:
+    """Blocks reachable from function entry without traversing the dispatcher."""
+    dispatcher = int(dispatcher_entry_serial)
+    seen: set[int] = set()
+    pending = [int(flow_graph.entry_serial)]
+    while pending:
+        serial = pending.pop()
+        if serial in seen or serial == dispatcher:
+            continue
+        seen.add(serial)
+        block = flow_graph.get_block(serial)
+        if block is not None:
+            pending.extend(int(successor) for successor in block.succs)
+    return seen
 
 
 def _dispatcher_entry_preds(
@@ -4211,20 +4999,7 @@ def _dispatcher_entry_preds(
         return [pre_header_hint] if pre_header_hint is not None else []
 
     # BFS from the function entry, never entering the dispatcher.
-    seen: set[int] = set()
-    stack = [int(entry)]
-    while stack:
-        s = stack.pop()
-        if s in seen or s == disp:
-            continue
-        seen.add(s)
-        blk = flow_graph.get_block(s)
-        if blk is None:
-            continue
-        for succ in blk.succs:
-            si = int(succ)
-            if si != disp and si not in seen:
-                stack.append(si)
+    seen = _entry_prefix_blocks(flow_graph, disp)
 
     entries = sorted(p for p in disp_preds if p in seen)
     if not entries and pre_header_hint is not None:
@@ -4765,13 +5540,16 @@ def emit_minimal_unflatten(
         initial_state=initial_state,
         emu=emu,
         live_block_for=live_block_for,
-        include_multi_entry_back_edges=recover_multi_entry_back_edges,
+        include_multi_entry_back_edges=(
+            recover_multi_entry_back_edges or materialized_computed_goto_profile
+        ),
         state_var_reg=state_var_reg,
         dispatcher_region_serials=(
             dispatcher_region_serials
             if materialized_computed_goto_profile
             and (
-                imported_direct_boundary_evidence
+                state_var_reg is not None
+                or imported_direct_boundary_evidence
                 or imported_conditional_boundary_evidence
             )
             else frozenset()
@@ -4810,6 +5588,22 @@ def emit_minimal_unflatten(
         materialized_state_routes=materialized_state_routes,
         handler_entry_eas_by_serial=handler_entry_eas_by_serial,
     )
+    if materialized_computed_goto_profile and state_var_reg is not None:
+        conditional_bridge_mods.extend(
+            build_stack_carried_state_selector_lowerings(
+                flow_graph,
+                dispatcher,
+                state_var_reg=int(state_var_reg),
+                dispatcher_region_serials=dispatcher_region_serials,
+                handler_serials=route_handler_serials,
+                materialized_state_routes=materialized_state_routes,
+                materialized_indirect_transfers=materialized_indirect_transfers,
+                imported_direct_boundary_evidence=(
+                    imported_direct_boundary_evidence
+                ),
+                handler_entry_eas_by_serial=handler_entry_eas_by_serial,
+            )
+        )
     if conditional_boundary_edges:
         conditional_bridge_mods = [
             mod
@@ -4904,13 +5698,20 @@ def emit_minimal_unflatten(
     # predecessor too, so its folded next-state (already in ``transitions``) IS
     # the initial state. Without it the entry bridge is skipped and removing the
     # dispatcher orphans every handler.
-    if initial_state is None:
-        initial_state = _recover_initial_state(
-            flow_graph,
-            transitions,
-            int(dispatcher_entry_serial),
-            pre_header_serial,
-        )
+    recovered_initial_state = _recover_initial_state(
+        flow_graph,
+        transitions,
+        int(dispatcher_entry_serial),
+        pre_header_serial,
+        state_var_stkoff=_soff,
+        state_var_reg=state_var_reg,
+    )
+    if recovered_initial_state is not None:
+        # Entry-only reaching definitions outrank a range-walk hint.  The latter
+        # can name an arbitrary mid-chain state when the dispatcher is a wide
+        # comparison tree, while the former is cut at the dispatcher and proves
+        # the state actually carried by the first dispatch.
+        initial_state = recovered_initial_state
     # Safety: the entry bridge is REQUIRED for correctness. Removing the
     # dispatcher orphans every handler unless the function-entry path is bridged
     # to ``route(initial_state)``. When a prologue exists but that bridge cannot
@@ -4990,6 +5791,9 @@ def emit_minimal_unflatten(
         entry_bridge_requires_witness=entry_bridge_requires_witness,
         strict_pre_header_prologue=recover_multi_entry_back_edges,
         allow_multi_entry_entry_bridge=recover_multi_entry_back_edges,
+        entry_bridge_cut_exit_path_uses=(
+            materialized_computed_goto_profile and state_var_reg is not None
+        ),
         materialized_indirect_transfers=materialized_indirect_transfers,
         materialized_state_routes=materialized_state_routes,
         condition_chain_handlers=route_handler_serials,

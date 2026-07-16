@@ -919,6 +919,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             equality_target_eas = unique_materialized_equality_target_eas(
                 materialized_indirect_transfers,
                 int(prelim.state_var_reg),
+                validated_candidate_target_eas=imported_target_eas,
             )
             materialized_handler_overrides: dict[int, int] = {}
             imported_handler_serials: set[int] = set()
@@ -1036,6 +1037,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         and range_evidence.dispatcher is not None
                         else None
                     )
+                ),
+                condition_chain_dag=(
+                    range_evidence.decision_dag
+                    if range_evidence is not None
+                    else None
                 ),
             )
             terminal_carrier_requests = plan_terminal_return_carrier_requests(

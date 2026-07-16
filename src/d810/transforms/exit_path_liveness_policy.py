@@ -226,7 +226,7 @@ def _block_gen_kill(block: object, state_var_stkoff: int | None):
         # Uses first (a use in the same instruction is not killed by its own def).
         for operand in (getattr(insn, "l", None), getattr(insn, "r", None)):
             for key in _variable_keys(operand):
-                if key != state_key:
+                if key != state_key and key not in kill:
                     gen.add(key)
         dest = getattr(insn, "d", None)
         key = _variable_key(dest)
@@ -238,6 +238,8 @@ def _block_gen_kill(block: object, state_var_stkoff: int | None):
 def _compute_liveness(
     flow_graph: object,
     state_var_stkoff: int | None,
+    *,
+    cut_entry_blocks: frozenset[int] = frozenset(),
 ) -> dict[int, set[tuple[str, int]]]:
     """Backward dataflow: live-in variables per block."""
     blocks: dict[int, object] = {}
@@ -263,7 +265,7 @@ def _compute_liveness(
             new_out: set[tuple[str, int]] = set()
             for succ in getattr(blocks[serial], "succs", ()):
                 succ_i = int(succ)
-                if succ_i in live_in:
+                if succ_i in live_in and succ_i not in cut_entry_blocks:
                     new_out |= live_in[succ_i]
             if new_out != live_out[serial]:
                 live_out[serial] = new_out
@@ -288,9 +290,15 @@ def block_defined_variables(
 def live_in_variables(
     flow_graph: object,
     state_var_stkoff: int | None,
+    *,
+    cut_entry_blocks: frozenset[int] = frozenset(),
 ) -> dict[int, set[tuple[str, int]]]:
-    """Return live-in variables per block."""
-    return _compute_liveness(flow_graph, state_var_stkoff)
+    """Return live-in variables, optionally stopping at replaced CFG entries."""
+    return _compute_liveness(
+        flow_graph,
+        state_var_stkoff,
+        cut_entry_blocks=cut_entry_blocks,
+    )
 
 
 def exit_path_shortcut_live_violations(
@@ -344,6 +352,7 @@ def exit_path_blocks_live_violations(
     *,
     source_blocks: tuple[int, ...] = (),
     old_target: int | None = None,
+    cut_exit_path_uses: bool = False,
 ) -> set[tuple[str, int]]:
     """Return live non-state definitions bypassed by shortcutting blocks.
 
@@ -352,7 +361,15 @@ def exit_path_blocks_live_violations(
     witness.  It does not prove feasibility; it only decides whether the legacy
     endpoint shortcut would skip a live stack/register definition.
     """
-    live_in = _compute_liveness(flow_graph, state_var_stkoff)
+    live_in = _compute_liveness(
+        flow_graph,
+        state_var_stkoff,
+        cut_entry_blocks=(
+            frozenset(int(block) for block in exit_path_blocks)
+            if cut_exit_path_uses
+            else frozenset()
+        ),
+    )
     target_live = live_in.get(int(shortcut_target), set())
     if not target_live:
         return set()

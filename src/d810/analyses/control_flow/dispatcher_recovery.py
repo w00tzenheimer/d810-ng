@@ -230,13 +230,19 @@ def _resolve_state_identity_to_stkoff(
                 write_counts[dst_stkoff] = write_counts.get(dst_stkoff, 0) + 1
     if not src_counts:
         return None
-    # Prefer the loaded slot with the most state-constant writes (the state var).
-    state_slots = {off: write_counts.get(off, 0) for off in src_counts}
-    best = max(state_slots, key=lambda k: state_slots[k])
-    if state_slots[best] > 0:
-        return best
-    # Fall back: the most common load source.
-    return max(src_counts, key=lambda k: src_counts[k])
+    # Prefer the loaded slot with the strongest combined evidence: direct
+    # state-constant writes first, then load frequency.  A tie is not a stack
+    # home.  Register-resident machines may precompute several conditional
+    # states in distinct stack slots and load each slot exactly once; choosing
+    # the first tied source by insertion order reclassifies the carrier register
+    # as an arbitrary stack variable.
+    evidence = {
+        off: (write_counts.get(off, 0), load_count)
+        for off, load_count in src_counts.items()
+    }
+    best_rank = max(evidence.values())
+    best = [off for off, rank in evidence.items() if rank == best_rank]
+    return best[0] if len(best) == 1 else None
 
 
 def _recover_computed_goto_loop_header(
@@ -315,14 +321,15 @@ def _recover_computed_goto_loop_header(
                             break
                 write_scores[int(successor)] = score
         if write_scores:
-            best_score = max(write_scores.values())
-            best_successors = tuple(
+            positive_successors = tuple(
                 successor
                 for successor, score in write_scores.items()
-                if score == best_score and score > 0
+                if score > 0
             )
-            if len(best_successors) == 1:
-                return int(best_successors[0])
+            if len(positive_successors) == 1:
+                return int(positive_successors[0])
+            if len(positive_successors) > 1:
+                return int(funnel)
         return int(funnel)
     # Loop header = the funnel's re-dispatch successor, never a chain block.
     header_candidates = [

@@ -1,8 +1,17 @@
 {
   "sdk_version": "9.3",
   "sdk_source": "ida-sdk/src/verifier/verify.cpp",
-  "scope": "minsn_t::verify+mop_t::verify",
+  "scope": "mcallinfo_t::verify+minsn_t::verify+mop_t::verify",
   "codes": [
+    {
+      "code": 50735,
+      "category": "call_validity",
+      "meaning": "Call argument operand size differs from formal type size",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_call_validity",
+      "notes": "Implemented as MINSN_50735_CALL_ARGUMENT_SIZE_MISMATCH. Each mcallarg_t operand size must equal argument.type.get_size()."
+    },
     {
       "code": 50754,
       "category": "operand_type_validity",
@@ -591,11 +600,11 @@
     {
       "code": 50824,
       "category": "operand_presence",
-      "meaning": "Wrong operand presence for opcode (14)",
+      "meaning": "Call in an MBL_CALL block has no argument list",
       "python_accessible": true,
       "disposition": "mapped",
-      "owner": "insn_operand_presence",
-      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 14)."
+      "owner": "insn_call_validity",
+      "notes": "Implemented as MINSN_50824_CALL_WITHOUT_ARGLIST. Calls nested in MBL_CALL blocks must carry mop_f in d."
     },
     {
       "code": 50826,

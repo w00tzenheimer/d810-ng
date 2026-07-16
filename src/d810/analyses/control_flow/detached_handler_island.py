@@ -689,6 +689,7 @@ def plan_detached_snippet_routes(
             transfer.resolver_kind
             in {
                 "static_handler_entry_route",
+                "static_equality_candidate",
                 "residual_state_route_evidence",
                 "residual_state_route",
             }
@@ -720,6 +721,7 @@ def plan_detached_snippet_routes(
             continue
         if transfer.resolver_kind in {
             "static_handler_entry_route",
+            "static_equality_candidate",
             "residual_state_route_evidence",
             "residual_state_route",
         }:

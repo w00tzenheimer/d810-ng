@@ -91,6 +91,7 @@ MINSN_52679_STKVAR_OVERFLOW = "MINSN_52679_STKVAR_OVERFLOW"
 MINSN_52863_BAD_SCATTERED_ADDR = "MINSN_52863_BAD_SCATTERED_ADDR"
 
 # Group E — Call/helper validity
+MINSN_50735_CALL_ARGUMENT_SIZE_MISMATCH = "MINSN_50735_CALL_ARGUMENT_SIZE_MISMATCH"
 MINSN_50772_ARGLIST_NOT_D_OPERAND = "MINSN_50772_ARGLIST_NOT_D_OPERAND"
 MINSN_50773_ARGLIST_ON_NONCALL = "MINSN_50773_ARGLIST_ON_NONCALL"
 MINSN_50780_REG_ADDR_OUTSIDE_HELPER = "MINSN_50780_REG_ADDR_OUTSIDE_HELPER"
@@ -2112,9 +2113,10 @@ def insn_call_validity(
     phase: str,
     focus_serials: Iterable[int] | None = None,
 ) -> list[InvariantViolation]:
-    """Check call and helper operand invariants (verify.cpp 50772-50824, 51066, 51264).
+    """Check call and helper operand invariants (verify.cpp 50735-50824, 51066, 51264).
 
     Checks:
+    - 50735: each call argument operand size must match its formal type size.
     - 50772: mop_f (arglist) must only appear as the d operand.
     - 50773: mop_f (arglist) operand must only appear on call/icall instructions.
     - 50780: mop_a (register address) is only valid for helper calls.
@@ -2143,6 +2145,46 @@ def insn_call_validity(
         blk = _safe_get_block(mba, int(serial))
         if blk is None:
             continue
+
+        for top_insn in _iter_insns(blk):
+            for nested_insn in _iter_insn_tree(top_insn):
+                nested_opcode = int(nested_insn.opcode)
+                if (
+                    nested_opcode not in call_opcodes
+                    or _mop_type(nested_insn.d) != mop_f_type
+                    or nested_insn.d.f is None
+                ):
+                    continue
+                nested_ea = _insn_ea(nested_insn)
+                for argument_index, argument in enumerate(nested_insn.d.f.args):
+                    try:
+                        operand_size = int(argument.size)
+                        type_size = int(argument.type.get_size())
+                    except Exception:
+                        # Other verifier checks own malformed or absent types.
+                        continue
+                    if operand_size == type_size:
+                        continue
+                    violations.append(
+                        _violation(
+                            code=MINSN_50735_CALL_ARGUMENT_SIZE_MISMATCH,
+                            phase=phase,
+                            message=(
+                                f"Block {serial} ea=0x{nested_ea or 0:x}: "
+                                f"call argument {argument_index} operand size "
+                                f"{operand_size} differs from type size {type_size}"
+                            ),
+                            block_serial=int(serial),
+                            insn_ea=nested_ea,
+                            verify_code=50735,
+                            details={
+                                "argument_index": int(argument_index),
+                                "operand_size": operand_size,
+                                "type_size": type_size,
+                            },
+                        )
+                    )
+
         if (int(blk.flags) & mbl_call) != 0:
             for top_insn in _iter_insns(blk):
                 for nested_insn in _iter_insn_tree(top_insn):
