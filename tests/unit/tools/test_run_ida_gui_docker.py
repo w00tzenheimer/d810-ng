@@ -224,6 +224,13 @@ def _automation_environment(run: list[str]) -> str:
     return values[0].removeprefix(prefix)
 
 
+def _audit_path_for_request(request_path: Path) -> Path:
+    request_id = request_path.name.removeprefix("automation-request-").removesuffix(
+        ".json"
+    )
+    return request_path.parent / f"automation-{request_id}.json"
+
+
 def test_default_launch_mounts_root_checkout_portable_d810_state_and_samples(
     tmp_path: Path,
 ) -> None:
@@ -529,6 +536,121 @@ def test_connect_bypasses_xquartz_docker_ida_state_mcp_source_and_sample_copy(
     assert calls == []
     assert not (paths["worktree"] / ".tmp" / "ida-gui").exists()
     assert list(paths["worktree"].rglob("*.i64")) == []
+
+
+def test_plain_fresh_plan_names_every_non_applicable_automation_field(
+    tmp_path: Path,
+) -> None:
+    result, calls, paths = _run(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert calls[-1][:2] == ["run", "--rm"]
+    assert "D810 GUI pre-action plan:" in result.stdout
+    assert "  mode: fresh plain" in result.stdout
+    assert f"  selected worktree: {paths['repo']}" in result.stdout
+    assert "  copied IDB: N/A" in result.stdout
+    assert "  ordered commands: none" in result.stdout
+    assert "  function selector: N/A" in result.stdout
+    assert "  MCP endpoint: N/A" in result.stdout
+    assert "  request path: N/A" in result.stdout
+    assert "  audit path: N/A" in result.stdout
+
+
+def test_named_fresh_plan_precedes_launch_and_reports_exact_artifacts(
+    tmp_path: Path,
+) -> None:
+    result, calls, paths = _run(
+        tmp_path,
+        "-w",
+        WORKTREE_NAME,
+        "--open-workbench",
+        "--function",
+        "0x401000",
+        "--open-config",
+        "--",
+        "/samples/bins/database with space.i64",
+    )
+
+    assert result.returncode == 0, result.stderr
+    request_path, _document = _automation_request(paths["worktree"])
+    copied_idb = next((paths["worktree"] / ".tmp" / "ida-gui").glob("*.i64"))
+    assert calls[-1][:2] == ["run", "--rm"]
+    assert "D810 GUI pre-action plan:" in result.stdout
+    assert "  mode: fresh named" in result.stdout
+    assert f"  selected worktree: {paths['worktree']}" in result.stdout
+    assert f"  copied IDB: {copied_idb}" in result.stdout
+    assert "  ordered commands: open-config, open-workbench" in result.stdout
+    assert "  function selector: 0x401000" in result.stdout
+    assert "  MCP endpoint: N/A" in result.stdout
+    assert f"  request path: {request_path}" in result.stdout
+    assert f"  audit path: {_audit_path_for_request(request_path)}" in result.stdout
+
+
+def test_named_fresh_mcp_plan_reports_loopback_endpoint_and_artifacts(
+    tmp_path: Path,
+) -> None:
+    result, calls, paths = _run(
+        tmp_path,
+        "--mcp",
+        "--mcp-port",
+        "14444",
+        "--open-config",
+    )
+
+    assert result.returncode == 0, result.stderr
+    request_path, _document = _automation_request(paths["repo"])
+    assert calls[-1][:2] == ["run", "--rm"]
+    assert "D810 GUI pre-action plan:" in result.stdout
+    assert "  mode: fresh named MCP" in result.stdout
+    assert f"  selected worktree: {paths['repo']}" in result.stdout
+    assert "  copied IDB: N/A" in result.stdout
+    assert "  ordered commands: open-config" in result.stdout
+    assert "  function selector: N/A" in result.stdout
+    assert "  MCP endpoint: http://127.0.0.1:14444/mcp" in result.stdout
+    assert f"  request path: {request_path}" in result.stdout
+    assert f"  audit path: {_audit_path_for_request(request_path)}" in result.stdout
+
+
+def test_connect_plan_precedes_request_without_claiming_fresh_launch_actions(
+    tmp_path: Path,
+) -> None:
+    result, calls, paths = _run(
+        tmp_path,
+        "-w",
+        WORKTREE_NAME,
+        "--connect",
+        "--open-config",
+        "--open-workbench",
+        "--function",
+        "namespace::target",
+        "--mcp-endpoint",
+        "http://127.0.0.1:1/mcp",
+    )
+
+    assert result.returncode != 0
+    assert "MCP request failed" in result.stderr
+    assert calls == []
+    assert "D810 GUI pre-action plan:" in result.stdout
+    assert "  mode: connect" in result.stdout
+    assert f"  selected worktree: {paths['worktree']}" in result.stdout
+    assert "  copied IDB: N/A (connect mode)" in result.stdout
+    assert "  ordered commands: open-config, open-workbench" in result.stdout
+    assert "  function selector: namespace::target" in result.stdout
+    assert "  MCP endpoint: http://127.0.0.1:1/mcp" in result.stdout
+    assert "  request path: N/A (sent directly over MCP)" in result.stdout
+    assert (
+        f"  audit path: {paths['worktree']}/.tmp/ida-gui/"
+        "automation-<request-id>.json"
+    ) in result.stdout
+    for fresh_only_claim in (
+        "  image:",
+        "  runtime:",
+        "  display:",
+        "MCP start",
+        "Docker",
+        "XQuartz",
+    ):
+        assert fresh_only_claim not in result.stdout
 
 
 def test_default_image_is_the_baked_d810_x11_runtime(tmp_path: Path) -> None:
@@ -871,7 +993,7 @@ def test_missing_gui_image_fails_before_docker_run(tmp_path: Path) -> None:
     assert calls[0][-1] == GUI_IMAGE
 
 
-def test_help_documents_worktrees_state_and_sample_mount(tmp_path: Path) -> None:
+def test_help_completely_documents_fresh_and_connect_contracts(tmp_path: Path) -> None:
     result, calls, _paths = _run(tmp_path, "--help")
 
     assert result.returncode == 0, result.stderr
@@ -884,6 +1006,27 @@ def test_help_documents_worktrees_state_and_sample_mount(tmp_path: Path) -> None
     assert "--open-config" in result.stdout
     assert "--open-workbench" in result.stdout
     assert "--function" in result.stdout
+    assert "--mcp" in result.stdout
+    assert "--mcp-port" in result.stdout
+    assert "--connect" in result.stdout
+    assert "--mcp-endpoint" in result.stdout
+    for restriction in (
+        "--function requires --open-workbench",
+        "--mcp requires --open-config or --open-workbench",
+        "--mcp-port requires --mcp",
+        "--connect requires --open-config or --open-workbench",
+        "--connect does not accept IDA arguments after --",
+        "--mcp-endpoint requires --connect",
+    ):
+        assert restriction in result.stdout
+    assert "plain fresh docker launch" in result.stdout.lower()
+    assert "fresh named automation" in result.stdout.lower()
+    assert "existing session" in result.stdout.lower()
+    assert "127.0.0.1" in result.stdout
+    assert ".tmp/ida-gui/automation-request-<request-id>.json" in result.stdout
+    assert ".tmp/ida-gui/automation-<request-id>.json" in result.stdout
+    assert "samples/bins/libobfuscated.dll.i64" in result.stdout
+    assert "dylib" not in result.stdout.lower()
     assert "copy" in result.stdout.lower()
     assert "/samples/bins" in result.stdout
     assert calls == []

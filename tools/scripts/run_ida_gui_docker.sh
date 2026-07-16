@@ -7,6 +7,15 @@ usage() {
   cat <<'EOF'
 Usage: run_ida_gui_docker.sh [OPTIONS] [-- IDA_ARGS...]
 
+Modes:
+  Plain fresh Docker launch (default) validates XQuartz and the GUI runtime,
+  then starts IDA against the selected checkout without named automation.
+  Fresh named automation adds --open-config and/or --open-workbench to that
+  launch; MCP remains opt-in through --mcp.
+  Existing session (--connect) sends named actions to an already-running IDA
+  MCP endpoint. It does not launch Docker, authorize XQuartz, copy an IDB, or
+  start the MCP plugin.
+
 Options:
   -w, --worktree NAME  Use D810_REPO_ROOT/D810_WORKTREE_ROOT/NAME.
   -l, --logs           Compatibility with run_system_tests_docker.sh; the GUI
@@ -19,7 +28,8 @@ Options:
                        Set D810_FACT_LIFECYCLE=0 in the container.
   --open-config        Open and focus the D-810 Configuration dock at startup.
   --open-workbench     Open and focus the D810 workbench at startup.
-  --function FUNCTION  Exact function name or integer EA for the workbench.
+  --function FUNCTION  Exact function name or integer EA for the workbench;
+                       without it, the workbench uses IDA's current function.
   --connect            Run named actions in an existing loopback MCP IDA session.
   --mcp-endpoint URL   Connect-only loopback HTTP /mcp endpoint. Default:
                        http://127.0.0.1:13337/mcp
@@ -54,6 +64,29 @@ Mounts:
   MCP plugin source            -> /root/.idapro/plugins/ida-pro-mcp
                                   read-only (only with --mcp)
 
+Named-action restrictions:
+  --function requires --open-workbench
+  --mcp requires --open-config or --open-workbench
+  --mcp-port requires --mcp; the host port must be 1024 through 65535.
+  --mcp-endpoint requires --connect
+  --connect requires --open-config or --open-workbench
+  --connect does not accept IDA arguments after --
+  --connect cannot be combined with --mcp or --mcp-port.
+
+MCP boundary:
+  Fresh --mcp publishes only 127.0.0.1:HOST_PORT and keeps the container port
+  fixed at 13337. --connect accepts only a loopback HTTP /mcp endpoint and
+  defaults to http://127.0.0.1:13337/mcp.
+
+Automation artifacts:
+  A fresh named launch writes its immutable request below the selected checkout:
+    .tmp/ida-gui/automation-request-<request-id>.json
+  Terminal fresh named and existing-session results publish their audit at:
+    .tmp/ida-gui/automation-<request-id>.json
+  Every accepted launch/connect invocation prints a pre-action plan naming the
+  selected worktree, copied IDB or N/A, ordered commands, function selector,
+  endpoint, request path when applicable, and audit path.
+
 Safety:
   The GUI image must carry org.d810.gui-runtime=x11-dev-emulation-z3-v1.
   Build the default image with:
@@ -63,10 +96,17 @@ Safety:
       -t idapro-9.3-speedups:x11-arm64 .
   A /samples/bins/*.i64 argument is copied to the selected checkout's
   .tmp/ida-gui directory. IDA opens the /work copy and cannot modify the source.
+  The canonical witness is /samples/bins/libobfuscated.dll.i64.
 
-Example:
+Fresh example:
   run_ida_gui_docker.sh -w truthful-config-v2-project-ui \
-    -- /samples/bins/libobfuscated.dll.2026-06-03.i64
+    --open-config --open-workbench --function 0x401000 --mcp \
+    -- /samples/bins/libobfuscated.dll.i64
+
+Existing-session example:
+  run_ida_gui_docker.sh -w truthful-config-v2-project-ui \
+    --connect --open-config --open-workbench --function 0x401000 \
+    --mcp-endpoint http://127.0.0.1:13337/mcp
 EOF
 }
 
@@ -81,6 +121,18 @@ Start XQuartz and authorize localhost with:
   open -a XQuartz
   /opt/X11/bin/xhost +localhost
 EOF
+}
+
+print_pre_action_plan() {
+  printf 'D810 GUI pre-action plan:\n'
+  printf '  mode: %s\n' "$PLAN_MODE"
+  printf '  selected worktree: %s\n' "$WORK_DIR"
+  printf '  copied IDB: %s\n' "$PLAN_COPIED_IDB"
+  printf '  ordered commands: %s\n' "$PLAN_COMMANDS"
+  printf '  function selector: %s\n' "$PLAN_FUNCTION_SELECTOR"
+  printf '  MCP endpoint: %s\n' "$PLAN_MCP_ENDPOINT"
+  printf '  request path: %s\n' "$PLAN_REQUEST_PATH"
+  printf '  audit path: %s\n\n' "$PLAN_AUDIT_PATH"
 }
 
 canonical_dir() {
@@ -291,6 +343,23 @@ fi
 [ -f "$WORK_DIR/src/d810ng.py" ] \
   || fail "selected checkout has no src/d810ng.py: $WORK_DIR"
 
+PLAN_COMMANDS="none"
+if [ -n "$OPEN_CONFIG" ] && [ -n "$OPEN_WORKBENCH" ]; then
+  PLAN_COMMANDS="open-config, open-workbench"
+elif [ -n "$OPEN_CONFIG" ]; then
+  PLAN_COMMANDS="open-config"
+elif [ -n "$OPEN_WORKBENCH" ]; then
+  PLAN_COMMANDS="open-workbench"
+fi
+PLAN_FUNCTION_SELECTOR="N/A"
+if [ -n "$OPEN_WORKBENCH" ]; then
+  if [ -n "$FUNCTION_SET" ]; then
+    PLAN_FUNCTION_SELECTOR="$FUNCTION_VALUE"
+  else
+    PLAN_FUNCTION_SELECTOR="current function"
+  fi
+fi
+
 if [ -n "$CONNECT_MODE" ]; then
   command -v python3 >/dev/null 2>&1 \
     || fail "python3 is required for existing-session GUI automation"
@@ -310,6 +379,12 @@ if [ -n "$CONNECT_MODE" ]; then
   if [ -n "$FUNCTION_SET" ]; then
     CONNECT_ARGS+=( --function "$FUNCTION_VALUE" )
   fi
+  PLAN_MODE="connect"
+  PLAN_COPIED_IDB="N/A (connect mode)"
+  PLAN_MCP_ENDPOINT="$MCP_ENDPOINT_VALUE"
+  PLAN_REQUEST_PATH="N/A (sent directly over MCP)"
+  PLAN_AUDIT_PATH="$WORK_DIR/.tmp/ida-gui/automation-<request-id>.json"
+  print_pre_action_plan
   exec env \
     "PYTHONPATH=$WORK_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
     python3 "$CONNECT_CLIENT" "${CONNECT_ARGS[@]}"
@@ -419,6 +494,8 @@ fi
 
 IDA_DATABASE_COPY=""
 IDA_DATABASE_CONTAINER_PATH=""
+AUTOMATION_REQUEST_HOST_PATH=""
+AUTOMATION_AUDIT_PATH=""
 if [ "${#IDA_ARGS[@]}" -gt 0 ]; then
   for IDA_ARG_INDEX in "${!IDA_ARGS[@]}"; do
     case "${IDA_ARGS[$IDA_ARG_INDEX]}" in
@@ -549,6 +626,11 @@ except Exception:
 print(f"/work/.tmp/ida-gui/{destination.name}")
 PY
   )"
+  AUTOMATION_REQUEST_NAME="$(basename "$D810_GUI_AUTOMATION_REQUEST")"
+  AUTOMATION_REQUEST_ID="${AUTOMATION_REQUEST_NAME#automation-request-}"
+  AUTOMATION_REQUEST_ID="${AUTOMATION_REQUEST_ID%.json}"
+  AUTOMATION_REQUEST_HOST_PATH="$AUTOMATION_DIR/$AUTOMATION_REQUEST_NAME"
+  AUTOMATION_AUDIT_PATH="$AUTOMATION_DIR/automation-$AUTOMATION_REQUEST_ID.json"
   export D810_GUI_AUTOMATION_REQUEST
   IDA_ARGS=( -S/work/tools/scripts/ida_gui_bootstrap.py "${IDA_ARGS[@]}" )
 fi
@@ -574,6 +656,19 @@ for ENV_NAME in ${!D810_@}; do
   ENV_VALUE="$(printenv "$ENV_NAME")"
   [ -n "$ENV_VALUE" ] && EXTRA_ENV_ARGS+=( -e "$ENV_NAME=$ENV_VALUE" )
 done
+
+PLAN_MODE="fresh plain"
+if [ -n "$NAMED_AUTOMATION" ]; then
+  PLAN_MODE="fresh named"
+fi
+if [ -n "$MCP_ENABLED" ]; then
+  PLAN_MODE="fresh named MCP"
+fi
+PLAN_COPIED_IDB="${IDA_DATABASE_COPY:-N/A}"
+PLAN_MCP_ENDPOINT="${MCP_ENDPOINT:-N/A}"
+PLAN_REQUEST_PATH="${AUTOMATION_REQUEST_HOST_PATH:-N/A}"
+PLAN_AUDIT_PATH="${AUTOMATION_AUDIT_PATH:-N/A}"
+print_pre_action_plan
 
 printf '%s plan:\n' "$0"
 printf '  image:     %s\n' "$DOCKER_IMAGE"

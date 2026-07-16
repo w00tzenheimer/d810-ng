@@ -1,91 +1,163 @@
 # Worktree-Aware IDA GUI Docker Launcher Design
 
-**Status:** Approved on 2026-07-16
+**Status:** Approved on 2026-07-16; automation and planning contracts updated
+after Tasks A-F.
 
 **Ticket:** `d81-kcin`
 
 ## Goal
 
-Provide a focused macOS launcher for the native ARM64 IDA 9.3 X11 image that selects a D810 checkout with the same `-w` convention as `tools/scripts/run_system_tests_docker.sh`, reuses portable D810 configuration and diagnostic state without replacing the image's Linux IDA registry, and opens disposable copies of canonical sample databases that are intentionally absent from linked worktrees.
+Provide one truthful macOS entry point for either a fresh native ARM64 IDA 9.3
+X11 launch or a bounded action against an existing IDA MCP session. Every mode
+must name the selected D810 checkout and print what it is about to do. Fresh
+launches reuse scoped portable D810 state without replacing the image's Linux
+IDA registry, and they open disposable copies of canonical sample databases.
 
-## Scope
+## Public Interface
 
-The launcher is `tools/scripts/run_ida_gui_docker.sh`. Its public interface is:
-
-```bash
-./tools/scripts/run_ida_gui_docker.sh [-w WORKTREE] [-- IDA_ARGS...]
-```
-
-Without `-w`, the selected checkout is `D810_REPO_ROOT`. With `-w NAME`, it is `D810_REPO_ROOT/D810_WORKTREE_ROOT/NAME`. `D810_WORKTREE_ROOT` defaults to `.worktrees`, matching the system-test runner. Arguments following `--` are passed to IDA unchanged and therefore use container paths.
-
-The launcher supports these host environment overrides:
-
-- `D810_REPO_ROOT`: canonical checkout containing `.worktrees` and local sample databases.
-- `D810_WORKTREE_ROOT`: worktree directory relative to the canonical checkout; default `.worktrees`.
-- `D810_GUI_DOCKER_IMAGE`: dependency-complete GUI image; default
-  `idapro-9.3-speedups:x11-arm64`.
-- `D810_DOCKER_MEMORY`: Docker memory limit; default `4g`, matching the system-test runner.
-- `D810_IDA_USER_DIR`: persistent host IDA user directory; default `$HOME/.idapro`.
-- `D810_GUI_DISPLAY`: container X11 display; default `host.docker.internal:0`.
-- `D810_XHOST_BIN`: XQuartz access-control client; default `/opt/X11/bin/xhost`.
-
-## Worktree and Data Mounts
-
-The selected checkout is mounted read-write at `/work` and again at `/root/.idapro/plugins/d810`. The second mount is nested after the IDA user-directory mount, so it replaces the host-only `~/.idapro/plugins/d810` symlink inside the container. IDA therefore loads exactly the checkout selected by `-w`, independently of the native IDA process or host symlink.
-
-The launcher does not mount the host IDA user directory over `/root/.idapro`. A whole-directory mount would replace the image's Linux `ida.reg` (whose `Python3TargetDLL` points at `/usr/local/lib/libpython3.13.so.1.0`) with the host macOS registry (whose Python target is a `.dylib`), preventing IDAPython from starting.
-
-Instead, the host `cfg/d810` directory is mounted read-write at `/root/.idapro/cfg/d810`, and the configured D810 log directory is mounted read-write at `/root/.idapro/logs` and at the absolute path recorded in `options.json` when necessary. These scoped mounts reuse editable projects, `d810_function_rules.db`, diagnostic SQLite databases, and log artifacts while leaving the image-owned registry and license intact.
-
-The canonical `D810_REPO_ROOT/samples/bins` directory is mounted read-only at `/samples/bins` when present. Local `.i64` files are ignored by Git and are not replicated into linked worktrees, so this separate mount gives every selected worktree the same databases without allowing IDA to modify the source artifacts.
-
-When an IDA argument is `/samples/bins/*.i64`, the launcher copies it to the selected checkout's `.tmp/ida-gui/` directory, verifies the copy byte-for-byte, and replaces that argument with the corresponding `/work/.tmp/ida-gui/...` path. For example:
+The launcher is `tools/scripts/run_ida_gui_docker.sh`:
 
 ```bash
-./tools/scripts/run_ida_gui_docker.sh \
-  -w truthful-config-v2-project-ui \
-  -l -- /samples/bins/libobfuscated.dll.2026-06-03.i64
+./tools/scripts/run_ida_gui_docker.sh [OPTIONS] [-- IDA_ARGS...]
 ```
 
-## Host and Container Validation
+The selection and named-action options are:
 
-Before launch, the script:
+- `-w, --worktree NAME`: select
+  `D810_REPO_ROOT/D810_WORKTREE_ROOT/NAME`; without it, select
+  `D810_REPO_ROOT`.
+- `--open-config`: open and focus the D-810 Configuration dock.
+- `--open-workbench`: open and focus the D810 workbench.
+- `--function FUNCTION`: select an exact function name or integer EA for the
+  workbench. It requires `--open-workbench`; without it, the named workbench
+  action uses IDA's current function.
+- `--mcp`: on a fresh named launch, mount and start the MCP plugin.
+- `--mcp-port PORT`: select the fresh launch's loopback host port. It requires
+  `--mcp`; the accepted range is 1024 through 65535. The container port remains
+  13337.
+- `--connect`: execute named actions in an existing IDA MCP session.
+- `--mcp-endpoint URL`: select the existing-session endpoint. It requires
+  `--connect`, accepts only loopback HTTP `/mcp` URLs, and defaults to
+  `http://127.0.0.1:13337/mcp`.
+- `--`: pass all remaining arguments to IDA unchanged in fresh mode.
 
-1. Resolves and canonicalizes the repository root, worktree root, selected checkout, IDA user directory, and sample directory.
-2. Rejects a missing worktree, a `-w` value that escapes the configured worktree root, or a checkout lacking `ida-plugin.json` and `src/d810ng.py`.
-3. Requires Docker and verifies that `D810_GUI_DOCKER_IMAGE` exists.
-4. Requires `/opt/X11/bin/xhost` and treats a successful `xhost` query as the XQuartz readiness signal. It does not rely on the application process name because the active server process is `Xquartz`/`X11.bin`, not `XQuartz`.
-5. Requires access control to contain `INET:localhost` or `INET6:localhost`. On failure it prints the exact recovery commands `open -a XQuartz` and `/opt/X11/bin/xhost +localhost`; it never broadens access with unrestricted `xhost +`.
+`--open-config` always precedes `--open-workbench` when both are requested.
+`--function` is not a free-form Python hook, and named fresh automation rejects
+caller-supplied IDA `-S` scripts. `--connect` requires at least one named action,
+accepts no IDA arguments, and cannot be combined with `--mcp` or `--mcp-port`.
+Fresh `--mcp` also requires at least one named action.
 
-The container runs in the foreground with `--rm`, `--memory`, `-w /work`, `MODE=x11`, `DISPLAY`, `LIBGL_ALWAYS_SOFTWARE=1`, and `PYTHONPATH=/root/.idapro/plugins/d810/src:/app/ida/python`, using `/app/ida/entrypoint.sh` as its explicit entrypoint. The explicit Python path prevents a host editable install or unrelated checkout from shadowing the worktree selected by `-w`. Before launch, the image must expose `org.d810.gui-runtime=x11-dev-emulation-z3-v1`; this proves that the X11 image includes the same virtualenv dependencies and isolated Z3 speedups layer as the test runtime. The launcher also accepts the system runner's `-l`, `--enable-debug-logging`, `--enable-diag-snapshot`, and `--disable-fact-lifecycle` options and forwards non-wrapper `D810_*` environment variables. Ctrl-C terminates the GUI container. The existing CLI image and host plugin symlink are unchanged.
+The host environment overrides are `D810_REPO_ROOT`, `D810_WORKTREE_ROOT`,
+`D810_GUI_DOCKER_IMAGE`, `D810_DOCKER_MEMORY`, `D810_IDA_USER_DIR`,
+`D810_GUI_DISPLAY`, `D810_XHOST_BIN`, and `D810_MCP_PLUGIN_DIR`. The defaults
+remain `.worktrees`, `idapro-9.3-speedups:x11-arm64`, `4g`, `$HOME/.idapro`,
+`host.docker.internal:0`, `/opt/X11/bin/xhost`, and
+`D810_IDA_USER_DIR/plugins/ida-pro-mcp` where applicable.
 
-## Error Handling
+## Mode Boundaries
 
-Invalid options, missing option values, invalid paths, unavailable XQuartz, missing localhost authorization, and absent Docker images fail before `docker run`. Errors identify the rejected value and the required recovery action. Paths and pass-through arguments are held in Bash arrays so whitespace is preserved and no command is reconstructed through `eval`.
+### Fresh plain launch
 
-## Testing
+Fresh plain mode validates XQuartz, the labeled Docker GUI runtime, the selected
+checkout, and scoped IDA state, then starts IDA. It creates no automation request
+or audit and does not mount, start, or publish MCP.
 
-`tests/unit/tools/test_run_ida_gui_docker.py` runs the real launcher against mocked `docker` and `xhost` executables. It covers:
+### Fresh named launch
 
-- default root-checkout selection;
-- `-w` selection under `.worktrees`;
-- `D810_WORKTREE_ROOT` override;
-- rejection of missing and escaping worktrees;
-- selected-checkout and nested plugin mounts;
-- scoped portable D810 state and read-only canonical sample mounts;
-- automatic byte-for-byte sample database copying;
-- system-runner-compatible memory, log, and diagnostic environment options;
-- exact IDA argument preservation, including whitespace;
-- Docker-image validation;
-- XQuartz unavailable and localhost-not-authorized failures;
-- help output that documents paths, state reuse, and sample paths.
+A fresh named launch creates an immutable request at
+`.tmp/ida-gui/automation-request-<request-id>.json`, prepends the fixed
+`ida_gui_bootstrap.py` IDA script, and executes only the closed named command
+set. The resulting audit belongs at
+`.tmp/ida-gui/automation-<request-id>.json`. The request records ordered
+commands, the validated selector, selected-worktree context, copied-IDB path and
+hash when present, and the MCP endpoint when MCP is explicitly enabled.
 
-After the mocked tests pass, live acceptance launches `idapro-9.3-speedups:x11-arm64` with `-w truthful-config-v2-project-ui` and a copied `libobfuscated.dll.2026-06-03.i64`. Acceptance requires the visible IDA GUI to open the `/work/.tmp/ida-gui/` copy, load D810 0.6.6 from the selected worktree with isolated Z3 available, expose the existing D810 configuration/log storage, and leave the canonical source hash unchanged. The live run is terminated after inspection.
+Fresh MCP publication is exactly `127.0.0.1:HOST_PORT:13337`. The plugin source
+is mounted read-only and only for `--mcp`; the plan and request report the host
+loopback endpoint.
+
+### Existing-session connect
+
+Connect mode resolves and validates the selected checkout, then runs its
+`ida_gui_connect.py` client against the requested loopback endpoint. It does not
+validate or launch Docker, authorize XQuartz, inspect IDA user state, copy a
+database, or mount/start MCP. Its request is sent directly over MCP, so there is
+no request file. A terminal typed result publishes the same audit schema beneath
+the selected checkout at `.tmp/ida-gui/automation-<request-id>.json`.
+
+## Pre-Action Plan
+
+Before `docker run` or the existing-session MCP exchange, the launcher prints a
+stable plan with these fields in this order:
+
+1. mode;
+2. selected worktree;
+3. copied IDB, or explicit `N/A`;
+4. ordered commands;
+5. function selector, `current function`, or `N/A`;
+6. MCP endpoint, or `N/A`;
+7. request path, or explicit direct-MCP/`N/A` status;
+8. audit path, exact when the fresh request ID exists and a deterministic
+   `<request-id>` pattern for connect.
+
+The connect plan intentionally contains no Docker image/runtime/display, sample
+copy, MCP-start, or XQuartz claims.
+
+## Worktree, State, and Sample Boundaries
+
+The selected checkout is mounted read-write at `/work` and
+`/root/.idapro/plugins/d810`, so IDA loads exactly the checkout selected by
+`-w`. The launcher does not mount the whole host IDA user directory because that
+would replace the image-owned Linux runtime registry. Instead, it mounts only
+host `cfg/d810` and the configured D810 log directory read-write. This preserves
+editable projects, `d810_function_rules.db`, diagnostic databases, and logs
+without replacing the container runtime or license state.
+
+`D810_REPO_ROOT/samples/bins` is mounted read-only at `/samples/bins` when
+present. A `/samples/bins/*.i64` argument is copied into the selected checkout's
+`.tmp/ida-gui/`, verified byte-for-byte, and rewritten to its `/work` path before
+IDA starts. The canonical witness is:
+
+```text
+/samples/bins/libobfuscated.dll.i64
+```
+
+The source sample is never opened directly and its hash must remain unchanged.
+
+## Validation and Error Handling
+
+The launcher canonicalizes the repository, worktree root, selected checkout,
+state paths, sample source, and optional MCP source. It rejects worktree escapes,
+missing plugin entry points, conflicting or duplicate mode flags, invalid
+selectors, unsafe endpoints, invalid host ports, and sample escapes before the
+relevant external action. Fresh mode additionally requires localhost-authorized
+XQuartz and an image labeled
+`org.d810.gui-runtime=x11-dev-emulation-z3-v1`. Recovery instructions use only
+`xhost +localhost`; unrestricted `xhost +` is never used.
+
+Paths and pass-through arguments remain Bash array elements. No command is
+reconstructed through `eval`.
+
+## Verification and Acceptance Boundary
+
+`tests/unit/tools/test_run_ida_gui_docker.py` executes the real launcher against
+mock Docker and XQuartz commands. Together with
+`tests/unit/tools/test_ida_gui_connect.py`, the focused suite covers fresh plain,
+fresh named, fresh MCP, connect, selector and endpoint validation, immutable
+request/audit context, copy safety, loopback publication, complete help, and all
+four pre-action plans.
+
+Task F adds no live IDA run. Its evidence is subprocess and repository
+verification only. Earlier live acceptance established the base XQuartz lane;
+the ticket remains open until the worklist's remaining named GUI lanes are
+actually observed and recorded.
 
 ## Non-Goals
 
-- Changing or retagging the existing `idapro-9.3:latest` CLI image.
+- Closing or commandeering an existing IDA session.
+- Arbitrary remote MCP endpoints or non-loopback Docker publication.
+- Arbitrary Python execution through the launcher.
+- Changing or retagging `idapro-9.3:latest`.
 - Changing `tools/scripts/run_system_tests_docker.sh`.
-- Extracting a shared shell library solely for this launcher.
-- Supporting non-XQuartz display transports or non-macOS hosts in this slice.
+- Supporting non-XQuartz display transports or non-macOS fresh hosts here.
 - Changing the host `~/.idapro/plugins/d810` symlink.
