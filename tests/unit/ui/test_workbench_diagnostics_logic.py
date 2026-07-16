@@ -5,7 +5,10 @@ from pathlib import Path
 
 from d810.diagnostics.workbench_models import (
     DiagnosticDatabaseSummary,
+    DiagnosticField,
+    DiagnosticRecord,
     DiagnosticSnapshotSummary,
+    DiagnosticViewKind,
 )
 from d810.ui import workbench_diagnostics_logic as logic
 
@@ -118,6 +121,41 @@ def test_actions_protect_active_database_and_require_explicit_selection():
 
     empty = {item.action_id: item for item in logic.diagnostic_action_states((), selected_snapshot_ids=())}
     assert all(item.enabled is False for item in empty.values())
+
+
+def test_all_closed_action_uses_full_inventory_not_only_current_selection():
+    closed = _database("/closed", recorded_at=1, function_ea=1, size=1, snapshots=1)
+    states = {
+        item.action_id: item
+        for item in logic.diagnostic_action_states(
+            (), selected_snapshot_ids=(), all_databases=(closed,)
+        )
+    }
+
+    assert states["delete_all_closed_databases"].enabled is True
+    assert states["delete_selected_databases"].enabled is False
+
+
+def test_function_grouping_and_jump_projection_are_deterministic():
+    databases = (
+        _database("/old", recorded_at=1, function_ea=0x401000, size=1, snapshots=1),
+        _database("/new", recorded_at=2, function_ea=0x401000, size=1, snapshots=1),
+        _database("/other", recorded_at=3, function_ea=0x402000, size=1, snapshots=1),
+    )
+    groups = logic.group_databases_by_function(databases)
+    record = DiagnosticRecord(
+        kind=DiagnosticViewKind.BLOCKS,
+        source_table="blocks",
+        snapshot_id=1,
+        ordinal=0,
+        fields=(DiagnosticField("serial", "blk7@0x401010", "blk7@0x401010", 0x401010),),
+        warnings=(),
+        anchor_ea=0x401010,
+    )
+
+    assert [group.function_ea for group in groups] == [0x401000, 0x402000]
+    assert [item.path for item in groups[0].databases] == ["/new", "/old"]
+    assert logic.record_jump_ea(record) == 0x401010
 
 
 def test_diagnostics_logic_has_no_qt_ida_sqlite_or_peewee_imports():

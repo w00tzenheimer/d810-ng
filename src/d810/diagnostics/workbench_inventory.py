@@ -111,18 +111,25 @@ def _table_columns(connection: sqlite3.Connection, table: str) -> tuple[str, ...
 
 
 def _owned_tables_for(existing: set[str]) -> tuple[str, ...]:
-    current = set(snapshot_owned_tables())
-    legacy = set(legacy_snapshot_owned_tables())
-    candidates = current if existing.intersection(current) else legacy
+    candidates = set(snapshot_owned_tables()).union(legacy_snapshot_owned_tables())
     return tuple(sorted(existing.intersection(candidates)))
 
 
 def _is_block_identity(name: str) -> bool:
-    if name in _NON_IDENTITY_BLOCK_COLUMNS or name == "snapshot_id":
+    if (
+        name in _NON_IDENTITY_BLOCK_COLUMNS
+        or name == "snapshot_id"
+        or "fingerprint" in name
+        or "label" in name
+        or "_ea_" in name
+        or name.endswith(("ea_hex", "ea_i64"))
+    ):
         return False
     return (
         "serial" in name
-        or name in {"succs", "preds", "selected_successor", "rejected_successors_json"}
+        or name.endswith(("succs", "preds"))
+        or "successor" in name
+        or "predecessor" in name
         or "block" in name
         or name in {"target_entry", "dispatcher_entry"}
     )
@@ -160,7 +167,41 @@ def _identity_display(value: object, anchors: dict[int, str]) -> str | None:
                 return None
             refs.append(ref)
         return ", ".join(refs)
+    if isinstance(candidate, dict):
+        return None
     return str(candidate)
+
+
+def _display_anchor_ea(display: str) -> int | None:
+    if "@" not in display:
+        return None
+    candidate = display.split("@", 1)[1].split(",", 1)[0].strip()
+    try:
+        return int(candidate, 0)
+    except ValueError:
+        return None
+
+
+def _value_anchor_ea(name: str, value: object) -> int | None:
+    if value is None:
+        return None
+    if name == "ea_i64" or name.endswith("_ea_i64"):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    if name == "ea_hex" or name.endswith("_ea_hex"):
+        try:
+            return int(str(value), 0)
+        except ValueError:
+            return None
+    return None
+
+
+def _view_table_candidates(table: str) -> tuple[str, ...]:
+    if table.startswith("state_cfg_"):
+        return (table, "dag_" + table.removeprefix("state_cfg_"))
+    return (table,)
 
 
 def _anchors(connection: sqlite3.Connection, snapshot_id: int, existing: set[str]) -> dict[int, str]:
@@ -336,53 +377,73 @@ class DiagnosticInventoryService:
             anchors = _anchors(connection, snapshot_id, existing)
             result: list[DiagnosticRecord] = []
             ordinal = 0
-            for table in _VIEW_TABLES[kind]:
-                if table not in owned:
-                    continue
-                columns = _table_columns(connection, table)
-                if "snapshot_id" not in columns:
-                    continue
-                query = (
-                    f"SELECT * FROM {_quote_identifier(table)} "
-                    "WHERE snapshot_id=? ORDER BY rowid"
-                )
-                for row in connection.execute(query, (snapshot_id,)):
-                    fields: list[DiagnosticField] = []
-                    warnings: list[str] = []
-                    for name in columns:
-                        value = row[name]
-                        if _is_block_identity(name) and value is not None:
-                            display = _identity_display(value, anchors)
-                            if display is None:
+            for configured_table in _VIEW_TABLES[kind]:
+                for table in _view_table_candidates(configured_table):
+                    if table not in owned:
+                        continue
+                    columns = _table_columns(connection, table)
+                    if "snapshot_id" not in columns:
+                        continue
+                    query = (
+                        f"SELECT * FROM {_quote_identifier(table)} "
+                        "WHERE snapshot_id=? ORDER BY rowid"
+                    )
+                    rows = connection.execute(query, (snapshot_id,)).fetchall()
+                    for row in rows:
+                        fields: list[DiagnosticField] = []
+                        warnings: list[str] = []
+                        for name in columns:
+                            value = row[name]
+                            if _is_block_identity(name) and value is not None:
+                                display = _identity_display(value, anchors)
+                                if display is None:
+                                    fields.append(
+                                        DiagnosticField(
+                                            name=name,
+                                            value=None,
+                                            display="<block anchor unavailable>",
+                                            anchor_ea=None,
+                                        )
+                                    )
+                                    warnings.append(
+                                        f"Block anchor unavailable for {name}"
+                                    )
+                                else:
+                                    fields.append(
+                                        DiagnosticField(
+                                            name=name,
+                                            value=display,
+                                            display=display,
+                                            anchor_ea=_display_anchor_ea(display),
+                                        )
+                                    )
+                            else:
                                 fields.append(
                                     DiagnosticField(
                                         name=name,
-                                        value=None,
-                                        display="<block anchor unavailable>",
+                                        value=value,
+                                        display="" if value is None else str(value),
+                                        anchor_ea=_value_anchor_ea(name, value),
                                     )
                                 )
-                                warnings.append(f"Block anchor unavailable for {name}")
-                            else:
-                                fields.append(
-                                    DiagnosticField(name=name, value=display, display=display)
-                                )
-                        else:
-                            fields.append(
-                                DiagnosticField(
-                                    name=name,
-                                    value=value,
-                                    display="" if value is None else str(value),
-                                )
-                            )
-                    result.append(
-                        DiagnosticRecord(
-                            kind=kind,
-                            source_table=table,
-                            snapshot_id=snapshot_id,
-                            ordinal=ordinal,
-                            fields=tuple(fields),
-                            warnings=tuple(warnings),
+                        primary_ea = next(
+                            (
+                                field.anchor_ea
+                                for field in fields
+                                if field.anchor_ea is not None
+                            ),
+                            None,
                         )
-                    )
-                    ordinal += 1
+                        result.append(
+                            DiagnosticRecord(
+                                kind=kind,
+                                source_table=table,
+                                snapshot_id=snapshot_id,
+                                ordinal=ordinal,
+                                fields=tuple(fields),
+                                warnings=tuple(warnings),
+                                anchor_ea=primary_ea,
+                            )
+                        )
+                        ordinal += 1
             return tuple(result)

@@ -8,6 +8,7 @@ import enum
 from d810.core.typing import Callable, Sequence, TypeVar
 from d810.diagnostics.workbench_models import (
     DiagnosticDatabaseSummary,
+    DiagnosticRecord,
     DiagnosticSnapshotSummary,
 )
 
@@ -33,6 +34,12 @@ class DiagnosticActionState:
     action_id: str
     enabled: bool
     reason: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class DiagnosticFunctionGroup:
+    function_ea: int
+    databases: tuple[DiagnosticDatabaseSummary, ...]
 
 
 _T = TypeVar("_T")
@@ -173,12 +180,32 @@ def latest_snapshot_for_function(
     return ordered[0] if ordered else None
 
 
+def group_databases_by_function(
+    values: Sequence[DiagnosticDatabaseSummary],
+) -> tuple[DiagnosticFunctionGroup, ...]:
+    grouped: dict[int, list[DiagnosticDatabaseSummary]] = {}
+    for database in values:
+        for function_ea in database.function_eas:
+            grouped.setdefault(function_ea, []).append(database)
+    return tuple(
+        DiagnosticFunctionGroup(function_ea, sort_databases(grouped[function_ea]))
+        for function_ea in sorted(grouped)
+    )
+
+
+def record_jump_ea(record: DiagnosticRecord) -> int | None:
+    return record.anchor_ea
+
+
 def diagnostic_action_states(
     selected_databases: Sequence[DiagnosticDatabaseSummary],
     *,
     selected_snapshot_ids: Sequence[int],
+    all_databases: Sequence[DiagnosticDatabaseSummary] | None = None,
 ) -> tuple[DiagnosticActionState, ...]:
     inactive = tuple(item for item in selected_databases if not item.active)
+    inventory = tuple(selected_databases) if all_databases is None else tuple(all_databases)
+    all_closed = tuple(item for item in inventory if not item.active)
     active_count = len(selected_databases) - len(inactive)
     active_note = (
         f"; {active_count} active database(s) will be skipped" if active_count else ""
@@ -227,9 +254,9 @@ def diagnostic_action_states(
         ),
         state(
             "delete_all_closed_databases",
-            has_inactive,
+            bool(all_closed),
             "Closed databases are ready for quarantine",
-            "No closed databases are selected",
+            "No closed databases are available",
         ),
         state(
             "vacuum_selected_databases",
