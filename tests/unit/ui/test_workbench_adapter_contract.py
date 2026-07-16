@@ -5,7 +5,9 @@ import importlib.util
 from pathlib import Path
 
 
-PANEL = Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "workbench_panel.py"
+PANEL = (
+    Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "workbench_panel.py"
+)
 
 
 def test_workbench_panel_module_exists() -> None:
@@ -67,7 +69,9 @@ def test_set_function_retains_identity_and_refreshes() -> None:
     assert "refresh" in _call_names(method)
 
 
-def test_panel_accepts_command_adapter_and_dispatches_through_pure_freshness_logic() -> None:
+def test_panel_accepts_command_adapter_and_dispatches_through_pure_freshness_logic() -> (
+    None
+):
     setter = _method("set_command_adapter")
     dispatch = _method("_run_command")
     calls = _call_names(dispatch)
@@ -85,7 +89,7 @@ def test_panel_exposes_function_override_alongside_scoped_commands() -> None:
     source = PANEL.read_text(encoding="utf-8")
 
     assert '("function_override", "Function override")' in source
-    assert 'self._run_command(action_id)' in source
+    assert "self._run_command(action_id)" in source
 
 
 def test_show_uses_persistent_dock_and_accepts_evidence_focus() -> None:
@@ -118,6 +122,27 @@ def test_close_marks_panel_closed_and_disconnects_signals() -> None:
 
     assert "_closed" in _assigned_attributes(method)
     assert "disconnect" in _call_names(method)
+
+
+def test_close_disconnects_only_buttons_that_have_connected_handlers() -> None:
+    method = _method("OnClose")
+    connected_action_ids = {
+        "refresh",
+        "export",
+        "analyze",
+        "deobfuscate",
+        "function_override",
+    }
+    loop_literals = {
+        element.value
+        for node in ast.walk(method)
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set))
+        for element in node.elts
+        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+    }
+
+    assert connected_action_ids.issubset(loop_literals)
+    assert {"compare", "recipe", "diagnostics"}.isdisjoint(loop_literals)
 
 
 def test_adapter_has_no_policy_storage_pass_or_sql_imports() -> None:

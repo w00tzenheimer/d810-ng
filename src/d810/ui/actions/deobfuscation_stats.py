@@ -2,6 +2,7 @@
 
 The stable Stats action ID now opens the workbench focused on evidence.
 """
+
 from __future__ import annotations
 
 from d810.core import typing
@@ -14,6 +15,7 @@ from d810.ui.actions_logic import (
 )
 
 logger = getLogger("D810.ui")
+
 
 def _get_current_func_ea(ctx: typing.Any, idaapi_shim: typing.Any) -> int | None:
     """Extract the entry-point EA of the function from the context.
@@ -42,6 +44,14 @@ class DeobfuscationStats(D810ActionHandler):
 
     # Singleton panel instance
     _panel: typing.Any = None
+
+    def term(self) -> None:
+        """Close the persistent workbench before action-module teardown."""
+        cls = DeobfuscationStats
+        panel = cls._panel
+        cls._panel = None
+        if panel is not None:
+            panel.close()
 
     def execute(self, ctx: typing.Any) -> int:
         """Execute the stats action.
@@ -85,7 +95,7 @@ class DeobfuscationStats(D810ActionHandler):
 
             # If panel was closed by IDA, discard it and create fresh
             cls = DeobfuscationStats
-            if cls._panel is not None and getattr(cls._panel, '_closed', False):
+            if cls._panel is not None and getattr(cls._panel, "_closed", False):
                 cls._panel = None
 
             # Create panel on first use
