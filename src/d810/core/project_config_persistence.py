@@ -4,7 +4,7 @@ import json
 import os
 import pathlib
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from d810.core import typing
 from d810.core.config import ProjectConfiguration, RuleConfiguration
@@ -24,9 +24,11 @@ def _read_complete_document(path: pathlib.Path) -> dict[str, typing.Any]:
         ) from exc
 
 
-def _write_document_atomically(
+def write_project_document_atomically(
     destination: pathlib.Path,
     document: dict[str, typing.Any],
+    *,
+    validator: Callable[[ProjectConfiguration], None] | None = None,
 ) -> ProjectConfiguration:
     destination = pathlib.Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -44,6 +46,8 @@ def _write_document_atomically(
             fp.flush()
             os.fsync(fp.fileno())
         validated = ProjectConfiguration.from_file(temp_path)
+        if validator is not None:
+            validator(validated)
         os.replace(temp_path, destination)
         temp_path = None
         validated.path = destination
@@ -64,7 +68,7 @@ def clone_project_configuration(
 ) -> ProjectConfiguration:
     document = _read_complete_document(source.path)
     document["description"] = description
-    return _write_document_atomically(destination, document)
+    return write_project_document_atomically(destination, document)
 
 
 def save_legacy_project_configuration(
@@ -80,4 +84,4 @@ def save_legacy_project_configuration(
     document["ins_rules"] = [rule.to_dict() for rule in ins_rules]
     document["blk_rules"] = [rule.to_dict() for rule in blk_rules]
     document.setdefault("additional_configuration", {})
-    return _write_document_atomically(destination, document)
+    return write_project_document_atomically(destination, document)

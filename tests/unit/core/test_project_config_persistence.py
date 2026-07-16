@@ -11,6 +11,7 @@ from d810.core.project_config_persistence import (
     ProjectConfigurationWriteError,
     clone_project_configuration,
     save_legacy_project_configuration,
+    write_project_document_atomically,
 )
 
 
@@ -146,4 +147,32 @@ def test_atomic_replace_failure_removes_temporary_file(
         )
 
     assert not destination.exists()
+    assert list(tmp_path.glob(".destination.json.*.tmp")) == []
+
+
+def test_full_validator_runs_on_temporary_reload_before_atomic_replace(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "destination.json"
+    destination.write_text('{"sentinel": "old"}', encoding="utf-8")
+    observed_paths = []
+
+    def reject(project: ProjectConfiguration) -> None:
+        observed_paths.append(project.path)
+        raise ValueError("full pipeline rejected")
+
+    with pytest.raises(ProjectConfigurationWriteError, match="destination.json"):
+        write_project_document_atomically(
+            destination,
+            {
+                "description": "candidate",
+                "ins_rules": [],
+                "blk_rules": [],
+                "additional_configuration": {},
+            },
+            validator=reject,
+        )
+
+    assert observed_paths and observed_paths[0] != destination
+    assert destination.read_text(encoding="utf-8") == '{"sentinel": "old"}'
     assert list(tmp_path.glob(".destination.json.*.tmp")) == []
