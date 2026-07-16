@@ -52,3 +52,29 @@
 
 - Run focused comparison/workbench/action tests, full unit suite, architecture gates, prohibited-import scan, and graph update.
 - Record evidence on `tcvpu-guv6`; keep live comparison acceptance open.
+
+## Automated evidence (2026-07-16)
+
+- Immutable comparison records and the IDA-independent service cover normalized
+  pseudocode, stable SHA-256 values, deterministic capture times, per-function
+  storage, every required identity dimension, missing artifacts, and exact
+  stale reasons.
+- Manager and state facades own capture and comparison. Normal workbench
+  collection reuses the stored references unless an explicit reference was
+  supplied.
+- Pure projection labels Native and D810 evidence, exposes freshness reasons,
+  and reports only text/line/character deltas. It makes no correctness claim.
+- The injected capture adapter enters `d810_hooks_suppressed(manager)` once,
+  decompiles once inside it, renders the existing D810 `cfunc` without another
+  mutation lifecycle, and never assigns persistent `manager.started` state.
+- Focused comparison/workbench tests: `55 passed`.
+- Full unit suite: `5800 passed, 29 skipped, 9 known contract-vocabulary
+  warnings, 162 subtests passed`.
+- `sg scan --config sgconfig.yml --report-style short`: clean.
+- `PYTHONPATH=src lint-imports --config .importlinter`: 13 contracts kept,
+  0 broken.
+- `git diff --check`: clean. `graphify update .` completed.
+
+Qt widget/layout integration and live native-vs-D810 acceptance remain deferred
+by user direction. No IDA process was launched, inspected, or modified during
+this slice.
