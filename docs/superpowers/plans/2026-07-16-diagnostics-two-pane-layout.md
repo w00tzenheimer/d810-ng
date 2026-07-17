@@ -4,7 +4,7 @@
 
 **Goal:** Refactor the Diagnostics Explorer into an equal two-pane layout with browsing and cleanup on the left and full-height structured records on the right.
 
-**Architecture:** Change only `WorkbenchDiagnosticsPanel.OnCreate`. Compose three nested splitters: database/snapshot browser, browser/cleaner left pane, and left/records outer pane. Preserve all existing widgets, signals, adapters, and pure action logic.
+**Architecture:** Change only the Qt composition in `WorkbenchDiagnosticsPanel.OnCreate` plus a local Qt size-policy helper. Compose three nested splitters: database/snapshot browser, browser/cleaner left pane, and left/records outer pane. Preserve all existing widgets, signals, adapters, and pure action logic.
 
 **Tech Stack:** Python 3, IDAPython, PySide6/PyQt compatibility through `d810.qt_shim`, pytest AST contract tests, Docker/XQuartz IDA 9.3.
 
@@ -29,12 +29,12 @@
 - Produces: a source contract for `_outer_splitter`, `_left_splitter`, and
   `_browser_splitter` ownership and proportions
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Assert that the outer splitter contains only the left pane and record group,
 uses equal stretch, and that the left splitter owns the browser and cleaner.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -57,18 +57,18 @@ the cleaner still spans the entire dock.
 - Consumes: existing database, snapshot, record, and cleaner widgets
 - Produces: `_browser_splitter`, `_left_splitter`, and `_outer_splitter`
 
-- [ ] **Step 1: Build the nested splitters**
+- [x] **Step 1: Build the nested splitters**
 
 Keep databases and snapshots side-by-side, place that browser above the cleaner
 in a vertical left splitter, and place the left splitter beside the record group
 in an equal horizontal outer splitter.
 
-- [ ] **Step 2: Condense cleaner and confirmation controls**
+- [x] **Step 2: Condense cleaner and confirmation controls**
 
 Use compact margins/spacing, wrap controls into grids, and make the plan/result
 split vertical so both retain full left-pane width.
 
-- [ ] **Step 3: Run focused diagnostics tests**
+- [x] **Step 3: Run focused diagnostics tests**
 
 Run:
 
@@ -91,17 +91,17 @@ Expected: all pass.
 - Consumes: the running Docker/XQuartz IDA and `D810.reload()`
 - Produces: an X11 capture and recorded acceptance evidence
 
-- [ ] **Step 1: Run unit and architecture verification**
+- [x] **Step 1: Run unit and architecture verification**
 
 Run the focused suite, full unit suite, cycle scan, ast-grep, import-linter,
 `git diff --check`, and `graphify update .`.
 
-- [ ] **Step 2: Reload and inspect live Qt**
+- [x] **Step 2: Reload and inspect live Qt**
 
 Reload D810 in the running container, reopen Diagnostics, verify outer splitter
 sizes through MCP, and capture the X11 window.
 
-- [ ] **Step 3: Record evidence and commit**
+- [x] **Step 3: Record evidence and commit**
 
 Add the capture path and exact verification counts to the GUI worklist, then
 commit the layout refinement.
