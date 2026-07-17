@@ -66,6 +66,7 @@ if IDA_AVAILABLE:
             self._comparison_dialog: typing.Any = None
             self._recipe_panel: typing.Any = None
             self._config_v2_editor: typing.Any = None
+            self._diagnostics_panel: typing.Any = None
             self._pending_focus: WorkbenchSection | None = None
             self._closed = False
             self.parent: typing.Any = None
@@ -138,6 +139,7 @@ if IDA_AVAILABLE:
                 button.clicked.connect(_dispatch)
             self.action_buttons["compare"].clicked.connect(self._run_comparison)
             self.action_buttons["recipe"].clicked.connect(self._run_recipe)
+            self.action_buttons["diagnostics"].clicked.connect(self._run_diagnostics)
 
         def OnCreate(self, form: typing.Any) -> None:
             self.parent = self.FormToPyQtWidget(form)
@@ -185,6 +187,7 @@ if IDA_AVAILABLE:
                     "function_override",
                     "compare",
                     "recipe",
+                    "diagnostics",
                 ):
                     self.action_buttons[action_id].clicked.disconnect()
             except (RuntimeError, TypeError):
@@ -198,6 +201,9 @@ if IDA_AVAILABLE:
             if self._config_v2_editor is not None:
                 self._config_v2_editor.close()
                 self._config_v2_editor = None
+            if self._diagnostics_panel is not None:
+                self._diagnostics_panel.close()
+                self._diagnostics_panel = None
             self.parent = None
 
         def close(self) -> None:
@@ -357,6 +363,32 @@ if IDA_AVAILABLE:
             self._recipe_panel = panel
             panel.show()
 
+        def _run_diagnostics(self, checked: bool = False) -> None:
+            del checked
+            from d810.ui.workbench_diagnostics_commands import (
+                WorkbenchDiagnosticsAdapter,
+            )
+
+            adapter = WorkbenchDiagnosticsAdapter(
+                self._state,
+                navigate=ida_kernwin.jumpto,
+            )
+            self._show_diagnostics(adapter)
+
+        def _show_diagnostics(self, adapter: typing.Any) -> None:
+            from d810.ui.workbench_diagnostics_panel import (
+                WorkbenchDiagnosticsPanel,
+            )
+
+            if self._diagnostics_panel is not None:
+                self._diagnostics_panel.close()
+            panel = WorkbenchDiagnosticsPanel(
+                adapter,
+                function_ea=self._func_ea,
+            )
+            self._diagnostics_panel = panel
+            panel.show()
+
         def _open_recipe_project_profile(self, recipe: typing.Any) -> None:
             from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
             from d810.ui.config_v2_editing_panel import ConfigV2EditingPanel
@@ -436,8 +468,7 @@ if IDA_AVAILABLE:
                 else ""
             )
             self.runtime_label.setText(
-                f"{snapshot.runtime.runtime_name}{routed} "
-                f"[{snapshot.runtime.mode}]"
+                f"{snapshot.runtime.runtime_name}{routed} " f"[{snapshot.runtime.mode}]"
             )
             confidence = (
                 "unavailable"

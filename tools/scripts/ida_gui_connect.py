@@ -25,14 +25,15 @@ from d810.ui import gui_automation_logic as gui_logic
 
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:13337/mcp"
-HTTP_TIMEOUT_SECONDS = 5.0
+HTTP_TIMEOUT_SECONDS = 45.0
+POLL_INTERVAL_SECONDS = 0.05
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MCP_PROTOCOL_VERSION = "2025-06-18"
 
 REMOTE_CODE_TEMPLATE = """import base64
 import json
 
-from d810.ui.gui_automation import run_named_commands
+from d810.ui.gui_automation import _submit_named_commands
 from d810.ui.gui_automation_logic import GuiAutomationRequest, GuiCommand
 
 _request_data = json.loads(
@@ -45,9 +46,33 @@ _request = GuiAutomationRequest(
     function_selector=_request_data["function_selector"],
     timeout_seconds=_request_data["timeout_seconds"],
 )
-_result = run_named_commands(_request)
+_receipt_id = _submit_named_commands(_request)
 json.dumps(
     {
+        "request_id": _receipt_id,
+        "status": "accepted",
+    },
+    allow_nan=False,
+    sort_keys=True,
+)
+"""
+
+POLL_REMOTE_CODE_TEMPLATE = """import base64
+import json
+
+from d810.ui.gui_automation import _take_named_command_result
+
+_request_id = json.loads(
+    base64.b64decode("__D810_REQUEST_ID_B64__").decode("utf-8")
+)
+_result = _take_named_command_result(_request_id)
+if _result is None:
+    _document = {
+        "request_id": _request_id,
+        "status": "pending",
+    }
+else:
+    _document = {
         "request_id": _result.request_id,
         "completed_at_utc": _result.completed_at_utc,
         "commands": [
@@ -63,7 +88,9 @@ json.dumps(
         ],
         "status": _result.status,
         "error": _result.error,
-    },
+    }
+json.dumps(
+    _document,
     allow_nan=False,
     default=dict,
     sort_keys=True,
@@ -80,6 +107,7 @@ _AddressInfo = tuple[object, object, object, object, tuple[object, ...]]
 _Resolver = Callable[..., Sequence[_AddressInfo]]
 _ConnectionFactory = Callable[..., http.client.HTTPConnection]
 _Clock = Callable[[], float]
+_Sleeper = Callable[[float], None]
 
 
 def _run_with_deadline(
@@ -259,6 +287,19 @@ def build_remote_code(request: gui_logic.GuiAutomationRequest) -> str:
     ).encode("utf-8")
     encoded = base64.b64encode(payload).decode("ascii")
     return REMOTE_CODE_TEMPLATE.replace("__D810_REQUEST_B64__", encoded)
+
+
+def build_poll_remote_code(request_id: str) -> str:
+    """Encode a validated request ID into the fixed result-poll source."""
+    if type(request_id) is not str or not request_id:
+        raise TypeError("request ID must be a non-empty string")
+    payload = json.dumps(
+        request_id,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    encoded = base64.b64encode(payload).decode("ascii")
+    return POLL_REMOTE_CODE_TEMPLATE.replace("__D810_REQUEST_ID_B64__", encoded)
 
 
 def _reject_json_constant(value: str) -> object:
@@ -594,10 +635,7 @@ def _automation_result(
     return result
 
 
-def _tool_result(
-    request: gui_logic.GuiAutomationRequest,
-    response: object,
-) -> gui_logic.GuiAutomationResult:
+def _tool_document(response: object) -> object:
     if not isinstance(response, dict):
         raise McpClientError("MCP tools/call result must be a JSON object")
     is_error = response.get("isError")
@@ -634,7 +672,40 @@ def _tool_result(
         raise McpClientError("MCP py_eval structured values must be strings")
     if stderr:
         raise McpClientError(f"MCP py_eval stderr: {stderr}")
-    document = _load_json(result_text, "MCP py_eval result")
+    return _load_json(result_text, "MCP py_eval result")
+
+
+def _submission_receipt(
+    request: gui_logic.GuiAutomationRequest,
+    response: object,
+) -> None:
+    document = _tool_document(response)
+    if not isinstance(document, dict):
+        raise McpClientError("MCP submission receipt must be a JSON object")
+    _require_exact_fields(
+        document,
+        {"request_id", "status"},
+        "MCP submission receipt",
+    )
+    if document["request_id"] != request.request_id:
+        raise McpClientError("MCP submission receipt request ID does not match")
+    if document["status"] != "accepted":
+        raise McpClientError("MCP submission receipt was not accepted")
+
+
+def _polled_result(
+    request: gui_logic.GuiAutomationRequest,
+    response: object,
+) -> gui_logic.GuiAutomationResult | None:
+    document = _tool_document(response)
+    if (
+        isinstance(document, dict)
+        and set(document) == {"request_id", "status"}
+        and document["status"] == "pending"
+    ):
+        if document["request_id"] != request.request_id:
+            raise McpClientError("MCP pending result request ID does not match")
+        return None
     return _automation_result(request, document)
 
 
@@ -671,8 +742,9 @@ def connect_named_commands(
     resolver: _Resolver = socket.getaddrinfo,
     connection_factory: _ConnectionFactory = http.client.HTTPConnection,
     clock: _Clock = time.monotonic,
+    sleep: _Sleeper = time.sleep,
 ) -> tuple[gui_logic.GuiAutomationResult, pathlib.Path]:
-    """Perform the fixed one-shot exchange and atomically publish its audit."""
+    """Submit outside the MCP callback, poll, and atomically publish its audit."""
     _request_document(request)
     endpoint = validate_endpoint(endpoint)
     if isinstance(http_timeout, bool) or not isinstance(http_timeout, (int, float)):
@@ -720,7 +792,7 @@ def connect_named_commands(
     )
     if ping != {}:
         raise McpClientError("MCP ping result must be an empty JSON object")
-    response = _rpc_call(
+    submission = _rpc_call(
         transport_endpoint,
         3,
         "tools/call",
@@ -732,7 +804,30 @@ def connect_named_commands(
         connection_factory=connection_factory,
         clock=clock,
     )
-    result = _tool_result(request, response)
+    _submission_receipt(request, submission)
+
+    request_id = 4
+    while True:
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise McpClientError("MCP GUI automation timed out")
+        sleep(min(POLL_INTERVAL_SECONDS, remaining))
+        response = _rpc_call(
+            transport_endpoint,
+            request_id,
+            "tools/call",
+            params={
+                "name": "py_eval",
+                "arguments": {"code": build_poll_remote_code(request.request_id)},
+            },
+            deadline=deadline,
+            connection_factory=connection_factory,
+            clock=clock,
+        )
+        result = _polled_result(request, response)
+        if result is not None:
+            break
+        request_id += 1
     context = {
         "mode": "connect",
         "worktree": str(resolved_worktree),

@@ -531,8 +531,12 @@ def action_states(
         WorkbenchActionState(
             "diagnostics",
             "Diagnostics",
-            False,
-            "The diagnostic explorer is delivered in workstream D0.",
+            current,
+            (
+                ""
+                if current
+                else "Refresh the stale workbench snapshot before opening diagnostics."
+            ),
         ),
     )
 

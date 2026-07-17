@@ -209,8 +209,8 @@ def test_current_started_snapshot_enables_scoped_slice_two_actions() -> None:
     assert states["compare"].enabled is True
     assert states["recipe"].enabled is True
     assert states["recipe"].reason == ""
-    assert states["diagnostics"].enabled is False
-    assert states["diagnostics"].reason
+    assert states["diagnostics"].enabled is True
+    assert states["diagnostics"].reason == ""
 
 
 def test_stale_snapshot_marks_pipeline_consumers_and_disables_scoped_actions() -> None:

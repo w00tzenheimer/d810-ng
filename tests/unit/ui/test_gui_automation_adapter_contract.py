@@ -8,6 +8,8 @@ import inspect
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[3]
 ADAPTER = ROOT / "src" / "d810" / "ui" / "gui_automation.py"
@@ -228,6 +230,112 @@ def test_public_adapter_contract_is_one_typed_entry_point() -> None:
         "GuiAutomationResult",
         _logic().GuiAutomationResult,
     )
+
+
+def test_live_scheduler_does_not_self_schedule_when_already_on_main_thread() -> None:
+    adapter = _adapter()
+    events: list[str] = []
+    kernwin = SimpleNamespace(
+        MFF_FAST=1,
+        execute_sync=lambda callback, flags: events.append("execute_sync"),
+    )
+    scheduler = adapter._IDAMainThreadScheduler(
+        kernwin,
+        is_main_thread=lambda: True,
+    )
+
+    result = scheduler.run(lambda: events.append("callback") or "done")
+
+    assert result == "done"
+    assert events == ["callback"]
+
+
+def test_live_scheduler_uses_execute_sync_from_worker_thread() -> None:
+    adapter = _adapter()
+    events: list[object] = []
+
+    def execute_sync(callback, flags):
+        events.append(("execute_sync", flags))
+        return callback()
+
+    kernwin = SimpleNamespace(MFF_FAST=7, execute_sync=execute_sync)
+    scheduler = adapter._IDAMainThreadScheduler(
+        kernwin,
+        is_main_thread=lambda: False,
+    )
+
+    result = scheduler.run(lambda: events.append("callback") or "done")
+
+    assert result == "done"
+    assert events == [("execute_sync", 7), "callback"]
+
+
+def test_async_submission_defers_named_commands_until_ida_timer(
+    monkeypatch,
+) -> None:
+    adapter = _adapter()
+    fake = _runtime(adapter)
+    callbacks = []
+    monkeypatch.setattr(adapter, "_runtime_factory", lambda: fake.runtime)
+    monkeypatch.setattr(adapter, "_async_results", {})
+    monkeypatch.setattr(adapter, "_async_timers", {})
+    monkeypatch.setattr(
+        adapter,
+        "_timer_registrar",
+        lambda callback: callbacks.append(callback) or object(),
+    )
+    request = _request(config=True, workbench=False)
+
+    assert adapter._submit_named_commands(request) == request.request_id
+    assert fake.scheduler.calls == 0
+    assert adapter._take_named_command_result(request.request_id) is None
+    assert len(callbacks) == 1
+
+    assert callbacks[0]() == -1
+    result = adapter._take_named_command_result(request.request_id)
+
+    assert result is not None
+    assert result.status == "succeeded"
+    assert fake.scheduler.calls == 1
+    with pytest.raises(KeyError, match="unknown GUI automation request"):
+        adapter._take_named_command_result(request.request_id)
+
+
+def test_async_submission_rejects_duplicate_pending_request(
+    monkeypatch,
+) -> None:
+    adapter = _adapter()
+    callbacks = []
+    monkeypatch.setattr(adapter, "_async_results", {})
+    monkeypatch.setattr(adapter, "_async_timers", {})
+    monkeypatch.setattr(
+        adapter,
+        "_timer_registrar",
+        lambda callback: callbacks.append(callback) or object(),
+    )
+    request = _request(config=True, workbench=False)
+
+    adapter._submit_named_commands(request)
+
+    with pytest.raises(ValueError, match="already exists"):
+        adapter._submit_named_commands(request)
+    assert len(callbacks) == 1
+
+
+def test_async_submission_clears_pending_state_when_timer_registration_fails(
+    monkeypatch,
+) -> None:
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_async_results", {})
+    monkeypatch.setattr(adapter, "_async_timers", {})
+    monkeypatch.setattr(adapter, "_timer_registrar", lambda callback: None)
+    request = _request(config=True, workbench=False)
+
+    with pytest.raises(RuntimeError, match="register IDA timer"):
+        adapter._submit_named_commands(request)
+
+    with pytest.raises(KeyError, match="unknown GUI automation request"):
+        adapter._take_named_command_result(request.request_id)
 
 
 def test_open_config_reuses_loaded_gui_and_verifies_actual_widget(monkeypatch) -> None:

@@ -244,6 +244,8 @@ def test_database_cleanup_moves_database_and_sidecars_to_quarantine(tmp_path: Pa
 
     assert result.quarantine[0].status is DiagnosticOperationStatus.SUCCEEDED
     assert result.quarantine[0].affected == 3
+    assert "Restore by moving each quarantined file" in result.quarantine[0].detail
+    assert str(path) in result.quarantine[0].detail
     assert not path.exists()
     assert not wal.exists()
     assert not shm.exists()

@@ -739,6 +739,7 @@ if [ -n "$MCP_ENABLED" ]; then
   DOCKER_ARGS+=(
     -e "IDA_MCP_HOST=0.0.0.0"
     -e "IDA_MCP_PORT=13337"
+    -e "IDA_MCP_TOOL_TIMEOUT_SEC=45"
     -p "127.0.0.1:$MCP_HOST_PORT:13337"
     -v "$MCP_PLUGIN_DIR:/root/.idapro/plugins/ida-pro-mcp:ro"
   )

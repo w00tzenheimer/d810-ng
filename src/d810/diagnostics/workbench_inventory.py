@@ -13,7 +13,7 @@ from d810.core.diag.ownership import (
     legacy_snapshot_owned_tables,
     snapshot_owned_tables,
 )
-from d810.core.typing import Callable, Iterable, Sequence
+from d810.core.typing import Callable, Iterable
 from d810.diagnostics.workbench_models import (
     DiagnosticDatabaseSummary,
     DiagnosticField,
@@ -80,9 +80,12 @@ def _normalized_path(path: os.PathLike[str] | str) -> str:
 
 def _readonly_connection(path: os.PathLike[str] | str) -> sqlite3.Connection:
     absolute = _normalized_path(path)
-    sidecars_exist = Path(absolute + "-wal").exists() or Path(absolute + "-shm").exists()
-    immutable = "" if sidecars_exist else "&immutable=1"
-    uri = "file:" + quote(absolute, safe="/") + "?mode=ro" + immutable
+    wal_path = Path(absolute + "-wal")
+    if wal_path.exists() and wal_path.stat().st_size:
+        raise sqlite3.DatabaseError(
+            "uncheckpointed WAL is not opened by the immutable explorer"
+        )
+    uri = "file:" + quote(absolute, safe="/") + "?mode=ro&immutable=1"
     connection = sqlite3.connect(uri, uri=True)
     connection.row_factory = sqlite3.Row
     return connection
@@ -204,7 +207,9 @@ def _view_table_candidates(table: str) -> tuple[str, ...]:
     return (table,)
 
 
-def _anchors(connection: sqlite3.Connection, snapshot_id: int, existing: set[str]) -> dict[int, str]:
+def _anchors(
+    connection: sqlite3.Connection, snapshot_id: int, existing: set[str]
+) -> dict[int, str]:
     anchors: dict[int, str] = {}
     if "blocks" in existing:
         columns = set(_table_columns(connection, "blocks"))
@@ -235,9 +240,15 @@ class DiagnosticInventoryService:
         self,
         *,
         roots: Iterable[os.PathLike[str] | str],
-        active_paths_provider: Callable[[], Iterable[os.PathLike[str] | str]] | None = None,
+        excluded_roots: Iterable[os.PathLike[str] | str] = (),
+        active_paths_provider: (
+            Callable[[], Iterable[os.PathLike[str] | str]] | None
+        ) = None,
     ) -> None:
         self._roots = tuple(Path(root).expanduser() for root in roots)
+        self._excluded_roots = tuple(
+            Path(root).expanduser().resolve() for root in excluded_roots
+        )
         self._active_paths_provider = active_paths_provider or (lambda: ())
 
     def _active_paths(self) -> set[str]:
@@ -245,11 +256,27 @@ class DiagnosticInventoryService:
 
     def paths(self) -> tuple[Path, ...]:
         found: set[Path] = set()
+
+        def eligible(path: Path) -> bool:
+            resolved = path.resolve()
+            return not any(
+                resolved == excluded or excluded in resolved.parents
+                for excluded in self._excluded_roots
+            )
+
         for root in self._roots:
-            if root.is_file() and root.name.endswith(".diag.sqlite3"):
+            if (
+                root.is_file()
+                and root.name.endswith(".diag.sqlite3")
+                and eligible(root)
+            ):
                 found.add(root.resolve())
             elif root.is_dir():
-                found.update(path.resolve() for path in root.rglob("*.diag.sqlite3"))
+                found.update(
+                    path.resolve()
+                    for path in root.rglob("*.diag.sqlite3")
+                    if eligible(path)
+                )
         return tuple(sorted(found, key=lambda path: str(path)))
 
     def databases(self) -> tuple[DiagnosticDatabaseSummary, ...]:
@@ -259,7 +286,11 @@ class DiagnosticInventoryService:
             sorted(
                 summaries,
                 key=lambda item: (
-                    -(item.recorded_at if item.recorded_at is not None else float("-inf")),
+                    -(
+                        item.recorded_at
+                        if item.recorded_at is not None
+                        else float("-inf")
+                    ),
                     item.path,
                 ),
             )

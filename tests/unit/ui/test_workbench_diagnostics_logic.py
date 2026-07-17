@@ -4,8 +4,15 @@ import ast
 from pathlib import Path
 
 from d810.diagnostics.workbench_models import (
+    DiagnosticCleanupPlan,
+    DiagnosticCleanupScope,
+    DiagnosticCleanupTarget,
+    DiagnosticCleanupResult,
     DiagnosticDatabaseSummary,
     DiagnosticField,
+    DiagnosticOperation,
+    DiagnosticOperationOutcome,
+    DiagnosticOperationStatus,
     DiagnosticRecord,
     DiagnosticSnapshotSummary,
     DiagnosticViewKind,
@@ -68,10 +75,19 @@ def test_database_default_and_every_requested_sort_are_deterministic():
     )
 
     assert [item.path for item in logic.sort_databases(values)] == ["/a", "/b", "/c"]
-    assert [item.path for item in logic.sort_databases(values, logic.DatabaseSort.FUNCTION)] == ["/a", "/b", "/c"]
-    assert [item.path for item in logic.sort_databases(values, logic.DatabaseSort.FILE_SIZE)] == ["/c", "/b", "/a"]
-    assert [item.path for item in logic.sort_databases(values, logic.DatabaseSort.SNAPSHOT_COUNT)] == ["/a", "/b", "/c"]
-    assert [item.path for item in logic.sort_databases(values, logic.DatabaseSort.PATH)] == ["/a", "/b", "/c"]
+    assert [
+        item.path for item in logic.sort_databases(values, logic.DatabaseSort.FUNCTION)
+    ] == ["/a", "/b", "/c"]
+    assert [
+        item.path for item in logic.sort_databases(values, logic.DatabaseSort.FILE_SIZE)
+    ] == ["/c", "/b", "/a"]
+    assert [
+        item.path
+        for item in logic.sort_databases(values, logic.DatabaseSort.SNAPSHOT_COUNT)
+    ] == ["/a", "/b", "/c"]
+    assert [
+        item.path for item in logic.sort_databases(values, logic.DatabaseSort.PATH)
+    ] == ["/a", "/b", "/c"]
 
 
 def test_snapshot_default_and_every_requested_sort_are_deterministic():
@@ -82,17 +98,33 @@ def test_snapshot_default_and_every_requested_sort_are_deterministic():
     )
 
     assert [item.snapshot_id for item in logic.sort_snapshots(values)] == [2, 1, 3]
-    assert [item.snapshot_id for item in logic.sort_snapshots(values, logic.SnapshotSort.MATURITY)] == [2, 3, 1]
-    assert [item.snapshot_id for item in logic.sort_snapshots(values, logic.SnapshotSort.PHASE)] == [3, 1, 2]
-    assert [item.snapshot_id for item in logic.sort_snapshots(values, logic.SnapshotSort.BLOCK_COUNT)] == [3, 2, 1]
-    assert [item.snapshot_id for item in logic.sort_snapshots(values, logic.SnapshotSort.ROW_COUNT)] == [1, 2, 3]
+    assert [
+        item.snapshot_id
+        for item in logic.sort_snapshots(values, logic.SnapshotSort.MATURITY)
+    ] == [2, 3, 1]
+    assert [
+        item.snapshot_id
+        for item in logic.sort_snapshots(values, logic.SnapshotSort.PHASE)
+    ] == [3, 1, 2]
+    assert [
+        item.snapshot_id
+        for item in logic.sort_snapshots(values, logic.SnapshotSort.BLOCK_COUNT)
+    ] == [3, 2, 1]
+    assert [
+        item.snapshot_id
+        for item in logic.sort_snapshots(values, logic.SnapshotSort.ROW_COUNT)
+    ] == [1, 2, 3]
 
 
 def test_filters_and_current_function_latest_selection_preserve_latest_semantics():
     databases = (
-        _database("/new-target", recorded_at=30, function_ea=0x401000, size=1, snapshots=1),
+        _database(
+            "/new-target", recorded_at=30, function_ea=0x401000, size=1, snapshots=1
+        ),
         _database("/other", recorded_at=40, function_ea=0x402000, size=1, snapshots=1),
-        _database("/old-target", recorded_at=10, function_ea=0x401000, size=1, snapshots=1),
+        _database(
+            "/old-target", recorded_at=10, function_ea=0x401000, size=1, snapshots=1
+        ),
     )
     snapshots = (
         _snapshot(1, timestamp=10, maturity="M1", phase="before", blocks=1, rows=1),
@@ -103,15 +135,24 @@ def test_filters_and_current_function_latest_selection_preserve_latest_semantics
         "/new-target",
         "/old-target",
     ]
-    assert [item.snapshot_id for item in logic.filter_snapshots(snapshots, "AFTER")] == [2]
+    assert [
+        item.snapshot_id for item in logic.filter_snapshots(snapshots, "AFTER")
+    ] == [2]
     assert logic.latest_database_for_function(databases, 0x401000).path == "/new-target"
     assert logic.latest_snapshot_for_function(snapshots, 0x401000).snapshot_id == 2
 
 
 def test_actions_protect_active_database_and_require_explicit_selection():
     inactive = _database("/a", recorded_at=1, function_ea=1, size=1, snapshots=2)
-    active = _database("/b", recorded_at=1, function_ea=2, size=1, snapshots=2, active=True)
-    states = {item.action_id: item for item in logic.diagnostic_action_states((inactive, active), selected_snapshot_ids=(1,))}
+    active = _database(
+        "/b", recorded_at=1, function_ea=2, size=1, snapshots=2, active=True
+    )
+    states = {
+        item.action_id: item
+        for item in logic.diagnostic_action_states(
+            (inactive, active), selected_snapshot_ids=(1,)
+        )
+    }
 
     assert states["delete_selected_snapshots"].enabled is True
     assert states["delete_selected_databases"].enabled is True
@@ -119,7 +160,10 @@ def test_actions_protect_active_database_and_require_explicit_selection():
     assert states["delete_all_closed_databases"].enabled is True
     assert states["vacuum_selected_databases"].enabled is True
 
-    empty = {item.action_id: item for item in logic.diagnostic_action_states((), selected_snapshot_ids=())}
+    empty = {
+        item.action_id: item
+        for item in logic.diagnostic_action_states((), selected_snapshot_ids=())
+    }
     assert all(item.enabled is False for item in empty.values())
 
 
@@ -175,3 +219,96 @@ def test_diagnostics_logic_has_no_qt_ida_sqlite_or_peewee_imports():
 
     assert not any(name.startswith(("ida", "PyQt", "PySide")) for name in imports)
     assert not any(token in name for name in imports for token in ("sqlite", "peewee"))
+
+
+def test_record_filter_and_projection_include_stage_outcome_and_anchored_fields():
+    records = (
+        DiagnosticRecord(
+            kind=DiagnosticViewKind.BLOCKS,
+            source_table="blocks",
+            snapshot_id=1,
+            ordinal=0,
+            fields=(
+                DiagnosticField("serial", "blk7@0x401010", "blk7@0x401010", 0x401010),
+                DiagnosticField("outcome", "lowered", "lowered"),
+            ),
+            warnings=(),
+            anchor_ea=0x401010,
+        ),
+    )
+
+    assert logic.filter_records(records, "LOWERED") == records
+    row = logic.project_record_rows(records)[0]
+    assert row.anchor == "0x401010"
+    assert "serial=blk7@0x401010" in row.summary
+    assert row.detail.startswith("View: blocks\nTable: blocks")
+
+
+def test_cleanup_plan_projection_requires_typed_confirmation_for_bulk_destruction():
+    target = DiagnosticCleanupTarget(
+        path="/tmp/a.diag.sqlite3",
+        snapshot_ids=(1, 2),
+        active=False,
+        estimated_rows=17,
+    )
+    all_snapshots = DiagnosticCleanupPlan(
+        scope=DiagnosticCleanupScope.ALL_SNAPSHOTS,
+        targets=(target,),
+        skipped_active_paths=(),
+        confirmation="Delete snapshot rows",
+    )
+    selected_databases = DiagnosticCleanupPlan(
+        scope=DiagnosticCleanupScope.SELECTED_DATABASES,
+        targets=(target,),
+        skipped_active_paths=(),
+        confirmation="Quarantine",
+    )
+
+    view = logic.project_cleanup_plan(all_snapshots)
+    assert view.required_phrase == "DELETE ALL"
+    assert view.target_count == 1
+    assert view.snapshot_count == 2
+    assert view.estimated_rows == 17
+    assert "/tmp/a.diag.sqlite3" in view.text
+    assert "snapshot IDs: 1, 2" in view.text
+    assert logic.cleanup_confirmation_matches(all_snapshots, "delete all") is True
+    assert logic.cleanup_confirmation_matches(all_snapshots, "DELETE") is False
+    assert (
+        logic.project_cleanup_plan(selected_databases).required_phrase == "QUARANTINE"
+    )
+
+
+def test_cleanup_result_projection_separates_transaction_integrity_sidecars_and_vacuum():
+    plan = DiagnosticCleanupPlan(
+        scope=DiagnosticCleanupScope.SELECTED_SNAPSHOTS,
+        targets=(),
+        skipped_active_paths=(),
+        confirmation="none",
+    )
+
+    def outcome(
+        operation: DiagnosticOperation, detail: str
+    ) -> DiagnosticOperationOutcome:
+        return DiagnosticOperationOutcome(
+            operation=operation,
+            path="/tmp/a.diag.sqlite3",
+            status=DiagnosticOperationStatus.SUCCEEDED,
+            detail=detail,
+            affected=1,
+        )
+
+    result = DiagnosticCleanupResult(
+        plan=plan,
+        logical=(
+            outcome(DiagnosticOperation.LOGICAL_DELETE, "committed; integrity passed"),
+        ),
+        wal=(outcome(DiagnosticOperation.WAL_CHECKPOINT, "sidecars handled"),),
+        vacuum=(outcome(DiagnosticOperation.VACUUM, "vacuumed"),),
+        quarantine=(),
+    )
+
+    text = logic.project_cleanup_result(result)
+    assert "Cleanup transaction" in text
+    assert "Integrity check" in text
+    assert "WAL / sidecars" in text
+    assert "Vacuum" in text
