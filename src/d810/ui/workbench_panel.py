@@ -376,15 +376,23 @@ if IDA_AVAILABLE:
             self._show_diagnostics(adapter)
 
         def _show_diagnostics(self, adapter: typing.Any) -> None:
+            from d810.diagnostics.workbench_graph_controller import (
+                DiagnosticGraphController,
+            )
+            from d810.ui.workbench_diagnostic_graph import IdaDiagnosticGraphView
             from d810.ui.workbench_diagnostics_panel import (
                 WorkbenchDiagnosticsPanel,
             )
 
             if self._diagnostics_panel is not None:
                 self._diagnostics_panel.close()
+            graph_view = IdaDiagnosticGraphView()
+            controller = DiagnosticGraphController(adapter, adapter, graph_view)
             panel = WorkbenchDiagnosticsPanel(
                 adapter,
                 function_ea=self._func_ea,
+                function_name=self._func_name or None,
+                graph_controller=controller,
             )
             self._diagnostics_panel = panel
             panel.show()
