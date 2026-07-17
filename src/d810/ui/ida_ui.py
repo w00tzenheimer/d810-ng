@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import pathlib
-
 import ida_kernwin
 import idaapi
 
@@ -25,18 +23,16 @@ from d810.ui.project_config_logic import (
 from d810.ui.project_picker_logic import build_project_picker_entries
 from d810.ui.project_picker_popup import ProjectPickerPopup
 from d810.ui.rule_detail import RuleDetailPanel
+from d810.ui.icon_assets import bundled_icon
 from d810.ui.rule_tree import RuleTreeWidget
 from d810.ui.testbed import TestRunnerForm
 
 logger = getLogger("D810.ui")
 
-_CONFIG_ACTION_ICON_DIR = pathlib.Path(__file__).with_name("icons")
-
-
 def _config_action_icon(name: str):
     """Load a bundled SVG instead of relying on the host font's glyph set."""
 
-    return QtGui.QIcon(str(_CONFIG_ACTION_ICON_DIR / f"{name}.svg"))
+    return bundled_icon(name)
 
 
 class LoggingConfigDialog(QtWidgets.QDialog):
