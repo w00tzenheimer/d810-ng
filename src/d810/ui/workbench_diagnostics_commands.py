@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from d810.diagnostics.workbench_models import DiagnosticViewKind
+from d810.diagnostics.workbench_models import DiagnosticRecord, DiagnosticViewKind
 
 
 _VIEW_KINDS = {item.value: item for item in DiagnosticViewKind}
@@ -33,7 +33,7 @@ class WorkbenchDiagnosticsAdapter:
         path: str,
         snapshot_id: int,
         kind: str,
-    ) -> tuple[object, ...]:
+    ) -> tuple[DiagnosticRecord, ...]:
         try:
             view_kind = _VIEW_KINDS[str(kind)]
         except KeyError as error:
