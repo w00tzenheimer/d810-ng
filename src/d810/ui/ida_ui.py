@@ -574,12 +574,9 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         config_row = QtWidgets.QHBoxLayout()
         project_vbox.addLayout(config_row)
 
-        # Status indicator (colored circle)
+        # Status indicator (bundled SVG avoids host-font glyph fallbacks).
         self._status_indicator = QtWidgets.QLabel()
-        self._status_indicator.setTextFormat(QtCore.Qt.RichText)
-        self._status_indicator.setText(
-            '<span style="color: #D32F2F; font-size: 20px;">●</span>'
-        )
+        self._status_indicator.setFixedSize(20, 20)
         self._status_indicator.setToolTip("D810 is stopped")
         config_row.addWidget(self._status_indicator)
 
@@ -795,13 +792,13 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             logger.debug("Cannot update status indicator: widget not created yet")
             return
         if loaded:
-            self._status_indicator.setText(
-                '<span style="color: #4CAF50; font-size: 20px;">*</span>'
+            self._status_indicator.setPixmap(
+                _config_action_icon("status-running").pixmap(QtCore.QSize(16, 16))
             )
             self._status_indicator.setToolTip("D810 is running")
         else:
-            self._status_indicator.setText(
-                '<span style="color: #D32F2F; font-size: 20px;">*</span>'
+            self._status_indicator.setPixmap(
+                _config_action_icon("status-stopped").pixmap(QtCore.QSize(16, 16))
             )
             self._status_indicator.setToolTip("D810 is stopped")
 

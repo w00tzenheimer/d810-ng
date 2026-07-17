@@ -6,6 +6,7 @@ from pathlib import Path
 
 IDA_UI = Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "ida_ui.py"
 ICON_DIR = IDA_UI.parent / "icons"
+RULE_TREE = IDA_UI.parent / "rule_tree.py"
 PYPROJECT = IDA_UI.parents[3] / "pyproject.toml"
 TREE = ast.parse(IDA_UI.read_text(encoding="utf-8"), filename=str(IDA_UI))
 
@@ -83,6 +84,34 @@ def test_config_action_svg_assets_are_packaged() -> None:
         assert "<svg" in icon_path.read_text(encoding="utf-8")
 
     assert 'ui/icons/*.svg' in PYPROJECT.read_text(encoding="utf-8")
+
+
+def test_engine_status_uses_svg_icons_instead_of_text_markers() -> None:
+    source = IDA_UI.read_text(encoding="utf-8")
+    update_status = ast.get_source_segment(source, _method("_update_status"))
+
+    assert update_status is not None
+    assert ".setPixmap(" in update_status
+    assert "*>" not in update_status
+    assert "●" not in source
+
+    for icon_name in ("status-running", "status-stopped"):
+        icon_path = ICON_DIR / f"{icon_name}.svg"
+        assert icon_path.is_file()
+        assert "<svg" in icon_path.read_text(encoding="utf-8")
+
+
+def test_rule_state_legend_uses_svg_icons_instead_of_text_markers() -> None:
+    source = RULE_TREE.read_text(encoding="utf-8")
+
+    assert "*>" not in source
+    assert '"* Configurable"' not in source
+    assert ".setPixmap(" in source
+
+    for icon_name in ("rule-enabled", "rule-disabled", "rule-configurable"):
+        icon_path = ICON_DIR / f"{icon_name}.svg"
+        assert icon_path.is_file()
+        assert "<svg" in icon_path.read_text(encoding="utf-8")
 
 
 def test_save_rules_delegates_to_edit_policy_and_manager_commands() -> None:
