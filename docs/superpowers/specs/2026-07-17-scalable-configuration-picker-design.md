@@ -6,13 +6,13 @@ Replace the flat configuration combobox in the D-810 Configuration form with a s
 
 ## User experience
 
-The Project header shows the active project filename in a compact button. Clicking it opens a modal picker titled `Choose D-810 configuration`.
+The Project header shows the active project filename with a dropdown affordance in a compact button. Clicking it opens an anchored searchable popup directly beneath that control.
 
 The picker contains:
 
-- A focused filter field with the placeholder `Filter filename, description, or runtime...`.
-- A non-editable result table with `Configuration`, `Behavior`, and `Description` columns.
-- A visible result count, `Load selected` action, Cancel action, and double-click-to-load behavior.
+- A focused filter field with the placeholder `Search configurations by filename, description, or runtime...`.
+- A compact two-column list: filename first, routing behavior second, and full descriptions in tooltips.
+- A visible result count plus single-click or Enter selection; the popup closes before the existing configuration-loading path runs.
 
 Each result represents exactly one discovered `ProjectConfiguration`. Filtering never removes projects from the underlying catalog and never changes the project index carried by a result. The selected row loads the existing `ProjectManager` index through `D810State.load_project`.
 
@@ -30,15 +30,15 @@ The existing Project identity rows remain the post-selection authority for mode,
 
 `d810.ui.project_picker_logic` is a Qt-free projection layer. It produces immutable picker entries with their original manager index, filename, behavior text, description, and normalized search text. It also filters entries without changing those stable identities.
 
-`d810.ui.project_picker_dialog` is a thin IDA/Qt dialog. It renders entries from the pure layer and returns an original project index only after an explicit load action or double-click. `D810ConfigForm_t` owns dialog creation and retains existing `_load_config(index)` as the sole configuration activation path.
+`d810.ui.project_picker_popup` is a thin IDA/Qt popup. It renders entries from the pure layer, retains their original manager indices while filtering, and calls back with that index only after selection. `D810ConfigForm_t` owns popup creation and retains existing `_load_config(index)` as the sole configuration activation path.
 
 ## Constraints
 
 - Do not hide, exclude, or collapse any discovered JSON project.
 - Do not mutate selection while the user filters or cancels the picker.
 - Do not change discovery, persistence, source/runtime activation, deletion policy, or config-v2 editing behavior.
-- Preserve headless imports: the pure logic module imports no Qt or IDA modules; the dialog has an import-safe non-IDA stub.
-- Test stable-index selection, routing labels, filtering, and the form-to-dialog contract before native validation.
+- Preserve headless imports: the pure logic module imports no Qt or IDA modules; the popup has an import-safe non-IDA stub.
+- Test stable-index selection, routing labels, filtering, and the form-to-popup contract before native validation.
 
 ## Validation
 

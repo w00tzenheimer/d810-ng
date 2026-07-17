@@ -1,5 +1,7 @@
 # Scalable Configuration Picker Implementation Plan
 
+> **Historical note:** The initial modal design in Task 2 was superseded during native XQuartz review. The shipped control is `d810.ui.project_picker_popup`, an anchored searchable dropdown; the companion design document records the final behavior.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every discovered D-810 JSON configuration quickly searchable and directly selectable from the native configuration UI.

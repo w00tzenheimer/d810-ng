@@ -29,6 +29,14 @@ def _call_names(method: ast.FunctionDef) -> set[str]:
     return names
 
 
+def _attribute_names(method: ast.FunctionDef) -> set[str]:
+    return {
+        node.attr
+        for node in ast.walk(method)
+        if isinstance(node, ast.Attribute)
+    }
+
+
 def test_load_config_reads_manager_snapshot_and_pure_view() -> None:
     calls = _call_names(_method("_load_config"))
 
@@ -37,13 +45,19 @@ def test_load_config_reads_manager_snapshot_and_pure_view() -> None:
     assert "_apply_project_config_view" in calls
 
 
-def test_form_uses_picker_without_loading_a_filtered_row_index() -> None:
+def test_form_uses_searchable_popup_without_loading_a_filtered_row_index() -> None:
     calls = _call_names(_method("_open_config_picker"))
 
-    assert "ProjectPickerDialog" in calls
+    assert "ProjectPickerPopup" in calls
     assert "build_project_picker_entries" in calls
-    assert "selected_project_index" in calls
-    assert "_load_config" in calls
+    assert "show_for" in calls
+    assert "_load_config" in _attribute_names(_method("_open_config_picker"))
+
+
+def test_current_configuration_control_has_a_dropdown_affordance() -> None:
+    source = IDA_UI.read_text(encoding="utf-8")
+
+    assert "▼" in source
 
 
 def test_save_rules_delegates_to_edit_policy_and_manager_commands() -> None:
