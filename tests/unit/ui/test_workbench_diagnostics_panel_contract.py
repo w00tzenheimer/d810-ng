@@ -153,3 +153,28 @@ def test_real_database_inventory_runs_off_the_ida_ui_thread() -> None:
     assert "QThreadPool" in source
     assert "databases" not in refresh_calls
     assert "start" in refresh_calls
+
+
+def test_panel_publishes_graph_context_without_projecting_or_refiltering_it() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    load_source = _method_source("_load_records")
+    refilter_source = _method_source("_refilter_records")
+
+    assert "Open graph" in source
+    for method_name in (
+        "_open_graph",
+        "_graph_context",
+        "_publish_graph_context",
+    ):
+        assert _method(method_name)
+    for call in (
+        "self._graph_controller.open",
+        "self._graph_controller.update_context",
+        "self._graph_controller.select_record",
+        "self._graph_controller.clear_for_unsupported_view",
+        "self._graph_controller.close",
+    ):
+        assert call in source
+    assert "project_diagnostic_graph" not in source
+    assert "_publish_graph_context()" in load_source
+    assert "_publish_graph_context" not in refilter_source

@@ -139,10 +139,14 @@ if IDA_AVAILABLE:
             adapter: typing.Any,
             *,
             function_ea: int | None = None,
+            function_name: str | None = None,
+            graph_controller: typing.Any = None,
         ) -> None:
             ida_kernwin.PluginForm.__init__(self)
             self._adapter = adapter
             self._function_ea = None if function_ea is None else int(function_ea)
+            self._function_name = function_name
+            self._graph_controller = graph_controller
             self._databases: tuple[typing.Any, ...] = ()
             self._database_rows: tuple[typing.Any, ...] = ()
             self._snapshots: tuple[typing.Any, ...] = ()
@@ -229,6 +233,8 @@ if IDA_AVAILABLE:
             )
             self.jump_function_button = QtWidgets.QPushButton("Jump to function")
             self.jump_record_button = QtWidgets.QPushButton("Jump to record anchor")
+            self.open_graph_button = QtWidgets.QPushButton("Open graph")
+            self.open_graph_button.setEnabled(False)
 
             self.cleanup_buttons: dict[str, typing.Any] = {}
             for action_id, label in (
@@ -294,6 +300,7 @@ if IDA_AVAILABLE:
             )
             self.jump_function_button.clicked.connect(self._jump_to_function)
             self.jump_record_button.clicked.connect(self._jump_to_record)
+            self.open_graph_button.clicked.connect(self._open_graph)
             self.refresh_button.clicked.connect(self.refresh)
             for action_id, button in self.cleanup_buttons.items():
 
@@ -366,6 +373,7 @@ if IDA_AVAILABLE:
             jump_row = QtWidgets.QHBoxLayout()
             jump_row.addWidget(self.jump_function_button)
             jump_row.addWidget(self.jump_record_button)
+            jump_row.addWidget(self.open_graph_button)
             jump_row.addStretch(1)
             record_layout.addLayout(jump_row)
 
@@ -465,6 +473,8 @@ if IDA_AVAILABLE:
         def OnClose(self, form: typing.Any) -> None:
             del form
             self._closed = True
+            if self._graph_controller is not None:
+                self._graph_controller.close()
             self._inventory_generation += 1
             self._inventory_workers.clear()
             self._pending_inventory_path.clear()
@@ -762,6 +772,7 @@ if IDA_AVAILABLE:
                     self.record_detail.setPlainText(f"Structured view failed: {exc}")
             filtered = filter_records(self._records, self.record_filter.text())
             self._apply_record_projection(filtered)
+            self._publish_graph_context()
 
         def _refilter_records(self, *args: typing.Any) -> None:
             del args
@@ -809,7 +820,52 @@ if IDA_AVAILABLE:
             del args
             row = self._current_record_row()
             self.record_detail.setPlainText("" if row is None else row.detail)
+            if self._graph_controller is not None:
+                self._graph_controller.select_record(
+                    None if row is None else row.record
+                )
             self._render_action_states()
+
+        def _graph_context(self) -> typing.Any:
+            controller = self._graph_controller
+            database = self._current_database()
+            snapshot = self._current_snapshot()
+            if (
+                controller is None
+                or database is None
+                or not database.readable
+                or snapshot is None
+            ):
+                return None
+            return controller.context_for_explorer(
+                database_path=str(database.path),
+                snapshot_id=int(snapshot.snapshot_id),
+                function_ea=int(snapshot.function_ea),
+                function_name=self._function_name,
+                view_value=str(self.view_combo.currentData() or ""),
+            )
+
+        def _open_graph(self, checked: bool = False) -> None:
+            del checked
+            context = self._graph_context()
+            if self._graph_controller is None or context is None:
+                self.open_graph_button.setEnabled(False)
+                self.record_detail.setPlainText(
+                    "Select a readable database, snapshot, and supported view "
+                    "before opening a graph"
+                )
+                return
+            self._graph_controller.open(context)
+
+        def _publish_graph_context(self) -> None:
+            context = self._graph_context()
+            self.open_graph_button.setEnabled(context is not None)
+            if self._graph_controller is None:
+                return
+            if context is None:
+                self._graph_controller.clear_for_unsupported_view()
+                return
+            self._graph_controller.update_context(context)
 
         def _selected_rows(self, tree: typing.Any) -> tuple[int, ...]:
             return tuple(
