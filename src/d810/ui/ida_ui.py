@@ -22,8 +22,8 @@ from d810.ui.project_config_logic import (
     build_project_config_view,
     select_config_edit_policy,
 )
-from d810.ui.project_picker_dialog import ProjectPickerDialog
 from d810.ui.project_picker_logic import build_project_picker_entries
+from d810.ui.project_picker_popup import ProjectPickerPopup
 from d810.ui.rule_detail import RuleDetailPanel
 from d810.ui.rule_tree import RuleTreeWidget
 from d810.ui.testbed import TestRunnerForm
@@ -843,7 +843,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             max(0, self.state.current_project_index),
             len(projects) - 1,
         )
-        self.cfg_select.setText(projects[project_index].path.name)
+        self.cfg_select.setText(f"{projects[project_index].path.name}  ▼")
         self.cfg_select.setToolTip(
             f"Choose D-810 configuration ({len(projects)} discovered)"
         )
@@ -854,20 +854,17 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         projects = tuple(self.state.project_manager.projects())
         if not projects:
             return
-        # PluginForm can temporarily have no Qt parent after D810.reload().
-        # In that case, parent the modal chooser to IDA's active window so the
-        # window manager keeps it on the same visible X11/desktop surface.
-        dialog_parent = self.parent or QtWidgets.QApplication.activeWindow()
-        dialog = ProjectPickerDialog(
+        existing_popup = getattr(self, "_config_picker_popup", None)
+        if existing_popup is not None:
+            existing_popup.close()
+        popup_parent = self.parent or QtWidgets.QApplication.activeWindow()
+        self._config_picker_popup = ProjectPickerPopup(
             build_project_picker_entries(projects),
             current_project_index=self.state.current_project_index,
-            parent=dialog_parent,
+            on_project_selected=self._load_config,
+            parent=popup_parent,
         )
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
-            return
-        project_index = dialog.selected_project_index()
-        if project_index is not None:
-            self._load_config(project_index)
+        self._config_picker_popup.show_for(self.cfg_select)
 
     # =========================================================================
     # Edit state machine
