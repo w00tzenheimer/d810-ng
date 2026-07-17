@@ -7,10 +7,12 @@ text-based filtering and emits signals when the user selects a rule.
 """
 from __future__ import annotations
 
+import pathlib
+
 from d810.core.logging import getLogger
 from d810.core import typing
 
-from d810.qt_shim import QtCore, QtWidgets, qt_flag_or, QColor, QBrush
+from d810.qt_shim import QtCore, QtGui, QtWidgets, qt_flag_or, QColor, QBrush
 
 if typing.TYPE_CHECKING:
     from d810.optimizers.microcode.handler import OptimizationRule
@@ -26,6 +28,34 @@ except (TypeError, ValueError):
 # Color constants for rule states
 COLOR_ENABLED = QColor(76, 175, 80)  # Material Green 500
 COLOR_DISABLED = QColor(158, 158, 158)  # Material Gray
+_RULE_ICON_DIR = pathlib.Path(__file__).with_name("icons")
+
+
+def _rule_state_icon(name: str):
+    """Load a bundled state icon without depending on the host font."""
+
+    return QtGui.QIcon(str(_RULE_ICON_DIR / f"{name}.svg"))
+
+
+def _legend_item(
+    icon_name: str, text: str, parent: QtWidgets.QWidget
+) -> QtWidgets.QWidget:
+    """Create one compact, image-backed item in the rule-state legend."""
+
+    item = QtWidgets.QWidget(parent)
+    layout = QtWidgets.QHBoxLayout(item)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(3)
+
+    icon = QtWidgets.QLabel(item)
+    icon.setPixmap(_rule_state_icon(icon_name).pixmap(QtCore.QSize(12, 12)))
+    icon.setToolTip(text)
+    layout.addWidget(icon)
+
+    label = QtWidgets.QLabel(text, item)
+    label.setStyleSheet("font-size: 10px")
+    layout.addWidget(label)
+    return item
 
 
 class RuleTreeWidget(QtWidgets.QWidget):
@@ -74,26 +104,11 @@ class RuleTreeWidget(QtWidgets.QWidget):
         legend_layout.setContentsMargins(4, 2, 4, 2)
         legend_layout.setSpacing(8)
 
-        # Enabled legend item
-        enabled_label = QtWidgets.QLabel(
-            "<span style='color:#4CAF50'>*</span> Enabled", legend_widget
+        legend_layout.addWidget(_legend_item("rule-enabled", "Enabled", legend_widget))
+        legend_layout.addWidget(_legend_item("rule-disabled", "Disabled", legend_widget))
+        legend_layout.addWidget(
+            _legend_item("rule-configurable", "Configurable", legend_widget)
         )
-        enabled_label.setStyleSheet("font-size: 10px")
-        legend_layout.addWidget(enabled_label)
-
-        # Disabled legend item
-        disabled_label = QtWidgets.QLabel(
-            "<span style='color:#9E9E9E'>*</span> Disabled", legend_widget
-        )
-        disabled_label.setStyleSheet("font-size: 10px")
-        legend_layout.addWidget(disabled_label)
-
-        # Configurable legend item
-        configurable_label = QtWidgets.QLabel(
-            "* Configurable", legend_widget
-        )
-        configurable_label.setStyleSheet("font-size: 10px")
-        legend_layout.addWidget(configurable_label)
 
         legend_layout.addStretch(1)
         layout.addWidget(legend_widget)
