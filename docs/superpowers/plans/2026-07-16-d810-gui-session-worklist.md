@@ -235,10 +235,11 @@ workbench or later dock gates.
 - The IDA console injects `D810` into `__main__`, but the MCP evaluator has a
   separate globals mapping. Use `import __main__; __main__.D810.reload()` from
   MCP rather than referring to bare `D810`.
-- Full-package reload can exceed the MCP plugin's fixed 15-second callback
-  budget. Keep the IDA process alive and schedule the reload with
-  `ida_kernwin.register_timer()` when necessary; do not restart the container
-  merely to refresh Python UI code.
+- Full-package reload can exceed a short MCP callback budget. The launcher now
+  gives MCP tools 45 seconds, and existing-session named UI commands submit
+  through `ida_kernwin.register_timer()` so IDA performs the action after the
+  MCP callback returns. Keep the IDA process alive and use `D810.reload()`;
+  do not restart the container merely to refresh Python UI code.
 - Hot reload now restores the manager's prior started state. Family discovery
   resolves the current post-reload Registrant base and uses stable distributed
   selection priorities, preserving `hodur`, `approov`, `tigress` order.
@@ -248,10 +249,11 @@ workbench or later dock gates.
 
 ### Current automated verification checkpoint
 
-At `2c19f521c` the following passed:
+At diagnostics implementation commit `350a9a51b` the following passed:
 
 ```text
-5906 passed, 29 skipped, 9 warnings, 162 subtests passed in 50.13s
+6166 passed, 29 skipped, 9 warnings, 162 subtests passed in 72.16s
+check-cycles: 931 modules, no cycles
 sg scan: clean
 import-linter: 13 kept, 0 broken
 git diff --check: clean
@@ -342,11 +344,13 @@ separate, explicit security decision in a future specification. `--connect`
 requires at least one named action, rejects raw IDA arguments, and never starts
 or stops the remote IDA process.
 
-The host client uses only Python's standard library (`urllib.request`, `json`,
-`base64`, and `pathlib`). It performs MCP `initialize`, `ping`, and
-`tools/call`. The only unsafe call is MCP's existing `py_eval`, with a constant
-code template that imports D810's named-command adapter and decodes a strictly
-validated data payload. No user text is interpolated as Python source.
+The host client uses only Python's standard library (`http.client`, `json`,
+`base64`, and `pathlib`). It performs MCP `initialize`, `ping`, a fixed
+submission `tools/call`, and fixed result-poll `tools/call` requests. The only
+unsafe call is MCP's existing `py_eval`, with constant templates that submit a
+strictly validated named-command payload and poll by an opaque encoded request
+ID. IDA runs the named action from its event loop after the submission callback
+returns. No user text is interpolated as Python source.
 
 ### Audit artifact
 
@@ -723,45 +727,76 @@ Live evidence:
 
 ### Diagnostics D0: read-only SQLite explorer (`tcvpu-u83u`)
 
-Status: headless inventory, newest-first sorting, structured anchored records,
-and selection logic are implemented; Qt/live navigation pending.
+Status: complete through live Docker/XQuartz acceptance on 2026-07-16 in
+`350a9a51b`.
 
-- [ ] Add a thin diagnostics dock backed by the existing manager facade and
+- [x] Add a thin diagnostics dock backed by the existing manager facade and
   `workbench_diagnostics_logic.py`; Qt must not import sqlite3 or storage
   models.
-- [ ] Discover generated diagnostic databases and default to newest-first using
+- [x] Discover generated diagnostic databases and default to newest-first using
   timestamp, stable ID, and path tie breakers.
-- [ ] Expose explicit sort controls including latest/newest and oldest.
-- [ ] Filter by database, snapshot, function, stage, and outcome without an
+- [x] Expose explicit sort controls including latest/newest and oldest.
+- [x] Filter by database, snapshot, function, stage, and outcome without an
   arbitrary SQL console.
-- [ ] Render every block as `serial@EA` and make function/block rows navigate to
+- [x] Render every block as `serial@EA` and make function/block rows navigate to
   the anchored IDA address.
-- [ ] Keep inventory connections read-only and verify browsing cannot mutate
+- [x] Keep inventory connections read-only and verify browsing cannot mutate
   the database, WAL, or SHM files.
+
+Live evidence:
+
+- `.tmp/ida-gui/live-diagnostics-explorer.png` shows the compact dock with 304
+  generated databases discovered asynchronously, the current function's newest
+  database selected, 17 snapshots, and 54 anchored block records.
+- Database, snapshot, and record filtering/sorting stayed in memory after the
+  exact background inventory. The current-function jump and selected record
+  jump resolved to the same anchored EA, `0x180012C9F`.
+- The explorer always uses `mode=ro&immutable=1`, fails closed on a non-empty
+  WAL, and preserved the database, WAL, and SHM hashes and metadata across live
+  browsing. The manager-owned quarantine tree is excluded; a live refresh
+  reported `0 shown / 304 discovered` for the quarantined disposable name.
 
 ### Diagnostics D1: transactional SQLite cleaner (`tcvpu-oij1`)
 
-Status: headless cleanup scopes, transactions, active-path protection,
-integrity checks, quarantine, WAL handling, and vacuum outcomes are
-implemented; Qt confirmation/live acceptance pending.
+Status: complete through live Docker/XQuartz acceptance on 2026-07-16 in
+`350a9a51b`.
 
-- [ ] Add explicit actions for selected snapshots, all snapshots in one
+- [x] Add explicit actions for selected snapshots, all snapshots in one
   database, keep latest N, older-than, selected databases, all closed
   databases, delete all, and vacuum.
-- [ ] Show the exact planned database paths, snapshot IDs, counts, and reclaimed
+- [x] Show the exact planned database paths, snapshot IDs, counts, and reclaimed
   estimate before enabling confirmation.
-- [ ] Require typed confirmation for `delete all` and all-database operations.
-- [ ] Skip active databases and recheck active-path/identity immediately before
+- [x] Require typed confirmation for `delete all` and all-database operations.
+- [x] Skip active databases and recheck active-path/identity immediately before
   execution to close the TOCTOU window.
-- [ ] Delete snapshot-owned rows by exact snapshot ID, dependents first and
+- [x] Delete snapshot-owned rows by exact snapshot ID, dependents first and
   parent last, in one rollback-safe transaction.
-- [ ] Fail closed on an unknown snapshot-owned table.
-- [ ] Quarantine database, WAL, and SHM sidecars together instead of unlinking
+- [x] Fail closed on an unknown snapshot-owned table.
+- [x] Quarantine database, WAL, and SHM sidecars together instead of unlinking
   them; expose restore instructions and the quarantine path.
-- [ ] Report cleanup transaction, integrity check, sidecar handling, and vacuum
+- [x] Report cleanup transaction, integrity check, sidecar handling, and vacuum
   as separate outcomes.
-- [ ] Refresh the explorer after cleanup and verify newest-first ordering and
+- [x] Refresh the explorer after cleanup and verify newest-first ordering and
   counts remain truthful.
+
+Live evidence:
+
+- A copied real generated database was the only cleaner target. The exact plan
+  for snapshot 17 named 187 owned rows; review confirmation enabled execution,
+  the transaction and integrity check passed, WAL checkpoint succeeded, and a
+  refresh showed 16 remaining snapshots with snapshot 16 newest.
+- The remaining all-snapshots plan named all 16 IDs and 12,968 rows. Empty and
+  wrong confirmation text stayed disabled; `DELETE ALL` enabled it, but the
+  destructive bulk operation was not executed.
+- The selected-database `QUARANTINE` path moved the disposable database and its
+  sidecars reversibly, displayed the exact restore command, and separated
+  logical transaction, integrity, quarantine/sidecar, WAL, and vacuum results.
+  The original source database retained SHA-256
+  `0d6b700fbdb80b97a6dd1812045b737b21c84a24826a42b8e45059b32e242ec5`;
+  the disposable quarantine proof artifact was then removed exactly.
+- Captures are `.tmp/ida-gui/live-diagnostics-cleaner-plan.png`,
+  `.tmp/ida-gui/live-diagnostics-cleaner-result.png`, and
+  `.tmp/ida-gui/live-diagnostics-cleaner-quarantine.png`.
 
 ---
 
@@ -794,23 +829,25 @@ For protocol debugging, the `tools/call` request shape is:
   "params": {
     "name": "py_eval",
     "arguments": {
-      "code": "CONSTANT_D810_NAMED_COMMAND_TEMPLATE"
+      "code": "CONSTANT_D810_NAMED_COMMAND_SUBMIT_TEMPLATE"
     }
   }
 }
 ```
 
-Use this only through the checked-in host client after its request-validation
-tests pass.
+The submission template returns immediately after registering an IDA timer;
+subsequent calls use a second constant poll template with only the encoded
+request ID. Use this only through the checked-in host client after its
+request-validation tests pass.
 
 ---
 
 ## Final verification and ticket closure
 
-- [ ] Run focused tests for every modified UI logic, adapter, launcher,
+- [x] Run focused tests for every modified UI logic, adapter, launcher,
   bootstrap, MCP client, workbench, recipe, config-v2, and diagnostic module.
-- [ ] Run the full unit suite and record exact fresh counts in the ticket.
-- [ ] Run the architecture gates from this worktree:
+- [x] Run the full unit suite and record exact fresh counts in the ticket.
+- [x] Run the architecture gates from this worktree:
 
   ```bash
   sg scan --config sgconfig.yml --report-style short
@@ -818,15 +855,27 @@ tests pass.
   git diff --check
   ```
 
-- [ ] Run `graphify update .` after code changes.
-- [ ] Launch the copied DLL IDB with the dependency-complete image.
-- [ ] Capture the named-command audit JSON, relevant IDA output, and an X11
+- [x] Run `graphify update .` after code changes.
+- [x] Launch the copied DLL IDB with the dependency-complete image.
+- [x] Capture the named-command audit JSON, relevant IDA output, and an X11
   screenshot for every live ticket acceptance.
-- [ ] Verify the canonical sample SHA-256 is unchanged after each session.
-- [ ] Update each child ticket with commit, focused tests, full tests,
+- [x] Verify the canonical sample SHA-256 is unchanged after each session.
+- [x] Update each child ticket with commit, focused tests, full tests,
   architecture gates, live actions, artifact paths, and remaining limitations.
-- [ ] Close a child ticket only when its terminal and live gates are both
+- [x] Close a child ticket only when its terminal and live gates are both
   complete. Close `d81-38ha` only after all eight child scopes are accepted.
+
+Final evidence: 248 broad focused tests passed, followed by an 87-test final
+focused rerun and `6166 passed, 29 skipped, 9 warnings, 162 subtests passed`.
+The 931-module cycle scan, ast-grep, all 13 import-linter contracts, graph
+update, and diff check passed. Fresh audit
+`.tmp/ida-gui/automation-34bf113e452197f163fca5a7519ec8bc.json` and combined
+existing-session audit
+`.tmp/ida-gui/automation-de615cadd5d35fbf563d87958ad05b0e.json` succeeded;
+the latter opened config then Workbench at `0x180012B60` without freezing MCP.
+The visible result is `.tmp/ida-gui/live-connect-workbench-async.png`. Canonical
+sample SHA-256 remained
+`61678430e3fe08f6bb23f41752faa22b57c805e8261277660933d01e3c046dab`.
 
 ## Explicit non-solutions
 

@@ -1,6 +1,6 @@
 ---
 id: d81-kcin
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-07-15T23:04:05Z
@@ -124,3 +124,13 @@ The live Qt capture showed a visible 898x650 configuration dock using the
 persisted routed Hodur project. This satisfies the remaining `d81-kcin` live
 named request/audit criterion; the other product lanes remain child-ticket
 work.
+
+**2026-07-16T18:07:31-07:00**
+
+Closed after the remaining product lanes completed. Fresh and explicit
+existing-session named automation both retain the accepted configuration dock,
+and combined audit
+`.tmp/ida-gui/automation-de615cadd5d35fbf563d87958ad05b0e.json` opened config
+then Workbench successfully in the live Docker/XQuartz session. The canonical
+sample SHA-256 remains
+`61678430e3fe08f6bb23f41752faa22b57c805e8261277660933d01e3c046dab`.
