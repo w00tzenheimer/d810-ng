@@ -37,6 +37,15 @@ def test_load_config_reads_manager_snapshot_and_pure_view() -> None:
     assert "_apply_project_config_view" in calls
 
 
+def test_form_uses_picker_without_loading_a_filtered_row_index() -> None:
+    calls = _call_names(_method("_open_config_picker"))
+
+    assert "ProjectPickerDialog" in calls
+    assert "build_project_picker_entries" in calls
+    assert "selected_project_index" in calls
+    assert "_load_config" in calls
+
+
 def test_save_rules_delegates_to_edit_policy_and_manager_commands() -> None:
     calls = _call_names(_method("_save_rules"))
 
