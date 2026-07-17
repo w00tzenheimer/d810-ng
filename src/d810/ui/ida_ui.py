@@ -30,6 +30,14 @@ from d810.ui.testbed import TestRunnerForm
 
 logger = getLogger("D810.ui")
 
+_CONFIG_ACTION_ICON_DIR = pathlib.Path(__file__).with_name("icons")
+
+
+def _config_action_icon(name: str):
+    """Load a bundled SVG instead of relying on the host font's glyph set."""
+
+    return QtGui.QIcon(str(_CONFIG_ACTION_ICON_DIR / f"{name}.svg"))
+
 
 class LoggingConfigDialog(QtWidgets.QDialog):
     """Logging configuration dialog for D-810.
@@ -585,42 +593,34 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
         # Project buttons (icon-only toolbuttons)
         self.btn_new_cfg = QToolButton()
-        self.btn_new_cfg.setText("+")
+        self.btn_new_cfg.setIcon(_config_action_icon("new"))
         self.btn_new_cfg.setToolTip("Create new configuration")
         self.btn_new_cfg.setFixedSize(32, 32)
-        font = self.btn_new_cfg.font()
-        font.setPointSize(16)
-        self.btn_new_cfg.setFont(font)
+        self.btn_new_cfg.setIconSize(QtCore.QSize(20, 20))
         self.btn_new_cfg.clicked.connect(self._create_config)
         config_row.addWidget(self.btn_new_cfg)
 
         self.btn_duplicate_cfg = QToolButton()
-        self.btn_duplicate_cfg.setText("⧉")
+        self.btn_duplicate_cfg.setIcon(_config_action_icon("duplicate"))
         self.btn_duplicate_cfg.setToolTip("Duplicate current configuration")
         self.btn_duplicate_cfg.setFixedSize(32, 32)
-        font = self.btn_duplicate_cfg.font()
-        font.setPointSize(16)
-        self.btn_duplicate_cfg.setFont(font)
+        self.btn_duplicate_cfg.setIconSize(QtCore.QSize(20, 20))
         self.btn_duplicate_cfg.clicked.connect(self._duplicate_config)
         config_row.addWidget(self.btn_duplicate_cfg)
 
         self.btn_edit_cfg = QToolButton()
-        self.btn_edit_cfg.setText("✎")
+        self.btn_edit_cfg.setIcon(_config_action_icon("edit"))
         self.btn_edit_cfg.setToolTip("Edit current configuration")
         self.btn_edit_cfg.setFixedSize(32, 32)
-        font = self.btn_edit_cfg.font()
-        font.setPointSize(16)
-        self.btn_edit_cfg.setFont(font)
+        self.btn_edit_cfg.setIconSize(QtCore.QSize(20, 20))
         self.btn_edit_cfg.clicked.connect(self._edit_config)
         config_row.addWidget(self.btn_edit_cfg)
 
         self.btn_delele_cfg = QToolButton()
-        self.btn_delele_cfg.setText("🗑")
+        self.btn_delele_cfg.setIcon(_config_action_icon("delete"))
         self.btn_delele_cfg.setToolTip("Delete current configuration")
         self.btn_delele_cfg.setFixedSize(32, 32)
-        font = self.btn_delele_cfg.font()
-        font.setPointSize(16)
-        self.btn_delele_cfg.setFont(font)
+        self.btn_delele_cfg.setIconSize(QtCore.QSize(20, 20))
         self.btn_delele_cfg.clicked.connect(self._delete_config)
         config_row.addWidget(self.btn_delele_cfg)
 
