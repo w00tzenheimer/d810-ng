@@ -22,6 +22,8 @@ from d810.ui.project_config_logic import (
     build_project_config_view,
     select_config_edit_policy,
 )
+from d810.ui.project_picker_dialog import ProjectPickerDialog
+from d810.ui.project_picker_logic import build_project_picker_entries
 from d810.ui.rule_detail import RuleDetailPanel
 from d810.ui.rule_tree import RuleTreeWidget
 from d810.ui.testbed import TestRunnerForm
@@ -472,7 +474,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         # Disconnect all signals to prevent PySide6 crash during Python finalization
         try:
             if hasattr(self, "cfg_select") and self.cfg_select is not None:
-                self.cfg_select.currentIndexChanged.disconnect()
+                self.cfg_select.clicked.disconnect()
 
             if hasattr(self, "_rule_tree") and self._rule_tree is not None:
                 self._rule_tree.rule_selected.disconnect()
@@ -577,7 +579,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.curlabel = QtWidgets.QLabel("Config:")
         config_row.addWidget(self.curlabel)
 
-        self.cfg_select = QtWidgets.QComboBox(self.parent)
+        self.cfg_select = QtWidgets.QPushButton(self.parent)
+        self.cfg_select.setToolTip("Choose a D-810 configuration")
         config_row.addWidget(self.cfg_select, stretch=1)
 
         # Project buttons (icon-only toolbuttons)
@@ -781,8 +784,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         # Final initialization
         # =====================================================================
         self.update_cfg_select()
-        self.cfg_select.setCurrentIndex(self.state.current_project_index)
-        self.cfg_select.currentIndexChanged.connect(self._load_config)
+        self.cfg_select.clicked.connect(self._open_config_picker)
 
         # Load the current config to populate the Rules tree immediately
         self._load_config(self.state.current_project_index)
@@ -829,24 +831,43 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             logger.debug("Config stored: %s.%s = %s", rule.name, param_name, value)
 
     def update_cfg_select(self):
-        logger.debug("Calling update_cfg_select")
-        tmp = self.state.current_project_index
-        # Prevent spurious _load_config calls while we rebuild the combo box.
-        was_blocked = self.cfg_select.blockSignals(True)
-        try:
-            self.cfg_select.clear()
-            # Display basename for readability
-            self.cfg_select.addItems(self.state.project_manager.project_names())
-        finally:
-            self.cfg_select.blockSignals(was_blocked)
-        if self.cfg_select.count() == 0:
-            self.cfg_select.setCurrentIndex(-1)
+        """Synchronize the current-project button without loading a project."""
+
+        projects = self.state.project_manager.projects()
+        if not projects:
+            self.cfg_select.setText("No configurations available")
+            self.cfg_select.setToolTip("No D-810 configuration projects were discovered")
+            self.cfg_select.setEnabled(False)
             return
-        if tmp < 0:
-            tmp = 0
-        elif tmp >= self.cfg_select.count():
-            tmp = self.cfg_select.count() - 1
-        self.cfg_select.setCurrentIndex(tmp)
+        project_index = min(
+            max(0, self.state.current_project_index),
+            len(projects) - 1,
+        )
+        self.cfg_select.setText(projects[project_index].path.name)
+        self.cfg_select.setToolTip(
+            f"Choose D-810 configuration ({len(projects)} discovered)"
+        )
+        self.cfg_select.setEnabled(True)
+
+    def _open_config_picker(self, checked: bool = False) -> None:
+        del checked
+        projects = tuple(self.state.project_manager.projects())
+        if not projects:
+            return
+        # PluginForm can temporarily have no Qt parent after D810.reload().
+        # In that case, parent the modal chooser to IDA's active window so the
+        # window manager keeps it on the same visible X11/desktop surface.
+        dialog_parent = self.parent or QtWidgets.QApplication.activeWindow()
+        dialog = ProjectPickerDialog(
+            build_project_picker_entries(projects),
+            current_project_index=self.state.current_project_index,
+            parent=dialog_parent,
+        )
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        project_index = dialog.selected_project_index()
+        if project_index is not None:
+            self._load_config(project_index)
 
     # =========================================================================
     # Edit state machine
@@ -1035,11 +1056,6 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         # Find the index of the newly saved config
         for i, proj in enumerate(self.state.project_manager.projects()):
             if proj.path == save_path:
-                was_blocked = self.cfg_select.blockSignals(True)
-                try:
-                    self.cfg_select.setCurrentIndex(i)
-                finally:
-                    self.cfg_select.blockSignals(was_blocked)
                 self._load_config(i)
                 break
 
@@ -1233,6 +1249,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 current_name,
             )
         project = self.state.load_project(index)
+        self.update_cfg_select()
         snapshot = self.state.get_project_runtime_snapshot()
         view = build_project_config_view(snapshot)
         self.cfg_description.setPlainText(project.description)
