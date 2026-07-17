@@ -798,6 +798,36 @@ Live evidence:
   `.tmp/ida-gui/live-diagnostics-cleaner-result.png`, and
   `.tmp/ida-gui/live-diagnostics-cleaner-quarantine.png`.
 
+### Diagnostics D2: two-pane workspace refinement
+
+Status: complete through live Docker/XQuartz acceptance on 2026-07-16.
+
+- [x] Split the diagnostics workspace into equal left and right panes.
+- [x] Keep databases and snapshots side-by-side in the upper-left browser.
+- [x] Condense the cleaner below that browser without removing any action,
+  exact-plan, confirmation, or outcome control.
+- [x] Give structured records the full-height right pane and preserve the
+  record list, detail view, filters, and navigation actions.
+- [x] Keep the refactor Qt-only; SQLite, cleanup, persistence, navigation, and
+  action-state logic remain behind the existing adapter and pure logic seams.
+
+Live evidence:
+
+- D810 was hot-reloaded in the existing dependency-complete X11 container,
+  the named `--open-workbench` command reopened the copied DLL IDB, and the
+  diagnostics action populated `304 shown / 304 discovered` databases.
+- The MCP geometry probe reported outer pane sizes `[677, 676]`, browser sizes
+  `[337, 336]`, and upper-browser/lower-cleaner sizes `[350, 234]`. This proves
+  the requested 1:1 outer and database/snapshot splits in the real Qt runtime;
+  the cleaner is the smaller vertical region.
+- `.tmp/ida-gui/live-diagnostics-two-pane-final.png` is the populated XQuartz
+  capture. Its SHA-256 is
+  `be306c0170dc6bace92f61622d995dbfef3dbc852de3dccf54ae9bcb40d78100`.
+- Focused diagnostics verification was `63 passed`; the full unit suite was
+  `6167 passed, 29 skipped, 9 warnings, 162 subtests passed`. Ruff, import
+  cycles, ast-grep, all 13 import-linter contracts, `git diff --check`, and
+  `graphify update .` were clean.
+
 ---
 
 ## MCP facts for future sessions

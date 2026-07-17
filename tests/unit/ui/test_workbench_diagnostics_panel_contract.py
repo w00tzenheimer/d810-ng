@@ -35,6 +35,13 @@ def _calls(method: ast.FunctionDef) -> set[str]:
     }
 
 
+def _method_source(name: str) -> str:
+    source = PANEL.read_text(encoding="utf-8")
+    segment = ast.get_source_segment(source, _method(name))
+    assert segment is not None
+    return segment
+
+
 def test_panel_is_thin_and_never_imports_sqlite_or_diagnostic_models() -> None:
     imports: set[str] = set()
     for node in ast.walk(_tree()):
@@ -110,6 +117,32 @@ def test_panel_uses_compact_group_layout_and_read_only_detail_views() -> None:
     assert "setReadOnly" in init_calls
     assert "setContentsMargins" in create_calls
     assert "setSpacing" in create_calls
+
+
+def test_panel_uses_equal_outer_split_with_browser_and_cleaner_on_left() -> None:
+    source = _method_source("OnCreate")
+
+    assert "self._browser_splitter.addWidget(database_group)" in source
+    assert "self._browser_splitter.addWidget(snapshot_group)" in source
+    assert "self._left_splitter.addWidget(self._browser_splitter)" in source
+    assert "self._left_splitter.addWidget(cleaner_group)" in source
+    assert "self._outer_splitter.addWidget(self._left_splitter)" in source
+    assert "self._outer_splitter.addWidget(record_group)" in source
+    assert "self._outer_splitter.setStretchFactor(0, 1)" in source
+    assert "self._outer_splitter.setStretchFactor(1, 1)" in source
+    assert "_ignore_size_hint(self._left_splitter, horizontal=True)" in source
+    assert "_ignore_size_hint(database_group, horizontal=True)" in source
+    assert "_ignore_size_hint(snapshot_group, horizontal=True)" in source
+    assert "_ignore_size_hint(cleaner_group, vertical=True)" in source
+    assert "self._browser_splitter.setSizes([1_000, 1_000])" in source
+    assert "self._left_splitter.setSizes([3_000, 2_000])" in source
+    assert "self._outer_splitter.setSizes([1_000, 1_000])" in source
+    assert "layout.addWidget(self._outer_splitter, stretch=1)" in source
+    assert "confirmation_controls = QtWidgets.QGridLayout()" in source
+    assert "self._plan_splitter" in source
+    assert (
+        "self._plan_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)" in source
+    )
 
 
 def test_real_database_inventory_runs_off_the_ida_ui_thread() -> None:

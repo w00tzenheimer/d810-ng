@@ -64,6 +64,23 @@ if IDA_AVAILABLE:
         except AttributeError:
             return QtWidgets.QAbstractItemView.NoEditTriggers
 
+    def _ignore_size_hint(
+        widget: typing.Any,
+        *,
+        horizontal: bool = False,
+        vertical: bool = False,
+    ) -> None:
+        policy = widget.sizePolicy()
+        try:
+            ignored = QtWidgets.QSizePolicy.Policy.Ignored
+        except AttributeError:
+            ignored = QtWidgets.QSizePolicy.Ignored
+        if horizontal:
+            policy.setHorizontalPolicy(ignored)
+        if vertical:
+            policy.setVerticalPolicy(ignored)
+        widget.setSizePolicy(policy)
+
     def _timestamp(value: float | None) -> str:
         if value is None:
             return "unavailable"
@@ -310,12 +327,16 @@ if IDA_AVAILABLE:
 
             context_group = QtWidgets.QGroupBox("Diagnostics", self.parent)
             context_layout = QtWidgets.QFormLayout(context_group)
+            context_layout.setContentsMargins(4, 4, 4, 4)
+            context_layout.setSpacing(4)
             context_layout.addRow("Function:", self.context_label)
             context_layout.addRow("Inventory:", self.inventory_label)
             context_layout.addRow("Safety:", self.mode_label)
 
-            database_group = QtWidgets.QGroupBox("Databases (newest first by default)")
+            database_group = QtWidgets.QGroupBox("Databases")
             database_layout = QtWidgets.QVBoxLayout(database_group)
+            database_layout.setContentsMargins(4, 4, 4, 4)
+            database_layout.setSpacing(4)
             database_controls = QtWidgets.QHBoxLayout()
             database_controls.addWidget(self.database_filter)
             database_controls.addWidget(self.database_sort)
@@ -324,6 +345,8 @@ if IDA_AVAILABLE:
 
             snapshot_group = QtWidgets.QGroupBox("Snapshots")
             snapshot_layout = QtWidgets.QVBoxLayout(snapshot_group)
+            snapshot_layout.setContentsMargins(4, 4, 4, 4)
+            snapshot_layout.setSpacing(4)
             snapshot_controls = QtWidgets.QHBoxLayout()
             snapshot_controls.addWidget(self.snapshot_filter)
             snapshot_controls.addWidget(self.snapshot_sort)
@@ -332,31 +355,24 @@ if IDA_AVAILABLE:
 
             record_group = QtWidgets.QGroupBox("Structured records (no SQL console)")
             record_layout = QtWidgets.QVBoxLayout(record_group)
+            record_layout.setContentsMargins(4, 4, 4, 4)
+            record_layout.setSpacing(4)
             record_controls = QtWidgets.QHBoxLayout()
             record_controls.addWidget(self.record_filter)
             record_controls.addWidget(self.view_combo)
             record_layout.addLayout(record_controls)
-            record_layout.addWidget(self.record_tree, stretch=2)
-            record_layout.addWidget(self.record_detail, stretch=1)
+            record_layout.addWidget(self.record_tree, stretch=3)
+            record_layout.addWidget(self.record_detail, stretch=2)
             jump_row = QtWidgets.QHBoxLayout()
             jump_row.addWidget(self.jump_function_button)
             jump_row.addWidget(self.jump_record_button)
             jump_row.addStretch(1)
             record_layout.addLayout(jump_row)
 
-            explorer = QtWidgets.QSplitter()
-            try:
-                explorer.setOrientation(QtCore.Qt.Orientation.Horizontal)
-            except AttributeError:
-                explorer.setOrientation(QtCore.Qt.Horizontal)
-            for widget in (database_group, snapshot_group, record_group):
-                explorer.addWidget(widget)
-            explorer.setStretchFactor(0, 2)
-            explorer.setStretchFactor(1, 2)
-            explorer.setStretchFactor(2, 3)
-
             cleaner_group = QtWidgets.QGroupBox("Cleaner - plan first, execute second")
             cleaner_layout = QtWidgets.QVBoxLayout(cleaner_group)
+            cleaner_layout.setContentsMargins(4, 4, 4, 4)
+            cleaner_layout.setSpacing(4)
             cleanup_actions = QtWidgets.QGridLayout()
             cleanup_actions.addWidget(
                 self.cleanup_buttons["delete_selected_snapshots"], 0, 0
@@ -364,45 +380,87 @@ if IDA_AVAILABLE:
             cleanup_actions.addWidget(
                 self.cleanup_buttons["delete_all_snapshots"], 0, 1
             )
-            cleanup_actions.addWidget(self.cleanup_buttons["keep_latest"], 0, 2)
-            cleanup_actions.addWidget(self.keep_latest_spin, 0, 3)
-            cleanup_actions.addWidget(self.cleanup_buttons["older_than"], 0, 4)
-            cleanup_actions.addWidget(self.older_than_edit, 0, 5)
             cleanup_actions.addWidget(
-                self.cleanup_buttons["delete_selected_databases"], 1, 0
+                self.cleanup_buttons["delete_selected_databases"], 0, 2
             )
             cleanup_actions.addWidget(
-                self.cleanup_buttons["delete_all_closed_databases"], 1, 1
+                self.cleanup_buttons["delete_all_closed_databases"], 0, 3
             )
+            cleanup_actions.addWidget(self.cleanup_buttons["keep_latest"], 1, 0)
+            cleanup_actions.addWidget(self.keep_latest_spin, 1, 1)
+            cleanup_actions.addWidget(self.cleanup_buttons["older_than"], 1, 2)
+            cleanup_actions.addWidget(self.older_than_edit, 1, 3)
             cleanup_actions.addWidget(
-                self.cleanup_buttons["vacuum_selected_databases"], 1, 2
+                self.cleanup_buttons["vacuum_selected_databases"], 2, 0, 1, 2
             )
-            cleanup_actions.addWidget(self.refresh_button, 1, 5)
+            cleanup_actions.addWidget(self.refresh_button, 2, 2, 1, 2)
+            cleanup_actions.setHorizontalSpacing(4)
+            cleanup_actions.setVerticalSpacing(4)
             cleaner_layout.addLayout(cleanup_actions)
 
-            plan_splitter = QtWidgets.QSplitter()
+            self._plan_splitter = QtWidgets.QSplitter()
             try:
-                plan_splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
+                self._plan_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)
             except AttributeError:
-                plan_splitter.setOrientation(QtCore.Qt.Horizontal)
-            plan_splitter.addWidget(self.cleanup_plan_view)
-            plan_splitter.addWidget(self.cleanup_result_view)
-            cleaner_layout.addWidget(plan_splitter)
+                self._plan_splitter.setOrientation(QtCore.Qt.Vertical)
+            self._plan_splitter.addWidget(self.cleanup_plan_view)
+            self._plan_splitter.addWidget(self.cleanup_result_view)
+            self._plan_splitter.setStretchFactor(0, 1)
+            self._plan_splitter.setStretchFactor(1, 1)
+            cleaner_layout.addWidget(self._plan_splitter, stretch=1)
 
-            confirmation_row = QtWidgets.QHBoxLayout()
-            confirmation_row.addWidget(self.reviewed_checkbox)
-            confirmation_row.addWidget(self.confirmation_edit, stretch=1)
-            confirmation_row.addWidget(self.checkpoint_checkbox)
-            confirmation_row.addWidget(self.vacuum_after_checkbox)
-            confirmation_row.addWidget(self.execute_button)
-            cleaner_layout.addLayout(confirmation_row)
+            confirmation_controls = QtWidgets.QGridLayout()
+            confirmation_controls.addWidget(self.reviewed_checkbox, 0, 0)
+            confirmation_controls.addWidget(self.confirmation_edit, 0, 1, 1, 3)
+            confirmation_controls.addWidget(self.checkpoint_checkbox, 1, 0)
+            confirmation_controls.addWidget(self.vacuum_after_checkbox, 1, 1)
+            confirmation_controls.addWidget(self.execute_button, 1, 2, 1, 2)
+            confirmation_controls.setHorizontalSpacing(4)
+            confirmation_controls.setVerticalSpacing(4)
+            cleaner_layout.addLayout(confirmation_controls)
+
+            self._browser_splitter = QtWidgets.QSplitter()
+            try:
+                self._browser_splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
+            except AttributeError:
+                self._browser_splitter.setOrientation(QtCore.Qt.Horizontal)
+            self._browser_splitter.addWidget(database_group)
+            self._browser_splitter.addWidget(snapshot_group)
+            _ignore_size_hint(database_group, horizontal=True)
+            _ignore_size_hint(snapshot_group, horizontal=True)
+            self._browser_splitter.setStretchFactor(0, 1)
+            self._browser_splitter.setStretchFactor(1, 1)
+            self._browser_splitter.setSizes([1_000, 1_000])
+
+            self._left_splitter = QtWidgets.QSplitter()
+            try:
+                self._left_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)
+            except AttributeError:
+                self._left_splitter.setOrientation(QtCore.Qt.Vertical)
+            self._left_splitter.addWidget(self._browser_splitter)
+            self._left_splitter.addWidget(cleaner_group)
+            _ignore_size_hint(self._left_splitter, horizontal=True)
+            _ignore_size_hint(cleaner_group, vertical=True)
+            self._left_splitter.setStretchFactor(0, 3)
+            self._left_splitter.setStretchFactor(1, 2)
+            self._left_splitter.setSizes([3_000, 2_000])
+
+            self._outer_splitter = QtWidgets.QSplitter()
+            try:
+                self._outer_splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
+            except AttributeError:
+                self._outer_splitter.setOrientation(QtCore.Qt.Horizontal)
+            self._outer_splitter.addWidget(self._left_splitter)
+            self._outer_splitter.addWidget(record_group)
+            self._outer_splitter.setStretchFactor(0, 1)
+            self._outer_splitter.setStretchFactor(1, 1)
+            self._outer_splitter.setSizes([1_000, 1_000])
 
             layout = QtWidgets.QVBoxLayout(self.parent)
             layout.setContentsMargins(4, 4, 4, 4)
             layout.setSpacing(6)
             layout.addWidget(context_group)
-            layout.addWidget(explorer, stretch=1)
-            layout.addWidget(cleaner_group)
+            layout.addWidget(self._outer_splitter, stretch=1)
 
         def OnClose(self, form: typing.Any) -> None:
             del form
