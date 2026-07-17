@@ -167,6 +167,7 @@ def test_close_disconnects_only_buttons_that_have_connected_handlers() -> None:
         "function_override",
         "compare",
         "recipe",
+        "diagnostics",
     }
     loop_literals = {
         element.value
@@ -177,7 +178,23 @@ def test_close_disconnects_only_buttons_that_have_connected_handlers() -> None:
     }
 
     assert connected_action_ids.issubset(loop_literals)
-    assert {"diagnostics"}.isdisjoint(loop_literals)
+    assert connected_action_ids.issubset(loop_literals)
+
+
+def test_panel_dispatches_diagnostics_through_owned_companion_panel() -> None:
+    calls = _call_names(_method("_run_diagnostics"))
+
+    assert "WorkbenchDiagnosticsAdapter" in calls
+    assert "_show_diagnostics" in calls
+
+
+def test_panel_closes_owned_diagnostics_panel_during_teardown() -> None:
+    method = _method("OnClose")
+    source = ast.unparse(method)
+
+    assert '"diagnostics"' in source or "'diagnostics'" in source
+    assert "_diagnostics_panel" in source
+    assert "close" in _call_names(method)
 
 
 def test_adapter_has_no_policy_storage_pass_or_sql_imports() -> None:

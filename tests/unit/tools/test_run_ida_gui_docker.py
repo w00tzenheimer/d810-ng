@@ -301,6 +301,7 @@ def test_mcp_mounts_resolved_source_read_only_and_publishes_only_loopback(
     )
     _assert_pair(run, "-e", "IDA_MCP_HOST=0.0.0.0")
     _assert_pair(run, "-e", "IDA_MCP_PORT=13337")
+    _assert_pair(run, "-e", "IDA_MCP_TOOL_TIMEOUT_SEC=45")
     _assert_pair(run, "-p", "127.0.0.1:13337:13337")
     _assert_pair(
         run,

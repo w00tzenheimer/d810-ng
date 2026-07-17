@@ -19,6 +19,7 @@ from d810.ui.gui_automation_logic import (
 _CONFIG_TITLE = "D-810 Configuration"
 _WORKBENCH_TITLE = "d810-ng Deobfuscation Workbench"
 _WORKBENCH_ACTION = "d810ng:deobfuscation_stats"
+_MAX_ASYNC_REQUESTS = 32
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -146,10 +147,18 @@ class _IDAWidgetRegistry:
 
 
 class _IDAMainThreadScheduler:
-    def __init__(self, ida_kernwin_module: typing.Any) -> None:
+    def __init__(
+        self,
+        ida_kernwin_module: typing.Any,
+        *,
+        is_main_thread: typing.Callable[[], bool],
+    ) -> None:
         self._ida_kernwin = ida_kernwin_module
+        self._is_main_thread = is_main_thread
 
     def run(self, callback: typing.Callable[[], typing.Any]) -> typing.Any:
+        if self._is_main_thread():
+            return callback()
         outcome: dict[str, typing.Any] = {}
 
         def execute() -> int:
@@ -184,6 +193,7 @@ def _build_live_runtime() -> _AutomationRuntime:
     import ida_hexrays
     import ida_kernwin
     import ida_name
+    import ida_pro
     import idaapi
 
     from d810.qt_shim import QtWidgets
@@ -208,11 +218,25 @@ def _build_live_runtime() -> _AutomationRuntime:
             DeobfuscationStats,
             process_events,
         ),
-        scheduler=_IDAMainThreadScheduler(ida_kernwin),
+        scheduler=_IDAMainThreadScheduler(
+            ida_kernwin,
+            is_main_thread=ida_pro.is_main_thread,
+        ),
     )
 
 
 _runtime_factory = _build_live_runtime
+
+
+def _register_ida_timer(callback: typing.Callable[[], int]) -> typing.Any:
+    import ida_kernwin
+
+    return ida_kernwin.register_timer(1, callback)
+
+
+_timer_registrar = _register_ida_timer
+_async_results: dict[str, GuiAutomationResult | None] = {}
+_async_timers: dict[str, typing.Any] = {}
 
 
 def _utc_now() -> str:
@@ -406,6 +430,55 @@ def run_named_commands(request: GuiAutomationRequest) -> GuiAutomationResult:
         return runtime.scheduler.run(lambda: _run_on_main_thread(runtime, request))
     except Exception as exc:
         return _failed_result(request, f"IDA main-thread execution failed: {exc}")
+
+
+def _submit_named_commands(request: GuiAutomationRequest) -> str:
+    """Defer a request until IDA returns to its event loop."""
+    if not isinstance(request, GuiAutomationRequest):
+        raise TypeError("request must be a GuiAutomationRequest")
+    request_id = request.request_id
+    if request_id in _async_results:
+        raise ValueError(f"GUI automation request already exists: {request_id}")
+    if len(_async_results) >= _MAX_ASYNC_REQUESTS:
+        raise RuntimeError("too many uncollected GUI automation requests")
+    _async_results[request_id] = None
+
+    def execute() -> int:
+        try:
+            _async_results[request_id] = run_named_commands(request)
+        except Exception as exc:
+            _async_results[request_id] = _failed_result(
+                request,
+                f"deferred GUI automation failed: {exc}",
+            )
+        finally:
+            _async_timers.pop(request_id, None)
+        return -1
+
+    try:
+        timer = _timer_registrar(execute)
+    except Exception:
+        _async_results.pop(request_id, None)
+        raise
+    if timer is None:
+        _async_results.pop(request_id, None)
+        raise RuntimeError("failed to register IDA timer for GUI automation")
+    if _async_results.get(request_id) is None:
+        _async_timers[request_id] = timer
+    return request_id
+
+
+def _take_named_command_result(request_id: str) -> GuiAutomationResult | None:
+    """Return pending or consume one terminal deferred result."""
+    if type(request_id) is not str:
+        raise TypeError("request_id must be a string")
+    if request_id not in _async_results:
+        raise KeyError(f"unknown GUI automation request: {request_id}")
+    result = _async_results[request_id]
+    if result is not None:
+        _async_results.pop(request_id, None)
+        _async_timers.pop(request_id, None)
+    return result
 
 
 __all__ = ["run_named_commands"]

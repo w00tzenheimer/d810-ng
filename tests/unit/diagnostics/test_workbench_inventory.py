@@ -137,13 +137,17 @@ def test_structured_views_anchor_every_block_identity_and_omit_unanchored_serial
     assert state_records[0].warnings == ("Block anchor unavailable for target_entry",)
 
 
-def test_supported_legacy_state_cfg_tables_remain_structurally_inspectable(tmp_path: Path):
+def test_supported_legacy_state_cfg_tables_remain_structurally_inspectable(
+    tmp_path: Path,
+):
     path = _database(
         tmp_path / "legacy.diag.sqlite3",
         ((1, "one", "0x401000", 0x401000, "M1", "post_d810", 1, 20.0),),
     )
     connection = sqlite3.connect(path)
-    connection.execute("CREATE TABLE dag_nodes (snapshot_id INTEGER, entry_block INTEGER)")
+    connection.execute(
+        "CREATE TABLE dag_nodes (snapshot_id INTEGER, entry_block INTEGER)"
+    )
     connection.execute("INSERT INTO blocks VALUES (?,?,?,?)", (1, 7, "0x401010", "[]"))
     connection.execute("INSERT INTO dag_nodes VALUES (?,?)", (1, 7))
     connection.commit()
@@ -154,9 +158,9 @@ def test_supported_legacy_state_cfg_tables_remain_structurally_inspectable(tmp_p
     )
 
     assert records[0].source_table == "dag_nodes"
-    assert {field.name: field.display for field in records[0].fields}["entry_block"] == (
-        "blk7@0x401010"
-    )
+    assert {field.name: field.display for field in records[0].fields}[
+        "entry_block"
+    ] == ("blk7@0x401010")
 
 
 def test_unreadable_or_non_database_file_is_reported_without_mutation(tmp_path: Path):
@@ -169,3 +173,83 @@ def test_unreadable_or_non_database_file_is_reported_without_mutation(tmp_path: 
     assert result.readable is False
     assert result.error
     assert path.read_bytes() == before
+
+
+def test_browsing_preserves_database_wal_and_shm_bytes_and_metadata(tmp_path: Path):
+    path = _database(
+        tmp_path / "stable.diag.sqlite3",
+        ((1, "one", "0x401000", 0x401000, "M1", "post_d810", 1, 20.0),),
+    )
+    connection = sqlite3.connect(path)
+    connection.execute("INSERT INTO blocks VALUES (?,?,?,?)", (1, 7, "0x401010", "[]"))
+    connection.commit()
+    connection.close()
+    wal = Path(str(path) + "-wal")
+    shm = Path(str(path) + "-shm")
+    wal.write_bytes(b"")
+    shm.write_bytes(b"stable-sidecar")
+    candidates = (path, wal, shm)
+    before = tuple(
+        (candidate.read_bytes(), candidate.stat().st_mtime_ns)
+        for candidate in candidates
+    )
+    service = DiagnosticInventoryService(roots=(tmp_path,))
+
+    database = service.databases()[0]
+    snapshots = service.snapshots(path)
+    records = service.records(path, 1, DiagnosticViewKind.BLOCKS)
+
+    after = tuple(
+        (candidate.read_bytes(), candidate.stat().st_mtime_ns)
+        for candidate in candidates
+    )
+    assert database.readable is True
+    assert snapshots[0].snapshot_id == 1
+    assert records[0].anchor_ea == 0x401010
+    assert after == before
+
+
+def test_uncheckpointed_wal_fails_closed_without_touching_sidecars(tmp_path: Path):
+    path = _database(
+        tmp_path / "wal.diag.sqlite3",
+        ((1, "one", "0x401000", 0x401000, "M1", "post_d810", 1, 20.0),),
+    )
+    wal = Path(str(path) + "-wal")
+    shm = Path(str(path) + "-shm")
+    wal.write_bytes(b"uncheckpointed")
+    shm.write_bytes(b"stable-sidecar")
+    before = tuple(
+        (candidate.read_bytes(), candidate.stat().st_mtime_ns)
+        for candidate in (path, wal, shm)
+    )
+
+    summary = DiagnosticInventoryService(roots=(tmp_path,)).databases()[0]
+
+    after = tuple(
+        (candidate.read_bytes(), candidate.stat().st_mtime_ns)
+        for candidate in (path, wal, shm)
+    )
+    assert summary.readable is False
+    assert "uncheckpointed WAL" in (summary.error or "")
+    assert after == before
+
+
+def test_inventory_excludes_manager_owned_quarantine_tree(tmp_path: Path):
+    live = _database(
+        tmp_path / "live.diag.sqlite3",
+        ((1, "live", "0x401000", 0x401000, "M1", "post_d810", 1, 20.0),),
+    )
+    quarantine = tmp_path / "diagnostic_quarantine"
+    quarantine.mkdir()
+    quarantined = _database(
+        quarantine / "removed.diag.sqlite3",
+        ((1, "removed", "0x402000", 0x402000, "M1", "post_d810", 1, 30.0),),
+    )
+
+    paths = DiagnosticInventoryService(
+        roots=(tmp_path,),
+        excluded_roots=(quarantine,),
+    ).paths()
+
+    assert paths == (live.resolve(),)
+    assert quarantined.resolve() not in paths

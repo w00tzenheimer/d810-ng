@@ -533,7 +533,9 @@ class DiagnosticCleanupService:
                 DiagnosticOperation.QUARANTINE,
                 target.path,
                 DiagnosticOperationStatus.SUCCEEDED,
-                f"Moved to reversible quarantine {destination}",
+                f"Moved to reversible quarantine {destination}. "
+                "Restore by moving each quarantined file back to its original "
+                f"name beside {source}",
                 len(moved),
             )
         except OSError as error:

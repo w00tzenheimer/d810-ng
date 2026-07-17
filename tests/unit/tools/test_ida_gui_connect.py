@@ -47,6 +47,12 @@ def _request(selector: str | int | None = "namespace::target") -> object:
     )
 
 
+def test_default_transport_deadline_exceeds_named_command_deadline() -> None:
+    connector = _connector()
+
+    assert connector.HTTP_TIMEOUT_SECONDS > _request().timeout_seconds
+
+
 def _request_envelope(code: str) -> dict[str, object]:
     match = re.search(r'base64\.b64decode\("([A-Za-z0-9+/=]+)"\)', code)
     assert match is not None, code
@@ -89,6 +95,8 @@ class _FakeMcpServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), _FakeMcpHandler)
         self.scenario = scenario
         self.requests: list[dict[str, object]] = []
+        self.request_document: dict[str, object] | None = None
+        self.poll_count = 0
 
 
 class _FakeMcpHandler(BaseHTTPRequestHandler):
@@ -183,25 +191,53 @@ class _FakeMcpHandler(BaseHTTPRequestHandler):
             assert isinstance(arguments, dict)
             code = arguments["code"]
             assert isinstance(code, str)
-            envelope = _request_envelope(code)
-            result_document = _result_document(
-                envelope,
-                status=(
-                    "failed"
-                    if self.server.scenario == "command-failure"
-                    else "succeeded"
-                ),
-            )
-            self._apply_contradictory_result(self.server.scenario, result_document)
             if self.server.scenario == "tool-error":
                 result = {
                     "content": [{"type": "text", "text": "fake tool failure"}],
                     "isError": True,
                 }
             else:
-                if self.server.scenario == "invalid-result":
-                    result_document.pop("commands")
-                stderr = "remote traceback" if self.server.scenario == "stderr" else ""
+                if "_submit_named_commands" in code:
+                    envelope = _request_envelope(code)
+                    self.server.request_document = envelope
+                    result_document = {
+                        "request_id": envelope["request_id"],
+                        "status": "accepted",
+                    }
+                else:
+                    assert "_take_named_command_result" in code
+                    envelope = self.server.request_document
+                    assert envelope is not None
+                    self.server.poll_count += 1
+                    if (
+                        self.server.scenario == "pending-once"
+                        and self.server.poll_count == 1
+                    ):
+                        result_document = {
+                            "request_id": envelope["request_id"],
+                            "status": "pending",
+                        }
+                    else:
+                        result_document = _result_document(
+                            envelope,
+                            status=(
+                                "failed"
+                                if self.server.scenario == "command-failure"
+                                else "succeeded"
+                            ),
+                        )
+                        self._apply_contradictory_result(
+                            self.server.scenario,
+                            result_document,
+                        )
+                        if self.server.scenario == "invalid-result":
+                            result_document.pop("commands")
+                stderr = (
+                    "remote traceback"
+                    if self.server.scenario == "stderr"
+                    and "_take_named_command_result" in code
+                    else ""
+                )
                 result = {
                     "content": [{"type": "text", "text": "structured below"}],
                     "structuredContent": {
@@ -316,8 +352,9 @@ def test_client_uses_exact_rpc_sequence_and_writes_atomic_schema_v1_audit(
         "initialize",
         "ping",
         "tools/call",
+        "tools/call",
     ]
-    assert [item["id"] for item in server.requests] == [1, 2, 3]
+    assert [item["id"] for item in server.requests] == [1, 2, 3, 4]
     assert server.requests[0] == {
         "jsonrpc": "2.0",
         "id": 1,
@@ -333,9 +370,11 @@ def test_client_uses_exact_rpc_sequence_and_writes_atomic_schema_v1_audit(
         "id": 2,
         "method": "ping",
     }
-    tool_request = server.requests[2]
-    assert tool_request["params"]["name"] == "py_eval"
-    assert set(tool_request["params"]["arguments"]) == {"code"}
+    submit_request, poll_request = server.requests[2:]
+    assert submit_request["params"]["name"] == "py_eval"
+    assert set(submit_request["params"]["arguments"]) == {"code"}
+    assert poll_request["params"]["name"] == "py_eval"
+    assert set(poll_request["params"]["arguments"]) == {"code"}
     assert result.status == "succeeded"
     assert connector.result_exit_code(result) == 0
     assert audit_path == audit_dir / "automation-request-123.json"
@@ -347,6 +386,29 @@ def test_client_uses_exact_rpc_sequence_and_writes_atomic_schema_v1_audit(
     assert audit["mcp_endpoint"] == _endpoint(server)
     assert audit["requested_commands"] == ["open-config", "open-workbench"]
     assert list(audit_dir.glob("*.tmp")) == []
+
+
+def test_client_polls_pending_receipt_until_terminal_result(tmp_path: Path) -> None:
+    connector = _connector()
+    with _fake_server("pending-once") as server:
+        result, _audit_path = connector.connect_named_commands(
+            _request(),
+            endpoint=_endpoint(server),
+            worktree=tmp_path,
+            audit_dir=tmp_path / ".tmp" / "ida-gui",
+            http_timeout=0.5,
+            sleep=lambda _seconds: None,
+        )
+
+    assert result.status == "succeeded"
+    assert [item["method"] for item in server.requests] == [
+        "initialize",
+        "ping",
+        "tools/call",
+        "tools/call",
+        "tools/call",
+    ]
+    assert [item["id"] for item in server.requests] == [1, 2, 3, 4, 5]
 
 
 def test_selector_is_validated_data_and_never_plaintext_remote_source() -> None:
@@ -363,6 +425,23 @@ def test_selector_is_validated_data_and_never_plaintext_remote_source() -> None:
     assert "py_eval" not in code
     assert "action_id" not in code
     assert "PLUGIN_ENTRY" not in code
+
+
+def test_remote_protocol_submits_then_polls_without_running_ui_in_mcp_callback() -> (
+    None
+):
+    connector = _connector()
+    request = _request()
+
+    submit_code = connector.build_remote_code(request)
+    poll_code = connector.build_poll_remote_code(request.request_id)
+
+    assert "_submit_named_commands" in submit_code
+    assert "run_named_commands(" not in submit_code
+    assert "_take_named_command_result" in poll_code
+    assert request.request_id not in poll_code
+    compile(submit_code, "<fixed-d810-gui-submit>", "exec")
+    compile(poll_code, "<fixed-d810-gui-poll>", "exec")
 
 
 def test_fixed_remote_template_has_only_approved_import_and_dispatch_boundary() -> None:
@@ -383,7 +462,7 @@ def test_fixed_remote_template_has_only_approved_import_and_dispatch_boundary() 
 
     assert imports == {"base64", "json"}
     assert imports_from == {
-        ("d810.ui.gui_automation", ("run_named_commands",)),
+        ("d810.ui.gui_automation", ("_submit_named_commands",)),
         (
             "d810.ui.gui_automation_logic",
             ("GuiAutomationRequest", "GuiCommand"),
@@ -391,7 +470,7 @@ def test_fixed_remote_template_has_only_approved_import_and_dispatch_boundary() 
     }
     assert "base64.b64decode" in code
     assert "json.loads" in code
-    assert code.count("run_named_commands(") == 1
+    assert code.count("_submit_named_commands(") == 1
     assert "json.dumps" in code
     compile(code, "<fixed-d810-gui-connect>", "exec")
 
@@ -403,9 +482,12 @@ def test_fixed_remote_template_runs_under_mcp_split_exec_namespaces(
     request = _request()
     captured: list[gui_logic.GuiAutomationRequest] = []
 
-    def run_named_commands(
+    terminal_result: gui_logic.GuiAutomationResult | None = None
+
+    def submit_named_commands(
         remote_request: gui_logic.GuiAutomationRequest,
-    ) -> gui_logic.GuiAutomationResult:
+    ) -> str:
+        nonlocal terminal_result
         captured.append(remote_request)
         commands = tuple(
             gui_logic.GuiCommandResult(
@@ -418,34 +500,44 @@ def test_fixed_remote_template_runs_under_mcp_split_exec_namespaces(
             )
             for command in remote_request.commands
         )
-        return gui_logic.GuiAutomationResult(
+        terminal_result = gui_logic.GuiAutomationResult(
             request_id=remote_request.request_id,
             completed_at_utc="2026-07-16T20:00:01Z",
             commands=commands,
             status="succeeded",
             error=None,
         )
+        return remote_request.request_id
+
+    def take_named_command_result(request_id: str):
+        assert request_id == request.request_id
+        return terminal_result
 
     adapter = ModuleType("d810.ui.gui_automation")
-    adapter.run_named_commands = run_named_commands
+    adapter._submit_named_commands = submit_named_commands
+    adapter._take_named_command_result = take_named_command_result
     monkeypatch.setitem(sys.modules, "d810.ui.gui_automation", adapter)
 
-    code = connector.build_remote_code(request)
-    tree = ast.parse(code)
-    assert isinstance(tree.body[-1], ast.Expr)
-    exec_tree = ast.Module(body=tree.body[:-1], type_ignores=[])
-    exec_globals: dict[str, object] = {}
-    exec_locals: dict[str, object] = {}
+    def split_eval(code: str) -> str:
+        tree = ast.parse(code)
+        assert isinstance(tree.body[-1], ast.Expr)
+        exec_tree = ast.Module(body=tree.body[:-1], type_ignores=[])
+        exec_globals: dict[str, object] = {}
+        exec_locals: dict[str, object] = {}
+        exec(compile(exec_tree, "<mcp-py-eval>", "exec"), exec_globals, exec_locals)
+        exec_globals.update(exec_locals)
+        eval_tree = ast.Expression(body=tree.body[-1].value)
+        return eval(compile(eval_tree, "<mcp-py-eval>", "eval"), exec_globals)
 
-    exec(compile(exec_tree, "<mcp-py-eval>", "exec"), exec_globals, exec_locals)
-    exec_globals.update(exec_locals)
-    eval_tree = ast.Expression(body=tree.body[-1].value)
-    result = eval(compile(eval_tree, "<mcp-py-eval>", "eval"), exec_globals)
+    receipt = json.loads(split_eval(connector.build_remote_code(request)))
+    result = json.loads(
+        split_eval(connector.build_poll_remote_code(request.request_id))
+    )
 
     assert captured == [request]
-    document = json.loads(result)
-    assert document["request_id"] == request.request_id
-    assert [command["name"] for command in document["commands"]] == [
+    assert receipt == {"request_id": request.request_id, "status": "accepted"}
+    assert result["request_id"] == request.request_id
+    assert [command["name"] for command in result["commands"]] == [
         "open-config",
         "open-workbench",
     ]
@@ -637,11 +729,14 @@ def test_client_rejects_transport_tool_and_structured_result_failures_without_re
                 http_timeout=0.03 if scenario == "timeout" else 0.5,
             )
 
-    assert [item["method"] for item in server.requests] == [
+    expected_methods = [
         "initialize",
         "ping",
         "tools/call",
     ]
+    if scenario in {"invalid-result", "stderr"}:
+        expected_methods.append("tools/call")
+    assert [item["method"] for item in server.requests] == expected_methods
     assert not (tmp_path / ".tmp" / "ida-gui").exists()
 
 
@@ -659,7 +754,7 @@ def test_valid_command_failure_is_audited_and_returns_nonzero(tmp_path: Path) ->
     assert result.status == "failed"
     assert connector.result_exit_code(result) == 1
     assert json.loads(audit_path.read_text(encoding="utf-8"))["status"] == "failed"
-    assert [item["method"] for item in server.requests].count("tools/call") == 1
+    assert [item["method"] for item in server.requests].count("tools/call") == 2
 
 
 def test_slow_drip_response_cannot_extend_rpc_past_total_deadline(

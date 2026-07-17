@@ -240,13 +240,15 @@ class D810Manager:
         self.recipe_command_service = WorkbenchRecipeCommandService(
             identity_is_current=self.workbench_service.recipe_request_is_current,
         )
+        diagnostic_quarantine_directory = self.log_dir / "diagnostic_quarantine"
         self.diagnostic_inventory_service = DiagnosticInventoryService(
             roots=(self.log_dir,),
+            excluded_roots=(diagnostic_quarantine_directory,),
             active_paths_provider=self.diagnostic_active_paths_provider,
         )
         self.diagnostic_cleanup_service = DiagnosticCleanupService(
             active_paths_provider=self.diagnostic_active_paths_provider,
-            quarantine_directory=self.log_dir / "diagnostic_quarantine",
+            quarantine_directory=diagnostic_quarantine_directory,
         )
         self.config_v2_editing_service = ConfigV2EditingService(workbench_registry)
 
