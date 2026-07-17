@@ -54,6 +54,26 @@ def test_save_rules_no_longer_constructs_project_configuration_directly() -> Non
 def test_edit_and_duplicate_handlers_use_the_pure_policy() -> None:
     assert "select_config_edit_policy" in _call_names(_method("_edit_config"))
     assert "select_config_edit_policy" in _call_names(_method("_duplicate_config"))
+    assert "_open_config_v2_editor" in _call_names(_method("_edit_config"))
+    assert "_open_config_v2_editor" in _call_names(_method("_duplicate_config"))
+
+
+def test_config_v2_editor_is_owned_and_uses_thin_command_adapter() -> None:
+    calls = _call_names(_method("_open_config_v2_editor"))
+
+    assert "ConfigV2EditingAdapter" in calls
+    assert "ConfigV2EditingPanel" in calls
+    assert "show" in calls
+
+
+def test_config_v2_save_refreshes_the_current_project_view_without_reloading() -> None:
+    calls = _call_names(_method("_refresh_config_v2_project_view"))
+
+    assert "update_cfg_select" in calls
+    assert "get_project_runtime_snapshot" in calls
+    assert "build_project_config_view" in calls
+    assert "_apply_project_config_view" in calls
+    assert "load_project" not in calls
 
 
 def test_ida_ui_does_not_import_core_project_persistence() -> None:

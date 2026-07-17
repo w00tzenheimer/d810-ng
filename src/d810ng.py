@@ -178,6 +178,9 @@ class D810Plugin(
         found; modules merely *blocked* by a cycle are ordered automatically.
         """
 
+        was_started = bool(
+            getattr(getattr(self.plugin, "manager", None), "started", False)
+        )
         with self.plugin_setup_reload():
             reload_package(
                 d810,
@@ -187,6 +190,14 @@ class D810Plugin(
                 ],
                 suppress_errors=self.suppress_reload_errors,
             )
+        manager = getattr(self.plugin, "manager", None)
+        if (
+            was_started
+            and self.plugin.is_loaded()
+            and manager is not None
+            and not manager.started
+        ):
+            self.plugin.start_d810()
 
 
 # noinspection PyPep8Naming

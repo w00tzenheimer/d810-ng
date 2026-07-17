@@ -66,6 +66,7 @@ class TigressFamily(StateMachineCffFamily):
     """Tigress switch / indirect-jump CFF family: detection + pipeline shape. No patching."""
 
     name = "tigress"
+    selection_priority = 100
 
     #: The switch-table case recovers at ``GLOBAL_ANALYZED`` (Hex-Rays ``MMAT_GLBOPT1``, the
     #: golden-tuned stage), like Approov. The TABLE/indirect_jump_table case is routed to

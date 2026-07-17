@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
 
@@ -42,11 +43,21 @@ def _load_plugin_module(
     core = CoreState()
 
     class ReloadablePluginBase:
-        def __init__(self, **_kwargs: object) -> None:
+        def __init__(self, **kwargs: object) -> None:
             self.plugin = core
+            self.base_package_name = str(kwargs["base_package_name"])
 
         def late_init(self) -> None:
             events.append("base-late-init")
+
+        @contextmanager
+        def plugin_setup_reload(self):
+            events.append("base-reload-enter")
+            core.loaded = False
+            core.manager.started = False
+            yield
+            core.loaded = True
+            events.append("base-reload-exit")
 
     idaapi = ModuleType("idaapi")
     idaapi.UI_Hooks = type("UI_Hooks", (), {})
@@ -71,7 +82,9 @@ def _load_plugin_module(
 
     reloader = ModuleType("d810._vendor.ida_reloader")
     reloader.ReloadablePluginBase = ReloadablePluginBase
-    reloader.reload_package = lambda *_args, **_kwargs: None
+    reloader.reload_package = lambda *_args, **_kwargs: events.append(
+        "reload-package"
+    )
 
     typing_module = ModuleType("d810.core.typing")
     typing_module.override = lambda function: function
@@ -129,3 +142,39 @@ def test_late_init_starts_core_exactly_when_needed(
 
     assert events == expected_events
     assert capsys.readouterr().out == "D810 initialized (version test-version)\n"
+
+
+@pytest.mark.parametrize(
+    ("initially_started", "expected_tail"),
+    (
+        (
+            True,
+            [
+                "base-reload-enter",
+                "reload-package",
+                "base-reload-exit",
+                "core-is-loaded",
+                "core-start",
+            ],
+        ),
+        (
+            False,
+            ["base-reload-enter", "reload-package", "base-reload-exit"],
+        ),
+    ),
+)
+def test_reload_restores_the_previous_started_state(
+    monkeypatch: pytest.MonkeyPatch,
+    initially_started: bool,
+    expected_tail: list[str],
+) -> None:
+    module, events = _load_plugin_module(
+        monkeypatch,
+        initially_loaded=True,
+        initially_started=initially_started,
+    )
+
+    plugin = module.D810Plugin()
+    plugin.reload()
+
+    assert events == expected_tail

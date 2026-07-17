@@ -69,9 +69,10 @@ def test_ollvm_routing_view_and_lossless_user_duplicate(tmp_path: Path) -> None:
 
     edit_policy = select_config_edit_policy(ConfigEditMode.EDIT, snapshot)
     duplicate_policy = select_config_edit_policy(ConfigEditMode.DUPLICATE, snapshot)
-    assert edit_policy.save_strategy is ConfigSaveStrategy.REFUSE
-    assert duplicate_policy.save_strategy is ConfigSaveStrategy.CLONE_RUNTIME_V2
+    assert edit_policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2
+    assert edit_policy.allowed is True
     assert duplicate_policy.rules_editable is False
+    assert duplicate_policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2
 
     destination = tmp_path / "ollvm-user-copy.json"
     duplicate = clone_project_configuration(

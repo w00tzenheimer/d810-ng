@@ -46,10 +46,12 @@ if IDA_AVAILABLE:
             adapter: typing.Any,
             *,
             refresh_workbench: typing.Callable[[], None] | None = None,
+            open_project_profile: typing.Callable[[typing.Any], None] | None = None,
         ) -> None:
             ida_kernwin.PluginForm.__init__(self)
             self._adapter = adapter
             self._refresh_workbench = refresh_workbench
+            self._open_project_profile = open_project_profile
             self._catalog_entries = tuple(adapter.catalog())
             self._draft, self._validation = adapter.reset()
             self._catalog_by_id = {
@@ -140,12 +142,17 @@ if IDA_AVAILABLE:
             self.action_buttons["analyze"].clicked.connect(self._analyze)
             self.action_buttons["apply_once"].clicked.connect(self._apply_once)
             self.action_buttons["save_function"].clicked.connect(self._save_function)
-            # save_project intentionally has no handler until Slice 5 live acceptance.
+            self.action_buttons["save_project"].clicked.connect(self._save_project)
 
             self._render()
 
         def OnCreate(self, form: typing.Any) -> None:
             self.parent = self.FormToPyQtWidget(form)
+            context_group = QtWidgets.QGroupBox("Recipe context", self.parent)
+            context_layout = QtWidgets.QFormLayout(context_group)
+            context_layout.addRow("Function:", self.context_label)
+            context_layout.addRow("Preflight:", self.validation_label)
+
             catalog_controls = QtWidgets.QHBoxLayout()
             catalog_controls.addWidget(self.search_edit)
             catalog_controls.addWidget(self.sort_combo)
@@ -178,15 +185,14 @@ if IDA_AVAILABLE:
                 actions.addWidget(self.action_buttons[action_id])
             actions.addStretch(1)
 
-            layout = QtWidgets.QVBoxLayout()
+            layout = QtWidgets.QVBoxLayout(self.parent)
             layout.setContentsMargins(4, 4, 4, 4)
-            layout.addWidget(self.context_label)
-            layout.addWidget(self.validation_label)
+            layout.setSpacing(6)
+            layout.addWidget(context_group)
             layout.addLayout(catalog_controls)
-            layout.addWidget(panes)
+            layout.addWidget(panes, stretch=1)
             layout.addLayout(edit_layout)
             layout.addLayout(actions)
-            self.parent.setLayout(layout)
             self._render()
 
         def OnClose(self, form: typing.Any) -> None:
@@ -236,17 +242,17 @@ if IDA_AVAILABLE:
                 self._validation,
                 workbench_current=self._adapter.is_current(self._draft),
                 engine_started=self._adapter.engine_started(),
-                project_profile_save_available=False,
+                project_profile_save_available=self._open_project_profile is not None,
             )
             self.context_label.setText(
-                f"Function 0x{self._draft.function_ea:X}; draft revision "
+                f"0x{self._draft.function_ea:X}; draft revision "
                 f"{self._draft.revision}; execution order is top to bottom"
             )
             if self._validation.satisfied:
-                self.validation_label.setText("Contract preflight: ready")
+                self.validation_label.setText("Ready")
             else:
                 self.validation_label.setText(
-                    f"Contract preflight: blocked ({len(self._validation.diagnostics)} diagnostic(s))"
+                    f"Blocked ({len(self._validation.diagnostics)} diagnostic(s))"
                 )
             self._render_catalog()
             self._render_draft()
@@ -431,6 +437,11 @@ if IDA_AVAILABLE:
                 if self._refresh_workbench is not None:
                     self._refresh_workbench()
                 self._render()
+
+        def _save_project(self, checked: bool = False) -> None:
+            del checked
+            if self._open_project_profile is not None:
+                self._open_project_profile(self._draft)
 
         def _catalog_selection_changed(
             self,

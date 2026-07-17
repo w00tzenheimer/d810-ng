@@ -73,7 +73,7 @@ def test_routed_v2_view_shows_both_identities_runtime_rules_and_passes() -> None
     assert view.effective_passes_text == "2 passes: pass-a, pass-b"
     assert view.rules_title == "Rules (runtime expansion: 2 instruction, 1 block)"
     assert view.enabled_rule_names == frozenset({"InsA", "InsB", "BlkA"})
-    assert view.edit_enabled is False
+    assert view.edit_enabled is True
 
 
 def test_direct_v2_view_marks_config_v2_without_routed_suffix() -> None:
@@ -117,20 +117,19 @@ def test_legacy_edit_and_duplicate_allow_rule_editing(mode: ConfigEditMode) -> N
     assert policy.save_strategy is ConfigSaveStrategy.SAVE_LEGACY_COPY
 
 
-def test_config_v2_edit_is_refused() -> None:
+def test_config_v2_edit_uses_structured_lossless_editor() -> None:
     policy = select_config_edit_policy(
         ConfigEditMode.EDIT,
         _snapshot(mode=ProjectConfigMode.CONFIG_V2, routed=True),
     )
 
-    assert policy.allowed is False
+    assert policy.allowed is True
     assert policy.rules_editable is False
-    assert policy.save_strategy is ConfigSaveStrategy.REFUSE
-    assert "flat rule tree" in policy.explanation
-    assert "pipeline_v2" in policy.explanation
+    assert policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2
+    assert "structured" in policy.explanation
 
 
-def test_config_v2_duplicate_uses_read_only_runtime_clone() -> None:
+def test_config_v2_duplicate_uses_structured_runtime_copy() -> None:
     policy = select_config_edit_policy(
         ConfigEditMode.DUPLICATE,
         _snapshot(mode=ProjectConfigMode.CONFIG_V2, routed=True),
@@ -138,7 +137,7 @@ def test_config_v2_duplicate_uses_read_only_runtime_clone() -> None:
 
     assert policy.allowed is True
     assert policy.rules_editable is False
-    assert policy.save_strategy is ConfigSaveStrategy.CLONE_RUNTIME_V2
+    assert policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2
     assert "effective runtime" in policy.explanation
 
 

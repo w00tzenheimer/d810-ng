@@ -37,6 +37,10 @@ class StateMachineCffFamily(Registrant):
     #: Display / selection name (the unflatten Family Protocol attribute).
     name: str = "state_machine_cff"
 
+    #: Stable routing precedence across package reloads. Equal priorities retain
+    #: registration order, so external profiles need no priority unless they overlap.
+    selection_priority: int = 0
+
     #: The backend-agnostic IR maturities (:class:`d810.ir.maturity.IRMaturity` — NO IDA
     #: import here; the IDA-bound unflatten rule resolves them to ``ida_hexrays.MMAT_*`` via
     #: :mod:`d810.hexrays.ir_maturity`) at which THIS profile's dispatcher shape is

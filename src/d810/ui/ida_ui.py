@@ -420,6 +420,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.created = False
         self.parent = None
         self.test_runner: TestRunnerForm | None = None
+        self._config_v2_editor = None
 
         # Edit state machine attributes
         self._edit_mode: ConfigEditMode | None = None
@@ -519,6 +520,9 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         if self.test_runner is not None:
             self.test_runner.Close(ida_kernwin.PluginForm.WCLS_SAVE)
             self.test_runner = None
+        if self._config_v2_editor is not None:
+            self._config_v2_editor.close()
+            self._config_v2_editor = None
 
     def Show(self):
         logger.debug("Calling Show")
@@ -1074,6 +1078,14 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             return
         current = self.state.current_project
         view = build_project_config_view(snapshot)
+        if policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2:
+            destination = self._choose_config_v2_destination(
+                snapshot,
+                duplicate=True,
+            )
+            if destination is not None:
+                self._open_config_v2_editor(destination)
+            return
         is_runtime_clone = (
             policy.save_strategy is ConfigSaveStrategy.CLONE_RUNTIME_V2
         )
@@ -1100,6 +1112,14 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 policy.explanation,
             )
             return
+        if policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2:
+            destination = self._choose_config_v2_destination(
+                snapshot,
+                duplicate=False,
+            )
+            if destination is not None:
+                self._open_config_v2_editor(destination)
+            return
         current = self.state.current_project
         self._enter_edit_mode(
             ConfigEditMode.EDIT,
@@ -1111,6 +1131,59 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             snapshot,
             policy.rules_editable,
         )
+
+    def _choose_config_v2_destination(
+        self,
+        snapshot: "ProjectRuntimeSnapshot",
+        *,
+        duplicate: bool,
+    ) -> pathlib.Path | None:
+        config_dir = pathlib.Path(self.state.d810_config.config_dir).resolve()
+        runtime_path = pathlib.Path(snapshot.runtime.path).resolve()
+        if not duplicate and runtime_path.parent == config_dir:
+            default = runtime_path
+        else:
+            suffix = "copy" if duplicate else "user"
+            default = config_dir / f"{runtime_path.stem}_{suffix}.json"
+        destination, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self.parent,
+            "Choose a lossless config-v2 project destination",
+            str(default),
+            "D810 project configurations (*.json)",
+        )
+        return pathlib.Path(destination) if destination else None
+
+    def _open_config_v2_editor(self, destination: pathlib.Path) -> None:
+        from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
+        from d810.ui.config_v2_editing_panel import ConfigV2EditingPanel
+
+        try:
+            adapter = ConfigV2EditingAdapter(
+                self.state,
+                destination=destination,
+            )
+            if self._config_v2_editor is not None:
+                self._config_v2_editor.close()
+            editor = ConfigV2EditingPanel(
+                adapter,
+                on_saved=self._refresh_config_v2_project_view,
+            )
+        except Exception as exc:
+            logger.warning("Config-v2 project editor failed: %s", exc)
+            QtWidgets.QMessageBox.critical(
+                self.parent,
+                "Config-v2 project editor",
+                str(exc),
+            )
+            return
+        self._config_v2_editor = editor
+        editor.show()
+
+    def _refresh_config_v2_project_view(self) -> None:
+        self.update_cfg_select()
+        snapshot = self.state.get_project_runtime_snapshot()
+        self.cfg_description.setPlainText(self.state.current_project.description)
+        self._apply_project_config_view(build_project_config_view(snapshot))
 
     # callback when the "Delete" button is clicked
     def _delete_config(self):

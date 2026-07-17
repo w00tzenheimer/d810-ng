@@ -11,9 +11,9 @@ from d810.manager.project_runtime import (
 )
 
 
-V2_EDIT_REFUSAL = (
-    "Config-v2 projects are read-only here because the flat rule tree cannot "
-    "serialize pipeline_v2 without losing configuration."
+V2_STRUCTURED_EDIT_EXPLANATION = (
+    "Edit with the structured config-v2 editor; unsupported fields remain "
+    "read-only and survive lossless save."
 )
 V2_CLONE_EXPLANATION = (
     "Duplicate will copy the complete effective runtime config-v2 document; "
@@ -31,6 +31,7 @@ class ConfigSaveStrategy(enum.Enum):
     CREATE_LEGACY = "create-legacy"
     SAVE_LEGACY_COPY = "save-legacy-copy"
     CLONE_RUNTIME_V2 = "clone-runtime-v2"
+    STRUCTURED_V2 = "structured-v2"
     REFUSE = "refuse"
 
 
@@ -76,10 +77,10 @@ def select_config_edit_policy(
         )
     if mode is ConfigEditMode.EDIT and snapshot.mode is ProjectConfigMode.CONFIG_V2:
         return ConfigEditPolicy(
+            True,
             False,
-            False,
-            ConfigSaveStrategy.REFUSE,
-            V2_EDIT_REFUSAL,
+            ConfigSaveStrategy.STRUCTURED_V2,
+            V2_STRUCTURED_EDIT_EXPLANATION,
         )
     if (
         mode is ConfigEditMode.DUPLICATE
@@ -88,7 +89,7 @@ def select_config_edit_policy(
         return ConfigEditPolicy(
             True,
             False,
-            ConfigSaveStrategy.CLONE_RUNTIME_V2,
+            ConfigSaveStrategy.STRUCTURED_V2,
             V2_CLONE_EXPLANATION,
         )
     return ConfigEditPolicy(
@@ -148,7 +149,7 @@ __all__ = [
     "ConfigSaveStrategy",
     "ProjectConfigView",
     "V2_CLONE_EXPLANATION",
-    "V2_EDIT_REFUSAL",
+    "V2_STRUCTURED_EDIT_EXPLANATION",
     "build_project_config_view",
     "select_config_edit_policy",
 ]

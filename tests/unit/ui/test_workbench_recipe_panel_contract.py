@@ -96,8 +96,9 @@ def test_recipe_panel_forwards_all_draft_operations_to_command_adapter() -> None
     assert expected.issubset(calls)
 
 
-def test_project_profile_save_is_rendered_but_never_dispatched() -> None:
+def test_project_profile_save_dispatches_to_owned_config_v2_editor_callback() -> None:
     source = PANEL.read_text(encoding="utf-8")
+    calls = _calls(_method("_save_project"))
 
     assert "save_project" in source
-    assert ".save_project(" not in source
+    assert "_open_project_profile" in calls

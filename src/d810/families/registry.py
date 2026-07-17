@@ -4,16 +4,16 @@ Profiles are discovered via :class:`d810.core.registry.Registrant`: every
 :class:`StateMachineCffFamily` subclass auto-registers when its module is imported
 (the ``d810.families.state_machine_cff`` package eagerly imports them on load — the
 "scanner loads the project" auto-config), so there is no hand-maintained family list.
-``select_family`` polls the registered profiles in REGISTRATION order (``hodur``,
-``approov``, ``tigress``) and returns the first match. ``HodurFamily`` owns the disjoint
+``select_family`` polls the registered profiles in stable selection-priority order
+(``hodur``, ``approov``, ``tigress``) and returns the first match. ``HodurFamily`` owns the disjoint
 ``CONDITION_CHAIN`` shape; ``ApproovFamily`` and ``TigressFamily`` both own switch /
-indirect, so registration order disambiguates them (Approov keeps switch by default).
+indirect, so stable priority disambiguates them (Approov keeps switch by default).
 
 Hybrid config override (``router_resolution`` policy): a project may bias / restrict the
 selection without a code change. ``project_config["router_resolution"]`` accepts ``deny``
 (exclude these family names), ``require`` (restrict to exactly this name), and ``prefer``
 (a ``name -> bias`` map that stable-sorts candidates by descending bias). The DEFAULT
-(absent / empty policy) preserves registration-order first-match exactly.
+(absent / empty policy) preserves the historical first-match order across reloads.
 
 The live state-machine unflattener calls ``select_family`` with the effective rule and
 project configuration. Project-level routing policy takes precedence over any legacy
@@ -23,14 +23,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-# Importing the package runs its __init__, which eagerly imports every profile module so
-# each StateMachineCffFamily subclass auto-registers (registration side effect).
-from d810.families.state_machine_cff import StateMachineCffFamily
-
 
 def registered_families() -> tuple:
-    """Return one instance of every registered profile."""
-    return tuple(family() for family in StateMachineCffFamily.all())
+    """Return current profile instances without retaining a reload-stale base."""
+    # Resolve the base dynamically. Full-package reload can recreate the Registrant
+    # subclass after this module was loaded; retaining the old class would silently
+    # enumerate its obsolete registry and make every routing family disappear.
+    from d810.families.state_machine_cff.base import StateMachineCffFamily
+
+    families = [family() for family in StateMachineCffFamily.all()]
+    families.sort(
+        key=lambda family: -int(getattr(family, "selection_priority", 0))
+    )
+    return tuple(families)
 
 
 def effective_family_selection_config(
@@ -52,9 +57,10 @@ def select_family(graph, project_config, *, capabilities=frozenset()):
 
     Mirrors unflatten ``select_family``: polls the candidate profiles and returns the first
     whose ``detect`` claims ``graph``. With the default (absent / empty)
-    ``router_resolution`` policy this is registration-order first-match, unchanged. The
+    ``router_resolution`` policy this is stable-priority first-match. The
     optional ``project_config["router_resolution"]`` policy filters (``deny`` / ``require``)
-    and biases (``prefer``) the candidate order before polling.
+    and biases (``prefer``) the candidate order before polling. Equal priorities retain
+    registration order.
     """
     policy = {}
     if isinstance(project_config, dict):
@@ -68,7 +74,7 @@ def select_family(graph, project_config, *, capabilities=frozenset()):
     if require:
         candidates = [f for f in candidates if f.name == require]
     if prefer:
-        # Stable sort by descending bias preserves registration order among ties.
+        # Stable sort by descending bias preserves priority order among ties.
         candidates.sort(key=lambda f: -float(prefer.get(f.name, 0.0)))
 
     for family in candidates:
