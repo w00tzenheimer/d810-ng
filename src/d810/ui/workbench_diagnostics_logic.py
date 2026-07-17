@@ -7,6 +7,7 @@ import enum
 
 from d810.core.typing import Callable, Sequence, TypeVar
 from d810.diagnostics.workbench_models import (
+    DiagnosticCleanupScope,
     DiagnosticDatabaseSummary,
     DiagnosticRecord,
     DiagnosticSnapshotSummary,
@@ -60,6 +61,13 @@ class DiagnosticCleanupPlanView:
     target_count: int
     snapshot_count: int
     estimated_rows: int
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class DiagnosticCleanupExecutionOptions:
+    """UI execution options derived from an already-previewed cleanup plan."""
+
+    show_vacuum_after: bool
 
 
 _T = TypeVar("_T")
@@ -366,6 +374,20 @@ def cleanup_confirmation_matches(plan: object, entered: str) -> bool:
     return not required or entered.strip().casefold() == required.casefold()
 
 
+def cleanup_execution_options(plan: object) -> DiagnosticCleanupExecutionOptions:
+    """Expose optional storage reclamation only for snapshot cleanup plans."""
+
+    scope = getattr(plan, "scope", None)
+    return DiagnosticCleanupExecutionOptions(
+        show_vacuum_after=scope
+        in {
+            DiagnosticCleanupScope.SELECTED_SNAPSHOTS,
+            DiagnosticCleanupScope.ALL_SNAPSHOTS,
+            DiagnosticCleanupScope.KEEP_LATEST,
+        }
+    )
+
+
 def _outcome_lines(values: Sequence[object]) -> tuple[str, ...]:
     if not values:
         return ("- Not requested",)
@@ -447,21 +469,9 @@ def diagnostic_action_states(
             "Select snapshots in a closed database",
         ),
         state(
-            "delete_all_snapshots",
-            has_inactive,
-            "Closed databases are ready for an all-snapshots plan",
-            "Select a closed database",
-        ),
-        state(
             "keep_latest",
             has_inactive,
             "Closed databases are ready for a retention plan",
-            "Select a closed database",
-        ),
-        state(
-            "older_than",
-            has_inactive,
-            "Closed databases are ready for a time-based plan",
             "Select a closed database",
         ),
         state(

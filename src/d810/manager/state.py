@@ -374,11 +374,6 @@ class D810State(metaclass=SingletonMeta):
     ) -> DiagnosticCleanupPlan:
         return self.manager.plan_diagnostic_keep_latest(path, keep)
 
-    def plan_diagnostic_older_than(
-        self, path: pathlib.Path | str, recorded_before: float
-    ) -> DiagnosticCleanupPlan:
-        return self.manager.plan_diagnostic_older_than(path, recorded_before)
-
     def plan_diagnostic_selected_databases(
         self, paths: typing.Iterable[pathlib.Path | str]
     ) -> DiagnosticCleanupPlan:

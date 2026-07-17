@@ -55,17 +55,14 @@ def test_selected_and_all_snapshot_plans_have_exact_ids_rows_and_confirmation(tm
     assert all_snapshots.targets[0].estimated_rows == 11
 
 
-def test_keep_latest_and_older_than_use_timestamp_then_id_ties(tmp_path: Path):
+def test_keep_latest_uses_timestamp_then_id_ties_without_time_based_cleanup(tmp_path: Path):
     path = _database(tmp_path / "a.diag.sqlite3")
     service = DiagnosticCleanupService(active_paths_provider=lambda: ())
 
     keep_two = service.plan_keep_latest(path, 2)
-    older = service.plan_older_than(path, 20.0)
-
     assert keep_two.scope is DiagnosticCleanupScope.KEEP_LATEST
     assert keep_two.targets[0].snapshot_ids == (1, 2)
-    assert older.scope is DiagnosticCleanupScope.OLDER_THAN
-    assert older.targets[0].snapshot_ids == (1,)
+    assert not hasattr(service, "plan_older_than")
 
 
 def test_active_database_is_excluded_from_every_destructive_plan(tmp_path: Path):
@@ -76,7 +73,6 @@ def test_active_database_is_excluded_from_every_destructive_plan(tmp_path: Path)
         service.plan_selected_snapshots(path, (1,)),
         service.plan_all_snapshots(path),
         service.plan_keep_latest(path, 1),
-        service.plan_older_than(path, 99.0),
         service.plan_selected_databases((path,)),
         service.plan_all_closed_databases((path,)),
         service.plan_vacuum((path,)),

@@ -251,21 +251,6 @@ class DiagnosticCleanupService:
 
         return self._plan_one(DiagnosticCleanupScope.KEEP_LATEST, path, ids)
 
-    def plan_older_than(
-        self, path: os.PathLike[str] | str, recorded_before: float
-    ) -> DiagnosticCleanupPlan:
-        return self._plan_one(
-            DiagnosticCleanupScope.OLDER_THAN,
-            path,
-            lambda connection: tuple(
-                int(row[0])
-                for row in connection.execute(
-                    "SELECT id FROM snapshots WHERE timestamp < ? ORDER BY id",
-                    (float(recorded_before),),
-                )
-            ),
-        )
-
     def _plan_databases(
         self,
         scope: DiagnosticCleanupScope,

@@ -32,6 +32,16 @@ def _calls(node: ast.AST) -> set[str]:
     return result
 
 
+def _method_names(path: Path, class_name: str) -> set[str]:
+    return {
+        item.name
+        for node in _tree(path).body
+        if isinstance(node, ast.ClassDef) and node.name == class_name
+        for item in node.body
+        if isinstance(item, ast.FunctionDef)
+    }
+
+
 def test_manager_owns_inventory_and_cleanup_services_and_all_operations():
     path = _ROOT / "src/d810/manager/manager.py"
     post_init_calls = _calls(_method(path, "D810Manager", "__post_init__"))
@@ -45,7 +55,6 @@ def test_manager_owns_inventory_and_cleanup_services_and_all_operations():
         "plan_diagnostic_selected_snapshots": "plan_selected_snapshots",
         "plan_diagnostic_all_snapshots": "plan_all_snapshots",
         "plan_diagnostic_keep_latest": "plan_keep_latest",
-        "plan_diagnostic_older_than": "plan_older_than",
         "plan_diagnostic_selected_databases": "plan_selected_databases",
         "plan_diagnostic_all_closed_databases": "plan_all_closed_databases",
         "plan_diagnostic_vacuum": "plan_vacuum",
@@ -53,6 +62,7 @@ def test_manager_owns_inventory_and_cleanup_services_and_all_operations():
     }
     for method_name, delegated_call in expected.items():
         assert delegated_call in _calls(_method(path, "D810Manager", method_name))
+    assert "plan_diagnostic_older_than" not in _method_names(path, "D810Manager")
 
 
 def test_state_exposes_the_same_manager_owned_operations_without_sql():
@@ -64,7 +74,6 @@ def test_state_exposes_the_same_manager_owned_operations_without_sql():
         "plan_diagnostic_selected_snapshots",
         "plan_diagnostic_all_snapshots",
         "plan_diagnostic_keep_latest",
-        "plan_diagnostic_older_than",
         "plan_diagnostic_selected_databases",
         "plan_diagnostic_all_closed_databases",
         "plan_diagnostic_vacuum",
@@ -72,6 +81,7 @@ def test_state_exposes_the_same_manager_owned_operations_without_sql():
     )
     for method_name in methods:
         assert method_name in _calls(_method(path, "D810State", method_name))
+    assert "plan_diagnostic_older_than" not in _method_names(path, "D810State")
 
     imported = {
         alias.name

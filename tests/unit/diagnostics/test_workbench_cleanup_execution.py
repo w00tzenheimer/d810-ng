@@ -68,22 +68,18 @@ def test_execute_revalidates_active_path_and_skips_without_mutation(tmp_path: Pa
     assert _ids(path) == (1, 2)
 
 
-def test_bulk_snapshot_scopes_execute_the_exact_planned_ids(tmp_path: Path):
+def test_bulk_snapshot_scopes_execute_the_exact_planned_ids_without_time_cleanup(tmp_path: Path):
     all_path = _full_owned_database(tmp_path / "all.diag.sqlite3")
     keep_path = _full_owned_database(tmp_path / "keep.diag.sqlite3")
-    older_path = _full_owned_database(tmp_path / "older.diag.sqlite3")
     service = DiagnosticCleanupService(active_paths_provider=lambda: ())
 
     all_result = service.execute(service.plan_all_snapshots(all_path), checkpoint_wal=False)
     keep_result = service.execute(service.plan_keep_latest(keep_path, 1), checkpoint_wal=False)
-    older_result = service.execute(service.plan_older_than(older_path, 15.0), checkpoint_wal=False)
 
     assert all_result.logical[0].status is DiagnosticOperationStatus.SUCCEEDED
     assert _ids(all_path) == ()
     assert keep_result.logical[0].status is DiagnosticOperationStatus.SUCCEEDED
     assert _ids(keep_path) == (2,)
-    assert older_result.logical[0].status is DiagnosticOperationStatus.SUCCEEDED
-    assert _ids(older_path) == (2,)
 
 
 def test_schema_drift_after_plan_fails_closed_and_preserves_rows(tmp_path: Path):
