@@ -89,8 +89,8 @@ def test_all_requested_cleanup_scopes_have_explicit_vocabulary():
         "selected_snapshots",
         "all_snapshots",
         "keep_latest",
-        "older_than",
         "selected_databases",
         "all_closed_databases",
         "vacuum",
     }
+    assert not hasattr(models.DiagnosticCleanupScope, "OLDER_THAN")

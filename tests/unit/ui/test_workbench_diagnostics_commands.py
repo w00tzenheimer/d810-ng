@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from d810.diagnostics.workbench_models import DiagnosticViewKind
 from d810.ui.workbench_diagnostics_commands import WorkbenchDiagnosticsAdapter
 
@@ -30,10 +32,6 @@ def test_adapter_delegates_inventory_views_plans_execution_and_navigation() -> N
             ("keep_latest", path, keep)
         )
         or plan,
-        plan_diagnostic_older_than=lambda path, timestamp: events.append(
-            ("older_than", path, timestamp)
-        )
-        or plan,
         plan_diagnostic_selected_databases=lambda paths: events.append(
             ("selected_databases", tuple(paths))
         )
@@ -60,15 +58,18 @@ def test_adapter_delegates_inventory_views_plans_execution_and_navigation() -> N
         adapter.plan("delete_selected_snapshots", path="/a", snapshot_ids=(2, 1))
         is plan
     )
-    assert adapter.plan("delete_all_snapshots", path="/a") is plan
     assert adapter.plan("keep_latest", path="/a", keep=3) is plan
-    assert adapter.plan("older_than", path="/a", recorded_before=4.5) is plan
     assert adapter.plan("delete_selected_databases", paths=("/a", "/b")) is plan
     assert adapter.plan("delete_all_closed_databases", paths=("/a", "/b")) is plan
     assert adapter.plan("vacuum_selected_databases", paths=("/a",)) is plan
-    assert adapter.execute(plan, checkpoint_wal=True, vacuum_after=False) is result
+    assert adapter.execute(plan, vacuum_after=False) is result
+    assert events[-1] == ("execute", plan, {"checkpoint_wal": True, "vacuum_after": False})
     adapter.navigate(0x401000)
     assert jumps == [0x401000]
+
+    for action_id in ("delete_all_snapshots", "older_than"):
+        with pytest.raises(ValueError, match="Unsupported"):
+            adapter.plan(action_id, path="/a")
 
 
 def test_adapter_rejects_unknown_views_and_actions() -> None:

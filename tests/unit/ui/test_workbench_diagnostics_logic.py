@@ -159,12 +159,44 @@ def test_actions_protect_active_database_and_require_explicit_selection():
     assert "active" in states["delete_selected_databases"].reason.lower()
     assert states["delete_all_closed_databases"].enabled is True
     assert states["vacuum_selected_databases"].enabled is True
+    assert set(states) == {
+        "delete_selected_snapshots",
+        "keep_latest",
+        "delete_selected_databases",
+        "delete_all_closed_databases",
+        "vacuum_selected_databases",
+        "inspect",
+    }
 
     empty = {
         item.action_id: item
         for item in logic.diagnostic_action_states((), selected_snapshot_ids=())
     }
     assert all(item.enabled is False for item in empty.values())
+
+
+def test_snapshot_cleanup_options_only_offer_vacuum_after_for_snapshot_plans():
+    target = DiagnosticCleanupTarget(
+        path="/tmp/a.diag.sqlite3",
+        snapshot_ids=(1,),
+        active=False,
+        estimated_rows=1,
+    )
+    snapshot_plan = DiagnosticCleanupPlan(
+        scope=DiagnosticCleanupScope.KEEP_LATEST,
+        targets=(target,),
+        skipped_active_paths=(),
+        confirmation="keep",
+    )
+    database_plan = DiagnosticCleanupPlan(
+        scope=DiagnosticCleanupScope.SELECTED_DATABASES,
+        targets=(target,),
+        skipped_active_paths=(),
+        confirmation="quarantine",
+    )
+
+    assert logic.cleanup_execution_options(snapshot_plan).show_vacuum_after is True
+    assert logic.cleanup_execution_options(database_plan).show_vacuum_after is False
 
 
 def test_all_closed_action_uses_full_inventory_not_only_current_selection():

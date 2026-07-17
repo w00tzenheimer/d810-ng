@@ -10,6 +10,7 @@ from d810.ui.workbench_diagnostics_logic import (
     DatabaseSort,
     SnapshotSort,
     cleanup_confirmation_matches,
+    cleanup_execution_options,
     diagnostic_action_states,
     filter_databases,
     filter_records,
@@ -236,28 +237,29 @@ if IDA_AVAILABLE:
             self.open_graph_button = QtWidgets.QPushButton("Open graph")
             self.open_graph_button.setEnabled(False)
 
-            self.cleanup_buttons: dict[str, typing.Any] = {}
-            for action_id, label in (
-                ("delete_selected_snapshots", "Delete selected snapshots"),
-                ("delete_all_snapshots", "Delete all snapshots in DB"),
-                ("keep_latest", "Keep latest N"),
-                ("older_than", "Delete older than Unix time"),
-                ("delete_selected_databases", "Quarantine selected DBs"),
-                ("delete_all_closed_databases", "Delete all closed DBs"),
-                ("vacuum_selected_databases", "Vacuum selected DBs"),
+            self.cleanup_action_combo = QtWidgets.QComboBox()
+            for label, action_id in (
+                ("Remove selected snapshots", "delete_selected_snapshots"),
+                ("Retain latest N", "keep_latest"),
+                ("Quarantine selected databases", "delete_selected_databases"),
+                (
+                    "Quarantine all closed databases",
+                    "delete_all_closed_databases",
+                ),
+                ("Reclaim selected database space", "vacuum_selected_databases"),
             ):
-                self.cleanup_buttons[action_id] = QtWidgets.QPushButton(label)
+                self.cleanup_action_combo.addItem(label, action_id)
+            self.preview_cleanup_button = QtWidgets.QPushButton("Preview cleanup plan")
             self.keep_latest_spin = QtWidgets.QSpinBox()
             self.keep_latest_spin.setRange(0, 1_000_000)
             self.keep_latest_spin.setValue(10)
             self.keep_latest_spin.setPrefix("N = ")
-            self.older_than_edit = QtWidgets.QLineEdit()
-            self.older_than_edit.setPlaceholderText("Unix timestamp")
+            self.keep_latest_spin.setVisible(False)
             self.cleanup_plan_view = QtWidgets.QPlainTextEdit()
             self.cleanup_plan_view.setReadOnly(True)
             self.cleanup_plan_view.setMaximumHeight(150)
             self.cleanup_plan_view.setPlaceholderText(
-                "Choose a cleaner action to inspect its exact plan"
+                "Choose a cleanup action, then preview its exact plan"
             )
             self.cleanup_result_view = QtWidgets.QPlainTextEdit()
             self.cleanup_result_view.setReadOnly(True)
@@ -268,11 +270,11 @@ if IDA_AVAILABLE:
             self.confirmation_edit.setPlaceholderText(
                 "Typed confirmation appears here when required"
             )
-            self.checkpoint_checkbox = QtWidgets.QCheckBox("Checkpoint WAL")
-            self.checkpoint_checkbox.setChecked(True)
             self.vacuum_after_checkbox = QtWidgets.QCheckBox(
-                "Vacuum after snapshot cleanup"
+                "Reclaim storage after cleanup"
             )
+            self.confirmation_controls = QtWidgets.QWidget()
+            self.confirmation_controls.setVisible(False)
             self.execute_button = QtWidgets.QPushButton("Execute confirmed plan")
             self.execute_button.setEnabled(False)
             self.refresh_button = QtWidgets.QPushButton("Refresh read-only inventory")
@@ -302,13 +304,10 @@ if IDA_AVAILABLE:
             self.jump_record_button.clicked.connect(self._jump_to_record)
             self.open_graph_button.clicked.connect(self._open_graph)
             self.refresh_button.clicked.connect(self.refresh)
-            for action_id, button in self.cleanup_buttons.items():
-
-                def _plan(checked: bool = False, *, action_id: str = action_id) -> None:
-                    del checked
-                    self._plan_cleanup(action_id)
-
-                button.clicked.connect(_plan)
+            self.cleanup_action_combo.currentIndexChanged.connect(
+                self._cleanup_action_changed
+            )
+            self.preview_cleanup_button.clicked.connect(self._plan_cleanup)
             self.reviewed_checkbox.stateChanged.connect(self._update_execute_enabled)
             self.confirmation_edit.textChanged.connect(self._update_execute_enabled)
             self.execute_button.clicked.connect(self._execute_cleanup)
@@ -339,6 +338,7 @@ if IDA_AVAILABLE:
             context_layout.addRow("Function:", self.context_label)
             context_layout.addRow("Inventory:", self.inventory_label)
             context_layout.addRow("Safety:", self.mode_label)
+            context_layout.addRow(self.refresh_button)
 
             database_group = QtWidgets.QGroupBox("Databases")
             database_layout = QtWidgets.QVBoxLayout(database_group)
@@ -381,29 +381,11 @@ if IDA_AVAILABLE:
             cleaner_layout = QtWidgets.QVBoxLayout(cleaner_group)
             cleaner_layout.setContentsMargins(4, 4, 4, 4)
             cleaner_layout.setSpacing(4)
-            cleanup_actions = QtWidgets.QGridLayout()
-            cleanup_actions.addWidget(
-                self.cleanup_buttons["delete_selected_snapshots"], 0, 0
-            )
-            cleanup_actions.addWidget(
-                self.cleanup_buttons["delete_all_snapshots"], 0, 1
-            )
-            cleanup_actions.addWidget(
-                self.cleanup_buttons["delete_selected_databases"], 0, 2
-            )
-            cleanup_actions.addWidget(
-                self.cleanup_buttons["delete_all_closed_databases"], 0, 3
-            )
-            cleanup_actions.addWidget(self.cleanup_buttons["keep_latest"], 1, 0)
-            cleanup_actions.addWidget(self.keep_latest_spin, 1, 1)
-            cleanup_actions.addWidget(self.cleanup_buttons["older_than"], 1, 2)
-            cleanup_actions.addWidget(self.older_than_edit, 1, 3)
-            cleanup_actions.addWidget(
-                self.cleanup_buttons["vacuum_selected_databases"], 2, 0, 1, 2
-            )
-            cleanup_actions.addWidget(self.refresh_button, 2, 2, 1, 2)
-            cleanup_actions.setHorizontalSpacing(4)
-            cleanup_actions.setVerticalSpacing(4)
+            cleanup_actions = QtWidgets.QHBoxLayout()
+            cleanup_actions.addWidget(QtWidgets.QLabel("Action:"))
+            cleanup_actions.addWidget(self.cleanup_action_combo, stretch=1)
+            cleanup_actions.addWidget(self.keep_latest_spin)
+            cleanup_actions.addWidget(self.preview_cleanup_button)
             cleaner_layout.addLayout(cleanup_actions)
 
             self._plan_splitter = QtWidgets.QSplitter()
@@ -417,15 +399,14 @@ if IDA_AVAILABLE:
             self._plan_splitter.setStretchFactor(1, 1)
             cleaner_layout.addWidget(self._plan_splitter, stretch=1)
 
-            confirmation_controls = QtWidgets.QGridLayout()
+            confirmation_controls = QtWidgets.QGridLayout(self.confirmation_controls)
             confirmation_controls.addWidget(self.reviewed_checkbox, 0, 0)
             confirmation_controls.addWidget(self.confirmation_edit, 0, 1, 1, 3)
-            confirmation_controls.addWidget(self.checkpoint_checkbox, 1, 0)
-            confirmation_controls.addWidget(self.vacuum_after_checkbox, 1, 1)
+            confirmation_controls.addWidget(self.vacuum_after_checkbox, 1, 0, 1, 2)
             confirmation_controls.addWidget(self.execute_button, 1, 2, 1, 2)
             confirmation_controls.setHorizontalSpacing(4)
             confirmation_controls.setVerticalSpacing(4)
-            cleaner_layout.addLayout(confirmation_controls)
+            cleaner_layout.addWidget(self.confirmation_controls)
 
             self._browser_splitter = QtWidgets.QSplitter()
             try:
@@ -929,10 +910,12 @@ if IDA_AVAILABLE:
                     all_databases=self._databases,
                 )
             }
-            for action_id, button in self.cleanup_buttons.items():
-                state = states.get(action_id)
-                button.setEnabled(bool(state and state.enabled))
-                button.setToolTip("" if state is None else state.reason)
+            self._cleanup_action_states = states
+            action_id = self._selected_cleanup_action()
+            state = states.get(action_id)
+            self.preview_cleanup_button.setEnabled(bool(state and state.enabled))
+            self.preview_cleanup_button.setToolTip("" if state is None else state.reason)
+            self.cleanup_action_combo.setToolTip("" if state is None else state.reason)
             snapshot = self._current_snapshot()
             record = self._current_record_row()
             self.jump_function_button.setEnabled(snapshot is not None)
@@ -945,13 +928,28 @@ if IDA_AVAILABLE:
             self.cleanup_plan_view.setPlainText("")
             self.reviewed_checkbox.setChecked(False)
             self.confirmation_edit.clear()
+            self.vacuum_after_checkbox.setChecked(False)
+            self.confirmation_controls.setVisible(False)
             self.confirmation_edit.setPlaceholderText(
                 "Typed confirmation appears here when required"
             )
             self.execute_button.setEnabled(False)
 
-        def _plan_cleanup(self, action_id: str) -> None:
+        def _selected_cleanup_action(self) -> str:
+            return str(self.cleanup_action_combo.currentData())
+
+        def _cleanup_action_changed(self, index: int) -> None:
+            del index
+            self.keep_latest_spin.setVisible(
+                self._selected_cleanup_action() == "keep_latest"
+            )
             self._clear_plan()
+            self._render_action_states()
+
+        def _plan_cleanup(self, checked: bool = False) -> None:
+            del checked
+            self._clear_plan()
+            action_id = self._selected_cleanup_action()
             database = self._current_database()
             path = None if database is None else database.path
             selected_paths = self._selected_database_paths()
@@ -962,14 +960,12 @@ if IDA_AVAILABLE:
                 else selected_paths
             )
             try:
-                recorded_before = float(self.older_than_edit.text().strip() or "0")
                 plan = self._adapter.plan(
                     action_id,
                     path=path,
                     paths=paths,
                     snapshot_ids=self._selected_snapshot_ids(),
                     keep=int(self.keep_latest_spin.value()),
-                    recorded_before=recorded_before,
                 )
                 view = project_cleanup_plan(plan)
             except Exception as exc:
@@ -978,6 +974,9 @@ if IDA_AVAILABLE:
                 return
             self._cleanup_plan = plan
             self.cleanup_plan_view.setPlainText(view.text)
+            options = cleanup_execution_options(plan)
+            self.vacuum_after_checkbox.setVisible(options.show_vacuum_after)
+            self.confirmation_controls.setVisible(True)
             if view.required_phrase:
                 self.confirmation_edit.setPlaceholderText(
                     f"Type {view.required_phrase} exactly"
@@ -1010,8 +1009,10 @@ if IDA_AVAILABLE:
             try:
                 result = self._adapter.execute(
                     plan,
-                    checkpoint_wal=self.checkpoint_checkbox.isChecked(),
-                    vacuum_after=self.vacuum_after_checkbox.isChecked(),
+                    vacuum_after=(
+                        self.vacuum_after_checkbox.isVisible()
+                        and self.vacuum_after_checkbox.isChecked()
+                    ),
                 )
                 text = project_cleanup_result(result)
             except Exception as exc:

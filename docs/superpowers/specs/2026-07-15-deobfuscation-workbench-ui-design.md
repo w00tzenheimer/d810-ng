@@ -347,20 +347,19 @@ programs. Diagnostic locations use anchored block identities and support
 jump-to-EA. The explorer reuses the non-mutating diagnostic reader boundary and
 pure query helpers; it does not expose arbitrary SQL execution.
 
-Cleanup supports multi-selection and these explicit operations:
-
-- delete selected snapshots;
-- delete all snapshots in the selected database;
-- keep the latest N snapshots;
-- delete snapshots older than a selected time;
-- delete selected diagnostic databases;
-- delete all closed diagnostic databases; and
-- vacuum selected databases.
+Cleanup supports multi-selection through one intent-based composer. Snapshot
+cleanup supports only deleting selected snapshots and retaining the latest N
+snapshots in a selected database. There is deliberately no time-based cleanup
+or Unix timestamp input. Database maintenance supports quarantining selected
+databases, quarantining all closed diagnostic databases, and vacuuming selected
+databases to reclaim storage.
 
 The active capture database is protected. A bulk command reports it as skipped
 instead of partially deleting it. File deletion uses reversible quarantine when
 possible. Snapshot deletion presents the database path, exact snapshot IDs,
-affected row count, and active-session exclusions before confirmation.
+affected row count, and active-session exclusions before confirmation. The UI
+always requests a WAL checkpoint; it is not an operator toggle. Optional vacuum
+after snapshot cleanup appears only after a snapshot plan is previewed.
 
 The diagnostic schema owns the authoritative set and deletion order of
 snapshot-owned tables. Cleanup validates that registry against the database

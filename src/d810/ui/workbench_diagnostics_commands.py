@@ -50,18 +50,13 @@ class WorkbenchDiagnosticsAdapter:
         paths: Sequence[str] = (),
         snapshot_ids: Sequence[int] = (),
         keep: int = 0,
-        recorded_before: float = 0.0,
     ) -> object:
         if action_id == "delete_selected_snapshots" and path is not None:
             return self._state.plan_diagnostic_selected_snapshots(
                 path, tuple(int(value) for value in snapshot_ids)
             )
-        if action_id == "delete_all_snapshots" and path is not None:
-            return self._state.plan_diagnostic_all_snapshots(path)
         if action_id == "keep_latest" and path is not None:
             return self._state.plan_diagnostic_keep_latest(path, int(keep))
-        if action_id == "older_than" and path is not None:
-            return self._state.plan_diagnostic_older_than(path, float(recorded_before))
         if action_id == "delete_selected_databases":
             return self._state.plan_diagnostic_selected_databases(tuple(paths))
         if action_id == "delete_all_closed_databases":
@@ -74,12 +69,11 @@ class WorkbenchDiagnosticsAdapter:
         self,
         plan: object,
         *,
-        checkpoint_wal: bool,
         vacuum_after: bool,
     ) -> object:
         return self._state.execute_diagnostic_cleanup(
             plan,
-            checkpoint_wal=bool(checkpoint_wal),
+            checkpoint_wal=True,
             vacuum_after=bool(vacuum_after),
         )
 

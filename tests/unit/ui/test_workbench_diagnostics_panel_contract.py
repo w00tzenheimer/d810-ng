@@ -86,7 +86,7 @@ def test_panel_projects_inventory_records_actions_plans_and_results_through_logi
     }.issubset(calls)
 
 
-def test_panel_exposes_all_approved_cleaner_actions_and_navigation() -> None:
+def test_panel_exposes_an_intent_based_cleaner_composer_and_navigation() -> None:
     source = PANEL.read_text(encoding="utf-8")
     calls = set().union(
         _calls(_method("_plan_cleanup")),
@@ -96,14 +96,17 @@ def test_panel_exposes_all_approved_cleaner_actions_and_navigation() -> None:
 
     for action_id in (
         "delete_selected_snapshots",
-        "delete_all_snapshots",
         "keep_latest",
-        "older_than",
         "delete_selected_databases",
         "delete_all_closed_databases",
         "vacuum_selected_databases",
     ):
         assert action_id in source
+    for retired in ("delete_all_snapshots", "older_than", "Unix timestamp"):
+        assert retired not in source
+    assert "self.cleanup_action_combo" in source
+    assert "Preview cleanup plan" in source
+    assert "checkpoint_checkbox" not in source
     assert {"plan", "navigate", "record_jump_ea"}.issubset(calls)
 
 
@@ -138,7 +141,7 @@ def test_panel_uses_equal_outer_split_with_browser_and_cleaner_on_left() -> None
     assert "self._left_splitter.setSizes([3_000, 2_000])" in source
     assert "self._outer_splitter.setSizes([1_000, 1_000])" in source
     assert "layout.addWidget(self._outer_splitter, stretch=1)" in source
-    assert "confirmation_controls = QtWidgets.QGridLayout()" in source
+    assert "self.confirmation_controls" in source
     assert "self._plan_splitter" in source
     assert (
         "self._plan_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)" in source

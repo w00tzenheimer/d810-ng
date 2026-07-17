@@ -23,7 +23,6 @@ class DiagnosticCleanupScope(str, enum.Enum):
     SELECTED_SNAPSHOTS = "selected_snapshots"
     ALL_SNAPSHOTS = "all_snapshots"
     KEEP_LATEST = "keep_latest"
-    OLDER_THAN = "older_than"
     SELECTED_DATABASES = "selected_databases"
     ALL_CLOSED_DATABASES = "all_closed_databases"
     VACUUM = "vacuum"

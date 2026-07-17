@@ -327,11 +327,6 @@ class D810Manager:
     ) -> DiagnosticCleanupPlan:
         return self.diagnostic_cleanup_service.plan_keep_latest(path, keep)
 
-    def plan_diagnostic_older_than(
-        self, path: pathlib.Path | str, recorded_before: float
-    ) -> DiagnosticCleanupPlan:
-        return self.diagnostic_cleanup_service.plan_older_than(path, recorded_before)
-
     def plan_diagnostic_selected_databases(
         self, paths: typing.Iterable[pathlib.Path | str]
     ) -> DiagnosticCleanupPlan:
