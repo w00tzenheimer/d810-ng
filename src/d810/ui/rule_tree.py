@@ -7,12 +7,11 @@ text-based filtering and emits signals when the user selects a rule.
 """
 from __future__ import annotations
 
-import pathlib
-
 from d810.core.logging import getLogger
 from d810.core import typing
 
-from d810.qt_shim import QtCore, QtGui, QtWidgets, qt_flag_or, QColor, QBrush
+from d810.qt_shim import QtCore, QtWidgets, qt_flag_or, QColor, QBrush
+from d810.ui.icon_assets import bundled_icon
 
 if typing.TYPE_CHECKING:
     from d810.optimizers.microcode.handler import OptimizationRule
@@ -28,13 +27,10 @@ except (TypeError, ValueError):
 # Color constants for rule states
 COLOR_ENABLED = QColor(76, 175, 80)  # Material Green 500
 COLOR_DISABLED = QColor(158, 158, 158)  # Material Gray
-_RULE_ICON_DIR = pathlib.Path(__file__).with_name("icons")
-
-
 def _rule_state_icon(name: str):
     """Load a bundled state icon without depending on the host font."""
 
-    return QtGui.QIcon(str(_RULE_ICON_DIR / f"{name}.svg"))
+    return bundled_icon(name)
 
 
 def _legend_item(

@@ -7,6 +7,7 @@ from pathlib import Path
 IDA_UI = Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "ida_ui.py"
 ICON_DIR = IDA_UI.parent / "icons"
 RULE_TREE = IDA_UI.parent / "rule_tree.py"
+ICON_ASSETS = IDA_UI.parent / "icon_assets.py"
 PYPROJECT = IDA_UI.parents[3] / "pyproject.toml"
 TREE = ast.parse(IDA_UI.read_text(encoding="utf-8"), filename=str(IDA_UI))
 
@@ -112,6 +113,17 @@ def test_rule_state_legend_uses_svg_icons_instead_of_text_markers() -> None:
         icon_path = ICON_DIR / f"{icon_name}.svg"
         assert icon_path.is_file()
         assert "<svg" in icon_path.read_text(encoding="utf-8")
+
+
+def test_icon_assets_have_a_qpainter_fallback_for_pyqt5_svg_failures() -> None:
+    assert ICON_ASSETS.is_file()
+
+    source = ICON_ASSETS.read_text(encoding="utf-8")
+    assert "QPainter" in source
+    assert "QIcon(pixmap)" in source
+    assert "isNull()" in source
+    assert "bundled_icon" in IDA_UI.read_text(encoding="utf-8")
+    assert "bundled_icon" in RULE_TREE.read_text(encoding="utf-8")
 
 
 def test_save_rules_delegates_to_edit_policy_and_manager_commands() -> None:
