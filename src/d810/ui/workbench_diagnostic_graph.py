@@ -68,6 +68,10 @@ class _DiagnosticGraphViewer(ida_graph.GraphViewer):
             self._id_to_model[warning_id] = "__status__"
         return True
 
+    def OnGetText(self, node_id: int) -> str:
+        """Return the text stored for the IDA GraphViewer node."""
+        return str(self[node_id])
+
     def OnHint(self, node_id: int) -> tuple[int, str] | None:
         model_id = self._id_to_model.get(int(node_id))
         if model_id is None:

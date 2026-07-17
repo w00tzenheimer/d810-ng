@@ -63,6 +63,13 @@ def test_adapter_declares_refresh_hint_double_click_popup_and_group_paths() -> N
         assert required in source
 
 
+def test_graphviewer_supplies_its_mandatory_text_callback() -> None:
+    source = GRAPH.read_text(encoding="utf-8")
+
+    assert "def OnGetText(self, node_id: int) -> str:" in source
+    assert "return str(self[node_id])" in source
+
+
 def test_hint_callback_defensively_ignores_stale_ida_node_ids() -> None:
     source = _source("OnHint")
 
