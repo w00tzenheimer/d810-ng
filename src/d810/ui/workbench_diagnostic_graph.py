@@ -228,8 +228,7 @@ class IdaDiagnosticGraphView:
             if not handles:
                 self.native_group_warning = "Native group unavailable: IDA rejected group"
                 return
-            if not viewer.SetGroupsVisibility(handles, True):
-                self.native_group_warning = "Native group unavailable: visibility rejected"
+            viewer.SetGroupsVisibility(handles, True)
         except Exception as error:
             self.native_group_warning = f"Native group unavailable: {error}"
 

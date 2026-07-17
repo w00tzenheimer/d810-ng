@@ -70,6 +70,18 @@ def test_graphviewer_supplies_its_mandatory_text_callback() -> None:
     assert "return str(self[node_id])" in source
 
 
+def test_native_group_visibility_treats_ida_void_return_as_success() -> None:
+    source_text = GRAPH.read_text(encoding="utf-8")
+    source = ast.get_source_segment(
+        source_text,
+        _method("IdaDiagnosticGraphView", "realize_group"),
+    )
+    assert source is not None
+
+    assert "viewer.SetGroupsVisibility(handles, True)" in source
+    assert "if not viewer.SetGroupsVisibility" not in source
+
+
 def test_hint_callback_defensively_ignores_stale_ida_node_ids() -> None:
     source = _source("OnHint")
 
