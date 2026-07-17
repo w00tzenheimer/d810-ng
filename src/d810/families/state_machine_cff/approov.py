@@ -16,8 +16,8 @@ This is a *sibling* of :class:`HodurFamily`, not a fork: it runs the SAME portab
 Disambiguation (the resolution of "why is Hodur attacking Approov"): each family OWNS a
 ``TableProvenance`` set. A table-backed function is claimed HERE; an equality-chain function by
 ``HodurFamily``. The shared *front-end* stays shared; only the *claim* is per-family.
-Because the claims are DISJOINT (table-backed here, equality-chain for Hodur),
-``select_family`` is order-independent — no priority/tiebreak needed.
+Because the claims are DISJOINT (table-backed here, equality-chain for Hodur), the
+priority mainly preserves the historical Approov-before-Tigress tie-break across reloads.
 
 Additive + inert: ApproovFamily auto-registers (via :class:`StateMachineCffFamily` /
 ``Registrant``) and is enumerated by :func:`d810.families.registry.select_family`, which
@@ -73,6 +73,7 @@ class ApproovFamily(StateMachineCffFamily):
     """Switch/indirect CFF (Approov) family: detection + pipeline shape. No microcode patching."""
 
     name = "approov"
+    selection_priority = 200
 
     #: Switch-table dispatchers survive flat through global analysis (the backend keeps the
     #: jump table), so ``GLOBAL_ANALYZED`` (Hex-Rays ``MMAT_GLBOPT1``) is the recovery point

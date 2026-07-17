@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 from d810.manager.config_v2_edit_models import (
@@ -81,6 +82,62 @@ def test_save_action_requires_exact_current_valid_identity():
     assert "unknown pass" in invalid["save_project"].reason
     assert stale["save_project"].enabled is False
     assert "current draft" in stale["save_project"].reason
+
+
+def test_document_projection_exposes_typed_fields_and_read_only_complete_payload():
+    document = {
+        "description": "OLLVM profile",
+        "migration_metadata": {"schema": 7},
+        "additional_configuration": {
+            "pipeline_v2_mode": "config-v2",
+            "analysis_priors": {"opaque": True},
+            "router_resolution": {
+                "prefer": {"approov": 4.0},
+                "require": None,
+                "deny": ["tigress"],
+            },
+            "pipeline_v2": [
+                {
+                    "pass_id": "mba-simplify",
+                    "rules": {
+                        "include": ["RuleA"],
+                        "exclude": [],
+                        "options": {"budget": 3},
+                    },
+                    "unknown_pass_metadata": "preserve-me",
+                },
+                {"pass": "jump-fixer", "options": {}},
+            ],
+        },
+    }
+    draft = ConfigV2ProjectDraft(
+        draft_id="draft",
+        revision=2,
+        source_path=Path("/source.json"),
+        destination_path=Path("/destination.json"),
+        source_sha256="abc",
+        original_document_json=json.dumps(document),
+        document_json=json.dumps(document),
+    )
+
+    view = logic.project_config_v2_document(draft)
+
+    assert view.description == "OLLVM profile"
+    assert [row.pass_id for row in view.pipeline_rows] == [
+        "mba-simplify",
+        "jump-fixer",
+    ]
+    assert json.loads(view.pipeline_rows[0].rules_json)["options"] == {"budget": 3}
+    assert json.loads(view.routing_json)["deny"] == ["tigress"]
+    assert json.loads(view.complete_document_json)["migration_metadata"] == {
+        "schema": 7
+    }
+    unsupported = json.loads(view.unsupported_document_json)
+    assert unsupported["migration_metadata"] == {"schema": 7}
+    assert unsupported["additional_configuration"]["analysis_priors"] == {
+        "opaque": True
+    }
+    assert "pipeline_v2" not in unsupported["additional_configuration"]
 
 
 def test_config_v2_logic_has_no_qt_ida_registry_or_persistence_imports():

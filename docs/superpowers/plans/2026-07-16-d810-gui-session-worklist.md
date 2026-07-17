@@ -232,6 +232,16 @@ workbench or later dock gates.
   operation.
 - The reloader publishes the outer plugin as `__main__.D810`; the real state is
   under `__main__.D810.plugin`.
+- The IDA console injects `D810` into `__main__`, but the MCP evaluator has a
+  separate globals mapping. Use `import __main__; __main__.D810.reload()` from
+  MCP rather than referring to bare `D810`.
+- Full-package reload can exceed the MCP plugin's fixed 15-second callback
+  budget. Keep the IDA process alive and schedule the reload with
+  `ida_kernwin.register_timer()` when necessary; do not restart the container
+  merely to refresh Python UI code.
+- Hot reload now restores the manager's prior started state. Family discovery
+  resolves the current post-reload Registrant base and uses stable distributed
+  selection priorities, preserving `hodur`, `approov`, `tigress` order.
 - `idaapi.run_plugin()` may return false because `D810Plugin.run()` returns
   `None` even when reload/UI work succeeds. Never use that boolean as the
   automation success oracle.
@@ -675,18 +685,41 @@ Qt widget capture is `.tmp/ida-gui/live-recipe-slice4-post-review.png`.
 
 ### Slice 5: v2-aware advanced project editing (`tcvpu-qzth`)
 
-Status: headless serializers, lossless persistence, routing propagation, and
-atomic save/reload are implemented; Qt/live acceptance pending.
+Status: complete through live Docker/XQuartz acceptance on 2026-07-16. The
+compact Workbench, Recipe Composer, and config-v2 captures are
+`.tmp/ida-gui/live-workbench-compact.png`,
+`.tmp/ida-gui/live-recipe-compact.png`,
+`.tmp/ida-gui/live-config-v2-routing-edited.png`, and
+`.tmp/ida-gui/live-recipe-project-editor.png`.
 
-- [ ] Add thin editors only for fields with declared serializers.
-- [ ] Keep unknown and unsupported document fields visible/read-only and prove
+- [x] Add thin editors only for fields with declared serializers.
+- [x] Keep unknown and unsupported document fields visible/read-only and prove
   they survive a save unchanged.
-- [ ] Edit pass/rule selection and routing policy, validate the full pipeline,
+- [x] Edit pass/rule selection and routing policy, validate the full pipeline,
   write atomically, and reload through the manager.
-- [ ] Refuse bundled-default overwrite and every edit that would cause a flat
+- [x] Refuse bundled-default overwrite and every edit that would cause a flat
   rule semantic downgrade.
-- [ ] Verify a live routing edit changes family selection as specified and can
+- [x] Verify a live routing edit changes family selection as specified and can
   be reverted losslessly.
+
+Live evidence:
+
+- D-810 Configuration's Edit action opened the structured six-pass runtime
+  draft; Recipe Composer's enabled `Save as project profile` opened a seeded
+  one-pass `jump-fixer` draft without writing a file.
+- The project description uses a wrapped multiline editor with vertical
+  scrolling as needed; compact group/form layouts keep spare height in the
+  working panes rather than between context labels.
+- A validated in-memory `prefer: {tigress: 10}` edit changed deterministic
+  family selection from `approov` to `tigress`; Reset restored the original
+  complete canonical JSON exactly.
+- A disposable `.tmp/ida-gui/live-config-v2-disposable.json` copy saved
+  atomically, reloaded as config-v2 with six passes and D810 still started,
+  then the session restored `hodur_flag2_s1a.json` and removed both the
+  temporary project registration and file.
+- Final focused verification was `156 passed`; the full unit suite was
+  `6143 passed, 29 skipped, 9 warnings, 162 subtests passed`. Import cycles,
+  ast-grep, all 13 import-linter contracts, and `git diff --check` were clean.
 
 ### Diagnostics D0: read-only SQLite explorer (`tcvpu-u83u`)
 

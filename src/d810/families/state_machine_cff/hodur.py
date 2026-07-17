@@ -30,6 +30,7 @@ class HodurFamily(StateMachineCffFamily):
     """State-variable CFF (Hodur) family: detection + pipeline shape. No microcode patching."""
 
     name = "hodur"
+    selection_priority = 300
 
     #: Recover at ``GLOBAL_ANALYZED`` (Hex-Rays ``MMAT_GLBOPT1`` — the historical stage the
     #: goldens are tuned to). Equality-chains that the backend folds into a structured loop

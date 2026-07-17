@@ -65,6 +65,7 @@ if IDA_AVAILABLE:
             self._command_adapter: typing.Any = None
             self._comparison_dialog: typing.Any = None
             self._recipe_panel: typing.Any = None
+            self._config_v2_editor: typing.Any = None
             self._pending_focus: WorkbenchSection | None = None
             self._closed = False
             self.parent: typing.Any = None
@@ -141,11 +142,11 @@ if IDA_AVAILABLE:
         def OnCreate(self, form: typing.Any) -> None:
             self.parent = self.FormToPyQtWidget(form)
 
-            context_layout = QtWidgets.QVBoxLayout()
-            context_layout.setContentsMargins(0, 0, 0, 0)
-            context_layout.addWidget(self.function_label)
-            context_layout.addWidget(self.runtime_label)
-            context_layout.addWidget(self.attack_label)
+            context_group = QtWidgets.QGroupBox("Function", self.parent)
+            context_layout = QtWidgets.QFormLayout(context_group)
+            context_layout.addRow("Function:", self.function_label)
+            context_layout.addRow("Runtime:", self.runtime_label)
+            context_layout.addRow("Attack:", self.attack_label)
 
             splitter = QtWidgets.QSplitter()
             try:
@@ -157,13 +158,13 @@ if IDA_AVAILABLE:
             splitter.setStretchFactor(0, 3)
             splitter.setStretchFactor(1, 2)
 
-            layout = QtWidgets.QVBoxLayout()
+            layout = QtWidgets.QVBoxLayout(self.parent)
             layout.setContentsMargins(4, 4, 4, 4)
-            layout.addLayout(context_layout)
+            layout.setSpacing(6)
+            layout.addWidget(context_group)
             layout.addWidget(self.filter_edit)
-            layout.addWidget(splitter)
+            layout.addWidget(splitter, stretch=1)
             layout.addLayout(self.action_layout)
-            self.parent.setLayout(layout)
 
             self.tree.header().setStretchLastSection(True)
             for column in range(3):
@@ -194,6 +195,9 @@ if IDA_AVAILABLE:
             if self._recipe_panel is not None:
                 self._recipe_panel.close()
                 self._recipe_panel = None
+            if self._config_v2_editor is not None:
+                self._config_v2_editor.close()
+                self._config_v2_editor = None
             self.parent = None
 
         def close(self) -> None:
@@ -348,9 +352,43 @@ if IDA_AVAILABLE:
             panel = WorkbenchRecipePanel(
                 recipe_adapter,
                 refresh_workbench=self.refresh,
+                open_project_profile=self._open_recipe_project_profile,
             )
             self._recipe_panel = panel
             panel.show()
+
+        def _open_recipe_project_profile(self, recipe: typing.Any) -> None:
+            from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
+            from d810.ui.config_v2_editing_panel import ConfigV2EditingPanel
+
+            config_dir = pathlib.Path(self._state.d810_config.config_dir)
+            default = config_dir / f"recipe_{int(recipe.function_ea):X}.json"
+            destination, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self.parent,
+                "Save recipe as a config-v2 project profile",
+                str(default),
+                "D810 project configurations (*.json)",
+            )
+            if not destination:
+                return
+            try:
+                adapter = ConfigV2EditingAdapter(
+                    self._state,
+                    destination=pathlib.Path(destination),
+                    recipe=recipe,
+                )
+                if self._config_v2_editor is not None:
+                    self._config_v2_editor.close()
+                editor = ConfigV2EditingPanel(
+                    adapter,
+                    on_saved=self.refresh,
+                )
+            except Exception as exc:
+                logger.warning("Config-v2 project editor failed: %s", exc)
+                self.detail.setPlainText(f"Project profile editor failed: {exc}")
+                return
+            self._config_v2_editor = editor
+            editor.show()
 
         def refresh(self) -> None:
             if self._func_ea is None:
@@ -389,7 +427,7 @@ if IDA_AVAILABLE:
                 return
             function_name = snapshot.function.name or f"sub_{snapshot.function.ea:X}"
             self.function_label.setText(
-                f"Function: {function_name} @ 0x{snapshot.function.ea:X} "
+                f"{function_name} @ 0x{snapshot.function.ea:X} "
                 f"(generation {snapshot.generation})"
             )
             routed = (
@@ -398,7 +436,7 @@ if IDA_AVAILABLE:
                 else ""
             )
             self.runtime_label.setText(
-                f"Runtime: {snapshot.runtime.runtime_name}{routed} "
+                f"{snapshot.runtime.runtime_name}{routed} "
                 f"[{snapshot.runtime.mode}]"
             )
             confidence = (
@@ -407,7 +445,7 @@ if IDA_AVAILABLE:
                 else f"{snapshot.attack.confidence:.2f}"
             )
             self.attack_label.setText(
-                f"Attack: {snapshot.attack.observed_shape}; "
+                f"{snapshot.attack.observed_shape}; "
                 f"confidence {confidence}; selection {snapshot.attack.selection_mode}"
             )
 
