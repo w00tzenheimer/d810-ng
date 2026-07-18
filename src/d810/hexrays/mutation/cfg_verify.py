@@ -20,6 +20,7 @@ helper_logger = getLogger(__name__)
 
 
 _OWNED_FAKE_BLOCK_ANCHORS: dict[int, set[int]] = {}
+_RESOLVER_PROVEN_LIVE_PREDICATES: dict[int, set[int]] = {}
 
 
 def _stable_mba_identity(mba: object) -> int:
@@ -57,6 +58,30 @@ def clear_owned_fake_block_registrations() -> None:
         len(_OWNED_FAKE_BLOCK_ANCHORS),
     )
     _OWNED_FAKE_BLOCK_ANCHORS.clear()
+
+
+def register_resolver_proven_live_predicate(
+    mba: object,
+    predicate_ea: int,
+) -> None:
+    """Protect one exact native predicate materialized by resolver evidence."""
+    _RESOLVER_PROVEN_LIVE_PREDICATES.setdefault(
+        _stable_mba_identity(mba),
+        set(),
+    ).add(int(predicate_ea))
+
+
+def is_resolver_proven_live_predicate(mba: object, predicate_ea: int) -> bool:
+    """Return whether both arms of this live predicate are resolver-owned."""
+    return int(predicate_ea) in _RESOLVER_PROVEN_LIVE_PREDICATES.get(
+        _stable_mba_identity(mba),
+        set(),
+    )
+
+
+def clear_resolver_proven_live_predicates() -> None:
+    """Forget MBA-scoped predicate ownership at pipeline teardown."""
+    _RESOLVER_PROVEN_LIVE_PREDICATES.clear()
 
 
 def repair_owned_fake_block_boundaries(mba: object) -> int:
@@ -366,6 +391,9 @@ __all__ = [
     "_collect_related_blocks",
     "_json_safe",
     "clear_owned_fake_block_registrations",
+    "clear_resolver_proven_live_predicates",
+    "is_resolver_proven_live_predicate",
     "register_owned_fake_block",
+    "register_resolver_proven_live_predicate",
     "repair_owned_fake_block_boundaries",
 ]

@@ -18,6 +18,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     TerminalReturnCarrierRequest,
+    is_conditional_handler_bridge_kind,
 )
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.ir.block_identity import BoundBlock, NativeEaInterval, StableBlockIdentity
@@ -68,6 +69,17 @@ class ResolverSessionState:
     indirect_dispatcher_materialized: bool = False
     snippet_capture_active: bool = False
     snippet_capture_profile_ea: int | None = None
+    preopt_union_preparation: object | None = None
+    prepatch_preopt_union_source: object | None = None
+    pending_preopt_reimport: bool = False
+    pending_prepatch_materialization: object | None = None
+    preopt_union_imported_mbas: set[tuple[int, int, int]] = field(
+        default_factory=set
+    )
+    preopt_union_mutated_mbas: set[tuple[int, int, int]] = field(
+        default_factory=set
+    )
+    attempted_mbas: set[tuple[int, int, int, int]] = field(default_factory=set)
     bootstrap_route_bindings: dict[
         tuple[StableBlockIdentity, int], BootstrapRouteBindingEvidence
     ] = field(default_factory=dict)
@@ -105,8 +117,25 @@ class ResolverSessionState:
         self,
         transfers: tuple[MaterializedIndirectTransfer, ...],
     ) -> bool:
-        """Merge portable transfer facts and advance their evidence epoch."""
-        merged = tuple(dict.fromkeys((*self.materialized_transfers, *transfers)))
+        """Merge portable facts, refreshing source-keyed predicate snapshots."""
+        merged = list(self.materialized_transfers)
+        for transfer in transfers:
+            resolver_kind = str(getattr(transfer, "resolver_kind", ""))
+            if is_conditional_handler_bridge_kind(resolver_kind):
+                merged = [
+                    existing
+                    for existing in merged
+                    if not (
+                        is_conditional_handler_bridge_kind(
+                            str(getattr(existing, "resolver_kind", ""))
+                        )
+                        and int(existing.source_jmp_ea)
+                        == int(transfer.source_jmp_ea)
+                    )
+                ]
+            if transfer not in merged:
+                merged.append(transfer)
+        merged = tuple(merged)
         if merged == self.materialized_transfers:
             return False
         self.materialized_transfers = merged
@@ -206,6 +235,13 @@ class ResolverSessionState:
         self.call_result_carriers = ()
         self.snippet_capture_active = False
         self.snippet_capture_profile_ea = None
+        self.preopt_union_preparation = None
+        self.prepatch_preopt_union_source = None
+        self.pending_preopt_reimport = False
+        self.pending_prepatch_materialization = None
+        self.preopt_union_imported_mbas.clear()
+        self.preopt_union_mutated_mbas.clear()
+        self.attempted_mbas.clear()
         self.bootstrap_route_bindings.clear()
 
     def rebind_bootstrap_route(

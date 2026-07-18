@@ -210,6 +210,8 @@ from d810.hexrays.mutation.mba_mutation_events import (
 )
 from d810.hexrays.mutation.cfg_verify import (
     capture_failure_artifact)
+from d810.hexrays.mutation.cfg_verify import (
+    register_resolver_proven_live_predicate)
 from d810.hexrays.mutation.cfg_mutations import (
     CPBLK_MINREF,
     copy_block_keep)
@@ -2634,6 +2636,12 @@ class DeferredGraphModifier:
         an adjacent fallthrough helper, preserving the original condition and
         changing only its block-reference destination.
         """
+        source_serial = int(source.serial)
+        source_start_ea = int(source.start)
+        taken_serial_before_insertion = int(taken_target.serial)
+        taken_start_ea = int(taken_target.start)
+        fallthrough_serial_before_insertion = int(fallthrough_target.serial)
+        fallthrough_start_ea = int(fallthrough_target.start)
         tail = source.tail
         if (
             source.nsucc() != 0
@@ -2641,6 +2649,19 @@ class DeferredGraphModifier:
             or not ida_hexrays.is_mcode_jcond(int(tail.opcode))
             or taken_target is fallthrough_target
         ):
+            logger.info(
+                "pruned conditional restore abstained: "
+                "source=blk%d@0x%X nsucc=%d tail=%s taken=blk%d@0x%X "
+                "fallthrough=blk%d@0x%X reason=source_shape",
+                source_serial,
+                source_start_ea,
+                int(source.nsucc()),
+                None if tail is None else int(tail.opcode),
+                taken_serial_before_insertion,
+                taken_start_ea,
+                fallthrough_serial_before_insertion,
+                fallthrough_start_ea,
+            )
             return False
 
         helper_serial = self._build_fallthrough_goto_helper(
@@ -2648,11 +2669,60 @@ class DeferredGraphModifier:
             fallthrough_target,
         )
         if helper_serial is None:
+            logger.info(
+                "pruned conditional restore abstained: "
+                "source=blk%d@0x%X fallthrough=blk%d@0x%X "
+                "reason=fallthrough_helper",
+                source_serial,
+                source_start_ea,
+                fallthrough_serial_before_insertion,
+                fallthrough_start_ea,
+            )
             return False
+        source = self._reacquire_block_after_insertion(
+            source_serial,
+            source_start_ea,
+        )
+        taken_target = self._reacquire_block_after_insertion(
+            taken_serial_before_insertion,
+            taken_start_ea,
+        )
+        fallthrough_target = self._reacquire_block_after_insertion(
+            fallthrough_serial_before_insertion,
+            fallthrough_start_ea,
+        )
         helper = self.mba.get_mblock(int(helper_serial))
-        if helper is None or int(helper.serial) != int(source.serial) + 1:
+        if (
+            source is None
+            or taken_target is None
+            or fallthrough_target is None
+            or helper is None
+            or int(helper.serial) != int(source.serial) + 1
+        ):
+            logger.info(
+                "pruned conditional restore abstained: "
+                "source=blk%d@0x%X helper=%s taken=blk%d@0x%X "
+                "fallthrough=blk%d@0x%X reason=reacquire",
+                source_serial,
+                source_start_ea,
+                helper_serial,
+                taken_serial_before_insertion,
+                taken_start_ea,
+                fallthrough_serial_before_insertion,
+                fallthrough_start_ea,
+            )
             return False
 
+        tail = source.tail
+        if tail is None or not ida_hexrays.is_mcode_jcond(int(tail.opcode)):
+            logger.info(
+                "pruned conditional restore abstained: "
+                "source=blk%d@0x%X tail=%s reason=tail_after_insertion",
+                int(source.serial),
+                int(source.start),
+                None if tail is None else int(tail.opcode),
+            )
+            return False
         taken_serial = int(taken_target.serial)
         tail.d = ida_hexrays.mop_t()
         tail.d.make_blkref(taken_serial)
@@ -2709,6 +2779,72 @@ class DeferredGraphModifier:
         self.mark_blocks_dirty_now(source, target)
         return True
 
+    def collapse_proven_dispatcher_envelope_now(
+        self,
+        source: ida_hexrays.mblock_t,
+        target: ida_hexrays.mblock_t,
+    ) -> bool:
+        """Replace one normalized resolver envelope with a proven direct edge.
+
+        PREOPT may expose the same native multi-target ``jmp reg`` as either a
+        two-way conditional or a one-way jump-table helper.  The caller must
+        independently prove that every native arm carries the same dispatcher
+        state to ``target``; this method only validates and rewires the local
+        one/two-successor envelope.
+        """
+        old_successor_serials = tuple(int(serial) for serial in source.succset)
+        if len(old_successor_serials) not in {1, 2} or source.tail is None:
+            return False
+        tail_opcode = int(source.tail.opcode)
+        if not (
+            ida_hexrays.is_mcode_jcond(tail_opcode)
+            or tail_opcode
+            in {
+                int(ida_hexrays.m_goto),
+                int(ida_hexrays.m_ijmp),
+                int(ida_hexrays.m_jtbl),
+                int(ida_hexrays.m_call),
+                int(ida_hexrays.m_icall),
+            }
+        ):
+            return False
+        old_successors = tuple(
+            self.mba.get_mblock(serial) for serial in old_successor_serials
+        )
+        if any(block is None for block in old_successors):
+            return False
+        for old_successor in old_successors:
+            assert old_successor is not None
+            source.succset._del(int(old_successor.serial))
+            if int(source.serial) in {
+                int(predecessor) for predecessor in old_successor.predset
+            }:
+                old_successor.predset._del(int(source.serial))
+        insert_goto_instruction(
+            source,
+            int(target.serial),
+            nop_previous_instruction=True,
+        )
+        source.type = int(ida_hexrays.BLT_1WAY)
+        source.flags |= int(ida_hexrays.MBL_GOTO)
+        if not any(
+            int(instruction.opcode)
+            in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}
+            for instruction in self._block_instructions(source)
+        ):
+            source.flags &= ~int(ida_hexrays.MBL_CALL)
+        source.succset.push_back(int(target.serial))
+        if int(source.serial) not in {
+            int(predecessor) for predecessor in target.predset
+        }:
+            target.predset.push_back(int(source.serial))
+        self.mark_blocks_dirty_now(
+            source,
+            target,
+            *(block for block in old_successors if block is not None),
+        )
+        return True
+
     def lower_proven_indirect_transfer_to_goto_now(
         self,
         source: ida_hexrays.mblock_t,
@@ -2741,8 +2877,22 @@ class DeferredGraphModifier:
         indirect_instruction = candidates[0]
 
         successors = tuple(int(serial) for serial in source.succset)
+        synthetic_return = None
         if successors not in ((), (int(target.serial),)):
-            return False
+            if len(successors) != 1:
+                return False
+            candidate = self.mba.get_mblock(int(successors[0]))
+            return_instructions = (
+                () if candidate is None else self._block_instructions(candidate)
+            )
+            if (
+                candidate is None
+                or int(candidate.nsucc()) != 0
+                or len(return_instructions) != 1
+                or int(return_instructions[0].opcode) != int(ida_hexrays.m_ret)
+            ):
+                return False
+            synthetic_return = candidate
 
         instruction_index = instructions.index(indirect_instruction)
         trailing = instructions[instruction_index + 1 :]
@@ -2762,7 +2912,18 @@ class DeferredGraphModifier:
                 int(target.serial),
                 nop_previous_instruction=False,
             )
-        if not successors:
+        if synthetic_return is not None:
+            source.succset._del(int(synthetic_return.serial))
+            if int(source.serial) in {
+                int(predecessor) for predecessor in synthetic_return.predset
+            }:
+                synthetic_return.predset._del(int(source.serial))
+            source.succset.push_back(int(target.serial))
+            if int(source.serial) not in {
+                int(predecessor) for predecessor in target.predset
+            }:
+                target.predset.push_back(int(source.serial))
+        elif not successors:
             source.succset.push_back(int(target.serial))
             if int(source.serial) not in {
                 int(predecessor) for predecessor in target.predset
@@ -2776,8 +2937,186 @@ class DeferredGraphModifier:
             for instruction in self._block_instructions(source)
         ):
             source.flags &= ~int(ida_hexrays.MBL_CALL)
-        self.mark_blocks_dirty_now(source, target)
+        if synthetic_return is None:
+            self.mark_blocks_dirty_now(source, target)
+        else:
+            self.mark_blocks_dirty_now(source, synthetic_return, target)
         return True
+
+    def lower_proven_indirect_transfer_to_conditional_now(
+        self,
+        source: ida_hexrays.mblock_t,
+        taken_target: ida_hexrays.mblock_t,
+        fallthrough_target: ida_hexrays.mblock_t,
+        *,
+        indirect_instruction_ea: int,
+        predicate_register: int,
+        predicate_size: int,
+        predicate_constant: int,
+        condition_code: int,
+    ) -> bool:
+        """Lower one resolver-proven raw indirect cut to an explicit predicate.
+
+        PREOPT can preserve an original ``jmp reg`` as a zero-way raw
+        ``m_mov``/``m_icall`` envelope even though its native target bodies are
+        absent from the live function MBA.  The static resolver supplies the
+        exact x86 comparison semantics and both targets.  Rebuild that proof as
+        ``m_jnz(m_setcc(register, constant), 0)`` so later Hex-Rays maturities
+        see ordinary two-way microcode rather than an invented call.
+        """
+        set_opcode_by_condition_code = {
+            2: int(ida_hexrays.m_setb),
+            3: int(ida_hexrays.m_setae),
+            4: int(ida_hexrays.m_setz),
+            5: int(ida_hexrays.m_setnz),
+            6: int(ida_hexrays.m_setbe),
+            7: int(ida_hexrays.m_seta),
+            12: int(ida_hexrays.m_setl),
+            13: int(ida_hexrays.m_setge),
+            14: int(ida_hexrays.m_setle),
+            15: int(ida_hexrays.m_setg),
+        }
+        condition_code = int(condition_code)
+        predicate_size = int(predicate_size)
+        set_opcode = set_opcode_by_condition_code.get(condition_code)
+        current_successors = tuple(int(serial) for serial in source.succset)
+        if (
+            set_opcode is None
+            or predicate_size <= 0
+            or int(predicate_register) < 0
+            or source is taken_target
+            or source is fallthrough_target
+            or taken_target is fallthrough_target
+            or len(current_successors) > 1
+        ):
+            logger.info(
+                "resolver conditional cut diagnostic: invalid proof/topology "
+                "source=blk%d@0x%x cc=%d size=%d reg=%d successors=%s "
+                "taken=blk%d@0x%x fallthrough=blk%d@0x%x",
+                int(source.serial),
+                int(source.start),
+                condition_code,
+                predicate_size,
+                int(predicate_register),
+                current_successors,
+                int(taken_target.serial),
+                int(taken_target.start),
+                int(fallthrough_target.serial),
+                int(fallthrough_target.start),
+            )
+            return False
+        synthetic_return = None
+        if current_successors:
+            synthetic_return = self.mba.get_mblock(current_successors[0])
+            return_instructions = (
+                ()
+                if synthetic_return is None
+                else self._block_instructions(synthetic_return)
+            )
+            if (
+                synthetic_return is None
+                or int(synthetic_return.nsucc()) != 0
+                or len(return_instructions) != 1
+                or int(return_instructions[0].opcode) != int(ida_hexrays.m_ret)
+            ):
+                logger.info(
+                    "resolver conditional cut diagnostic: invalid return envelope "
+                    "source=blk%d@0x%x successor=%s shape=%s",
+                    int(source.serial),
+                    int(source.start),
+                    current_successors,
+                    (
+                        None
+                        if synthetic_return is None
+                        else (
+                            int(synthetic_return.serial),
+                            int(synthetic_return.type),
+                            int(synthetic_return.nsucc()),
+                            tuple(int(serial) for serial in synthetic_return.succset),
+                            None
+                            if synthetic_return.head is None
+                            else (
+                                int(synthetic_return.head.ea),
+                                int(synthetic_return.head.opcode),
+                            ),
+                            None
+                            if synthetic_return.tail is None
+                            else (
+                                int(synthetic_return.tail.ea),
+                                int(synthetic_return.tail.opcode),
+                            ),
+                        )
+                    ),
+                )
+                return False
+        source_instructions = self._block_instructions(source)
+        candidates = tuple(
+            instruction
+            for instruction in source_instructions
+            if int(instruction.ea) == int(indirect_instruction_ea)
+            and int(instruction.opcode)
+            in {
+                int(ida_hexrays.m_mov),
+                int(ida_hexrays.m_call),
+                int(ida_hexrays.m_icall),
+                int(ida_hexrays.m_ijmp),
+            }
+        )
+        if len(candidates) != 1 or candidates[0] is not source_instructions[-1]:
+            logger.info(
+                "resolver conditional cut diagnostic: instruction match failed "
+                "source=blk%d@0x%x instruction=0x%x candidates=%s tail=%s",
+                int(source.serial),
+                int(source.start),
+                int(indirect_instruction_ea),
+                tuple(
+                    (int(instruction.ea), int(instruction.opcode))
+                    for instruction in candidates
+                ),
+                (
+                    None
+                    if source.tail is None
+                    else (int(source.tail.ea), int(source.tail.opcode))
+                ),
+            )
+            return False
+
+        safe_ea = int(indirect_instruction_ea)
+        try:
+            compare = ida_hexrays.minsn_t(safe_ea)
+            compare.opcode = set_opcode
+            compare.l = ida_hexrays.mop_t()
+            compare.l.make_reg(int(predicate_register), predicate_size)
+            compare.r = ida_hexrays.mop_t()
+            compare.r.make_number(
+                int(predicate_constant) & ((1 << (8 * predicate_size)) - 1),
+                predicate_size,
+                safe_ea,
+            )
+            compare.d = ida_hexrays.mop_t()
+            compare.d.size = 1
+            condition = ida_hexrays.mop_t()
+            condition.create_from_insn(compare)
+        except Exception as exc:  # noqa: BLE001 - synthesis is fail-closed
+            logger.warning(
+                "resolver conditional cut synthesis failed at 0x%x: %s",
+                safe_ea,
+                exc,
+            )
+            return False
+
+        if synthetic_return is None:
+            old_dispatcher_serial = int(taken_target.serial)
+        else:
+            old_dispatcher_serial = int(synthetic_return.serial)
+        return self._apply_lower_conditional_state_transition(
+            source,
+            old_dispatcher_serial=old_dispatcher_serial,
+            rewrite_from_ea=safe_ea,
+            condition_operand=condition,
+            false_target_serial=int(fallthrough_target.serial),
+            true_target_serial=int(taken_target.serial),
+        )
 
     def restore_pruned_call_continuation_now(
         self,
@@ -4072,8 +4411,33 @@ class DeferredGraphModifier:
                 continue_on_verify_failure,
             )
 
-        # Sort by priority (lower = earlier)
-        sorted_mods = sorted(self.modifications, key=lambda m: m.priority)
+        # Sort by priority (lower = earlier). Conditional lowerings insert a
+        # helper immediately after their source block, shifting every later
+        # serial. Apply those rewrites from the highest source serial downward
+        # so one helper insertion cannot move a source that is still pending.
+        # All other modifications retain their stable insertion order.
+        def _apply_order(
+            item: tuple[int, GraphModification],
+        ) -> tuple[int, int, int, int]:
+            index, modification = item
+            is_conditional = (
+                modification.mod_type
+                == ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION
+            )
+            return (
+                int(modification.priority),
+                1 if is_conditional else 0,
+                -int(modification.block_serial) if is_conditional else int(index),
+                int(index),
+            )
+
+        sorted_mods = [
+            modification
+            for _, modification in sorted(
+                enumerate(self.modifications),
+                key=_apply_order,
+            )
+        ]
 
         # Debug knob: limit number of deferred modifications applied in this batch.
         # Useful for bisecting CFG corruption/segfault sources without changing
@@ -4169,7 +4533,9 @@ class DeferredGraphModifier:
                     label=f"deferred_apply_{phase_label}",
                     func_ea=self.mba.entry_ea if self.mba is not None else 0,
                     maturity="MMAT_GLBOPT1",
-                    phase=phase_label,
+                    # ``snapshots.phase`` is a fixed pipeline-stage enum; the
+                    # finer deferred-apply boundary remains encoded in label.
+                    phase="unknown",
                 )
             except Exception:
                 logger.debug(
@@ -7615,6 +7981,15 @@ class DeferredGraphModifier:
         true_target = self._resolve_serial(int(true_target_serial))
         old_dispatcher = self._resolve_serial(int(old_dispatcher_serial))
         if false_target is None or true_target is None or old_dispatcher is None:
+            logger.info(
+                "conditional_state_transition diagnostic: unresolved serial "
+                "source=blk%d@0x%x old=%s false=%s true=%s",
+                int(blk.serial),
+                int(blk.start),
+                old_dispatcher_serial,
+                false_target_serial,
+                true_target_serial,
+            )
             return False
         if not _is_live_block_serial(self.mba, false_target) or not _is_live_block_serial(self.mba, true_target):
             logger.warning(
@@ -7625,9 +8000,9 @@ class DeferredGraphModifier:
             )
             return False
         current_successors = tuple(int(successor) for successor in blk.succset)
-        if (
-            int(blk.nsucc()) not in (1, 2)
-            or int(old_dispatcher) not in current_successors
+        if int(blk.nsucc()) not in (0, 1, 2) or (
+            current_successors
+            and int(old_dispatcher) not in current_successors
         ):
             logger.warning(
                 "conditional_state_transition: block %d expected dispatcher successor %d, succs=%s",
@@ -7682,13 +8057,14 @@ class DeferredGraphModifier:
         else:
             condition_mop = self._materialize_condition_mop(condition_operand)
             if condition_mop is None:
+                logger.info(
+                    "conditional_state_transition diagnostic: condition clone "
+                    "failed source=blk%d@0x%x type=%s",
+                    int(blk.serial),
+                    int(blk.start),
+                    type(condition_operand).__name__,
+                )
                 return False
-
-        cursor = rewrite_insn
-        while cursor is not None:
-            next_insn = cursor.next
-            blk.remove_from_block(cursor)
-            cursor = next_insn
 
         safe_ea = int(rewrite_from_ea)
         if safe_ea == idaapi.BADADDR:
@@ -7704,6 +8080,29 @@ class DeferredGraphModifier:
         # false arm, and wire ``succset = [helper, taken]``.
         true_blk = self.mba.get_mblock(int(true_target))
         false_blk = self.mba.get_mblock(int(false_target))
+        source_serial_before_insertion = int(blk.serial)
+        source_start_ea = int(blk.start)
+        source_instruction_ea = int(rewrite_insn.ea)
+        true_serial_before_insertion = int(true_blk.serial) if true_blk is not None else -1
+        true_start_ea = int(true_blk.start) if true_blk is not None else idaapi.BADADDR
+        true_instruction_ea = (
+            None if true_blk is None or true_blk.head is None else int(true_blk.head.ea)
+        )
+        false_serial_before_insertion = int(false_blk.serial) if false_blk is not None else -1
+        false_start_ea = int(false_blk.start) if false_blk is not None else idaapi.BADADDR
+        false_instruction_ea = (
+            None if false_blk is None or false_blk.head is None else int(false_blk.head.ea)
+        )
+        logger.info(
+            "conditional target identity before helper: true=blk%d@0x%x %s "
+            "false=blk%d@0x%x %s",
+            int(true_blk.serial),
+            int(true_blk.start),
+            tuple((int(i.ea), int(i.opcode)) for i in self._block_instructions(true_blk)),
+            int(false_blk.serial),
+            int(false_blk.start),
+            tuple((int(i.ea), int(i.opcode)) for i in self._block_instructions(false_blk)),
+        )
         taken_target = int(true_target if true_is_taken else false_target)
         taken_state = true_state if true_is_taken else false_state
         fallthrough_state = false_state if true_is_taken else true_state
@@ -7715,8 +8114,18 @@ class DeferredGraphModifier:
             or taken_blk is None
             or fallthrough_blk is None
         ):
+            logger.info(
+                "conditional_state_transition diagnostic: target object missing "
+                "source=blk%d@0x%x true=%s false=%s taken=%s fallthrough=%s",
+                int(blk.serial),
+                int(blk.start),
+                true_blk,
+                false_blk,
+                taken_blk,
+                fallthrough_blk,
+            )
             return False
-        taken_helper = None
+        taken_helper_serial = None
         if has_arm_state_writes:
             taken_helper_serial = self._build_fallthrough_goto_helper(
                 blk,
@@ -7726,10 +8135,37 @@ class DeferredGraphModifier:
                 state_value=int(taken_state),
             )
             if taken_helper_serial is None:
+                logger.info(
+                    "conditional_state_transition diagnostic: taken helper failed "
+                    "source=blk%d@0x%x",
+                    int(blk.serial),
+                    int(blk.start),
+                )
                 return False
-            taken_helper = self.mba.get_mblock(int(taken_helper_serial))
-            if taken_helper is None:
+            blk = self._reacquire_block_after_insertion(
+                source_serial_before_insertion,
+                source_start_ea,
+                exact_instruction_ea=source_instruction_ea,
+                insertion_serial=int(taken_helper_serial),
+            )
+            true_blk = self._reacquire_block_after_insertion(
+                true_serial_before_insertion,
+                true_start_ea,
+                exact_instruction_ea=true_instruction_ea,
+                insertion_serial=int(taken_helper_serial),
+            )
+            false_blk = self._reacquire_block_after_insertion(
+                false_serial_before_insertion,
+                false_start_ea,
+                exact_instruction_ea=false_instruction_ea,
+                insertion_serial=int(taken_helper_serial),
+            )
+            if blk is None or true_blk is None or false_blk is None:
                 return False
+            fallthrough_blk = false_blk if true_is_taken else true_blk
+            source_serial_before_insertion = int(blk.serial)
+            true_serial_before_insertion = int(true_blk.serial)
+            false_serial_before_insertion = int(false_blk.serial)
         first_succ = self._build_fallthrough_goto_helper(
             blk,
             fallthrough_blk,
@@ -7740,10 +8176,72 @@ class DeferredGraphModifier:
             ),
         )
         if first_succ is None:
+            logger.info(
+                "conditional_state_transition diagnostic: fallthrough helper failed "
+                "source=blk%d@0x%x target=blk%d@0x%x",
+                int(blk.serial),
+                int(blk.start),
+                int(fallthrough_blk.serial),
+                int(fallthrough_blk.start),
+            )
             return False
-        taken_serial = int(
-            taken_helper.serial if taken_helper is not None else taken_blk.serial
+        blk = self._reacquire_block_after_insertion(
+            source_serial_before_insertion,
+            source_start_ea,
+            exact_instruction_ea=source_instruction_ea,
+            insertion_serial=int(first_succ),
         )
+        true_blk = self._reacquire_block_after_insertion(
+            true_serial_before_insertion,
+            true_start_ea,
+            exact_instruction_ea=true_instruction_ea,
+            insertion_serial=int(first_succ),
+        )
+        false_blk = self._reacquire_block_after_insertion(
+            false_serial_before_insertion,
+            false_start_ea,
+            exact_instruction_ea=false_instruction_ea,
+            insertion_serial=int(first_succ),
+        )
+        if blk is None or true_blk is None or false_blk is None:
+            return False
+        logger.info(
+            "conditional target identity after helper: source=blk%d@0x%x %s "
+            "true=blk%d@0x%x %s false=blk%d@0x%x %s",
+            int(blk.serial),
+            int(blk.start),
+            tuple((int(i.ea), int(i.opcode)) for i in self._block_instructions(blk)),
+            int(true_blk.serial),
+            int(true_blk.start),
+            tuple((int(i.ea), int(i.opcode)) for i in self._block_instructions(true_blk)),
+            int(false_blk.serial),
+            int(false_blk.start),
+            tuple((int(i.ea), int(i.opcode)) for i in self._block_instructions(false_blk)),
+        )
+        taken_blk = true_blk if true_is_taken else false_blk
+        fallthrough_blk = false_blk if true_is_taken else true_blk
+        if taken_helper_serial is None:
+            taken_serial = int(taken_blk.serial)
+        else:
+            current_taken_helper_serial = self._resolve_serial(
+                int(taken_helper_serial)
+            )
+            if current_taken_helper_serial is None:
+                return False
+            taken_serial = int(current_taken_helper_serial)
+
+        rewrite_insn = blk.head
+        while rewrite_insn is not None:
+            if int(rewrite_insn.ea) == source_instruction_ea:
+                break
+            rewrite_insn = rewrite_insn.next
+        if rewrite_insn is None:
+            return False
+        cursor = rewrite_insn
+        while cursor is not None:
+            next_insn = cursor.next
+            blk.remove_from_block(cursor)
+            cursor = next_insn
 
         if preserved_branch is not None:
             branch = preserved_branch
@@ -7791,6 +8289,11 @@ class DeferredGraphModifier:
             int(first_succ),
             int(rewrite_from_ea),
         )
+        if preserved_branch is not None:
+            register_resolver_proven_live_predicate(
+                self.mba,
+                int(rewrite_from_ea),
+            )
         # Diagnostic-only provenance: the lowered 2-way replaces a single
         # state-write-to-dispatcher edge, so the surviving snapshot shows only a
         # 1-way handler with no constant state write. Persist the (source,
@@ -7836,6 +8339,68 @@ class DeferredGraphModifier:
             pass
         return True
 
+    def _reacquire_block_after_insertion(
+        self,
+        serial_before_insertion: int,
+        start_ea: int,
+        *,
+        exact_instruction_ea: int | None = None,
+        insertion_serial: int | None = None,
+    ) -> ida_hexrays.mblock_t | None:
+        """Reacquire an ``mblock_t`` after MBA storage has been reallocated."""
+        if insertion_serial is not None:
+            expected_serial = int(serial_before_insertion) + int(
+                int(serial_before_insertion) >= int(insertion_serial)
+            )
+            if _is_live_block_serial(self.mba, expected_serial):
+                expected = self.mba.get_mblock(expected_serial)
+                has_expected_instruction = (
+                    exact_instruction_ea is None
+                    or any(
+                        int(instruction.ea) == int(exact_instruction_ea)
+                        for instruction in self._block_instructions(expected)
+                    )
+                )
+                if (
+                    expected is not None
+                    and int(expected.start) == int(start_ea)
+                    and has_expected_instruction
+                ):
+                    return expected
+        if exact_instruction_ea is not None:
+            exact_matches = tuple(
+                candidate
+                for serial in range(int(self.mba.qty))
+                for candidate in (self.mba.get_mblock(serial),)
+                if candidate is not None
+                and any(
+                    int(instruction.ea) == int(exact_instruction_ea)
+                    for instruction in self._block_instructions(candidate)
+                )
+            )
+            if len(exact_matches) == 1:
+                return exact_matches[0]
+        resolved_serial = self._resolve_serial(int(serial_before_insertion))
+        if resolved_serial is not None:
+            candidate = self.mba.get_mblock(int(resolved_serial))
+            if candidate is not None and int(candidate.start) == int(start_ea):
+                return candidate
+        matches = tuple(
+            candidate
+            for serial in range(int(self.mba.qty))
+            for candidate in (self.mba.get_mblock(serial),)
+            if candidate is not None and int(candidate.start) == int(start_ea)
+        )
+        instruction_backed = tuple(
+            candidate
+            for candidate in matches
+            if candidate.head is not None
+            and int(candidate.type) != int(ida_hexrays.BLT_XTRN)
+        )
+        if len(instruction_backed) == 1:
+            return instruction_backed[0]
+        return matches[0] if len(matches) == 1 else None
+
     def _build_fallthrough_goto_helper(
         self,
         blk: ida_hexrays.mblock_t,
@@ -7853,10 +8418,27 @@ class DeferredGraphModifier:
         requirement that ``succset[0]`` of a 2-way block equals the fall-through.
         """
         mba = blk.mba
+        target_serial_before_insertion = int(target_blk.serial)
+        target_start_ea = int(target_blk.start)
+        target_instruction_ea = (
+            None if target_blk.head is None else int(target_blk.head.ea)
+        )
         old_qty = int(mba.qty)
         nop_block = copy_block_keep(mba, blk, blk.serial + 1)
         if nop_block is None:
             return None
+        logger.info(
+            "fallthrough helper copy diagnostic: source=blk%d@0x%x "
+            "returned=blk%d@0x%x instructions=%s",
+            int(blk.serial),
+            int(blk.start),
+            int(nop_block.serial),
+            int(nop_block.start),
+            tuple(
+                (int(instruction.ea), int(instruction.opcode))
+                for instruction in self._block_instructions(nop_block)
+            ),
+        )
         self._record_serial_insertion(int(nop_block.serial), old_qty)
         # Strip the cloned body to a single NOP, then append the goto.
         cur = nop_block.head
@@ -7875,11 +8457,18 @@ class DeferredGraphModifier:
                 sblk.predset._del(nop_block.serial)
         for p in [int(x) for x in nop_block.predset]:
             nop_block.predset._del(p)
-        # Re-read the target object's serial after the insertion. The caller
-        # deliberately passes the object rather than a pre-insertion integer so
-        # a preceding arm-helper insertion cannot retarget this helper to the
-        # target's former predecessor.
-        target_serial = int(target_blk.serial)
+        # SWIG block proxies are not stable across ``copy_block_keep``.  Resolve
+        # the pre-insertion serial through this modifier's insertion ledger and
+        # reacquire the current C++ block instead of trusting ``target_blk``.
+        current_target = self._reacquire_block_after_insertion(
+            target_serial_before_insertion,
+            target_start_ea,
+            exact_instruction_ea=target_instruction_ea,
+            insertion_serial=int(nop_block.serial),
+        )
+        if current_target is None:
+            return None
+        target_serial = int(current_target.serial)
         state_fields = (state_register, state_size, state_value)
         if all(value is not None for value in state_fields):
             assignment = self._materialize_register_state_write(
@@ -7894,10 +8483,10 @@ class DeferredGraphModifier:
         insert_goto_instruction(nop_block, target_serial, nop_previous_instruction=False)
         nop_block.flags |= ida_hexrays.MBL_GOTO
         nop_block.succset.push_back(target_serial)
-        if nop_block.serial not in [int(p) for p in target_blk.predset]:
-            target_blk.predset.push_back(nop_block.serial)
-            if target_blk.serial != mba.qty - 1:
-                target_blk.mark_lists_dirty()
+        if nop_block.serial not in [int(p) for p in current_target.predset]:
+            current_target.predset.push_back(nop_block.serial)
+            if current_target.serial != mba.qty - 1:
+                current_target.mark_lists_dirty()
         nop_block.mark_lists_dirty()
         return int(nop_block.serial)
 

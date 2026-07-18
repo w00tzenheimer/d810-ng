@@ -436,6 +436,55 @@ def test_static_handler_capture_ranges_use_prepatch_owned_ranges() -> None:
         target_ea=0x40B163,
     ) == ()
 
+
+def test_static_fixpoint_equality_route_inherits_prepatch_owned_ranges() -> None:
+    state = 0x64B9DC19
+    target_ea = 0x40CCE6
+    equality = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CCE4,
+        source_block_ea=0x40CCCB,
+        materialized_anchor_eas=(0x40CCDF, 0x40CCE5),
+        target_eas=(target_ea, 0x40C9DB),
+        condition_code=4,
+        true_target_ea=target_ea,
+        false_target_ea=0x40C9DB,
+        selector_state_var_reg=20,
+        selector_compare_constant=state,
+        resolver_kind="static_fixpoint",
+    )
+    handler = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CCCB,
+        source_block_ea=0x40CCCB,
+        materialized_anchor_eas=(),
+        target_eas=(target_ea,),
+        selector_state_var_reg=20,
+        selector_state_constant=state,
+        resolver_kind="static_handler_entry_route",
+        owned_native_ranges=((target_ea, 0x40CCFB),),
+    )
+
+    assert plan_detached_snippet_routes(
+        (equality, handler),
+        live_eas=frozenset({0x40CCDF, 0x40CCE4, 0x40CCE5}),
+        live_target_eas=frozenset({0x40CCCB}),
+    ) == (
+        DetachedSnippetRoutePlan(
+            source_ea=0x40CCDF,
+            target_ea=target_ea,
+            state_constant=state,
+            evidence_kind="static_fixpoint",
+            owned_native_ranges=((target_ea, 0x40CCFB),),
+        ),
+    )
+    assert detached_handler_island.select_detached_snippet_capture_ranges(
+        plan_detached_snippet_routes(
+            (equality, handler),
+            live_eas=frozenset({0x40CCDF, 0x40CCE4, 0x40CCE5}),
+            live_target_eas=frozenset({0x40CCCB}),
+        ),
+        target_ea=target_ea,
+    ) == ((target_ea, 0x40CCFB),)
+
 def test_plan_detached_snippet_route_skips_live_static_handler_entry() -> None:
     state = 0xCCEC5DE0
     leaf = MaterializedIndirectTransfer(
@@ -594,6 +643,33 @@ def test_plan_detached_snippet_route_selects_missing_static_equality_arm() -> No
             target_ea=0x40C898,
             state_constant=0x19A7218A,
             evidence_kind="static_equality_fixpoint",
+        ),
+    )
+
+
+def test_plan_detached_snippet_route_selects_static_fixpoint_equality_arm() -> None:
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CD44,
+        source_block_ea=0x40CD2B,
+        materialized_anchor_eas=(0x40CD38, 0x40CD3E),
+        target_eas=(0x40C9DB, 0x40CD46),
+        condition_code=4,
+        true_target_ea=0x40CD46,
+        false_target_ea=0x40C9DB,
+        selector_compare_constant=0x34170401,
+        resolver_kind="static_fixpoint",
+    )
+
+    assert plan_detached_snippet_routes(
+        (transfer,),
+        live_eas=frozenset({0x40CD38, 0x40C9DB}),
+        live_target_eas=frozenset({0x40C9DB}),
+    ) == (
+        DetachedSnippetRoutePlan(
+            source_ea=0x40CD38,
+            target_ea=0x40CD46,
+            state_constant=0x34170401,
+            evidence_kind="static_fixpoint",
         ),
     )
 

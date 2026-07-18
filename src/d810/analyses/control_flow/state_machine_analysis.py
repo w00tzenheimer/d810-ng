@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+from collections import deque
 from dataclasses import dataclass, field
 
 from d810.ir.flowgraph import (
@@ -754,7 +755,7 @@ def run_snapshot_constant_fixpoint(
     flow_graph: FlowGraph,
     state_var_stkoff: int,
     *,
-    max_iterations: int = 1000,
+    max_iterations: int | None = None,
     state_var_gaddr: int | None = None,
     foldable_global_reads: object | None = None,
 ) -> SnapshotConstantFixpointResult:
@@ -770,16 +771,28 @@ def run_snapshot_constant_fixpoint(
     """
 
     block_serials = tuple(sorted(flow_graph.blocks))
+    iteration_budget = (
+        max(1000, len(block_serials) * 4)
+        if max_iterations is None
+        else int(max_iterations)
+    )
     in_stk_maps: dict[int, dict[int, int]] = {serial: {} for serial in block_serials}
     in_reg_maps: dict[int, dict[int, int]] = {serial: {} for serial in block_serials}
     out_stk_maps: dict[int, dict[int, int]] = {serial: {} for serial in block_serials}
     out_reg_maps: dict[int, dict[int, int]] = {serial: {} for serial in block_serials}
 
-    worklist = list(block_serials)
+    # FIFO matters here.  A LIFO worklist seeded with every block can repeatedly
+    # revisit high-serial cyclic regions before ever evaluating the function
+    # entry.  On a large imported MBA that exhausted the old fixed 1000-step
+    # budget with the prologue maps still empty.  Queue every block once before
+    # any revisit, then use a size-scaled default budget for convergence.
+    worklist = deque(block_serials)
+    queued = set(block_serials)
     iterations = 0
 
-    while worklist and iterations < max_iterations:
-        serial = worklist.pop()
+    while worklist and iterations < iteration_budget:
+        serial = worklist.popleft()
+        queued.discard(serial)
         iterations += 1
 
         block = flow_graph.get_block(serial)
@@ -819,8 +832,9 @@ def run_snapshot_constant_fixpoint(
             out_stk_maps[serial] = out_stk
             out_reg_maps[serial] = out_reg
             for succ in block.succs:
-                if succ not in worklist:
+                if succ not in queued:
                     worklist.append(succ)
+                    queued.add(succ)
 
     return SnapshotConstantFixpointResult(
         in_stk_maps=in_stk_maps,

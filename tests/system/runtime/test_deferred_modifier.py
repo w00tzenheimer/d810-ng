@@ -72,6 +72,7 @@ class _FakeBlock:
         self.serial = serial
         self.type = ida_hexrays.BLT_1WAY
         self.flags = 0
+        self.head = None
         self.tail = SimpleNamespace(opcode=ida_hexrays.m_goto, ea=0x1000, l=None, d=None, r=None)
         self.succset = _FakeEdgeSet()
         self.predset = _FakeEdgeSet()
@@ -217,6 +218,52 @@ def test_apply_aborts_on_first_failed_modification_and_cleans(monkeypatch):
     assert applied == 1
     assert len(calls) == 2
     assert mba.cleaned == 1
+
+
+def test_apply_orders_conditional_block_insertions_by_descending_source(
+    monkeypatch,
+):
+    """Later-source helper insertion must not drift an earlier source serial."""
+    mba = _FakeMBA()
+    mba.blocks = {
+        10: _FakeBlock(10, start=0x40DD15),
+        20: _FakeBlock(20, start=0x40DE51),
+    }
+    mba.qty = 30
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(
+            dm.ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
+            block_serial=10,
+            new_target=25,
+            old_target=22,
+            false_target=24,
+            true_target=25,
+            rewrite_from_ea=0x40DD38,
+        ),
+        dm.GraphModification(
+            dm.ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
+            block_serial=20,
+            new_target=27,
+            old_target=22,
+            false_target=26,
+            true_target=27,
+            rewrite_from_ea=0x40DE69,
+        ),
+    ]
+    applied_sources: list[int] = []
+
+    monkeypatch.setattr(
+        modifier,
+        "_apply_single",
+        lambda mod: applied_sources.append(int(mod.block_serial)) or True,
+    )
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_args, **_kwargs: None)
+
+    assert modifier.apply(run_optimize_local=False, run_deep_cleaning=False) == 2
+    assert applied_sources == [20, 10]
 
 
 def test_apply_transactional_rolls_back_when_mid_batch_aborts(monkeypatch):
@@ -810,15 +857,33 @@ def test_restore_pruned_conditional_preserves_predicate_and_builds_both_arms(
     mba.qty = 40
 
     def _copy_block_keep(_mba, _guard, insertion_serial):
+        rebuilt: dict[int, _FakeBlock] = {}
+        for block in tuple(mba.blocks.values()):
+            replacement = _FakeBlock(
+                int(block.serial) + (int(block.serial) >= int(insertion_serial)),
+                start=int(block.start),
+            )
+            replacement.mba = mba
+            replacement.type = int(block.type)
+            replacement.flags = int(block.flags)
+            replacement.head = block.head
+            replacement.tail = block.tail
+            replacement.succset = _FakeEdgeSet(tuple(int(x) for x in block.succset))
+            replacement.predset = _FakeEdgeSet(tuple(int(x) for x in block.predset))
+            if int(block.start) == 0x40C10A:
+                replacement.tail = SimpleNamespace(
+                    opcode=ida_hexrays.m_jnz,
+                    ea=0x40C12C,
+                    d=_BlockReference(),
+                )
+                replacement.nsucc = lambda: 0  # type: ignore[method-assign]
+            rebuilt[int(replacement.serial)] = replacement
         helper = _FakeBlock(int(insertion_serial), start=0xF1C10000)
         helper.mba = mba
         helper.head = None
         helper.make_nop = lambda _insn: None  # type: ignore[attr-defined]
-        for block in tuple(mba.blocks.values()):
-            if int(block.serial) >= int(insertion_serial):
-                block.serial += 1
-        mba.blocks = {int(block.serial): block for block in mba.blocks.values()}
-        mba.blocks[int(helper.serial)] = helper
+        rebuilt[int(helper.serial)] = helper
+        mba.blocks = rebuilt
         mba.qty += 1
         return helper
 
@@ -833,15 +898,18 @@ def test_restore_pruned_conditional_preserves_predicate_and_builds_both_arms(
         fallthrough_target=fallthrough_target,
     )
 
+    live_guard = mba.get_mblock(10)
     helper = mba.get_mblock(11)
-    assert guard.type == ida_hexrays.BLT_2WAY
-    assert tuple(guard.succset) == (11, int(taken_target.serial))
-    assert guard.tail.ea == 0x40C12C
-    assert guard.tail.d.t == ida_hexrays.mop_b
-    assert guard.tail.d.b == int(taken_target.serial)
-    assert tuple(helper.succset) == (int(fallthrough_target.serial),)
-    assert tuple(helper.predset) == (int(guard.serial),)
-    assert int(guard.serial) in tuple(taken_target.predset)
+    live_taken_target = mba.get_mblock(21)
+    live_fallthrough_target = mba.get_mblock(31)
+    assert live_guard.type == ida_hexrays.BLT_2WAY
+    assert tuple(live_guard.succset) == (11, int(live_taken_target.serial))
+    assert live_guard.tail.ea == 0x40C12C
+    assert live_guard.tail.d.t == ida_hexrays.mop_b
+    assert live_guard.tail.d.b == int(live_taken_target.serial)
+    assert tuple(helper.succset) == (int(live_fallthrough_target.serial),)
+    assert tuple(helper.predset) == (int(live_guard.serial),)
+    assert int(live_guard.serial) in tuple(live_taken_target.predset)
 
 
 def test_conditional_lowering_helpers_keep_target_identity_across_two_insertions(
@@ -898,6 +966,104 @@ def test_conditional_lowering_helpers_keep_target_identity_across_two_insertions
 
     second_target_serial = int(goto_targets[1][1])
     assert int(mba.get_mblock(second_target_serial).start) == 0x40C0FE
+
+
+def test_conditional_helper_rebinds_target_when_proxy_serial_stays_stale(
+    monkeypatch,
+) -> None:
+    mba = _FakeMBA()
+    guard = _FakeBlock(10, start=0x40AC64)
+    guard.mba = mba
+    guard.head = None
+    stale_target = _FakeBlock(20, start=0x40B0CA)
+    stale_target.mba = mba
+    mba.blocks = {
+        int(guard.serial): guard,
+        int(stale_target.serial): stale_target,
+    }
+    mba.qty = 30
+    goto_targets: list[int] = []
+
+    def _copy_block_keep(_mba, _guard, insertion_serial):
+        rebuilt: dict[int, _FakeBlock] = {}
+        for serial, block in tuple(mba.blocks.items()):
+            if int(serial) < int(insertion_serial):
+                rebuilt[int(serial)] = block
+                continue
+            replacement = _FakeBlock(
+                int(serial) + 1,
+                start=int(block.start),
+            )
+            replacement.mba = mba
+            rebuilt[int(replacement.serial)] = replacement
+        helper = _FakeBlock(int(insertion_serial), start=0xF1C20000)
+        helper.mba = mba
+        helper.head = None
+        helper.make_nop = lambda _insn: None  # type: ignore[attr-defined]
+        helper.mark_lists_dirty = lambda: None  # type: ignore[assignment]
+        rebuilt[int(helper.serial)] = helper
+        mba.blocks = rebuilt
+        mba.qty += 1
+        return helper
+
+    monkeypatch.setattr(dm, "copy_block_keep", _copy_block_keep)
+    monkeypatch.setattr(
+        dm,
+        "insert_goto_instruction",
+        lambda _helper, target, **_kwargs: goto_targets.append(int(target)),
+    )
+
+    modifier = dm.DeferredGraphModifier(mba)
+    assert modifier._build_fallthrough_goto_helper(guard, stale_target) == 11
+
+    assert goto_targets == [21]
+    assert int(mba.get_mblock(goto_targets[0]).start) == 0x40B0CA
+
+
+def test_conditional_reacquire_uses_current_insertion_position_before_ea_fallback():
+    mba = _FakeMBA()
+    source_ea = 0x40DD7C
+    target_ea = 0xF1C01C08
+
+    def _instruction(ea: int) -> SimpleNamespace:
+        return SimpleNamespace(ea=int(ea), opcode=ida_hexrays.m_mov, next=None)
+
+    source = _FakeBlock(108, start=0x40DD66)
+    source.head = source.tail = _instruction(source_ea)
+    copied_helper = _FakeBlock(109, start=0x40DD66)
+    copied_helper.head = copied_helper.tail = _instruction(source_ea)
+    shifted_target = _FakeBlock(665, start=0x40D200)
+    shifted_target.head = shifted_target.tail = _instruction(target_ea)
+    duplicate_ea = _FakeBlock(700, start=0x40D200)
+    duplicate_ea.head = duplicate_ea.tail = _instruction(target_ea)
+    mba.blocks = {
+        108: source,
+        109: copied_helper,
+        665: shifted_target,
+        700: duplicate_ea,
+    }
+    mba.qty = 701
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier._serial_remap = {108: 400, 664: 800}
+
+    assert (
+        modifier._reacquire_block_after_insertion(
+            108,
+            0x40DD66,
+            exact_instruction_ea=source_ea,
+            insertion_serial=109,
+        )
+        is source
+    )
+    assert (
+        modifier._reacquire_block_after_insertion(
+            664,
+            0x40D200,
+            exact_instruction_ea=target_ea,
+            insertion_serial=109,
+        )
+        is shifted_target
+    )
 
 
 def test_conditional_lowering_resolves_dispatcher_serial_once(monkeypatch):
@@ -2807,6 +2973,7 @@ class TestStagedAtomicClassification:
             dm.ModificationType.BLOCK_TERMINAL_GOTO_CHANGE,
             dm.ModificationType.BLOCK_CONVERT_TO_GOTO,
             dm.ModificationType.EDGE_REMOVE,
+            dm.ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL,
         }
         actual = {
             mt for mt in dm.ModificationType

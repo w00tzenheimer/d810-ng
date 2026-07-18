@@ -26,11 +26,39 @@ from d810.passes.unflatten.state_machine import (
     PlanSemanticRegions,
     RecoverDispatcher,
     RecoverStateTransitions,
+    _effective_state_identity,
 )
+from d810.analyses.control_flow.dispatcher_recovery import DispatcherRecovery
 from d810.passes.unflatten import state_machine as state_machine_module
 
 C1 = 0x10000001
 STATE_OFF = 0x3C
+
+
+def test_materialized_resolver_register_replaces_misidentified_stack_alias():
+    recovery = DispatcherRecovery(
+        state_var_stkoff=112,
+        state_var_reg=None,
+    )
+
+    assert _effective_state_identity(
+        recovery,
+        materialized_computed_goto_profile=True,
+        materialized_state_var_reg=20,
+    ) == (None, 20)
+
+
+def test_nonmaterialized_profile_keeps_recovered_stack_identity():
+    recovery = DispatcherRecovery(
+        state_var_stkoff=112,
+        state_var_reg=None,
+    )
+
+    assert _effective_state_identity(
+        recovery,
+        materialized_computed_goto_profile=False,
+        materialized_state_var_reg=20,
+    ) == (112, None)
 
 
 def _ne(const, target):

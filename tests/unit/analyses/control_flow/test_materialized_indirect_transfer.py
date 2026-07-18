@@ -12,18 +12,25 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     TerminalReturnCarrierRequest,
     exact_materialized_handler_override_serial,
     override_materialized_handler_targets,
+    select_materialized_handler_owner_serial,
     merge_materialized_handler_maps,
     find_unique_target_block,
     find_unique_target_entry_block,
+    instruction_backed_materialized_handler_owners,
     lookup_state_keyed_transfer_target,
     lookup_singleton_transfer_target,
+    materialized_dispatcher_router_native_ranges,
+    native_origin_blocks_in_ranges,
     materialized_terminal_target_eas_by_source,
+    missing_materialized_handler_targets,
     plan_terminal_return_carrier_requests,
     plan_resolver_proven_indirect_call_neutralizations,
     route_materialized_transfer_chain,
     route_transfer_target_through_condition_chain,
     plan_residual_state_route_bridges,
+    unique_materialized_conditional_handler_entry_eas,
     unique_materialized_equality_target_eas,
+    unique_materialized_state_register,
 )
 from d810.analyses.control_flow.minimal_state_recovery import (
     HandlerTransition,
@@ -74,6 +81,264 @@ def _graph() -> FlowGraph:
         entry_serial=1,
         func_ea=0x1000,
     )
+
+
+def test_unique_materialized_state_register_accepts_exact_resolver_consensus():
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CA05,
+            source_block_ea=0x40C9EC,
+            materialized_anchor_eas=(0x40C9F2,),
+            target_eas=(0x40CA22, 0x40CA60),
+            selector_state_var_reg=20,
+            selector_compare_constant=0xA7AFB008,
+            resolver_kind="static_fixpoint",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CA3B,
+            source_block_ea=0x40CA22,
+            materialized_anchor_eas=(0x40CA28,),
+            target_eas=(0x40C9DB, 0x40CA3D),
+            selector_state_var_reg=20,
+            selector_state_constant=0x960C145D,
+            resolver_kind="static_handler_entry_route",
+        ),
+    )
+
+    assert unique_materialized_state_register(transfers) == 20
+
+
+def test_unique_materialized_state_register_abstains_on_conflicting_resolvers():
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CA05,
+            source_block_ea=0x40C9EC,
+            materialized_anchor_eas=(0x40C9F2,),
+            target_eas=(0x40CA22, 0x40CA60),
+            selector_state_var_reg=20,
+            selector_compare_constant=0xA7AFB008,
+            resolver_kind="static_fixpoint",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CA50,
+            source_block_ea=0x40CA3D,
+            materialized_anchor_eas=(0x40CA47,),
+            target_eas=(0x40C9EC, 0x40CBB0),
+            selector_state_var_reg=28,
+            selector_compare_constant=0x069225E4,
+            resolver_kind="static_fixpoint",
+        ),
+    )
+
+    assert unique_materialized_state_register(transfers) is None
+
+
+def test_unique_materialized_state_register_prefers_state_routes_over_navigation_alias():
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CE90,
+            source_block_ea=0x40CE90,
+            materialized_anchor_eas=(0x40CE96,),
+            target_eas=(0x40CEAB,),
+            selector_state_var_reg=16,
+            selector_state_constant=0x255387B6,
+            resolver_kind="static_handler_entry_route",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CDBA,
+            source_block_ea=0x40CDB7,
+            materialized_anchor_eas=(0x40CDD0,),
+            target_eas=(0x40CEAB,),
+            selector_state_var_reg=16,
+            selector_state_constant=0x255387B6,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CEC6,
+            source_block_ea=0x40CEAB,
+            materialized_anchor_eas=(0x40CEB0,),
+            target_eas=(0x40CE10, 0x40CE78),
+            selector_state_var_reg=28,
+            selector_compare_constant=0x255387B6,
+            resolver_kind="static_fixpoint",
+        ),
+    )
+
+    assert unique_materialized_state_register(transfers) == 16
+
+
+def test_unique_materialized_state_register_ignores_non_state_evidence():
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CA05,
+        source_block_ea=0x40C9EC,
+        materialized_anchor_eas=(0x40C9F2,),
+        target_eas=(0x40CA22,),
+        selector_state_var_reg=28,
+        resolver_kind="detached_static_fixpoint",
+    )
+
+    assert unique_materialized_state_register((transfer,)) is None
+
+
+def test_conditional_handler_entries_project_unique_state_targets():
+    true_state = 0x5C46FC3C
+    false_state = 0x3EEFBA76
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0xF1C000B8,
+        source_block_ea=0x40CDA0,
+        materialized_anchor_eas=(0xF1C000B8,),
+        target_eas=(0x40CF38, 0x40CF01),
+        true_target_ea=0x40CF38,
+        false_target_ea=0x40CF01,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        resolver_kind="conditional_handler_bridge",
+    )
+
+    assert unique_materialized_conditional_handler_entry_eas(
+        (transfer,),
+        {true_state: 25, false_state: 23},
+    ) == {23: 0x40CF01, 25: 0x40CF38}
+
+
+def test_conditional_handler_entries_abstain_on_serial_identity_conflict():
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0xF1C000B8,
+        source_block_ea=0x40CDA0,
+        materialized_anchor_eas=(0xF1C000B8,),
+        target_eas=(0x40CF38, 0x40CF01),
+        true_target_ea=0x40CF38,
+        false_target_ea=0x40CF01,
+        predicate_true_state=0x5C46FC3C,
+        predicate_false_state=0x3EEFBA76,
+        resolver_kind="conditional_handler_bridge",
+    )
+
+    assert unique_materialized_conditional_handler_entry_eas(
+        (transfer,),
+        {0x5C46FC3C: 25, 0x3EEFBA76: 25},
+    ) == {}
+
+
+def test_missing_materialized_handler_targets_reports_unmapped_exact_states():
+    assert missing_materialized_handler_targets(
+        {
+            0x11111111: 0x401000,
+            0x22222222: 0x402000,
+        },
+        {
+            0x11111111: 10,
+        },
+    ) == ((0x22222222, 0x402000),)
+
+
+def test_missing_materialized_handler_targets_accepts_complete_exact_map():
+    assert missing_materialized_handler_targets(
+        {
+            0x11111111: 0x401000,
+            0x22222222: 0x402000,
+        },
+        {
+            0x11111111: 10,
+            0x22222222: 20,
+        },
+    ) == ()
+
+
+def test_missing_materialized_handler_targets_accepts_proven_terminal_state():
+    assert missing_materialized_handler_targets(
+        {
+            0x11111111: 0x401000,
+            0x22222222: 0x402000,
+        },
+        {
+            0x11111111: 10,
+        },
+        terminal_state_targets=((0x22222222, 0x402000),),
+    ) == ()
+
+
+def test_instruction_backed_handler_owners_reject_external_placeholders():
+    live_state = 0x11111111
+    placeholder_state = 0x22222222
+    unrelated_state = 0x33333333
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, 0x401000, (0x401000,)),
+            20: BlockSnapshot(
+                serial=20,
+                block_type=0,
+                succs=(),
+                preds=(10,),
+                flags=0,
+                start_ea=0x402000,
+                insn_snapshots=(),
+                kind=BlockKind.EXTERNAL,
+            ),
+            30: _block(30, 0x403000, (0x403000,)),
+        },
+        entry_serial=10,
+        func_ea=0x400000,
+    )
+
+    assert instruction_backed_materialized_handler_owners(
+        {
+            live_state: 0x401000,
+            placeholder_state: 0x402000,
+        },
+        {
+            live_state: 10,
+            placeholder_state: 20,
+            unrelated_state: 30,
+        },
+        graph,
+    ) == {live_state: 10}
+
+
+def test_instruction_backed_handler_owner_precedes_imported_clone():
+    state = 0xB8D2E088
+    graph = FlowGraph(
+        blocks={194: _block(194, 0x40E37B, (0x40E37B, 0x40E387))},
+        entry_serial=194,
+        func_ea=0x40D200,
+    )
+
+    assert select_materialized_handler_owner_serial(
+        state_constant=state,
+        instruction_backed_owners={state: 194},
+        exact_target_serial=670,
+        exact_target_ea=0x40E387,
+        flow_graph=graph,
+    ) == 194
+
+
+def test_adjacent_router_arm_does_not_replace_explicit_handler_entry():
+    state = 0x699BC698
+    graph = FlowGraph(
+        blocks={268: _block(268, 0x40EA9B, (0x40EA9B, 0x40EAA5))},
+        entry_serial=268,
+        func_ea=0x40D200,
+    )
+
+    assert select_materialized_handler_owner_serial(
+        state_constant=state,
+        instruction_backed_owners={state: 268},
+        exact_target_serial=777,
+        exact_target_ea=0x40EAA7,
+        flow_graph=graph,
+    ) == 777
+
+
+def test_imported_handler_owner_fills_missing_live_state():
+    graph = FlowGraph(blocks={}, entry_serial=0, func_ea=0x40D200)
+
+    assert select_materialized_handler_owner_serial(
+        state_constant=0xB8D2E088,
+        instruction_backed_owners={},
+        exact_target_serial=670,
+        exact_target_ea=0x40E387,
+        flow_graph=graph,
+    ) == 670
 
 
 @pytest.mark.parametrize(
@@ -160,6 +425,39 @@ def test_equality_target_projection_uses_condition_chain_fallback() -> None:
     }
 
 
+def test_equality_target_projection_accepts_static_fixpoint_equality_arm() -> None:
+    state = 0x64B9DC19
+    equality = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CCE4,
+        source_block_ea=0x40CCCB,
+        materialized_anchor_eas=(0x40CCD8, 0x40CCDE),
+        target_eas=(0x40C9DB, 0x40CCE6),
+        condition_code=4,
+        true_target_ea=0x40CCE6,
+        false_target_ea=0x40C9DB,
+        selector_state_var_reg=20,
+        selector_compare_constant=state,
+        resolver_kind="static_fixpoint",
+    )
+    range_comparison = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CC54,
+        source_block_ea=0x40CC40,
+        materialized_anchor_eas=(0x40CC48, 0x40CC4E),
+        target_eas=(0x40CC56, 0x40CCB0),
+        condition_code=13,
+        true_target_ea=0x40CCB0,
+        false_target_ea=0x40CC56,
+        selector_state_var_reg=20,
+        selector_compare_constant=state,
+        resolver_kind="static_fixpoint",
+    )
+
+    assert unique_materialized_equality_target_eas(
+        (equality, range_comparison),
+        20,
+    ) == {state: 0x40CCE6}
+
+
 def test_equality_candidate_requires_registered_live_target() -> None:
     state = 0xAB7BA295
     target_ea = 0x40DD70
@@ -223,6 +521,85 @@ def test_equality_target_projection_accepts_exact_residual_state_route() -> None
     assert unique_materialized_equality_target_eas((residual,), 20) == {
         state: 0x40BF1B,
     }
+
+
+def test_equality_target_projection_rejects_resolver_landing_in_dispatcher() -> None:
+    """A computed-goto landing can be another BST router, not a handler."""
+    state = 0x699BC698
+    router_ea = 0x40EAA7
+    residual = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40D348,
+        source_block_ea=0x40D313,
+        materialized_anchor_eas=(0x40D348,),
+        target_eas=(router_ea,),
+        dispatcher_router_eas=(router_ea, 0x40D370),
+        selector_state_var_reg=28,
+        selector_state_constant=state,
+        resolver_kind="residual_state_route",
+    )
+
+    assert unique_materialized_equality_target_eas((residual,), 28) == {}
+
+
+def test_explicit_handler_entry_may_also_be_a_dispatcher_router() -> None:
+    """A bootstrap handler can reload state and immediately dispatch again."""
+    state = 0x699BC698
+    bootstrap_ea = 0x40EAA7
+    route = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40EA8D,
+        source_block_ea=0x40EA8D,
+        materialized_anchor_eas=(),
+        target_eas=(bootstrap_ea,),
+        dispatcher_router_eas=(bootstrap_ea, 0x40D370),
+        selector_state_var_reg=28,
+        selector_state_constant=state,
+        resolver_kind="static_handler_entry_route",
+    )
+
+    assert unique_materialized_equality_target_eas((route,), 28) == {
+        state: bootstrap_ea,
+    }
+
+
+def test_imported_router_microblocks_follow_resolver_proven_native_range() -> None:
+    """Split PREOPT blocks inherit router identity from native instruction EAs."""
+    router_ea = 0x40EAA7
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40EABA,
+        source_block_ea=router_ea,
+        materialized_anchor_eas=(0x40EABA,),
+        target_eas=(0x40EA9B, 0x40D370),
+        dispatcher_router_eas=(router_ea, 0x40D370),
+        selector_state_var_reg=28,
+        selector_compare_constant=0x10B85E45,
+        resolver_kind="static_fixpoint",
+    )
+
+    ranges = materialized_dispatcher_router_native_ranges((transfer,))
+
+    assert ranges == ((0x40EAA7, 0x40EABB),)
+    assert native_origin_blocks_in_ranges(
+        {
+            777: frozenset({0x40EAA7}),
+            778: frozenset({0x40EAAB, 0x40EAB0}),
+            779: frozenset({0x40EAB6, 0x40EABA}),
+            780: frozenset({0x40EABB}),
+        },
+        ranges,
+    ) == frozenset({777, 778, 779})
+
+
+def test_router_native_ranges_ignore_unproven_source_blocks() -> None:
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40D38F,
+        source_block_ea=0x40D38B,
+        materialized_anchor_eas=(0x40D38F,),
+        target_eas=(0x40D391,),
+        dispatcher_router_eas=(0x40EAA7,),
+        resolver_kind="static_fixpoint",
+    )
+
+    assert materialized_dispatcher_router_native_ranges((transfer,)) == ()
 
 
 def test_residual_state_route_bridge_requires_unique_live_one_way_endpoints() -> None:
@@ -348,6 +725,49 @@ def test_terminal_state_route_requests_early_maturity_return_carrier() -> None:
         TerminalReturnCarrierRequest(
             source_handler_ea=0x40C7E5,
             terminal_target_ea=0x40C898,
+            state_var_reg=20,
+            state_constant=state,
+        ),
+    )
+
+
+def test_terminal_route_uses_native_identities_when_live_blocks_are_synthetic() -> None:
+    state = 0x69225E4
+    graph = FlowGraph(
+        blocks={
+            41: _block(41, 0x40C8B0, succs=(74,)),
+            74: BlockSnapshot(
+                serial=74,
+                block_type=7,
+                succs=(),
+                preds=(41,),
+                flags=0,
+                start_ea=0xFFFFFFFFFFFFFFFF,
+                insn_snapshots=(),
+                kind=BlockKind.STOP,
+            ),
+        },
+        entry_serial=41,
+        func_ea=0x40C8B0,
+    )
+
+    assert plan_terminal_return_carrier_requests(
+        graph,
+        (
+            MaterializedStateRoute(
+                source_block_serial=41,
+                state_constant=state,
+                target_handler_serial=74,
+                proof_kind="terminal_state_route",
+                source_native_ea=0x40CC1C,
+                target_native_ea=0x40CD8C,
+            ),
+        ),
+        state_var_reg=20,
+    ) == (
+        TerminalReturnCarrierRequest(
+            source_handler_ea=0x40CC1C,
+            terminal_target_ea=0x40CD8C,
             state_var_reg=20,
             state_constant=state,
         ),
@@ -609,6 +1029,26 @@ def test_state_keyed_route_maps_folded_native_entry_with_bounded_next_label():
     )
 
     assert lookup_state_keyed_transfer_target(graph, transfer, 0x304E8694) == 2
+
+
+def test_target_mapper_excludes_known_shadow_block_from_bounded_owner():
+    graph = FlowGraph(
+        blocks={
+            1: _block(1, 0x1000, (0x1002,)),
+            2: _block(2, 0x1FF0, (0x2004, 0x2008)),
+            3: _block(3, 0x1000, (0x2004, 0x2008)),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+
+    assert find_unique_target_entry_block(graph, 0x2000, 0x2005) is None
+    assert find_unique_target_entry_block(
+        graph,
+        0x2000,
+        0x2005,
+        excluded_serials=frozenset({3}),
+    ) == 2
 
 
 def test_state_keyed_equality_transfer_selects_matching_arm():

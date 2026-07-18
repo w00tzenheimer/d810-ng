@@ -210,6 +210,11 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
                 function_ea,
                 decision.get("reason", "unspecified"),
             )
+            if bool(decision.get("restart_from_generated")):
+                # CALLS can discover evidence that changes a resolver-owned
+                # PREOPT template.  A loop-local restart cannot revisit that
+                # template; MERR_REDO asks Hex-Rays to regenerate the MBA.
+                return ida_hexrays.MERR_REDO
             # Hex-Rays documents MERR_LOOP as the required result when a
             # calls_done subscriber changes microcode inputs.  It restarts the
             # optimization pipeline at the CALLS boundary.

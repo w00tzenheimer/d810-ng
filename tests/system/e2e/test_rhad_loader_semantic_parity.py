@@ -128,7 +128,7 @@ def test_real_loader_matches_reachable_semantic_oracle(tmp_path) -> None:
     assert "sub_40F830()" in recovered
     assert "memset((void *)Param[1], 0, 0x40000u)" in recovered
     assert re.search(r"sub_4069C0\([^;\n]*&Param\[13\]\)", recovered)
-    assert "return &off_48B8A4;" in recovered
+    assert re.search(r"return (?:\(__int32\))?&off_48B8A4;", recovered)
     assert recovered.count("free(") == 6
     for call in (
         "CreateWindowExW(",

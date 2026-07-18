@@ -7,6 +7,8 @@ from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.hexrays.ir.cfg_queries import (
     is_conditional_jump)
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+from d810.hexrays.mutation.cfg_verify import is_resolver_proven_live_predicate
 from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
     opcode_to_string,
@@ -417,6 +419,22 @@ class JumpFixer(FlowOptimizationRule):
                     blk, blk.tail, left_ast, right_ast
                 )
                 if new_ins:
+                    if (
+                        new_ins.opcode == ida_hexrays.m_goto
+                        and is_resolver_proven_live_predicate(
+                            blk.mba,
+                            int(blk.tail.ea),
+                        )
+                    ):
+                        logger.info(
+                            "Rule %s skipped: preserving resolver-proven "
+                            "predicate blk%d@0x%X predicate=0x%X",
+                            rule.name,
+                            int(blk.serial),
+                            int(blk.start),
+                            int(blk.tail.ea),
+                        )
+                        continue
                     if (
                         rule.name == "JmpRuleZ3Const"
                         and self._z3_fold_discards_side_effect_payload(
