@@ -23,8 +23,7 @@ from d810.ui import workbench_logic
 from d810.ui import workbench_workflow_logic as workflow
 
 
-def _snapshot() -> DeobfuscationWorkbenchSnapshot:
-    generation = 4
+def _snapshot(*, generation: int = 4) -> DeobfuscationWorkbenchSnapshot:
     return DeobfuscationWorkbenchSnapshot(
         generation=generation,
         function=FunctionRef(0x401000, "target", "sha256:abc", generation),
@@ -61,10 +60,15 @@ def _snapshot() -> DeobfuscationWorkbenchSnapshot:
     )
 
 
-def _comparison_view(*, text_changed: bool, comparable: bool = True):
+def _comparison_view(
+    *,
+    text_changed: bool,
+    comparable: bool = True,
+    function_ea: int = 0x401000,
+):
     comparison = workbench_logic.comparison_view(
         WorkbenchComparisonSnapshot(
-            function_ea=0x401000,
+            function_ea=function_ea,
             baseline=BaselineRef(True, "sha256:abc", None, 4, pseudocode="native();"),
             d810_output=D810OutputRef(
                 True, "sha256:abc", None, 4, pseudocode="d810();"
@@ -85,9 +89,11 @@ def _comparison_view(*, text_changed: bool, comparable: bool = True):
 
 
 def _accepted_deobfuscation_result(
-    *, status: OutcomeStatus = OutcomeStatus.CHANGED
+    snapshot: DeobfuscationWorkbenchSnapshot | None = None,
+    *,
+    status: OutcomeStatus = OutcomeStatus.CHANGED,
 ) -> WorkbenchCommandResult:
-    snapshot = _snapshot()
+    snapshot = snapshot or _snapshot()
     return WorkbenchCommandResult(
         command="deobfuscate",
         function_ea=snapshot.function.ea,
@@ -132,6 +138,32 @@ def test_current_comparison_offers_contextual_tuning() -> None:
     assert "correct" not in (view.headline + view.detail).casefold()
 
 
+def test_refreshed_snapshot_verifies_accepted_direct_run() -> None:
+    pre_run_snapshot = _snapshot(generation=4)
+    refreshed_snapshot = _snapshot(generation=5)
+
+    view = workflow.project_workbench_workflow(
+        refreshed_snapshot,
+        comparison=_comparison_view(text_changed=True),
+        last_result=_accepted_deobfuscation_result(pre_run_snapshot),
+    )
+
+    assert view.phase is workflow.WorkflowPhase.VERIFY
+    assert view.comparison_state == "current"
+
+
+def test_comparison_for_another_function_cannot_verify_a_direct_run() -> None:
+    view = workflow.project_workbench_workflow(
+        _snapshot(),
+        comparison=_comparison_view(text_changed=True, function_ea=0x402000),
+        last_result=_accepted_deobfuscation_result(),
+    )
+
+    assert view.phase is workflow.WorkflowPhase.INVESTIGATE
+    assert view.primary.action_id == "compare"
+    assert view.comparison_state == "retry"
+
+
 def test_stale_and_stopped_snapshots_disable_the_direct_action() -> None:
     stale = workflow.project_workbench_workflow(
         dataclasses.replace(_snapshot(), freshness=SnapshotFreshness.STALE)
@@ -156,7 +188,9 @@ def test_running_snapshot_reports_the_transient_run_state() -> None:
     assert view.primary.label == "Running deobfuscation..."
 
 
-def test_blocked_failed_and_stale_results_require_investigation() -> None:
+def test_blocked_failed_abstained_no_match_and_stale_results_require_investigation() -> (
+    None
+):
     blocked = workflow.project_workbench_workflow(
         _snapshot(),
         last_result=_accepted_deobfuscation_result(status=OutcomeStatus.BLOCKED),
@@ -171,16 +205,62 @@ def test_blocked_failed_and_stale_results_require_investigation() -> None:
     )
     stale = workflow.project_workbench_workflow(
         _snapshot(),
-        last_result=dataclasses.replace(
-            _accepted_deobfuscation_result(), requested_generation=3
-        ),
+        last_result=_accepted_deobfuscation_result(status=OutcomeStatus.STALE),
+    )
+    abstained = workflow.project_workbench_workflow(
+        _snapshot(),
+        last_result=_accepted_deobfuscation_result(status=OutcomeStatus.ABSTAINED),
+    )
+    no_match = workflow.project_workbench_workflow(
+        _snapshot(),
+        last_result=_accepted_deobfuscation_result(status=OutcomeStatus.NO_MATCH),
     )
 
     assert blocked.phase is workflow.WorkflowPhase.INVESTIGATE
     assert failed.phase is workflow.WorkflowPhase.INVESTIGATE
     assert stale.phase is workflow.WorkflowPhase.INVESTIGATE
+    assert abstained.phase is workflow.WorkflowPhase.INVESTIGATE
+    assert no_match.phase is workflow.WorkflowPhase.INVESTIGATE
     assert all(
-        view.primary.action_id == "diagnostics" for view in (blocked, failed, stale)
+        view.primary.action_id == "diagnostics"
+        for view in (blocked, failed, stale, abstained, no_match)
+    )
+
+
+def test_rejected_direct_results_remain_investigation_despite_comparison_error() -> (
+    None
+):
+    rejected = workflow.project_workbench_workflow(
+        _snapshot(),
+        last_result=dataclasses.replace(
+            _accepted_deobfuscation_result(), accepted=False
+        ),
+        comparison_error="Native capture timed out",
+    )
+    blocked = workflow.project_workbench_workflow(
+        _snapshot(),
+        last_result=_accepted_deobfuscation_result(status=OutcomeStatus.BLOCKED),
+        comparison_error="Native capture timed out",
+    )
+    failed = workflow.project_workbench_workflow(
+        _snapshot(),
+        last_result=dataclasses.replace(
+            _accepted_deobfuscation_result(),
+            succeeded=False,
+            status=OutcomeStatus.FAILED,
+        ),
+        comparison_error="Native capture timed out",
+    )
+    stale = workflow.project_workbench_workflow(
+        _snapshot(),
+        last_result=_accepted_deobfuscation_result(status=OutcomeStatus.STALE),
+        comparison_error="Native capture timed out",
+    )
+
+    assert all(
+        view.phase is workflow.WorkflowPhase.INVESTIGATE
+        and view.primary.action_id == "diagnostics"
+        for view in (rejected, blocked, failed, stale)
     )
 
 
@@ -197,7 +277,7 @@ def test_unavailable_comparison_after_current_run_is_retryable_investigation() -
     assert "correct" not in (view.headline + view.detail).casefold()
 
 
-def test_comparison_error_is_retryable_and_rule_firings_do_not_change_copy() -> None:
+def test_comparison_error_requires_an_accepted_current_direct_run() -> None:
     snapshot = _snapshot()
     altered_statistics = dataclasses.replace(
         snapshot,
@@ -211,9 +291,21 @@ def test_comparison_error_is_retryable_and_rule_firings_do_not_change_copy() -> 
         altered_statistics, comparison_error="Native capture timed out"
     )
 
-    assert original.phase is workflow.WorkflowPhase.INVESTIGATE
-    assert original.primary.action_id == "compare"
-    assert "Native capture timed out" in original.detail
+    assert original.phase is workflow.WorkflowPhase.READY
+    assert original.primary.action_id == "deobfuscate"
+    assert "Native capture timed out" not in original.detail
     assert (original.headline, original.detail) == (altered.headline, altered.detail)
     assert "correct" not in (original.headline + original.detail).casefold()
     assert "rule firing" not in (original.headline + original.detail).casefold()
+
+
+def test_comparison_error_after_accepted_current_direct_run_is_retryable() -> None:
+    view = workflow.project_workbench_workflow(
+        _snapshot(),
+        last_result=_accepted_deobfuscation_result(),
+        comparison_error="Native capture timed out",
+    )
+
+    assert view.phase is workflow.WorkflowPhase.INVESTIGATE
+    assert view.primary.action_id == "compare"
+    assert "Native capture timed out" in view.detail
