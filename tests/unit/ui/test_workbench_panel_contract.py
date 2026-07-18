@@ -27,3 +27,25 @@ def test_workbench_composes_diagnostics_graph_outside_the_adapter_boundary() -> 
     assert "from d810.diagnostics" not in source
     assert "graph_controller=controller" in source
     assert "function_name=self._func_name or None" in source
+
+
+def test_recommended_attack_refreshes_before_automatic_comparison() -> None:
+    source = _method_source("_run_recommended_attack")
+
+    assert 'self._run_command("deobfuscate", refresh_after=False)' in source
+    assert "self.refresh()" in source
+    assert "self._run_comparison()" in source
+    assert source.index("self.refresh()") < source.index("self._run_comparison()")
+
+
+def test_attack_card_renders_the_pure_workflow_projection() -> None:
+    panel_source = PANEL.read_text(encoding="utf-8")
+    render_source = _method_source("_render_workflow")
+
+    assert (
+        "from d810.ui.workbench_workflow_logic import project_workbench_workflow"
+        in panel_source
+    )
+    assert "view = project_workbench_workflow(" in render_source
+    assert "self.workflow_headline.setText(view.headline)" in render_source
+    assert "self.workflow_detail.setText(view.detail)" in render_source
