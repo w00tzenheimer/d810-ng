@@ -1,0 +1,1923 @@
+{
+  "candidates": [
+    {
+      "column": 52,
+      "detail": "recon_fact_profile_modules",
+      "kind": "legacy-config-key",
+      "line": 277,
+      "path": "src/d810/backends/hexrays/evidence/ollvm_carrier.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "recon_fact_profile_modules",
+      "kind": "manual-config-key",
+      "line": 993,
+      "path": "src/d810/conf/default_unflattening_ollvm.json",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "recon_fact_profile_modules",
+      "kind": "manual-config-key",
+      "line": 6,
+      "path": "src/d810/conf/default_unflattening_ollvm_config_v2_canary.json",
+      "rewriteable": false
+    },
+    {
+      "column": 8,
+      "detail": "recon_db",
+      "kind": "legacy-config-key",
+      "line": 1331,
+      "path": "src/d810/diagnostics/residual_worksheet.py",
+      "rewriteable": true
+    },
+    {
+      "column": 36,
+      "detail": "recon_db",
+      "kind": "legacy-attribute",
+      "line": 1419,
+      "path": "src/d810/diagnostics/residual_worksheet.py",
+      "rewriteable": true
+    },
+    {
+      "column": 20,
+      "detail": "recon_db",
+      "kind": "legacy-attribute",
+      "line": 1442,
+      "path": "src/d810/diagnostics/residual_worksheet.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 86,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 15,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 703,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 34,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 706,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 38,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 707,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 11,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 742,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 18,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 744,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 11,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 763,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 12,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 766,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 12,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 773,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 11,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 1073,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 28,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 1075,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 1179,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 41,
+      "detail": "recon_runtime",
+      "kind": "legacy-config-key",
+      "line": 1179,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 58,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 1179,
+      "path": "src/d810/hexrays/hooks/optblock_adapter.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 107,
+      "path": "src/d810/manager/decompilation_lifecycle.py",
+      "rewriteable": false
+    },
+    {
+      "column": 20,
+      "detail": "analyze_and_persist",
+      "kind": "direct-runtime-call",
+      "line": 200,
+      "path": "src/d810/manager/decompilation_lifecycle.py",
+      "rewriteable": false
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.recon_runtime_factory import build_recon_phase",
+      "kind": "legacy-import",
+      "line": 56,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.recon_runtime_factory import build_recon_runtime_bundle",
+      "kind": "legacy-import",
+      "line": 56,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "_recon_phase",
+      "kind": "legacy-symbol",
+      "line": 145,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "_recon_runtime",
+      "kind": "legacy-symbol",
+      "line": 146,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "_recon_bundle",
+      "kind": "legacy-symbol",
+      "line": 147,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 27,
+      "detail": "_recon_runtime",
+      "kind": "legacy-config-key",
+      "line": 190,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 28,
+      "detail": "recon_fact_profile_modules",
+      "kind": "legacy-config-key",
+      "line": 225,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 30,
+      "detail": "recon_runtime",
+      "kind": "constructor-injection",
+      "line": 323,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 30,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 323,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "_recon_bundle",
+      "kind": "legacy-attribute",
+      "line": 460,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "_recon_phase",
+      "kind": "legacy-attribute",
+      "line": 461,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 462,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 27,
+      "detail": "enable_recon_pipeline",
+      "kind": "legacy-config-key",
+      "line": 463,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 12,
+      "detail": "_recon_bundle",
+      "kind": "legacy-attribute",
+      "line": 464,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 33,
+      "detail": "build_recon_runtime_bundle",
+      "kind": "legacy-symbol",
+      "line": 464,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 15,
+      "detail": "_recon_bundle",
+      "kind": "legacy-attribute",
+      "line": 468,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "_recon_phase",
+      "kind": "legacy-attribute",
+      "line": 469,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 36,
+      "detail": "_recon_bundle",
+      "kind": "legacy-attribute",
+      "line": 469,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 36,
+      "detail": "recon_phase",
+      "kind": "legacy-attribute",
+      "line": 469,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 470,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 38,
+      "detail": "_recon_bundle",
+      "kind": "legacy-attribute",
+      "line": 470,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 38,
+      "detail": "recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 470,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 30,
+      "detail": "_recon_phase",
+      "kind": "legacy-attribute",
+      "line": 473,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 29,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 474,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 11,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 487,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 12,
+      "detail": "_load_recon_fact_profile_modules",
+      "kind": "legacy-attribute",
+      "line": 503,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 24,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 505,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 30,
+      "detail": "recon_runtime",
+      "kind": "constructor-injection",
+      "line": 509,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 30,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 509,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 15,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 791,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 19,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 795,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 15,
+      "detail": "build_recon_phase",
+      "kind": "legacy-symbol",
+      "line": 809,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 11,
+      "detail": "_recon_bundle",
+      "kind": "legacy-attribute",
+      "line": 835,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 12,
+      "detail": "_recon_bundle",
+      "kind": "legacy-attribute",
+      "line": 836,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 12,
+      "detail": "_recon_bundle",
+      "kind": "legacy-attribute",
+      "line": 837,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 13,
+      "detail": "_recon_phase",
+      "kind": "legacy-attribute",
+      "line": 838,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "_recon_phase",
+      "kind": "legacy-attribute",
+      "line": 840,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "_recon_phase",
+      "kind": "legacy-attribute",
+      "line": 843,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 844,
+      "path": "src/d810/manager/manager.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "recon_runtime",
+      "kind": "legacy-symbol",
+      "line": 51,
+      "path": "src/d810/manager/post_d810_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 11,
+      "detail": "recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 95,
+      "path": "src/d810/manager/post_d810_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 12,
+      "detail": "recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 116,
+      "path": "src/d810/manager/post_d810_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 8457,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 0,
+      "detail": "_PREOPT_UNION_PREPARATIONS",
+      "kind": "resolver-global-access",
+      "line": 8458,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 0,
+      "detail": "_PREPATCH_PREOPT_UNION_SOURCES",
+      "kind": "resolver-global-access",
+      "line": 8459,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 11,
+      "detail": "_PREOPT_UNION_PREPARATIONS",
+      "kind": "resolver-global-access",
+      "line": 8759,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 14,
+      "detail": "_PREPATCH_PREOPT_UNION_SOURCES",
+      "kind": "resolver-global-access",
+      "line": 8873,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 22,
+      "detail": "_PREPATCH_PREOPT_UNION_SOURCES",
+      "kind": "resolver-global-access",
+      "line": 8874,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "_PREPATCH_PREOPT_UNION_SOURCES",
+      "kind": "resolver-global-access",
+      "line": 9049,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 13,
+      "detail": "_PREOPT_UNION_PREPARATIONS",
+      "kind": "resolver-global-access",
+      "line": 10729,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 17,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 10732,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 22,
+      "detail": "_PREPATCH_PREOPT_UNION_SOURCES",
+      "kind": "resolver-global-access",
+      "line": 10797,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "_PREOPT_UNION_PREPARATIONS",
+      "kind": "resolver-global-access",
+      "line": 11110,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 15,
+      "detail": "_PREOPT_UNION_PREPARATIONS",
+      "kind": "resolver-global-access",
+      "line": 11132,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 12,
+      "detail": "_PREOPT_UNION_PREPARATIONS",
+      "kind": "resolver-global-access",
+      "line": 11135,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 8,
+      "detail": "_PREOPT_UNION_PREPARATIONS",
+      "kind": "resolver-global-access",
+      "line": 11144,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 17,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 11186,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 8,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 11212,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 18,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 11615,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 17,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 11691,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 29,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 11696,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 22,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 11703,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 17,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 11774,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 0,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 12032,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 18,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 12049,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 8,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 12059,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 8,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 12081,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 18,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 12107,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 8,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 12255,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 12,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 12265,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 14,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 12267,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 12271,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 12272,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "_PREOPT_UNION_PREPARATIONS",
+      "kind": "resolver-global-access",
+      "line": 12273,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "_PREPATCH_PREOPT_UNION_SOURCES",
+      "kind": "resolver-global-access",
+      "line": 12274,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 12,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 12301,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 14,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 12303,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 12307,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 12308,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "_PREOPT_UNION_PREPARATIONS",
+      "kind": "resolver-global-access",
+      "line": 12309,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "_PREPATCH_PREOPT_UNION_SOURCES",
+      "kind": "resolver-global-access",
+      "line": 12310,
+      "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.phase import ReconPhase",
+      "kind": "legacy-import",
+      "line": 41,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.runtime import ReconAnalysisRuntime",
+      "kind": "legacy-import",
+      "line": 42,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "recon_phase",
+      "kind": "legacy-symbol",
+      "line": 84,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 17,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 84,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "recon_runtime",
+      "kind": "legacy-symbol",
+      "line": 85,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 19,
+      "detail": "ReconAnalysisRuntime",
+      "kind": "legacy-symbol",
+      "line": 85,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 45,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 97,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 46,
+      "detail": "ReconAnalysisRuntime",
+      "kind": "legacy-symbol",
+      "line": 104,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 11,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 113,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 12,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 116,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "register_default_recon_collectors",
+      "kind": "legacy-symbol",
+      "line": 117,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 53,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 121,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 5,
+      "detail": "ReconRuntimeBundle",
+      "kind": "legacy-symbol",
+      "line": 141,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 18,
+      "detail": "ReconAnalysisRuntime",
+      "kind": "legacy-symbol",
+      "line": 151,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 21,
+      "detail": "register_default_fact_collectors",
+      "kind": "legacy-symbol",
+      "line": 156,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 15,
+      "detail": "ReconRuntimeBundle",
+      "kind": "legacy-symbol",
+      "line": 166,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 24,
+      "detail": "recon_phase",
+      "kind": "constructor-injection",
+      "line": 167,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 26,
+      "detail": "recon_runtime",
+      "kind": "constructor-injection",
+      "line": 168,
+      "path": "src/d810/passes/recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.phase import ReconPhase",
+      "kind": "legacy-import",
+      "line": 40,
+      "path": "src/d810/passes/runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.fact_runtime import FactLifecycleRuntime",
+      "kind": "legacy-import",
+      "line": 49,
+      "path": "src/d810/passes/runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 15,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 168,
+      "path": "src/d810/passes/runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 31,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 182,
+      "path": "src/d810/passes/runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 213,
+      "path": "src/d810/passes/runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 8,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 217,
+      "path": "src/d810/passes/runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 23,
+      "detail": "recon_db",
+      "kind": "legacy-attribute",
+      "line": 1065,
+      "path": "tests/system/conftest.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 161,
+      "path": "tests/system/runtime/hexrays/test_detached_snippet_companion_regression.py",
+      "rewriteable": false
+    },
+    {
+      "column": 12,
+      "detail": "recon_fact_profile_modules",
+      "kind": "legacy-config-key",
+      "line": 165,
+      "path": "tests/system/runtime/optimizers/microcode/flow/flattening/test_ollvm_carrier_profile.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 2487,
+      "path": "tests/system/runtime/optimizers/microcode/flow/jumps/test_computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 3432,
+      "path": "tests/system/runtime/optimizers/microcode/flow/jumps/test_computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 8,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 3436,
+      "path": "tests/system/runtime/optimizers/microcode/flow/jumps/test_computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 11,
+      "detail": "_RESOLUTIONS_BY_EA",
+      "kind": "resolver-global-access",
+      "line": 3493,
+      "path": "tests/system/runtime/optimizers/microcode/flow/jumps/test_computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 11,
+      "detail": "_MATERIALIZATION_SESSIONS",
+      "kind": "resolver-global-access",
+      "line": 3494,
+      "path": "tests/system/runtime/optimizers/microcode/flow/jumps/test_computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "_PREOPT_UNION_PREPARATIONS",
+      "kind": "resolver-global-access",
+      "line": 7147,
+      "path": "tests/system/runtime/optimizers/microcode/flow/jumps/test_computed_goto_resolver.py",
+      "rewriteable": false
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.phase import ReconPhase",
+      "kind": "legacy-import",
+      "line": 7,
+      "path": "tests/system/runtime/recon/test_phase.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 55,
+      "path": "tests/system/runtime/recon/test_phase.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 61,
+      "path": "tests/system/runtime/recon/test_phase.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 68,
+      "path": "tests/system/runtime/recon/test_phase.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 74,
+      "path": "tests/system/runtime/recon/test_phase.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 86,
+      "path": "tests/system/runtime/recon/test_phase.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 97,
+      "path": "tests/system/runtime/recon/test_phase.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 108,
+      "path": "tests/system/runtime/recon/test_phase.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 121,
+      "path": "tests/system/runtime/recon/test_phase.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 137,
+      "path": "tests/system/runtime/recon/test_phase.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 157,
+      "path": "tests/system/runtime/recon/test_phase.py",
+      "rewriteable": true
+    },
+    {
+      "column": 15,
+      "detail": "recon_db",
+      "kind": "legacy-attribute",
+      "line": 21,
+      "path": "tests/system/runtime/test_manager_recon_db.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 25,
+      "path": "tests/system/runtime/test_manager_recon_db.py",
+      "rewriteable": true
+    },
+    {
+      "column": 15,
+      "detail": "recon_db",
+      "kind": "legacy-attribute",
+      "line": 26,
+      "path": "tests/system/runtime/test_manager_recon_db.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 30,
+      "path": "tests/system/runtime/test_manager_recon_db.py",
+      "rewriteable": true
+    },
+    {
+      "column": 15,
+      "detail": "recon_db",
+      "kind": "legacy-attribute",
+      "line": 31,
+      "path": "tests/system/runtime/test_manager_recon_db.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "_recon_phase",
+      "kind": "legacy-attribute",
+      "line": 137,
+      "path": "tests/system/runtime/test_optimizer_prefiltering.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 138,
+      "path": "tests/system/runtime/test_optimizer_prefiltering.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "_recon_phase",
+      "kind": "legacy-attribute",
+      "line": 176,
+      "path": "tests/system/runtime/test_optimizer_prefiltering.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "_recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 177,
+      "path": "tests/system/runtime/test_optimizer_prefiltering.py",
+      "rewriteable": true
+    },
+    {
+      "column": 20,
+      "detail": "enable_recon_pipeline",
+      "kind": "legacy-config-key",
+      "line": 153,
+      "path": "tests/unit/core/test_config.py",
+      "rewriteable": true
+    },
+    {
+      "column": 52,
+      "detail": "enable_recon_pipeline",
+      "kind": "legacy-config-key",
+      "line": 164,
+      "path": "tests/unit/core/test_config.py",
+      "rewriteable": true
+    },
+    {
+      "column": 66,
+      "detail": "enable_recon_pipeline",
+      "kind": "legacy-config-key",
+      "line": 173,
+      "path": "tests/unit/core/test_config.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.recon_runtime_factory import DEFAULT_FACT_COLLECTOR_NAMES",
+      "kind": "legacy-import",
+      "line": 3,
+      "path": "tests/unit/passes/test_recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.recon_runtime_factory import DEFAULT_RECON_COLLECTOR_NAMES",
+      "kind": "legacy-import",
+      "line": 3,
+      "path": "tests/unit/passes/test_recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.recon_runtime_factory import build_recon_phase",
+      "kind": "legacy-import",
+      "line": 3,
+      "path": "tests/unit/passes/test_recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.recon_runtime_factory import build_recon_runtime_bundle",
+      "kind": "legacy-import",
+      "line": 3,
+      "path": "tests/unit/passes/test_recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 12,
+      "detail": "build_recon_phase",
+      "kind": "legacy-symbol",
+      "line": 12,
+      "path": "tests/unit/passes/test_recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 13,
+      "detail": "build_recon_runtime_bundle",
+      "kind": "legacy-symbol",
+      "line": 22,
+      "path": "tests/unit/passes/test_recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 49,
+      "detail": "recon_phase",
+      "kind": "legacy-attribute",
+      "line": 26,
+      "path": "tests/unit/passes/test_recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 19,
+      "detail": "recon_runtime",
+      "kind": "legacy-attribute",
+      "line": 29,
+      "path": "tests/unit/passes/test_recon_runtime_factory.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.fact_runtime import FactLifecycleRuntime",
+      "kind": "legacy-import",
+      "line": 10,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 116,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 143,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 175,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 207,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 246,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 272,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 11,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 292,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 11,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 293,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 305,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 342,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 378,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 417,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 38,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 429,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 439,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 495,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 547,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 606,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 668,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 729,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 789,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 840,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 880,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 929,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 971,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1018,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1085,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1135,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1193,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1232,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1323,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1389,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1442,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1536,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1621,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1705,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1748,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1789,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 14,
+      "detail": "FactLifecycleRuntime",
+      "kind": "legacy-symbol",
+      "line": 1808,
+      "path": "tests/unit/recon/facts/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.phase import ReconPhase",
+      "kind": "legacy-import",
+      "line": 43,
+      "path": "tests/unit/recon/test_flowgraph_ready_subscriber_dedup.py",
+      "rewriteable": true
+    },
+    {
+      "column": 74,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 134,
+      "path": "tests/unit/recon/test_flowgraph_ready_subscriber_dedup.py",
+      "rewriteable": true
+    },
+    {
+      "column": 16,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 143,
+      "path": "tests/unit/recon/test_flowgraph_ready_subscriber_dedup.py",
+      "rewriteable": true
+    },
+    {
+      "column": 15,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 164,
+      "path": "tests/unit/recon/test_flowgraph_ready_subscriber_dedup.py",
+      "rewriteable": true
+    },
+    {
+      "column": 8,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 384,
+      "path": "tests/unit/recon/test_outcome.py",
+      "rewriteable": false
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.phase import ReconPhase",
+      "kind": "legacy-import",
+      "line": 18,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.runtime import ReconAnalysisRuntime",
+      "kind": "legacy-import",
+      "line": 19,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 29,
+      "detail": "ReconAnalysisRuntime",
+      "kind": "legacy-symbol",
+      "line": 70,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 33,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 76,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 9,
+      "detail": "ReconAnalysisRuntime",
+      "kind": "legacy-symbol",
+      "line": 88,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": true
+    },
+    {
+      "column": 13,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 467,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 15,
+      "detail": "analyze_and_persist",
+      "kind": "direct-runtime-call",
+      "line": 484,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 15,
+      "detail": "analyze_and_persist",
+      "kind": "direct-runtime-call",
+      "line": 502,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 11,
+      "detail": "analyze_and_persist",
+      "kind": "direct-runtime-call",
+      "line": 522,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 11,
+      "detail": "analyze_and_persist",
+      "kind": "direct-runtime-call",
+      "line": 527,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 11,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 585,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 11,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 590,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 11,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 605,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 11,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 612,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 633,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 650,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 11,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 672,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 11,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 673,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 728,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 802,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 820,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 854,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 4,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 889,
+      "path": "tests/unit/recon/test_runtime.py",
+      "rewriteable": false
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.phase import ReconPhase",
+      "kind": "legacy-import",
+      "line": 14,
+      "path": "tests/unit/recon/test_runtime_integration.py",
+      "rewriteable": true
+    },
+    {
+      "column": 0,
+      "detail": "from d810.passes.runtime import ReconAnalysisRuntime",
+      "kind": "legacy-import",
+      "line": 15,
+      "path": "tests/unit/recon/test_runtime_integration.py",
+      "rewriteable": true
+    },
+    {
+      "column": 4,
+      "detail": "ReconAnalysisRuntime",
+      "kind": "legacy-symbol",
+      "line": 107,
+      "path": "tests/unit/recon/test_runtime_integration.py",
+      "rewriteable": true
+    },
+    {
+      "column": 33,
+      "detail": "ReconPhase",
+      "kind": "legacy-symbol",
+      "line": 113,
+      "path": "tests/unit/recon/test_runtime_integration.py",
+      "rewriteable": true
+    },
+    {
+      "column": 9,
+      "detail": "ReconAnalysisRuntime",
+      "kind": "legacy-symbol",
+      "line": 125,
+      "path": "tests/unit/recon/test_runtime_integration.py",
+      "rewriteable": true
+    }
+  ],
+  "root": "/Users/mahmoud/src/idapro/d810",
+  "schema_version": 1,
+  "summary": {
+    "candidates": 239,
+    "rewritable": 168,
+    "unknown": 71
+  }
+}

@@ -172,13 +172,10 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         # allow emitting DecompilationEvent.MATURITY_CHANGED events.
         self.event_emitter = None
 
-        # Optional ReconPhase - set via configure(recon_phase=...) when recon
-        # is enabled in the project config. None means recon is disabled (zero
-        # overhead: the guard below short-circuits immediately).
-        self._recon_phase = None  # ReconPhase | None
-        # Optional ReconAnalysisRuntime - set via configure(recon_runtime=...).
-        # Used to reset recon state when a new function is decompiled.
-        self._recon_runtime = None  # ReconAnalysisRuntime | None
+        # Manager-owned lifecycle port.  It owns session reset, portable
+        # capture, analysis, and hint application; this adapter only emits
+        # the callback-local FlowGraph event.
+        self._decompilation_lifecycle = None
 
         self.instruction_optimizers = []
         self._active_optimizers: list = []
@@ -297,7 +294,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     def reset_cycle_detection(self) -> None:
         """Clear the rewrite-cycle seen set.
 
-        Called on decompilation start (via DecompilationEvent.STARTED in the
+        Called on session start (via DecompilationEvent.SESSION_STARTED in the
         manager) and on maturity change (in log_info_on_input).
         """
         self._rewrite_seen.clear()
@@ -468,66 +465,14 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             self._active_instruction_rule_names_by_maturity.clear()
             self._drain_run_later_for_maturity(mba)
 
-            # Recon: reset state when a new function is decompiled, then
-            # fire microcode collectors at this maturity. No-op when recon is
-            # disabled (_recon_phase / _recon_runtime is None).
-            # The runtime deduplicates reset_for_func across managers.
             mba_ea = int(getattr(mba, "entry_ea", 0) or 0)
-            if self._recon_runtime is not None:
-                try:
-                    did_reset = self._recon_runtime.reset_for_func(mba_ea)
-                except Exception:
-                    optimizer_logger.exception(
-                        "ReconRuntime reset failed for func=0x%x", mba_ea
-                    )
-                    did_reset = False
-                if did_reset and self._rule_scope_service is not None:
-                    try:
-                        self._rule_scope_service.clear_hint_state(mba_ea)
-                    except Exception:
-                        optimizer_logger.exception(
-                            "RuleScopeService clear_hint_state failed for func=0x%x",
-                            mba_ea,
-                        )
-            # E4a: emit ``FLOWGRAPH_READY`` AFTER ``reset_for_func``.
-            # Critical ordering: ``reset_for_func`` clears the
-            # ``ReconPhase`` maturity guard and calls ``store.clear_func``;
-            # if we emitted BEFORE the reset, the subscriber would
-            # collect into a store that the reset immediately wipes,
-            # AND a stale ``_fired`` guard from a prior decompilation
-            # could even suppress the collection entirely.  The old
-            # direct ``run_microcode_collectors(mba, ...)`` call was
-            # placed AFTER the reset for the same reason; the
-            # subscriber must inherit that placement.
             if self.event_emitter is not None:
                 _emit_flowgraph_ready_event(self.event_emitter, mba)
-            # ``run_microcode_collectors(mba, ...)`` is now invoked by
-            # the ``FLOWGRAPH_READY`` subscriber on ``D810`` (see
-            # ``manager.flowgraph_ready.FlowGraphReadySubscriber``).  The
-            # event fires immediately above and ``ReconPhase`` dedupes
-            # by ``(func_ea, maturity)``, so adding back a direct
-            # call here would double-collect.
-            if self._recon_phase is not None:
-                if self._recon_runtime is not None:
-                    try:
-                        hints = self._recon_runtime.analyze_and_persist(mba_ea)
-                        if hints is not None and self._rule_scope_service is not None:
-                            result = self._rule_scope_service.apply_hints(hints)
-                            optimizer_logger.info(
-                                "Applied recon hints to rule scope for func=0x%x",
-                                mba_ea,
-                            )
-                            self._recon_runtime.record_rule_scope_outcome(
-                                func_ea=mba_ea,
-                                hints=hints,
-                                apply_result=result,
-                                source="analyzed",
-                            )
-                    except Exception:
-                        optimizer_logger.exception(
-                            "ReconRuntime analyze_and_persist failed for func=0x%x",
-                            mba_ea,
-                        )
+            if self._decompilation_lifecycle is not None:
+                self._decompilation_lifecycle.analyze_current_function(
+                    function_ea=mba_ea,
+                    source="analyzed",
+                )
 
             for ins_optimizer in self.instruction_optimizers:
                 ins_optimizer.cur_maturity = self.current_maturity
@@ -560,8 +505,10 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         )
         self.generate_z3_code = generate_z3_code
         self.dump_intermediate_microcode = dump_intermediate_microcode
-        self._recon_phase = kwargs.get("recon_phase", self._recon_phase)
-        self._recon_runtime = kwargs.get("recon_runtime", self._recon_runtime)
+        self._decompilation_lifecycle = kwargs.get(
+            "decompilation_lifecycle",
+            self._decompilation_lifecycle,
+        )
         self._run_later_scheduler = kwargs.get(
             "pass_scheduler",
             self._run_later_scheduler,

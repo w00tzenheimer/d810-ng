@@ -659,19 +659,25 @@ def test_reset_for_func_flushes_previous_outcomes() -> None:
     assert outcome_call.kwargs["consumer_name"] == "rule_scope"
 
 
-def test_reset_fires_on_different_func_without_mark_finished() -> None:
-    """Switching to a different function fires reset without needing mark_finished.
+def test_nested_session_reset_restores_parent_without_mark_finished() -> None:
+    """An inner decompilation preserves the live parent session.
 
-    This covers the case where IDA decompiles func A then func B in sequence
-    without an explicit FINISHED event between them.
+    The coordinator distinguishes this from an abandoned sequential function
+    switch and sets ``preserve_active_session`` for the inner start.
     """
-    rt, mock_phase, _mock_analysis, mock_store = _make_runtime()
-    other_ea = 0x402000
+    rt, mock_phase, _mock_analysis, _mock_store = _make_runtime()
+    outer_ea = _FUNC_EA
+    inner_ea = 0x402000
 
-    assert rt.reset_for_func(_FUNC_EA) is True
-    assert rt.reset_for_func(other_ea) is True
+    assert rt.reset_for_func(outer_ea) is True
+    assert rt.reset_for_func(inner_ea, preserve_active_session=True) is True
+    rt.mark_decompilation_finished(resume_func_ea=outer_ea)
+
+    assert rt._current_func_ea == outer_ea
     assert mock_phase.reset.call_count == 2
-    mock_phase.reset.assert_has_calls([call(func_ea=_FUNC_EA), call(func_ea=other_ea)])
+    mock_phase.reset.assert_has_calls(
+        [call(func_ea=outer_ea), call(func_ea=inner_ea)]
+    )
 
 
 # ---------------------------------------------------------------------------

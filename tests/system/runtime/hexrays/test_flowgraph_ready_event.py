@@ -58,8 +58,14 @@ class TestDecompilationEventValues:
         """The five members ship at canonical dotted values; this is
         the regression cover against accidental string-value drift
         (subscribers / logs may match by value)."""
-        assert DecompilationEvent.STARTED.value == "decompilation.started"
-        assert DecompilationEvent.FINISHED.value == "decompilation.finished"
+        assert (
+            DecompilationEvent.SESSION_STARTED.value
+            == "decompilation.session.started"
+        )
+        assert (
+            DecompilationEvent.SESSION_FINISHED.value
+            == "decompilation.session.finished"
+        )
         assert (
             DecompilationEvent.MATURITY_CHANGED.value
             == "decompilation.maturity.changed"

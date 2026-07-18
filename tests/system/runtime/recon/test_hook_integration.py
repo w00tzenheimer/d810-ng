@@ -52,26 +52,26 @@ def _get_class_source(filepath: pathlib.Path, class_name: str) -> str:
     return ""
 
 
-class TestInstructionOptimizerManagerHasReconPhase:
-    """InstructionOptimizerManager must have _recon_phase support."""
+class TestInstructionOptimizerManagerUsesLifecyclePort:
+    """Instruction adapter delegates lifecycle work to the coordinator."""
 
-    def test_has_recon_phase_in_init(self):
+    def test_has_lifecycle_port_in_init(self):
         filepath = _OPTINSN_ADAPTER
         cls_src = _get_class_source(filepath, "InstructionOptimizerManager")
-        assert "_recon_phase" in cls_src, (
-            "InstructionOptimizerManager.__init__ must set self._recon_phase"
+        assert "_decompilation_lifecycle" in cls_src, (
+            "InstructionOptimizerManager must retain the injected lifecycle port"
         )
 
-    def test_configure_accepts_recon_phase(self):
+    def test_configure_accepts_lifecycle_port(self):
         filepath = _OPTINSN_ADAPTER
         cls_src = _get_class_source(filepath, "InstructionOptimizerManager")
-        assert "recon_phase" in cls_src, (
-            "InstructionOptimizerManager.configure() must accept recon_phase kwarg"
+        assert "decompilation_lifecycle" in cls_src, (
+            "InstructionOptimizerManager.configure() must accept the lifecycle port"
         )
 
     def test_log_info_emits_flowgraph_ready(self):
         """E4a contract: microcode recon collection is driven by the
-        ``FLOWGRAPH_READY`` subscriber on ``D810``.  Each manager
+        lifecycle coordinator on ``D810``.  Each manager
         maturity gate must invoke ``_emit_flowgraph_ready_event``;
         the direct ``run_microcode_collectors(mba, ...)`` call is
         gone.
@@ -84,82 +84,55 @@ class TestInstructionOptimizerManagerHasReconPhase:
         assert "_emit_flowgraph_ready_event(" in cls_src, (
             "InstructionOptimizerManager.log_info_on_input() must call "
             "_emit_flowgraph_ready_event(); the FLOWGRAPH_READY "
-            "subscriber on D810 is the sole microcode-collection "
+            "coordinator on D810 is the sole microcode-collection "
             "trigger after E4a."
         )
-        # Direct call shape must be absent.
-        assert "self._recon_phase.run_microcode_collectors(" not in cls_src, (
-            "InstructionOptimizerManager must not call "
-            "_recon_phase.run_microcode_collectors() directly -- "
-            "E4a routes that through the FLOWGRAPH_READY subscriber "
-            "on D810.  A direct call here would double-collect."
-        )
+        assert ".reset_for_func(" not in cls_src
+        assert ".analyze_and_persist(" not in cls_src
 
 
-class TestBlockOptimizerManagerHasReconPhase:
-    """BlockOptimizerManager must have _recon_phase support."""
+class TestBlockOptimizerManagerUsesLifecyclePort:
+    """Block adapter delegates lifecycle work to the coordinator."""
 
-    def test_has_recon_phase_in_init(self):
+    def test_has_lifecycle_port_in_init(self):
         filepath = _OPTBLOCK_ADAPTER
         cls_src = _get_class_source(filepath, "BlockOptimizerManager")
-        assert "_recon_phase" in cls_src, (
-            "BlockOptimizerManager.__init__ must set self._recon_phase"
-        )
+        assert "_decompilation_lifecycle" in cls_src
 
-    def test_configure_accepts_recon_phase(self):
+    def test_configure_accepts_lifecycle_port(self):
         filepath = _OPTBLOCK_ADAPTER
         cls_src = _get_class_source(filepath, "BlockOptimizerManager")
-        assert "recon_phase" in cls_src, (
-            "BlockOptimizerManager.configure() must accept recon_phase kwarg"
-        )
+        assert "decompilation_lifecycle" in cls_src
 
-    def test_log_info_emits_flowgraph_ready(self):
-        """E4a contract: see ``InstructionOptimizerManager`` sibling.
-        Both manager maturity gates emit; ``ReconPhase`` dedupes the
-        two emits per ``(func_ea, maturity)``."""
+    def test_log_info_emits_flowgraph_ready_and_owns_no_runtime_lifecycle(self):
         filepath = _OPTBLOCK_ADAPTER
         cls_src = _get_class_source(filepath, "BlockOptimizerManager")
-        assert "_emit_flowgraph_ready_event(" in cls_src, (
-            "BlockOptimizerManager.log_info_on_input() must call "
-            "_emit_flowgraph_ready_event(); the FLOWGRAPH_READY "
-            "subscriber on D810 is the sole microcode-collection "
-            "trigger after E4a."
-        )
-        # Direct call shape must be absent.
-        assert "self._recon_phase.run_microcode_collectors(" not in cls_src, (
-            "BlockOptimizerManager must not call "
-            "_recon_phase.run_microcode_collectors() directly -- "
-            "E4a routes that through the FLOWGRAPH_READY subscriber "
-            "on D810.  A direct call here would double-collect."
-        )
+        assert "_emit_flowgraph_ready_event(" in cls_src
+        assert ".reset_for_func(" not in cls_src
+        assert ".analyze_and_persist(" not in cls_src
 
 
-class TestCtreeOptimizerManagerHasReconPhase:
-    """CtreeOptimizerManager must have a recon_phase parameter."""
+class TestCtreeOptimizerManagerUsesLifecyclePort:
+    """Ctree adapter delegates collection and analysis to the coordinator."""
 
-    def test_init_accepts_recon_phase(self):
+    def test_init_accepts_lifecycle_port(self):
         filepath = _CTREE_HOOKS
         cls_src = _get_class_source(filepath, "CtreeOptimizerManager")
-        assert "recon_phase" in cls_src, (
-            "CtreeOptimizerManager.__init__ must accept recon_phase parameter"
-        )
+        assert "decompilation_lifecycle" in cls_src
 
-    def test_on_maturity_calls_run_ctree_collectors(self):
+    def test_on_maturity_calls_lifecycle_port(self):
         filepath = _CTREE_HOOKS
         cls_src = _get_class_source(filepath, "CtreeOptimizerManager")
-        assert "run_ctree_collectors" in cls_src, (
-            "CtreeOptimizerManager.on_maturity() must call "
-            "_recon_phase.run_ctree_collectors()"
-        )
+        assert "lifecycle.capture_ctree(" in cls_src
+        assert "lifecycle.analyze_current_function(" in cls_src
+        assert ".analyze_and_persist(" not in cls_src
 
-    def test_has_recon_phase_attribute(self):
-        """CtreeOptimizerManager can be imported without IDA (guarded imports)."""
+    def test_has_lifecycle_parameter(self):
+        """Ctree manager remains importable without an initialized IDA runtime."""
         from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
+
         sig = inspect.signature(CtreeOptimizerManager.__init__)
-        assert "recon_phase" in sig.parameters or \
-               hasattr(CtreeOptimizerManager, "_recon_phase"), (
-            "CtreeOptimizerManager must expose recon_phase"
-        )
+        assert "decompilation_lifecycle" in sig.parameters
 
 
 class TestReconRuntimeFactoryBuildsFullReconPhase:
