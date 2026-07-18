@@ -186,13 +186,12 @@ def _investigation_view(
     )
 
 
-def _result_matches_snapshot(
+def _result_matches_current_function(
     snapshot: DeobfuscationWorkbenchSnapshot,
     result: WorkbenchCommandResult,
 ) -> bool:
     return (
         result.function_ea == snapshot.function.ea
-        and result.requested_generation == snapshot.generation
         and result.function_fingerprint == snapshot.function.fingerprint
     )
 
@@ -209,7 +208,7 @@ def _needs_investigation(
         return False
     assert result is not None
     return (
-        not _result_matches_snapshot(snapshot, result)
+        not _result_matches_current_function(snapshot, result)
         or not result.accepted
         or not result.succeeded
         or result.status in _INVESTIGATION_STATUSES
@@ -223,7 +222,7 @@ def _current_successful_deobfuscation(
     return (
         _is_deobfuscation_result(result)
         and result is not None
-        and _result_matches_snapshot(snapshot, result)
+        and _result_matches_current_function(snapshot, result)
         and result.accepted
         and result.succeeded
         and result.status not in _INVESTIGATION_STATUSES
@@ -250,16 +249,19 @@ def project_workbench_workflow(
         )
     if not snapshot.engine_started:
         return _unavailable_view("Start D810 before running deobfuscation.", snapshot)
-    if comparison_error:
-        return _investigation_view(snapshot, comparison_detail=comparison_error)
     if _needs_investigation(snapshot, last_result):
         return _investigation_view(snapshot, last_result)
-    if comparison is not None and comparison.comparable:
-        return _verification_view(snapshot, comparison)
-    if comparison is not None and _current_successful_deobfuscation(
-        snapshot, last_result
-    ):
-        return _investigation_view(snapshot, comparison_detail=comparison.summary)
+    if _current_successful_deobfuscation(snapshot, last_result):
+        if comparison_error:
+            return _investigation_view(snapshot, comparison_detail=comparison_error)
+        if (
+            comparison is not None
+            and comparison.comparable
+            and comparison.function_ea == snapshot.function.ea
+        ):
+            return _verification_view(snapshot, comparison)
+        if comparison is not None:
+            return _investigation_view(snapshot, comparison_detail=comparison.summary)
     return _ready_view(snapshot)
 
 
