@@ -130,6 +130,16 @@ def test_accepted_matching_direct_attack_transition_refreshes_before_optional_co
     assert transition.compare is expected_compare
 
 
+def test_accepted_but_stale_direct_attack_transition_does_not_refresh_or_compare() -> None:
+    snapshot = _snapshot()
+    result = _accepted_deobfuscation_result(snapshot, status=OutcomeStatus.STALE)
+
+    transition = workflow.recommended_attack_transition(snapshot, result)
+
+    assert transition.refresh is False
+    assert transition.compare is False
+
+
 @pytest.mark.parametrize(
     "result",
     (
