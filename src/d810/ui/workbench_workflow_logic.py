@@ -73,6 +73,8 @@ def recommended_attack_transition(
     if not accepted_direct_result:
         return RecommendedAttackTransition(refresh=False, compare=False)
     assert result is not None
+    if result.status is OutcomeStatus.STALE:
+        return RecommendedAttackTransition(refresh=False, compare=False)
     return RecommendedAttackTransition(
         refresh=True,
         compare=result.refresh_requested,
