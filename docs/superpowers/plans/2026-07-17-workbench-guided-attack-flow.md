@@ -29,7 +29,7 @@
 - Consumes: `DeobfuscationWorkbenchSnapshot`, `WorkbenchCommandResult`, and `ComparisonView`.
 - Produces: `WorkflowPhase`, `WorkflowActionView`, `WorkbenchWorkflowView`, and `project_workbench_workflow(...)`.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_current_started_snapshot_offers_immediate_deobfuscation() -> None:
@@ -56,13 +56,13 @@ def test_current_comparison_offers_contextual_tuning() -> None:
 
 Cover stopped and stale snapshots, transient running, blocked/failed results, and unavailable comparison. Assert no output says the result is correct or derives a result from firing counts.
 
-- [ ] **Step 2: Verify the tests fail**
+- [x] **Step 2: Verify the tests fail**
 
 Run: `pytest tests/unit/ui/test_workbench_workflow_logic.py -q`
 
 Expected: FAIL because `d810.ui.workbench_workflow_logic` does not exist.
 
-- [ ] **Step 3: Implement the immutable projection**
+- [x] **Step 3: Implement the immutable projection**
 
 ```python
 class WorkflowPhase(str, enum.Enum):
@@ -96,13 +96,13 @@ def project_workbench_workflow(
 
 Use freshness and `engine_started` for availability. A current successful deobfuscation plus a current comparison is `VERIFY`; stale, blocked, failed, or comparison-error results are `INVESTIGATE`. In `READY`, use the direct action for both recognized and unknown shapes, with copy that truthfully names the effective runtime.
 
-- [ ] **Step 4: Verify the model**
+- [x] **Step 4: Verify the model**
 
 Run: `pytest tests/unit/ui/test_workbench_workflow_logic.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/d810/ui/workbench_workflow_logic.py tests/unit/ui/test_workbench_workflow_logic.py
@@ -119,7 +119,7 @@ git commit -m "feat(ui): model guided workbench attack flow"
 - Consumes: `project_workbench_workflow(...)` from Task 1 and existing adapter methods `deobfuscate`, `compare`, `recipe`, and `function_override`.
 - Produces: `DeobfuscationWorkbenchPanel._run_recommended_attack()`.
 
-- [ ] **Step 1: Write a failing orchestration contract**
+- [x] **Step 1: Write a failing orchestration contract**
 
 ```python
 def test_recommended_attack_refreshes_before_automatic_comparison() -> None:
@@ -133,13 +133,13 @@ def test_recommended_attack_refreshes_before_automatic_comparison() -> None:
 
 Also assert the panel imports the pure workflow projection instead of deriving card copy from Qt state.
 
-- [ ] **Step 2: Verify it fails**
+- [x] **Step 2: Verify it fails**
 
 Run: `pytest tests/unit/ui/test_workbench_panel_contract.py -q`
 
 Expected: FAIL because `_run_recommended_attack` does not exist.
 
-- [ ] **Step 3: Implement the portable attack card**
+- [x] **Step 3: Implement the portable attack card**
 
 ```python
 self.workflow_headline = QtWidgets.QLabel()
@@ -151,7 +151,7 @@ self.workflow_secondary_layout = QtWidgets.QHBoxLayout()
 
 Place an `Attack` group between function context and evidence. Add `_render_workflow()` to render the pure view, one primary button, and contextual secondary buttons. Keep the evidence chooser unchanged. Move existing peer actions under an `Advanced` group, retaining action IDs and manager adapters.
 
-- [ ] **Step 4: Coordinate run, refresh, then comparison**
+- [x] **Step 4: Coordinate run, refresh, then comparison**
 
 ```python
 def _run_recommended_attack(self, checked: bool = False) -> None:
@@ -177,7 +177,7 @@ Refactor `_run_command(...)` to return `WorkbenchCommandResult | None` and accep
 
 Wire contextual buttons: `diagnostics` opens the existing function-scoped explorer, `recipe` opens Recipe Composer, `function_override` invokes the existing command, and `compare` retries capture.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `pytest tests/unit/ui/test_workbench_panel_contract.py -q`
 
