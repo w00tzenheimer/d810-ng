@@ -3,6 +3,8 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 
+import pytest
+
 from d810.manager.workbench_models import (
     ArtifactFreshness,
     ArtifactRef,
@@ -107,6 +109,69 @@ def _accepted_deobfuscation_result(
     )
 
 
+@pytest.mark.parametrize(
+    ("refresh_requested", "expected_compare"),
+    ((True, True), (False, False)),
+    ids=("refresh-and-compare", "refresh-without-compare"),
+)
+def test_accepted_matching_direct_attack_transition_refreshes_before_optional_compare(
+    refresh_requested: bool,
+    expected_compare: bool,
+) -> None:
+    snapshot = _snapshot()
+    result = dataclasses.replace(
+        _accepted_deobfuscation_result(snapshot),
+        refresh_requested=refresh_requested,
+    )
+
+    transition = workflow.recommended_attack_transition(snapshot, result)
+
+    assert transition.refresh is True
+    assert transition.compare is expected_compare
+
+
+@pytest.mark.parametrize(
+    "result",
+    (
+        None,
+        dataclasses.replace(_accepted_deobfuscation_result(), accepted=False),
+        dataclasses.replace(
+            _accepted_deobfuscation_result(),
+            status=OutcomeStatus.STALE,
+            succeeded=False,
+            accepted=False,
+            refresh_requested=False,
+        ),
+        dataclasses.replace(_accepted_deobfuscation_result(), command="analyze"),
+        dataclasses.replace(_accepted_deobfuscation_result(), function_ea=0x402000),
+        dataclasses.replace(
+            _accepted_deobfuscation_result(),
+            function_fingerprint="sha256:other",
+        ),
+        dataclasses.replace(
+            _accepted_deobfuscation_result(),
+            requested_generation=3,
+        ),
+    ),
+    ids=(
+        "none",
+        "rejected",
+        "stale",
+        "wrong-command",
+        "wrong-ea",
+        "wrong-fingerprint",
+        "wrong-generation",
+    ),
+)
+def test_noncurrent_direct_attack_transition_does_not_refresh_or_compare(
+    result: WorkbenchCommandResult | None,
+) -> None:
+    transition = workflow.recommended_attack_transition(_snapshot(), result)
+
+    assert transition.refresh is False
+    assert transition.compare is False
+
+
 def test_workbench_workflow_logic_module_exists() -> None:
     assert importlib.util.find_spec("d810.ui.workbench_workflow_logic") is not None
 
@@ -178,6 +243,31 @@ def test_stale_and_stopped_snapshots_disable_the_direct_action() -> None:
     assert stopped.phase is workflow.WorkflowPhase.UNAVAILABLE
     assert stopped.primary.enabled is False
     assert "Start D810" in stopped.primary.reason
+
+
+def test_rejected_result_keeps_the_stale_snapshot_unavailable_for_refresh() -> None:
+    stale_snapshot = dataclasses.replace(
+        _snapshot(),
+        freshness=SnapshotFreshness.STALE,
+    )
+    rejected_result = dataclasses.replace(
+        _accepted_deobfuscation_result(),
+        status=OutcomeStatus.STALE,
+        succeeded=False,
+        accepted=False,
+        refresh_requested=False,
+        message="Command belongs to an older workbench generation",
+    )
+
+    view = workflow.project_workbench_workflow(
+        stale_snapshot,
+        last_result=rejected_result,
+    )
+
+    assert view.phase is workflow.WorkflowPhase.UNAVAILABLE
+    assert view.primary.enabled is False
+    assert "Refresh" in view.primary.reason
+    assert rejected_result.message not in view.detail
 
 
 def test_running_snapshot_reports_the_transient_run_state() -> None:

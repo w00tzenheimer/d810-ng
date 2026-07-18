@@ -33,23 +33,24 @@ def test_recommended_attack_refreshes_before_automatic_comparison() -> None:
     source = _method_source("_run_recommended_attack")
 
     assert 'self._run_command("deobfuscate", refresh_after=False)' in source
+    assert "recommended_attack_transition(snapshot, result)" in source
     assert "self.refresh()" in source
     assert "self._run_comparison()" in source
-    assert source.index("self.refresh()") < source.index("self._run_comparison()")
+    assert source.index("if transition.refresh:") < source.index("self.refresh()")
+    assert source.index("self.refresh()") < source.index("if transition.compare:")
+    assert source.index("if transition.compare:") < source.index(
+        "self._run_comparison()"
+    )
 
 
-def test_accepted_nonrefresh_direct_result_refreshes_without_comparison() -> None:
+def test_recommended_attack_delegates_the_transition_decision_to_pure_logic() -> None:
     source = _method_source("_run_recommended_attack")
+    panel_source = PANEL.read_text(encoding="utf-8")
 
-    accepted_result_branch = source.split("if (", 1)[1].split("self._render_workflow()", 1)[0]
-    assert "should_accept_command_result(snapshot, result)" in accepted_result_branch
-    assert "result.refresh_requested" not in accepted_result_branch.split(
-        "self.refresh()", 1
-    )[0]
-    assert "if result.refresh_requested:" in accepted_result_branch
-    assert accepted_result_branch.index("self.refresh()") < accepted_result_branch.index(
-        "if result.refresh_requested:"
-    ) < accepted_result_branch.index("self._run_comparison()")
+    assert "recommended_attack_transition" in panel_source
+    assert "transition = recommended_attack_transition(snapshot, result)" in source
+    assert "should_accept_command_result(snapshot, result)" not in source
+    assert "result.refresh_requested" not in source
 
 
 def test_attack_card_renders_the_pure_workflow_projection() -> None:
