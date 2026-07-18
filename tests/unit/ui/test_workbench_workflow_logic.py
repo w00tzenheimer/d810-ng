@@ -309,3 +309,15 @@ def test_comparison_error_after_accepted_current_direct_run_is_retryable() -> No
     assert view.phase is workflow.WorkflowPhase.INVESTIGATE
     assert view.primary.action_id == "compare"
     assert "Native capture timed out" in view.detail
+
+
+def test_missing_comparison_after_accepted_current_direct_run_is_retryable() -> None:
+    view = workflow.project_workbench_workflow(
+        _snapshot(),
+        last_result=_accepted_deobfuscation_result(),
+    )
+
+    assert view.phase is workflow.WorkflowPhase.INVESTIGATE
+    assert view.primary.action_id == "compare"
+    assert view.primary.label == "Retry comparison"
+    assert view.comparison_state == "retry"

@@ -254,14 +254,14 @@ def project_workbench_workflow(
     if _current_successful_deobfuscation(snapshot, last_result):
         if comparison_error:
             return _investigation_view(snapshot, comparison_detail=comparison_error)
-        if (
-            comparison is not None
-            and comparison.comparable
-            and comparison.function_ea == snapshot.function.ea
-        ):
+        if comparison is None:
+            return _investigation_view(
+                snapshot,
+                comparison_detail="Comparison evidence is not available yet.",
+            )
+        if comparison.comparable and comparison.function_ea == snapshot.function.ea:
             return _verification_view(snapshot, comparison)
-        if comparison is not None:
-            return _investigation_view(snapshot, comparison_detail=comparison.summary)
+        return _investigation_view(snapshot, comparison_detail=comparison.summary)
     return _ready_view(snapshot)
 
 
