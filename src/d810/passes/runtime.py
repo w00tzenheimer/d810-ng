@@ -7,10 +7,10 @@ a single facade: collect -> persist -> analyze -> (optionally persist hints)
 Does NOT own: rule activation, planner scoring, CFG mutation.
 No IDA imports - fully unit-testable.
 
-Stale-hint policy: ``reset_for_func(func_ea)`` is called at the start of
-each decompilation (when the optimizer managers detect a new func_ea).  This
-clears the in-memory fired guard **and** persisted raw results / analyzed
-hints so every decompilation pass starts from a clean slate.
+Stale-hint policy: the manager lifecycle coordinator calls
+``reset_for_func(func_ea)`` at top-level decompilation start. This clears the
+in-memory fired guard **and** persisted raw results / analyzed hints so every
+decompilation pass starts from a clean slate.
 """
 from __future__ import annotations
 
@@ -178,25 +178,35 @@ class ReconAnalysisRuntime:
         self._fact_sink: FactObservationSink = fact_sink or _CoreObservabilitySink()
         self._current_func_ea: int = -1
         self._outcome_log: ReconOutcomeLog = ReconOutcomeLog()
-        self._outcome_seen: set[tuple] = set()
+        self._outcome_seen_by_func: dict[int, set[tuple[str, bool]]] = {}
         self._fact_lifecycle = FactLifecycleRuntime(
             persistence_callback=self._persist_maturity_facts,
         )
 
-    def reset_for_func(self, func_ea: int) -> bool:
+    def reset_for_func(
+        self,
+        func_ea: int,
+        *,
+        preserve_active_session: bool = False,
+    ) -> bool:
         """Reset recon state -- deduplicates across managers.
 
-        Only the first call per decompilation actually clears state.
-        Subsequent calls with the same *func_ea* are no-ops.
+        Only the first call per decompilation actually clears state. Subsequent
+        calls with the same *func_ea* are no-ops. ``preserve_active_session``
+        is reserved for the manager coordinator's nested-session bridge: it
+        prevents an inner decompilation from flushing its still-active parent.
 
         Returns:
             ``True`` if the reset actually fired, ``False`` if deduplicated.
         """
         if func_ea == self._current_func_ea:
             return False  # already reset for this decompilation
-        # Flush previous function's outcomes if not finalized
+        # A normal function switch means the old callback chain ended without
+        # a structural finish; preserve that historical flush behavior. A
+        # manager-declared nested session instead keeps the parent live so it
+        # can resume after the inner decompilation finishes.
         prev_ea = self._current_func_ea
-        if prev_ea != -1:
+        if prev_ea != -1 and not preserve_active_session:
             self._persist_outcomes(prev_ea)
         self._current_func_ea = func_ea
         self._phase.reset(func_ea=func_ea)
@@ -205,15 +215,27 @@ class ReconAnalysisRuntime:
             lambda store: store.clear_func(func_ea=func_ea)
         )
         self._outcome_log.reset_for_func(func_ea)
-        self._outcome_seen.clear()
-        logger.debug("reset_for_func: func=0x%x prev=0x%x flushed=%s", func_ea, prev_ea, prev_ea != -1)
+        self._outcome_seen_by_func.pop(func_ea, None)
+        logger.debug(
+            "reset_for_func: func=0x%x prev=0x%x flushed=%s nested=%s",
+            func_ea,
+            prev_ea,
+            prev_ea != -1 and not preserve_active_session,
+            preserve_active_session,
+        )
         return True
 
-    def mark_decompilation_finished(self) -> None:
-        """Called at decompilation end -- persist outcomes, then reset guard."""
+    def mark_decompilation_finished(
+        self,
+        *,
+        resume_func_ea: int | None = None,
+    ) -> None:
+        """Persist the finished session and optionally resume its parent."""
         if self._current_func_ea != -1:
             self._persist_outcomes(self._current_func_ea)
-        self._current_func_ea = -1
+        self._current_func_ea = (
+            int(resume_func_ea) if resume_func_ea is not None else -1
+        )
 
     def _persist_outcomes(self, func_ea: int) -> None:
         """Persist consumer outcomes to store.
@@ -275,10 +297,11 @@ class ReconAnalysisRuntime:
         avoid per-block spam when gates evaluate identically on every block.
         """
         self._outcome_log.record(report)
-        dedup_key = (report.func_ea, report.consumer_name, report.consumer_verdict_applied)
-        if dedup_key in self._outcome_seen:
+        dedup_key = (report.consumer_name, report.consumer_verdict_applied)
+        seen = self._outcome_seen_by_func.setdefault(report.func_ea, set())
+        if dedup_key in seen:
             return
-        self._outcome_seen.add(dedup_key)
+        seen.add(dedup_key)
         logger.info(
             "outcome: func=0x%x consumer=%s artifacts=%s summary=%s verdict=%s",
             report.func_ea, report.consumer_name,

@@ -4,9 +4,9 @@ Queryable SQLite snapshots for block chain tracing, variable provenance,
 and DAG correlation without grep/sed.
 
 Session lifecycle:
-    open_diag_session(func_ea)   -- called on DecompilationEvent.STARTED
+    open_diag_session(func_ea)   -- called on DecompilationEvent.SESSION_STARTED
     get_diag_db()                -- returns the session's connection (or None)
-    close_diag_session()         -- called on DecompilationEvent.FINISHED
+    close_diag_session()         -- called on DecompilationEvent.SESSION_FINISHED
 """
 from __future__ import annotations
 
@@ -274,7 +274,7 @@ def find_latest_diag_db_path(func_ea: int = 0, log_dir: str | None = None) -> Pa
 def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
     """Open a diag DB for this decompilation pass.
 
-    Called on DecompilationEvent.STARTED. All subsequent
+    Called on DecompilationEvent.SESSION_STARTED. All subsequent
     ``get_diag_db()`` calls will return the same connection until
     ``close_diag_session()``.
 
@@ -308,7 +308,7 @@ def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
 
 
 def close_diag_session() -> None:
-    """Close the current diag DB. Called on DecompilationEvent.FINISHED.
+    """Close the current diag DB. Called on DecompilationEvent.SESSION_FINISHED.
 
     Also unsubscribes the diag event-handler subscribers so any
     close-time emit can't be picked up by a stale subscriber bound to

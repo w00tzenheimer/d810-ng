@@ -1,9 +1,8 @@
-"""Unit cover for E4a's ``FLOWGRAPH_READY`` -> recon dedup contract.
+"""Unit cover for ``FLOWGRAPH_READY`` coordinator capture deduplication.
 
 E4a moves microcode recon collection from two direct
-``run_microcode_collectors(mba, ...)`` calls in
-``hexrays_hooks.py`` to a single ``FLOWGRAPH_READY`` subscriber on
-``D810``.  Both maturity-transition gates still emit
+``run_microcode_collectors(mba, ...)`` calls in the adapters to the
+manager-owned lifecycle coordinator.  Both maturity-transition gates still emit
 ``FLOWGRAPH_READY`` for the same ``(func_ea, maturity)``, so the
 subscriber fires twice -- but ``ReconPhase.run_microcode_collectors``
 dedupes by ``(func_ea, maturity)`` internally, so exactly one
@@ -11,18 +10,17 @@ collector pass actually runs.
 
 This file tests two things:
 
-1. **Behavior**: emitting an event twice for the same
+1. **Behavior**: routing an event twice for the same
    ``(func_ea, maturity)`` results in exactly one collector
    invocation.  Uses a local sentinel ``Event`` enum -- the dedup
    contract is between ``EventEmitter`` and ``ReconPhase``, neither
    of which cares about the specific event identity.  Avoiding the
    real ``DecompilationEvent`` import keeps this file under the
    ``unit-tests-no-hexrays`` contract.
-2. **Architectural pin**: no remaining direct
-   ``self._recon_phase.run_microcode_collectors(mba, ...)`` /
-   ``self._recon_phase.run_microcode_collectors(mba,`` call shape in
-   the two manager maturity gates in ``hexrays_hooks.py``.  Catches
-   future drift that re-introduces the double-collection path.
+2. **Architectural pin**: the two maturity gates emit only the portable
+   flowgraph payload; the manager-owned coordinator is the sole collection
+   and pre-D810 fact-capture owner. This catches a future direct adapter
+   collection path that would double-collect.
 
 Lives in ``tests/unit/`` because:
 
@@ -43,7 +41,10 @@ from d810.core.events import EventEmitter
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.analyses.control_flow.models import ReconResult
 from d810.passes.phase import ReconPhase
-from d810.manager.flowgraph_ready import FlowGraphReadySubscriber
+from d810.manager.decompilation_lifecycle import (
+    DecompilationLifecycleCoordinator,
+    FlowgraphReadyPayload,
+)
 
 
 class _Event(enum.Enum):
@@ -124,8 +125,8 @@ class _CapturingFactRuntime:
         )
 
 
-class TestFlowGraphReadySubscriberDedup:
-    """Subscriber pattern: ``FLOWGRAPH_READY`` fires from two manager
+class TestFlowGraphReadyCoordinatorDedup:
+    """Coordinator pattern: ``FLOWGRAPH_READY`` fires from two manager
     maturity gates per maturity transition.  ``ReconPhase`` dedupes by
     ``(func_ea, maturity)`` -- exactly one collector pass runs even
     though the subscriber is invoked twice."""
@@ -151,7 +152,9 @@ class TestFlowGraphReadySubscriberDedup:
             func_ea=func_ea,
             metadata={
                 "maturity": maturity,
-                "maturity_name": f"MMAT_{maturity}",
+                "maturity_name": (
+                    "MMAT_GLBOPT1" if maturity == 14 else f"MMAT_{maturity}"
+                ),
                 "cpu_arch_name": "metapc",
             },
         )
@@ -161,12 +164,30 @@ class TestFlowGraphReadySubscriberDedup:
         phase: ReconPhase | None = None,
         *,
         fact_runtime: _CapturingFactRuntime | None = None,
-    ) -> FlowGraphReadySubscriber:
-        """Build the real subscriber without importing ``manager.py``."""
-        return FlowGraphReadySubscriber(
-            recon_phase=phase,
-            recon_runtime=fact_runtime,
-            provider_name="hexrays_microcode",
+    ) -> DecompilationLifecycleCoordinator:
+        """Build the real coordinator without importing the IDA-facing hook."""
+        return DecompilationLifecycleCoordinator(
+            preanalysis_phase=phase,
+            analysis_runtime=fact_runtime,
+            rule_scope_service=None,
+        )
+
+    def _payload(
+        self,
+        flow_graph: FlowGraph,
+        *,
+        snapshot: object | None = None,
+    ) -> FlowgraphReadyPayload:
+        metadata = flow_graph.metadata
+        return FlowgraphReadyPayload(
+            flow_graph=flow_graph,
+            func_ea=int(flow_graph.func_ea),
+            provider_phase=ProviderPhaseSnapshot(
+                provider_name="hexrays_microcode",
+                provider_level=int(metadata["maturity"]),
+                friendly_provider_level=str(metadata["maturity_name"]),
+            ),
+            snapshot=snapshot,
         )
 
     def test_two_events_same_func_maturity_yields_one_collect(
@@ -179,25 +200,13 @@ class TestFlowGraphReadySubscriberDedup:
         collector = _CountingCollector()
         phase = self._build_phase(monkeypatch, collector)
         emitter: EventEmitter[_Event] = EventEmitter()
-        emitter.on(_Event.FLOWGRAPH_READY, self._subscriber(phase))
+        emitter.on(_Event.FLOWGRAPH_READY, self._subscriber(phase).capture_flowgraph)
 
         fg = self._empty_flow_graph(func_ea=0x140002000, maturity=14)
 
         # Emit twice for the same (func_ea, maturity).
-        emitter.emit(
-            _Event.FLOWGRAPH_READY,
-            flow_graph=fg,
-            func_ea=0x140002000,
-            maturity=14,
-            maturity_name="MMAT_GLBOPT1",
-        )
-        emitter.emit(
-            _Event.FLOWGRAPH_READY,
-            flow_graph=fg,
-            func_ea=0x140002000,
-            maturity=14,
-            maturity_name="MMAT_GLBOPT1",
-        )
+        emitter.emit(_Event.FLOWGRAPH_READY, self._payload(fg))
+        emitter.emit(_Event.FLOWGRAPH_READY, self._payload(fg))
 
         # Exactly one collector pass.
         assert len(collector.calls) == 1
@@ -215,25 +224,13 @@ class TestFlowGraphReadySubscriberDedup:
         collector = _CountingCollector()
         phase = self._build_phase(monkeypatch, collector)
         emitter: EventEmitter[_Event] = EventEmitter()
-        emitter.on(_Event.FLOWGRAPH_READY, self._subscriber(phase))
+        emitter.on(_Event.FLOWGRAPH_READY, self._subscriber(phase).capture_flowgraph)
 
         fg14 = self._empty_flow_graph(func_ea=0x140002000, maturity=14)
         fg15 = self._empty_flow_graph(func_ea=0x140002000, maturity=15)
 
-        emitter.emit(
-            _Event.FLOWGRAPH_READY,
-            flow_graph=fg14,
-            func_ea=0x140002000,
-            maturity=14,
-            maturity_name="MMAT_GLBOPT1",
-        )
-        emitter.emit(
-            _Event.FLOWGRAPH_READY,
-            flow_graph=fg15,
-            func_ea=0x140002000,
-            maturity=15,
-            maturity_name="MMAT_GLBOPT2",
-        )
+        emitter.emit(_Event.FLOWGRAPH_READY, self._payload(fg14))
+        emitter.emit(_Event.FLOWGRAPH_READY, self._payload(fg15))
 
         assert len(collector.calls) == 2
         assert {m for _, _, m in collector.calls} == {14, 15}
@@ -246,25 +243,13 @@ class TestFlowGraphReadySubscriberDedup:
         collector = _CountingCollector()
         phase = self._build_phase(monkeypatch, collector)
         emitter: EventEmitter[_Event] = EventEmitter()
-        emitter.on(_Event.FLOWGRAPH_READY, self._subscriber(phase))
+        emitter.on(_Event.FLOWGRAPH_READY, self._subscriber(phase).capture_flowgraph)
 
         fg_a = self._empty_flow_graph(func_ea=0x140002000, maturity=14)
         fg_b = self._empty_flow_graph(func_ea=0x140003000, maturity=14)
 
-        emitter.emit(
-            _Event.FLOWGRAPH_READY,
-            flow_graph=fg_a,
-            func_ea=0x140002000,
-            maturity=14,
-            maturity_name="MMAT_GLBOPT1",
-        )
-        emitter.emit(
-            _Event.FLOWGRAPH_READY,
-            flow_graph=fg_b,
-            func_ea=0x140003000,
-            maturity=14,
-            maturity_name="MMAT_GLBOPT1",
-        )
+        emitter.emit(_Event.FLOWGRAPH_READY, self._payload(fg_a))
+        emitter.emit(_Event.FLOWGRAPH_READY, self._payload(fg_b))
 
         assert len(collector.calls) == 2
         assert {func_ea for _, func_ea, _ in collector.calls} == {
@@ -283,30 +268,17 @@ class TestFlowGraphReadySubscriberDedup:
         emitter: EventEmitter[_Event] = EventEmitter()
         emitter.on(
             _Event.FLOWGRAPH_READY,
-            self._subscriber(fact_runtime=fact_runtime),
+            self._subscriber(fact_runtime=fact_runtime).capture_flowgraph,
         )
 
         fg = self._empty_flow_graph(func_ea=0x140002000, maturity=14)
         snapshot = object()
 
-        emitter.emit(
-            _Event.FLOWGRAPH_READY,
-            flow_graph=fg,
-            func_ea=0x140002000,
-            maturity=14,
-            maturity_name="MMAT_GLBOPT1",
-        )
+        emitter.emit(_Event.FLOWGRAPH_READY, self._payload(fg))
         assert len(fact_runtime.calls) == 1
         assert fact_runtime.calls[0]["snapshot"] is None
 
-        emitter.emit(
-            _Event.FLOWGRAPH_READY,
-            flow_graph=fg,
-            func_ea=0x140002000,
-            maturity=14,
-            maturity_name="MMAT_GLBOPT1",
-            snapshot=snapshot,
-        )
+        emitter.emit(_Event.FLOWGRAPH_READY, self._payload(fg, snapshot=snapshot))
 
         assert len(fact_runtime.calls) == 2
         call = fact_runtime.calls[1]
@@ -321,15 +293,8 @@ class TestFlowGraphReadySubscriberDedup:
         assert provider_phase.friendly_provider_level == "MMAT_GLBOPT1"
 
 
-class TestNoDirectReconCallsInManagerGates:
-    """Architectural pin: ``hexrays_hooks.py`` must not contain any
-    direct ``self._recon_phase.run_microcode_collectors(mba, ...)``
-    call.  After E4a, all microcode recon collection goes through the
-    ``FLOWGRAPH_READY`` subscriber on ``D810``.
-
-    Catches drift -- a future edit that adds a direct call back would
-    cause double-collection (the subscriber + the direct call).
-    """
+class TestNoDirectCollectionInAdapterGates:
+    """Architecture pin: hook adapters may only emit portable payloads."""
 
     def test_no_direct_run_microcode_collectors_call_in_hexrays_hooks(
         self,
@@ -353,19 +318,12 @@ class TestNoDirectReconCallsInManagerGates:
 
         # Direct call shape -- the call form, not the mention of
         # ``run_microcode_collectors`` in comments / docstrings.
-        forbidden = (
-            "self._recon_phase.run_microcode_collectors(",
-            "_recon_phase.run_microcode_collectors(\n",
-        )
+        forbidden = ("run_microcode_collectors(",)
         for shape in forbidden:
             assert shape not in src, (
-                f"hexrays_hooks.py contains a direct call to "
-                f"``run_microcode_collectors`` ({shape!r}).  "
-                "E4a moved this to the ``FLOWGRAPH_READY`` subscriber "
-                "on ``D810`` (see "
-                "``manager.flowgraph_ready.FlowGraphReadySubscriber``).  "
-                "A direct call here would double-collect because the "
-                "subscriber already fires per maturity transition."
+                f"hexrays_hooks.py contains a direct collection call "
+                f"({shape!r}). The manager-owned lifecycle coordinator is "
+                "the only collection owner."
             )
 
     def test_no_direct_pre_d810_fact_capture_call_in_hexrays_hooks(
@@ -392,9 +350,9 @@ class TestNoDirectReconCallsInManagerGates:
         assert "self._recon_runtime.capture_maturity_facts(" not in src, (
             "hexrays_hooks.py must not call "
             "self._recon_runtime.capture_maturity_facts(...) directly. "
-            "Pre-D810 fact capture is owned by "
-            "manager.flowgraph_ready.FlowGraphReadySubscriber so the target "
-            "is the portable FlowGraph, not the live mba_t."
+            "Pre-D810 fact capture is owned by the manager lifecycle "
+            "coordinator so the target is the portable FlowGraph, not the "
+            "live mba_t."
         )
 
     def test_post_d810_fact_capture_does_not_fallback_to_live_mba(

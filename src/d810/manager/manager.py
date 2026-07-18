@@ -10,7 +10,9 @@ from d810.core import (
     MOP_TO_AST_CACHE,
     typing,
 )
+from d810.core.decompilation_session import DecompilationSessionEvent
 from d810.core.logging import getLogger
+from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.project import (
     emit_recon_fact_collector_registration,
 )
@@ -57,7 +59,10 @@ from d810.passes.recon_runtime_factory import (
 )
 from d810.passes.scheduler import PassScheduler
 from d810.passes.store import shutdown_all_writers
-from d810.manager.flowgraph_ready import FlowGraphReadySubscriber
+from d810.manager.decompilation_lifecycle import (
+    DecompilationLifecycleCoordinator,
+    FlowgraphReadyPayload,
+)
 from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
 from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
 from d810.manager.profiling import ProfilingController
@@ -140,7 +145,7 @@ class D810Manager:
     _recon_phase: typing.Any = dataclasses.field(default=None, init=False)
     _recon_runtime: typing.Any = dataclasses.field(default=None, init=False)
     _recon_bundle: typing.Any = dataclasses.field(default=None, init=False)
-    _flowgraph_ready_subscriber: typing.Any = dataclasses.field(
+    decompilation_lifecycle: DecompilationLifecycleCoordinator = dataclasses.field(
         default=None, init=False
     )
     _post_d810_runtime: typing.Any = dataclasses.field(default=None, init=False)
@@ -294,10 +299,13 @@ class D810Manager:
     def is_profiling(self) -> bool:
         return self.profiling.is_running
 
-    def start_profiling(self):
+    def start_profiling(self, _event: DecompilationSessionEvent | None = None):
         self.profiling.start()
 
-    def stop_profiling(self) -> pathlib.Path | None:
+    def stop_profiling(
+        self,
+        _event: DecompilationSessionEvent | None = None,
+    ) -> pathlib.Path | None:
         return self.profiling.stop()
 
     def enable_profiling(self):
@@ -461,9 +469,21 @@ class D810Manager:
                 self._recon_phase = self._recon_bundle.recon_phase
                 self._recon_runtime = self._recon_bundle.recon_runtime
 
-        # Wire recon phase + runtime into microcode optimizers.
-        # The runtime provides reset_for_func() at decompilation start;
-        # the phase dispatches collectors at each maturity.
+        self.decompilation_lifecycle = DecompilationLifecycleCoordinator(
+            preanalysis_phase=self._recon_phase,
+            analysis_runtime=self._recon_runtime,
+            rule_scope_service=self.rule_scope_service,
+        )
+
+        # The lifecycle coordinator owns top-level reset, capture, analysis,
+        # and rule-scope delivery.  Adapters retain only the narrow fact-view
+        # runtime seam they still need for optimizer-local consumers.
+        self.instruction_optimizer.configure(
+            decompilation_lifecycle=self.decompilation_lifecycle,
+        )
+        self.block_optimizer.configure(
+            decompilation_lifecycle=self.decompilation_lifecycle,
+        )
         if self._recon_runtime is not None:
             # LS10: register the Hex-Rays live SourceLifter (import-time side
             # effect) before the induction collector runs, so a raw mba handed
@@ -485,12 +505,7 @@ class D810Manager:
                 runtime=self._recon_runtime,
                 project_config=dict(self.config),
             )
-            self.instruction_optimizer.configure(
-                recon_phase=self._recon_phase,
-                recon_runtime=self._recon_runtime,
-            )
             self.block_optimizer.configure(
-                recon_phase=self._recon_phase,
                 recon_runtime=self._recon_runtime,
             )
 
@@ -499,11 +514,11 @@ class D810Manager:
         if _pass_pipeline is not None:
             self.block_optimizer.configure(pass_pipeline=_pass_pipeline)
 
-        # Build ctree optimizer with recon phase and runtime from the start.
+        # Ctree collection and analysis use the same lifecycle port as the
+        # microcode adapters.
         self.ctree_optimizer = CtreeOptimizerManager(
             self.stats,
-            recon_phase=self._recon_phase,
-            recon_runtime=self._recon_runtime,
+            decompilation_lifecycle=self.decompilation_lifecycle,
         )
 
         for ctree_rule in self.ctree_optimizer_rules:
@@ -514,6 +529,8 @@ class D810Manager:
             self.event_emitter.emit,
             ctree_optimizer_manager=self.ctree_optimizer,
             block_optimizer=self.block_optimizer,
+            decompilation_lifecycle=self.decompilation_lifecycle,
+            database_identity=idb_key,
         )
         self._post_d810_runtime = None
         self._compile_rule_scope()
@@ -605,58 +622,76 @@ class D810Manager:
     def _stop_timer(self, report: bool = True):
         self.profiling.stop_timer(report=report)
 
+    def _on_session_started(self, event: DecompilationSessionEvent) -> None:
+        """Reset observer-only state after the coordinator has opened a session."""
+        self.start_profiling(event)
+        self.stats.reset()
+        MOP_CONSTANT_CACHE.clear()
+        MOP_TO_AST_CACHE.clear()
+        Z3MopProver().clear_caches()
+        self.instruction_optimizer.reset_cycle_detection()
+        self.instruction_optimizer.reset_run_later_state()
+        self.block_optimizer.reset_pass_counter()
+        self.block_optimizer.reset_pipeline_tracker()
+        self.block_optimizer.reset_perf_counters()
+        self._start_timer()
+
+    def _on_session_finished(self, event: DecompilationSessionEvent) -> None:
+        """Report observer-only state after the coordinator has closed a session."""
+        self.stop_profiling(event)
+        self.stats.report()
+        logger.info("MOP_CONSTANT_CACHE stats: %s", MOP_CONSTANT_CACHE.stats)
+        logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats)
+        self.block_optimizer.report_perf_counters()
+        self._stop_timer()
+
+    def _capture_flowgraph_ready(
+        self,
+        *,
+        flow_graph: typing.Any,
+        func_ea: int,
+        maturity: int,
+        maturity_name: str,
+        producer: str | None = None,
+        producer_stage_id: int | None = None,
+        producer_stage_name: str | None = None,
+        snapshot_stage: typing.Any = None,
+        snapshot: typing.Any = None,
+    ) -> None:
+        """Adapt the Hex-Rays event payload to the permanent coordinator port."""
+        del producer, producer_stage_id, producer_stage_name, snapshot_stage
+        provider_phase = ProviderPhaseSnapshot(
+            provider_name=HEXRAYS_MICROCODE_PROVIDER,
+            provider_level=int(maturity),
+            friendly_provider_level=str(maturity_name),
+            ir_maturity=getattr(flow_graph, "metadata", {}).get("ir_maturity"),
+        )
+        self.decompilation_lifecycle.capture_flowgraph(
+            FlowgraphReadyPayload(
+                flow_graph=flow_graph,
+                func_ea=int(func_ea),
+                provider_phase=provider_phase,
+                snapshot=snapshot,
+            )
+        )
+
     def _install_hooks(self):
-        # must become before listeners are installed
-        for _subscriber in (
-            self.start_profiling,
-            self.stats.reset,
-            MOP_CONSTANT_CACHE.clear,
-            MOP_TO_AST_CACHE.clear,
-            Z3MopProver().clear_caches,
-            self.instruction_optimizer.reset_cycle_detection,
-            self.instruction_optimizer.reset_run_later_state,
-            self.block_optimizer.reset_pass_counter,
-            self.block_optimizer.reset_pipeline_tracker,
-            self.block_optimizer.reset_perf_counters,
-            self._start_timer,
-        ):
-            self.event_emitter.on(DecompilationEvent.STARTED, _subscriber)
+        self.event_emitter.on(
+            DecompilationEvent.SESSION_STARTED,
+            self._on_session_started,
+        )
+        self.event_emitter.on(
+            DecompilationEvent.SESSION_FINISHED,
+            self._on_session_finished,
+        )
 
-        for _subscriber in (
-            self.stop_profiling,
-            self.stats.report,
-            lambda: logger.info(
-                "MOP_CONSTANT_CACHE stats: %s", MOP_CONSTANT_CACHE.stats
-            ),
-            lambda: logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats),
-            self.block_optimizer.report_perf_counters,
-            self._stop_timer,
-        ):
-            self.event_emitter.on(DecompilationEvent.FINISHED, _subscriber)
-
-        if self._recon_runtime is not None:
-            self.event_emitter.on(
-                DecompilationEvent.FINISHED,
-                self._recon_runtime.mark_decompilation_finished,
-            )
-
-        # E4a/E4b: single shared FLOWGRAPH_READY subscriber for the
-        # portable microcode analysis path.  Both manager maturity
-        # gates emit this event for the same ``(func_ea, maturity)``;
-        # ``ReconPhase.run_microcode_collectors`` dedupes by
-        # ``(func_ea, maturity)`` internally, while pre-D810 fact
-        # capture runs through the same portable FlowGraph payload
-        # whether or not a diagnostic snapshot is attached.
-        if self._recon_phase is not None or self._recon_runtime is not None:
-            self._flowgraph_ready_subscriber = FlowGraphReadySubscriber(
-                recon_phase=self._recon_phase,
-                recon_runtime=self._recon_runtime,
-                provider_name=HEXRAYS_MICROCODE_PROVIDER,
-            )
-            self.event_emitter.on(
-                DecompilationEvent.FLOWGRAPH_READY,
-                self._flowgraph_ready_subscriber,
-            )
+        # The coordinator is the sole collection/capture route.  Both
+        # maturity gates still emit the same portable payload, preserving the
+        # existing lifter and snapshot timing while the phase deduplicates.
+        self.event_emitter.on(
+            DecompilationEvent.FLOWGRAPH_READY,
+            self._capture_flowgraph_ready,
+        )
 
         from d810.hexrays.preanalysis.flowchart_preanalysis import (
             run_flowchart_preanalysis_handlers,

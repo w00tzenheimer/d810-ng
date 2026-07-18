@@ -114,23 +114,21 @@ class CtreeOptimizerManager:
     def __init__(
         self,
         stats: OptimizationStatistics,
-        recon_phase=None,
-        recon_runtime=None,
+        decompilation_lifecycle=None,
     ) -> None:
         logger.debug("Initializing CtreeOptimizerManager...")
         self.ctree_rules: list[CtreeOptimizationRule] = []
         self.stats: OptimizationStatistics = stats
-        # Optional ReconPhase - when set, fires ctree collectors at each
-        # maturity level before ctree rules run. None means recon is disabled.
-        self._recon_phase = recon_phase  # ReconPhase | None
-        # Optional ReconAnalysisRuntime - set via configure(recon_runtime=...).
-        # Used to eagerly analyze and persist hints after ctree collectors.
-        self._recon_runtime = recon_runtime  # ReconAnalysisRuntime | None
+        # Manager-owned lifecycle port.  The hook stays callback-local and
+        # does not retain a phase or analysis runtime.
+        self._decompilation_lifecycle = decompilation_lifecycle
 
     def configure(self, **kwargs) -> None:
         """Update optional dependencies after construction."""
-        self._recon_phase = kwargs.get("recon_phase", self._recon_phase)
-        self._recon_runtime = kwargs.get("recon_runtime", self._recon_runtime)
+        self._decompilation_lifecycle = kwargs.get(
+            "decompilation_lifecycle",
+            self._decompilation_lifecycle,
+        )
 
     def add_rule(self, rule: CtreeOptimizationRule) -> None:
         """Register a ctree rule."""
@@ -146,34 +144,23 @@ class CtreeOptimizerManager:
         :param new_maturity: the new maturity level
         :return: total number of patches applied
         """
-        # Recon: fire ctree collectors at every maturity level (no-op when
-        # _recon_phase is None - guarded for zero overhead when disabled).
-        if self._recon_phase is not None:
+        lifecycle = self._decompilation_lifecycle
+        if lifecycle is not None:
             func_ea = int(getattr(cfunc, "entry_ea", 0) or 0)
             provider_phase = ProviderPhaseSnapshot(
                 provider_name=HEXRAYS_CTREE_PROVIDER,
                 provider_level=int(new_maturity),
                 friendly_provider_level=_ctree_maturity_to_string(new_maturity),
             )
-            try:
-                self._recon_phase.run_ctree_collectors(
-                    cfunc,
-                    func_ea=func_ea,
-                    provider_phase=provider_phase,
-                )
-            except Exception:
-                logger.exception(
-                    "ReconPhase (ctree) failed at maturity %s",
-                    provider_phase.friendly_provider_level,
-                )
-            if self._recon_runtime is not None:
-                try:
-                    self._recon_runtime.analyze_and_persist(func_ea)
-                except Exception:
-                    logger.exception(
-                        "ReconRuntime analyze_and_persist (ctree) failed for func=0x%x",
-                        func_ea,
-                    )
+            lifecycle.capture_ctree(
+                cfunc,
+                func_ea=func_ea,
+                provider_phase=provider_phase,
+            )
+            lifecycle.analyze_current_function(
+                function_ea=func_ea,
+                source="analyzed",
+            )
 
         if ida_hexrays is not None and new_maturity != ida_hexrays.CMAT_FINAL:
             return 0

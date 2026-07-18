@@ -15,8 +15,8 @@ class DecompilationEvent(enum.Enum):
     # Dotted hierarchical event values: domain.object.action.
     # Filter by prefix (e.g. ``decompilation.``) in subscribers / logs.
     # Underscores within a segment are OK (`post_d810`); the SEPARATOR is `.`.
-    STARTED = "decompilation.started"
-    FINISHED = "decompilation.finished"
+    SESSION_STARTED = "decompilation.session.started"
+    SESSION_FINISHED = "decompilation.session.finished"
     MATURITY_CHANGED = "decompilation.maturity.changed"
     POST_D810_CAPTURE = "decompilation.post_d810.capture"
     HEXRAYS_FLOWCHART_READY = "decompilation.hexrays.flowchart.ready"
@@ -45,11 +45,9 @@ def _emit_flowgraph_ready_event(
     route through one helper so the cross-layer event fires at
     every recon-collection lifecycle point.
 
-    E4a (now): the ``FLOWGRAPH_READY`` subscriber on ``D810`` (see
-    ``manager.flowgraph_ready.FlowGraphReadySubscriber``) is the sole
-    invoker of ``ReconPhase.run_microcode_collectors`` for the
-    microcode path.  The legacy live-mba direct calls that used to
-    live in the hook module are gone.
+    The manager-owned lifecycle coordinator is the sole invoker of
+    ``ReconPhase.run_microcode_collectors`` for the microcode path. The legacy
+    live-mba direct calls that used to live in the hook module are gone.
 
     Lift failures log via ``optimizer_logger.exception`` and return
     cleanly -- the subscriber never runs for the failed transition,

@@ -25,11 +25,15 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         callback: typing.Callable,
         ctree_optimizer_manager: CtreeOptimizerManager | None = None,
         block_optimizer: BlockOptimizerManager | None = None,
+        decompilation_lifecycle: typing.Any | None = None,
+        database_identity: str = "",
     ):
         super().__init__()
         self.callback = callback
         self.ctree_optimizer_manager = ctree_optimizer_manager
         self._block_optimizer = block_optimizer
+        self._decompilation_lifecycle = decompilation_lifecycle
+        self._database_identity = str(database_identity)
 
     def flowchart(
         self,
@@ -214,10 +218,13 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             open_observability_session(int(mba.entry_ea))
         except Exception:
             pass  # diagnostic, never gates decompilation
-        self.callback(DecompilationEvent.STARTED)
-        # self.manager.start_profiling()
-        # self.manager.instruction_optimizer.reset_rule_usage_statistic()
-        # self.manager.block_optimizer.reset_rule_usage_statistic()
+        lifecycle = self._decompilation_lifecycle
+        if lifecycle is not None:
+            session = lifecycle.begin_hexrays_session(
+                function_ea=int(mba.entry_ea),
+                database_identity=self._database_identity,
+            )
+            self.callback(DecompilationEvent.SESSION_STARTED, session.event)
         return 0
 
     def maturity(self, cfunc, new_maturity: int) -> int:
@@ -262,7 +269,11 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             close_observability_session()
         except Exception:
             pass  # diagnostic, never gates decompilation
-        self.callback(DecompilationEvent.FINISHED)
+        lifecycle = self._decompilation_lifecycle
+        if lifecycle is not None:
+            event = lifecycle.finish_hexrays_session()
+            if event is not None:
+                self.callback(DecompilationEvent.SESSION_FINISHED, event)
         return 0
 
     def func_printed(self, cfunc: ida_hexrays.cfunc_t) -> int:

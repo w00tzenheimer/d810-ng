@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "baseline_report": "tools/scripts/codemod_reports/decompilation_lifecycle_before.json",
+  "retired_manual_kinds": [
+    "manual-lifecycle-owner",
+    "event-subscription"
+  ],
+  "direct_runtime": {
+    "baseline_count": 26,
+    "checkpoint_count": 23,
+    "allowed_production": [
+      {
+        "path": "src/d810/manager/decompilation_lifecycle.py",
+        "detail": "reset_for_func",
+        "maximum": 1
+      },
+      {
+        "path": "src/d810/manager/decompilation_lifecycle.py",
+        "detail": "analyze_and_persist",
+        "maximum": 1
+      },
+      {
+        "path": "src/d810/passes/runtime.py",
+        "detail": "reset_for_func",
+        "maximum": 2
+      }
+    ]
+  },
+  "bridges": [
+    {
+      "path": "src/d810/manager/decompilation_lifecycle.py",
+      "kind": "direct-runtime-call",
+      "details": [
+        "reset_for_func",
+        "analyze_and_persist"
+      ]
+    }
+  ]
+}
