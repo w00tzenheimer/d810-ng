@@ -6,6 +6,7 @@ import pathlib
 
 from d810.core import typing
 from d810.core.logging import getLogger
+from d810.manager.workbench_models import WorkbenchCommandResult
 from d810.ui.workbench_logic import (
     WorkbenchActionState,
     WorkbenchRow,
@@ -20,6 +21,7 @@ from d810.ui.workbench_logic import (
     should_accept_command_result,
     stale_snapshot,
 )
+from d810.ui.workbench_workflow_logic import project_workbench_workflow
 
 logger = getLogger("D810.ui")
 
@@ -67,6 +69,12 @@ if IDA_AVAILABLE:
             self._recipe_panel: typing.Any = None
             self._config_v2_editor: typing.Any = None
             self._diagnostics_panel: typing.Any = None
+            self._workflow_running = False
+            self._workflow_result: WorkbenchCommandResult | None = None
+            self._workflow_comparison: typing.Any = None
+            self._workflow_comparison_error: str | None = None
+            self._workflow_primary_action_id = ""
+            self._pending_post_run_refresh = False
             self._pending_focus: WorkbenchSection | None = None
             self._closed = False
             self.parent: typing.Any = None
@@ -101,6 +109,23 @@ if IDA_AVAILABLE:
             self.detail.setReadOnly(True)
             self.detail.setPlaceholderText("Select an item to inspect its evidence")
 
+            self.workflow_headline = QtWidgets.QLabel()
+            self.workflow_detail = QtWidgets.QLabel()
+            self.workflow_detail.setWordWrap(True)
+            self.workflow_primary_button = QtWidgets.QPushButton()
+            self.workflow_secondary_layout = QtWidgets.QHBoxLayout()
+            self.workflow_secondary_buttons: dict[str, typing.Any] = {}
+            for action_id in (
+                "diagnostics",
+                "recipe",
+                "function_override",
+                "compare",
+            ):
+                button = QtWidgets.QPushButton()
+                self.workflow_secondary_buttons[action_id] = button
+                self.workflow_secondary_layout.addWidget(button)
+            self.workflow_secondary_layout.addStretch(1)
+
             self.action_buttons: dict[str, typing.Any] = {}
             action_layout = QtWidgets.QHBoxLayout()
             for action_id, label in (
@@ -115,7 +140,8 @@ if IDA_AVAILABLE:
             ):
                 button = QtWidgets.QPushButton(label)
                 self.action_buttons[action_id] = button
-                action_layout.addWidget(button)
+                if action_id != "deobfuscate":
+                    action_layout.addWidget(button)
             action_layout.addStretch(1)
             self.action_layout = action_layout
 
@@ -140,6 +166,21 @@ if IDA_AVAILABLE:
             self.action_buttons["compare"].clicked.connect(self._run_comparison)
             self.action_buttons["recipe"].clicked.connect(self._run_recipe)
             self.action_buttons["diagnostics"].clicked.connect(self._run_diagnostics)
+            self.workflow_primary_button.clicked.connect(
+                self._run_workflow_primary_action
+            )
+            self.workflow_secondary_buttons["diagnostics"].clicked.connect(
+                self._run_diagnostics
+            )
+            self.workflow_secondary_buttons["recipe"].clicked.connect(
+                self._run_recipe
+            )
+            self.workflow_secondary_buttons["function_override"].clicked.connect(
+                self._run_function_override
+            )
+            self.workflow_secondary_buttons["compare"].clicked.connect(
+                self._run_comparison
+            )
 
         def OnCreate(self, form: typing.Any) -> None:
             self.parent = self.FormToPyQtWidget(form)
@@ -149,6 +190,17 @@ if IDA_AVAILABLE:
             context_layout.addRow("Function:", self.function_label)
             context_layout.addRow("Runtime:", self.runtime_label)
             context_layout.addRow("Attack:", self.attack_label)
+
+            attack_group = QtWidgets.QGroupBox("Attack", self.parent)
+            attack_layout = QtWidgets.QVBoxLayout(attack_group)
+            attack_layout.addWidget(self.workflow_headline)
+            attack_layout.addWidget(self.workflow_detail)
+            attack_layout.addWidget(self.workflow_primary_button)
+            attack_layout.addLayout(self.workflow_secondary_layout)
+
+            advanced_group = QtWidgets.QGroupBox("Advanced", self.parent)
+            advanced_layout = QtWidgets.QVBoxLayout(advanced_group)
+            advanced_layout.addLayout(self.action_layout)
 
             splitter = QtWidgets.QSplitter()
             try:
@@ -164,14 +216,16 @@ if IDA_AVAILABLE:
             layout.setContentsMargins(4, 4, 4, 4)
             layout.setSpacing(6)
             layout.addWidget(context_group)
+            layout.addWidget(attack_group)
             layout.addWidget(self.filter_edit)
             layout.addWidget(splitter, stretch=1)
-            layout.addLayout(self.action_layout)
+            layout.addWidget(advanced_group)
 
             self.tree.header().setStretchLastSection(True)
             for column in range(3):
                 self.tree.resizeColumnToContents(column)
             self._render_rows(self._visible_rows)
+            self._render_workflow()
 
         def OnClose(self, form: typing.Any) -> None:
             del form
@@ -190,6 +244,9 @@ if IDA_AVAILABLE:
                     "diagnostics",
                 ):
                     self.action_buttons[action_id].clicked.disconnect()
+                self.workflow_primary_button.clicked.disconnect()
+                for button in self.workflow_secondary_buttons.values():
+                    button.clicked.disconnect()
             except (RuntimeError, TypeError):
                 pass
             if self._comparison_dialog is not None:
@@ -265,14 +322,19 @@ if IDA_AVAILABLE:
         def set_command_adapter(self, adapter: typing.Any) -> None:
             self._command_adapter = adapter
 
-        def _run_command(self, action_id: str) -> None:
+        def _run_command(
+            self,
+            action_id: str,
+            *,
+            refresh_after: bool = True,
+        ) -> WorkbenchCommandResult | None:
             snapshot = self._snapshot
             adapter = self._command_adapter
             if snapshot is None or adapter is None:
-                return
+                return None
             handler = getattr(adapter, action_id, None)
             if not callable(handler):
-                return
+                return None
 
             request = command_request(snapshot, action_id)
             stale = stale_snapshot(snapshot)
@@ -287,37 +349,96 @@ if IDA_AVAILABLE:
             self._render_context()
             self._render_rows(self._visible_rows)
             self._render_action_states(action_states(stale))
+            self._render_workflow()
 
             try:
                 result = handler(request)
             except Exception as exc:
                 logger.warning("Workbench command %s failed: %s", action_id, exc)
                 self.detail.setPlainText(f"{action_id} failed: {exc}")
-                return
+                return None
 
             if not should_accept_command_result(snapshot, result):
                 self.detail.setPlainText(result.message)
-                return
-            if result.refresh_requested:
+                return result
+            if result.refresh_requested and refresh_after:
                 self.refresh()
             else:
                 self.detail.setPlainText(result.message)
+            return result
+
+        def _run_recommended_attack(self, checked: bool = False) -> None:
+            del checked
+            snapshot = self._snapshot
+            self._workflow_running = True
+            self._render_workflow()
+            result = self._run_command("deobfuscate", refresh_after=False)
+            self._workflow_running = False
+            self._workflow_result = result
+            self._workflow_comparison = None
+            self._workflow_comparison_error = None
+            if (
+                snapshot is not None
+                and result is not None
+                and should_accept_command_result(snapshot, result)
+                and result.refresh_requested
+            ):
+                self._pending_post_run_refresh = True
+                try:
+                    self.refresh()
+                finally:
+                    self._pending_post_run_refresh = False
+                self._run_comparison()
+            self._render_workflow()
+
+        def _run_function_override(self, checked: bool = False) -> None:
+            del checked
+            self._run_command("function_override")
+
+        def _run_workflow_primary_action(self, checked: bool = False) -> None:
+            del checked
+            if self._workflow_primary_action_id == "deobfuscate":
+                self._run_recommended_attack()
+            elif self._workflow_primary_action_id == "compare":
+                if (
+                    self._workflow_comparison is not None
+                    and self._workflow_comparison_error is None
+                ):
+                    self._show_comparison(self._workflow_comparison)
+                else:
+                    self._run_comparison()
+            elif self._workflow_primary_action_id == "diagnostics":
+                self._run_diagnostics()
 
         def _run_comparison(self, checked: bool = False) -> None:
             del checked
             snapshot = self._snapshot
             adapter = self._command_adapter
             if snapshot is None or adapter is None:
+                self._workflow_comparison = None
+                self._workflow_comparison_error = (
+                    "Comparison adapter is not available for the current function."
+                )
+                self._render_workflow()
                 return
             compare = getattr(adapter, "compare", None)
             if not callable(compare):
+                self._workflow_comparison = None
+                self._workflow_comparison_error = "Comparison capture is unavailable."
+                self._render_workflow()
                 return
             try:
                 view = comparison_view(compare(snapshot))
             except Exception as exc:
                 logger.warning("Workbench comparison failed: %s", exc)
                 self.detail.setPlainText(f"Compare failed: {exc}")
+                self._workflow_comparison = None
+                self._workflow_comparison_error = f"Compare failed: {exc}"
+                self._render_workflow()
                 return
+            self._workflow_comparison = view
+            self._workflow_comparison_error = None
+            self._render_workflow()
             self._show_comparison(view)
 
         def _show_comparison(self, view: typing.Any) -> None:
@@ -430,6 +551,7 @@ if IDA_AVAILABLE:
 
         def refresh(self) -> None:
             if self._func_ea is None:
+                self._clear_workflow_state()
                 self._snapshot = None
                 self._rows = ()
                 self._visible_rows = ()
@@ -439,13 +561,22 @@ if IDA_AVAILABLE:
                 self.attack_label.setText("Attack: not analyzed")
                 self._render_rows(())
                 self._render_action_states(())
+                self._render_workflow()
                 return
 
+            previous_identity = self._workflow_snapshot_identity(self._snapshot)
             snapshot = self._state.get_workbench_snapshot(
                 self._func_ea,
                 self._func_name,
                 self._fingerprint,
             )
+            current_identity = self._workflow_snapshot_identity(snapshot)
+            if (
+                previous_identity is not None
+                and previous_identity != current_identity
+                and not self._pending_post_run_refresh
+            ):
+                self._clear_workflow_state()
             rows = project_workbench_rows(snapshot)
             visible_rows = filter_workbench_rows(rows, self.filter_edit.text())
             states = action_states(snapshot)
@@ -457,7 +588,54 @@ if IDA_AVAILABLE:
             self._render_context()
             self._render_rows(visible_rows)
             self._render_action_states(states)
+            self._render_workflow()
             self._focus_section(self._pending_focus)
+
+        @staticmethod
+        def _workflow_snapshot_identity(snapshot: typing.Any) -> typing.Any:
+            if snapshot is None:
+                return None
+            return (
+                snapshot.function.ea,
+                snapshot.function.fingerprint,
+                snapshot.generation,
+            )
+
+        def _clear_workflow_state(self) -> None:
+            self._workflow_running = False
+            self._workflow_result = None
+            self._workflow_comparison = None
+            self._workflow_comparison_error = None
+
+        def _render_workflow(self) -> None:
+            view = project_workbench_workflow(
+                self._snapshot,
+                comparison=self._workflow_comparison,
+                last_result=self._workflow_result,
+                running=self._workflow_running,
+                comparison_error=self._workflow_comparison_error,
+            )
+            self.workflow_headline.setText(view.headline)
+            self.workflow_detail.setText(view.detail)
+            self._workflow_primary_action_id = view.primary.action_id
+            self.workflow_primary_button.setText(view.primary.label)
+            self.workflow_primary_button.setEnabled(view.primary.enabled)
+            self.workflow_primary_button.setToolTip(view.primary.reason)
+
+            secondary_by_id = {
+                action.action_id: action for action in view.secondary
+            }
+            for action_id, button in self.workflow_secondary_buttons.items():
+                action = secondary_by_id.get(action_id)
+                button.setVisible(action is not None)
+                if action is None:
+                    button.setText("")
+                    button.setEnabled(False)
+                    button.setToolTip("")
+                    continue
+                button.setText(action.label)
+                button.setEnabled(action.enabled)
+                button.setToolTip(action.reason)
 
         def _render_context(self) -> None:
             snapshot = self._snapshot
