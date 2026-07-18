@@ -22,6 +22,7 @@ from d810.ui.workbench_logic import (
     stale_snapshot,
 )
 from d810.ui.workbench_workflow_logic import project_workbench_workflow
+from d810.ui.workbench_workflow_logic import recommended_attack_transition
 
 logger = getLogger("D810.ui")
 
@@ -377,17 +378,14 @@ if IDA_AVAILABLE:
             self._workflow_result = result
             self._workflow_comparison = None
             self._workflow_comparison_error = None
-            if (
-                snapshot is not None
-                and result is not None
-                and should_accept_command_result(snapshot, result)
-            ):
+            transition = recommended_attack_transition(snapshot, result)
+            if transition.refresh:
                 self._pending_post_run_refresh = True
                 try:
                     self.refresh()
                 finally:
                     self._pending_post_run_refresh = False
-                if result.refresh_requested:
+                if transition.compare:
                     self._run_comparison()
             self._render_workflow()
 

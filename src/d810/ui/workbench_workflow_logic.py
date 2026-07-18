@@ -11,7 +11,7 @@ from d810.manager.workbench_models import (
     SnapshotFreshness,
     WorkbenchCommandResult,
 )
-from d810.ui.workbench_logic import ComparisonView
+from d810.ui.workbench_logic import ComparisonView, should_accept_command_result
 
 
 class WorkflowPhase(str, enum.Enum):
@@ -40,6 +40,12 @@ class WorkbenchWorkflowView:
     comparison_state: str = "unavailable"
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class RecommendedAttackTransition:
+    refresh: bool
+    compare: bool
+
+
 _DIRECT_ACTION = "deobfuscate"
 _INVESTIGATION_STATUSES = frozenset(
     {
@@ -51,6 +57,26 @@ _INVESTIGATION_STATUSES = frozenset(
         OutcomeStatus.STALE,
     }
 )
+
+
+def recommended_attack_transition(
+    snapshot: DeobfuscationWorkbenchSnapshot | None,
+    result: WorkbenchCommandResult | None,
+) -> RecommendedAttackTransition:
+    """Decide the accepted direct-run refresh and comparison transition."""
+    accepted_direct_result = (
+        snapshot is not None
+        and result is not None
+        and result.command == _DIRECT_ACTION
+        and should_accept_command_result(snapshot, result)
+    )
+    if not accepted_direct_result:
+        return RecommendedAttackTransition(refresh=False, compare=False)
+    assert result is not None
+    return RecommendedAttackTransition(
+        refresh=True,
+        compare=result.refresh_requested,
+    )
 
 
 def _action(
@@ -266,8 +292,10 @@ def project_workbench_workflow(
 
 
 __all__ = [
+    "RecommendedAttackTransition",
     "WorkbenchWorkflowView",
     "WorkflowActionView",
     "WorkflowPhase",
     "project_workbench_workflow",
+    "recommended_attack_transition",
 ]
