@@ -111,6 +111,44 @@ def test_materialized_transfer_evidence_is_session_scoped() -> None:
     assert materialized_indirect_transfers(state) == (transfer, second)
 
 
+def test_session_evidence_supersedes_stale_conditional_bridge() -> None:
+    predicate_ea = 0x401020
+    stale = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=0x401000,
+        materialized_anchor_eas=(predicate_ea,),
+        target_eas=(0x402000, 0x403000),
+        true_target_ea=0x402000,
+        false_target_ea=0x403000,
+        resolver_kind="conditional_handler_bridge",
+    )
+    unrelated = MaterializedIndirectTransfer(
+        source_jmp_ea=0x401080,
+        source_block_ea=0x401070,
+        materialized_anchor_eas=(),
+        target_eas=(0x404000,),
+        resolver_kind="residual_state_route_evidence",
+    )
+    refreshed = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=0x401000,
+        materialized_anchor_eas=(predicate_ea,),
+        target_eas=(0x405000, 0x406000),
+        true_target_ea=0x405000,
+        false_target_ea=0x406000,
+        resolver_kind="conditional_handler_bridge",
+    )
+    state = _resolver_state()
+
+    assert merge_materialized_indirect_transfers(state, (stale, unrelated))
+    assert merge_materialized_indirect_transfers(state, (refreshed,))
+
+    assert materialized_indirect_transfers(state) == (
+        unrelated,
+        refreshed,
+    )
+
+
 def test_terminal_return_carrier_evidence_is_session_scoped() -> None:
     request = TerminalReturnCarrierRequest(
         source_handler_ea=0x40C7E5,

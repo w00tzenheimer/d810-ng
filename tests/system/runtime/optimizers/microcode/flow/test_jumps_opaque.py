@@ -7,6 +7,11 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.backends.ast.z3 import Z3MopProver
+from d810.hexrays.mutation.cfg_verify import (
+    clear_resolver_proven_live_predicates,
+    register_resolver_proven_live_predicate,
+)
+from d810.optimizers.microcode.flow.jumps import handler
 from d810.optimizers.microcode.flow.jumps import opaque
 
 
@@ -101,6 +106,46 @@ class _VarAst:
 
     def evaluate(self, _env: dict) -> int:
         return 0
+
+
+def test_jump_fixer_preserves_resolver_proven_live_predicate(monkeypatch):
+    predicate_ea = 0x40D987
+    mba = SimpleNamespace()
+    branch = _insn(
+        ida_hexrays.m_jz,
+        left=_reg(20),
+        right=_num(0),
+        dest=_blkref(11),
+    )
+    branch.ea = predicate_ea
+    block = SimpleNamespace(
+        mba=mba,
+        serial=7,
+        start=0x40D8FF,
+        tail=branch,
+        nextb=SimpleNamespace(serial=8),
+    )
+    folded = _insn(ida_hexrays.m_goto, dest=_blkref(11))
+    folding_rule = SimpleNamespace(
+        name="JmpRuleReachingConst",
+        check_pattern_and_replace=lambda *_args: folded,
+    )
+    fixer = handler.JumpFixer()
+    fixer.rules = [folding_rule]
+
+    monkeypatch.setattr(handler, "is_conditional_jump", lambda _block: True)
+    monkeypatch.setattr(handler, "mop_to_ast", lambda _mop: object())
+
+    def unexpected_modifier(_mba):
+        raise AssertionError("resolver-proven predicate must not be folded")
+
+    monkeypatch.setattr(handler, "DeferredGraphModifier", unexpected_modifier)
+    clear_resolver_proven_live_predicates()
+    register_resolver_proven_live_predicate(mba, predicate_ea)
+    try:
+        assert fixer.optimize(block) is False
+    finally:
+        clear_resolver_proven_live_predicates()
 
 
 def test_constant_relation_true_when_both_constant(monkeypatch):

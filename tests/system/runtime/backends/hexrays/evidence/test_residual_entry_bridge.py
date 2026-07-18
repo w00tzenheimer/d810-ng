@@ -450,6 +450,25 @@ def test_normalizes_jz_handler_arms_to_register_nonzero_polarity():
     assert result.false_target_ea == 0x4000
 
 
+def test_recognizes_ordered_handler_predicate_with_taken_state_preserved():
+    (result,) = recognize_conditional_handler_bridges(
+        _handler_bridge_mba(
+            opcode=ida_hexrays.m_jg,
+            compared=_number(6),
+        ),
+        state_register=STATE_REGISTER,
+        state_targets={0xA5A94B86: 0x3000, 0x304E8694: 0x4000},
+    )
+
+    assert result.condition_code == 15
+    assert result.predicate_compare_constant == 6
+    assert result.true_is_taken is True
+    assert result.true_state == 0x304E8694
+    assert result.true_target_ea == 0x4000
+    assert result.false_state == 0xA5A94B86
+    assert result.false_target_ea == 0x3000
+
+
 def test_recognizes_register_comparison_handler_arms():
     (result,) = recognize_conditional_handler_bridges(
         _handler_bridge_mba(compared=_reg(45)),
@@ -550,6 +569,66 @@ def test_recognizes_live_nested_predicate_without_reconstruction_identity():
     assert result.predicate_register is None
     assert result.predicate_compare_constant == 0x62
     assert result.true_is_taken is True
+
+
+def test_recognizes_import_owned_opaque_jcnd_with_exact_state_arms():
+    opaque_condition = _derived(size=1)
+    empty_right = SimpleNamespace(t=ida_hexrays.mop_z, size=0)
+    mba = _handler_bridge_mba(
+        opcode=ida_hexrays.m_jcnd,
+        compared=empty_right,
+        predicate=opaque_condition,
+        include_predicate_setup=False,
+    )
+    source_instructions = list(_block_instructions(mba.get_mblock(0)))
+    source_instructions.insert(
+        -1,
+        _insn(
+            ida_hexrays.m_mov,
+            0x208,
+            left=_number(0x304E8694),
+            d=_reg(44),
+        ),
+    )
+    mba = _mba(
+        {
+            0: _Block(source_instructions, [1, 2]),
+            1: mba.get_mblock(1),
+            2: _Block(
+                [
+                    _insn(
+                        ida_hexrays.m_mov,
+                        0x220,
+                        left=_reg(44),
+                        d=_reg(STATE_REGISTER),
+                    )
+                ],
+                [],
+            ),
+        }
+    )
+    state_targets = {0xA5A94B86: 0x3000, 0x304E8694: 0x4000}
+
+    assert recognize_conditional_handler_bridges(
+        mba,
+        state_register=STATE_REGISTER,
+        state_targets=state_targets,
+    ) == ()
+
+    (result,) = recognize_conditional_handler_bridges(
+        mba,
+        state_register=STATE_REGISTER,
+        state_targets=state_targets,
+        preserve_live_predicate_eas=frozenset({0x210}),
+    )
+
+    assert result.predicate_ea == 0x210
+    assert result.condition_code == 5
+    assert result.predicate_register is None
+    assert result.predicate_compare_constant is None
+    assert result.true_is_taken is True
+    assert result.true_state == 0x304E8694
+    assert result.false_state == 0xA5A94B86
 
 
 def test_predicate_arm_reaches_route_ea_through_bounded_microcode_path():

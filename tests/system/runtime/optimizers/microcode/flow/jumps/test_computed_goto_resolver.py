@@ -19,6 +19,7 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     _canonical_low_byte_parent,
     _native_equality_selector_is_materializable,
     _native_final_state_write_before_live_tail,
+    _native_target_is_return_epilogue,
     _NativeEqualityRow,
     _PatchPlan,
     _static_equality_route_candidate,
@@ -41,6 +42,9 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     _exact_equality_native_target,
     _dispatcher_context_register_values,
     _function_context_register_values,
+    _branch_state_choice_candidates,
+    _make_static_conditional_state_choice,
+    _resolve_static_conditional_state_choice_targets,
     _is_concrete_handler_entry,
     _is_ignorable_corridor_store,
     _is_materialized_dispatch_instruction,
@@ -92,8 +96,6 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedStateRoute,
     TerminalReturnCarrierRequest,
 )
-
-
 def test_branch_state_choice_recovers_default_and_overriding_dispatch_states() -> None:
     choices = _branch_state_choice_candidates(
         source_block_ea=0x40E1F6,
@@ -366,6 +368,24 @@ def test_static_choice_routes_require_independent_entry_dispatch_replay() -> Non
     assert {route.resolver_kind for route in routes} == {
         "static_handler_entry_route"
     }
+
+
+from d810.analyses.control_flow.native_semantic_closure import (
+    NativeBlock,
+    NativeCfg,
+    NativeEdge,
+    NativeEdgeKind,
+    NativeRange,
+    NativeTerminalKind,
+    ResolverProvenHandlerEntry,
+    plan_native_semantic_closure,
+)
+from d810.analyses.control_flow.detached_handler_island import (
+    DetachedSnippetBoundaryPortOwner,
+    DetachedSnippetBoundaryPorts,
+    DetachedSnippetConditionalBoundaryPort,
+    DetachedSnippetDirectBoundaryPort,
+)
 from d810.analyses.control_flow.semantic_transition import StateWriteAnchor
 from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
 from d810.analyses.control_flow.native_preanalysis_session import (
@@ -821,8 +841,8 @@ def test_flowchart_preflight_discovers_bootstrap_evidence_before_its_redo(
     state.begin_materialization(object())
     monkeypatch.setattr(
         computed_goto_resolver,
-        "_discover_static_native_bootstrap_routes",
-        lambda **_kwargs: True,
+        "discover_static_native_bootstrap_routes",
+        lambda _function_ea, _state: True,
     )
     decision = {"session": session}
 
@@ -894,6 +914,601 @@ def test_function_context_register_values_require_one_non_top_singleton():
     }
 
     assert _function_context_register_values(states) == (("esi", 0xFDEE1C81),)
+
+
+def test_static_handler_entry_route_is_an_exact_state_target() -> None:
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40D381,
+        source_block_ea=0x40D381,
+        materialized_anchor_eas=(),
+        target_eas=(0x40D48E,),
+        selector_state_var_reg=28,
+        selector_state_constant=0x81F82C5E,
+        resolver_kind="static_handler_entry_route",
+    )
+
+    assert _unique_static_equality_handler_targets((transfer,), 28) == {
+        0x81F82C5E: 0x40D48E,
+    }
+
+
+def test_static_handler_exit_route_maps_exact_state_to_final_handler() -> None:
+    entry_routes = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x401000,
+            source_block_ea=0x401000,
+            materialized_anchor_eas=(),
+            target_eas=(0x405000,),
+            selector_state_var_reg=20,
+            selector_state_constant=0x11111111,
+            resolver_kind="static_handler_entry_route",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x401100,
+            source_block_ea=0x401100,
+            materialized_anchor_eas=(),
+            target_eas=(0x406000,),
+            selector_state_var_reg=20,
+            selector_state_constant=0x22222222,
+            resolver_kind="static_handler_entry_route",
+        ),
+    )
+    terminal = MaterializedIndirectTransfer(
+        source_jmp_ea=0x405030,
+        source_block_ea=0x405000,
+        materialized_anchor_eas=(),
+        target_eas=(0x407000,),
+        source_register_values=((20, 0x22222222), (28, 0x407000)),
+        resolver_kind="detached_static_fixpoint",
+    )
+
+    (route,) = computed_goto_resolver._resolve_static_handler_exit_routes(
+        (terminal,),
+        entry_routes,
+    )
+
+    assert route.source_block_ea == 0x405000
+    assert route.source_jmp_ea == 0x405030
+    assert route.target_eas == (0x406000,)
+    assert route.selector_state_var_reg == 20
+    assert route.selector_state_constant == 0x22222222
+    assert route.dispatcher_envelope_target_eas == (0x407000,)
+    assert route.resolver_kind == "static_handler_exit_route"
+
+
+def test_exact_handler_exit_route_replaces_dispatcher_cut_target() -> None:
+    dispatcher_cut = MaterializedIndirectTransfer(
+        source_jmp_ea=0x405030,
+        source_block_ea=0x405000,
+        materialized_anchor_eas=(),
+        target_eas=(0x407000,),
+        resolver_kind="static_fixpoint",
+    )
+    exact_route = MaterializedIndirectTransfer(
+        source_jmp_ea=0x405030,
+        source_block_ea=0x405000,
+        materialized_anchor_eas=(),
+        target_eas=(0x406000,),
+        selector_state_var_reg=20,
+        selector_state_constant=0x22222222,
+        resolver_kind="static_handler_exit_route",
+    )
+
+    assert computed_goto_resolver._resolver_targets_by_source(
+        (dispatcher_cut, exact_route)
+    ) == {0x405030: (0x406000,)}
+
+
+def test_connected_fixpoint_snapshot_recovers_final_handler_route(monkeypatch) -> None:
+    plan = _PatchPlan(
+        jmp_ea=0x405030,
+        block_entry=0x405000,
+        patch_start=0x405020,
+        patch_bytes=b"\x90",
+        region_end=0x405032,
+        insn_heads=(0x405020,),
+        new_block_eas=(),
+        target_eas=(0x407000,),
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x401000,
+        jmp_targets={0x405030: (0x407000,)},
+        reachable_eas=(0x401000, 0x405000),
+        arch="x86",
+        executed_insns=10,
+        seeds_run=0,
+        patch_plans=(plan,),
+        corridor_register_snapshots=(
+            (0x405000, (("ebx", 0x11111111),)),
+        ),
+    )
+    entry_routes = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x401000,
+            source_block_ea=0x401000,
+            materialized_anchor_eas=(),
+            target_eas=(0x406000,),
+            selector_state_var_reg=20,
+            selector_state_constant=0x22222222,
+            resolver_kind="static_handler_entry_route",
+        ),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_register_mreg",
+        lambda name: 20 if name == "ebx" else None,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_static_register_state_before_jmp",
+        lambda block_entry, state, jmp_ea: {
+            **state,
+            "ebx": frozenset({0x22222222}),
+        },
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_residual_context_mregs",
+        lambda values: {20: dict(values)["ebx"]},
+    )
+
+    (route,) = computed_goto_resolver._recover_connected_static_handler_exit_routes(
+        resolution,
+        entry_routes,
+    )
+
+    assert route.source_block_ea == 0x405000
+    assert route.source_jmp_ea == 0x405030
+    assert route.target_eas == (0x406000,)
+    assert route.selector_state_constant == 0x22222222
+    assert route.source_register_values == ((20, 0x22222222),)
+
+
+def test_static_conditional_state_choice_maps_both_unique_handler_arms() -> None:
+    choice = _make_static_conditional_state_choice(
+        source_block_ea=0x40D252,
+        compare_ea=0x40D256,
+        select_ea=0x40D266,
+        condition_code=12,
+        predicate_register=20,
+        predicate_size=4,
+        predicate_constant=0x113,
+        true_values=frozenset({0xB13A6E93}),
+        false_values=frozenset({0x4D34CF70}),
+    )
+    assert choice is not None
+    routes = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40DAA3,
+            source_block_ea=0x40DAA3,
+            materialized_anchor_eas=(),
+            target_eas=(0x40DABB,),
+            selector_state_var_reg=28,
+            selector_state_constant=0xB13A6E93,
+            resolver_kind="static_handler_entry_route",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40F1F1,
+            source_block_ea=0x40F1F1,
+            materialized_anchor_eas=(),
+            target_eas=(0x40F20B,),
+            selector_state_var_reg=28,
+            selector_state_constant=0x4D34CF70,
+            resolver_kind="static_handler_entry_route",
+        ),
+    )
+
+    assert _resolve_static_conditional_state_choice_targets((choice,), routes) == (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40D266,
+            source_block_ea=0x40D252,
+            materialized_anchor_eas=(0x40D256, 0x40D266),
+            target_eas=(0x40DABB, 0x40F20B),
+            condition_code=12,
+            true_target_ea=0x40DABB,
+            false_target_ea=0x40F20B,
+            selector_state_var_reg=28,
+            predicate_register=20,
+            predicate_size=4,
+            predicate_compare_constant=0x113,
+            predicate_true_state=0xB13A6E93,
+            predicate_false_state=0x4D34CF70,
+            predicate_true_is_taken=True,
+            predicate_preserve_live=True,
+            resolver_kind="static_conditional_state_choice_bridge",
+        ),
+    )
+
+
+def test_branch_state_choice_recovers_default_and_overriding_dispatch_states() -> None:
+    choices = _branch_state_choice_candidates(
+        source_block_ea=0x40E1F6,
+        predicate_ea=0x40E20E,
+        condition_code=4,
+        source_state={
+            "ebp": frozenset({0x85AE90D3}),
+            "eax": frozenset({0x11111111}),
+        },
+        taken_state={
+            "ebp": frozenset({0x3AF41FBE}),
+            "eax": frozenset({0x22222222}),
+        },
+        fallthrough_state={
+            "ebp": frozenset({0x85AE90D3}),
+            "eax": frozenset({0x33333333}),
+        },
+        taken_resolved_target_ea=0x40E5C0,
+        fallthrough_resolved_target_ea=0x40D381,
+        register_mregs={"eax": 8, "ebp": 28},
+    )
+
+    assert choices == (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40E20E,
+            source_block_ea=0x40E1F6,
+            materialized_anchor_eas=(0x40E20E,),
+            target_eas=(),
+            condition_code=4,
+            selector_state_var_reg=28,
+            predicate_true_state=0x3AF41FBE,
+            predicate_false_state=0x85AE90D3,
+            resolver_kind="static_conditional_state_choice",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_values", "taken_values", "fallthrough_values", "taken_frontier"),
+    (
+        (frozenset({1, 2}), frozenset({3}), frozenset({1}), 0x2000),
+        (frozenset({1}), frozenset({2}), frozenset({3}), 0x2000),
+        (frozenset({1}), frozenset({2}), frozenset({1}), 0),
+    ),
+)
+def test_branch_state_choice_abstains_without_exact_default_or_frontiers(
+    source_values: frozenset[int],
+    taken_values: frozenset[int],
+    fallthrough_values: frozenset[int],
+    taken_frontier: int,
+) -> None:
+    assert _branch_state_choice_candidates(
+        source_block_ea=0x1000,
+        predicate_ea=0x1010,
+        condition_code=4,
+        source_state={"ebp": source_values},
+        taken_state={"ebp": taken_values},
+        fallthrough_state={"ebp": fallthrough_values},
+        taken_resolved_target_ea=taken_frontier,
+        fallthrough_resolved_target_ea=0x3000,
+        register_mregs={"ebp": 28},
+    ) == ()
+
+
+def test_static_stack_carried_choice_defers_source_bridge_and_rebases_consumer() -> None:
+    store_ea = 0x40D269
+    consumer_load_ea = 0x40EAA7
+    carrier_displacement = 0x44
+    choice = _make_static_conditional_state_choice(
+        source_block_ea=0x40D252,
+        compare_ea=0x40D256,
+        select_ea=0x40D266,
+        condition_code=12,
+        predicate_register=20,
+        predicate_size=4,
+        predicate_constant=0x113,
+        true_values=frozenset({0xB13A6E93}),
+        false_values=frozenset({0x4D34CF70}),
+        state_carrier_store_ea=store_ea,
+        state_carrier_stack_displacement=carrier_displacement,
+    )
+    assert choice is not None
+    routes = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40DAA3,
+            source_block_ea=0x40DAA3,
+            materialized_anchor_eas=(),
+            target_eas=(0x40DABB,),
+            selector_state_var_reg=28,
+            selector_state_constant=0xB13A6E93,
+            resolver_kind="static_handler_entry_route",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40F1F1,
+            source_block_ea=0x40F1F1,
+            materialized_anchor_eas=(),
+            target_eas=(0x40F20B,),
+            selector_state_var_reg=28,
+            selector_state_constant=0x4D34CF70,
+            resolver_kind="static_handler_entry_route",
+        ),
+    )
+
+    resolved = _resolve_static_conditional_state_choice_targets((choice,), routes)
+
+    assert len(resolved) == 1
+    assert resolved[0].resolver_kind == "static_stack_carried_state_choice"
+    assert resolved[0].source_jmp_ea == 0x40D266
+    assert resolved[0].state_carrier_store_ea == store_ea
+    assert resolved[0].state_carrier_stack_displacement == carrier_displacement
+    assert resolved[0].target_eas == (0x40DABB, 0x40F20B)
+    assert computed_goto_resolver._static_stack_carrier_frame_offset_overrides(
+        (choice,),
+        consumer_load_eas_by_displacement={
+            carrier_displacement: (consumer_load_ea,),
+        },
+        native_stack_frame_offsets_by_ea={
+            store_ea: (84,),
+            consumer_load_ea: (220,),
+        },
+    ) == {consumer_load_ea: (84,)}
+
+
+def test_static_stack_carried_choice_binds_native_consumer_identity() -> None:
+    store_ea = 0x40D269
+    consumer_load_ea = 0x40EAA7
+    carrier_displacement = 0x44
+    choice = _make_static_conditional_state_choice(
+        source_block_ea=0x40D252,
+        compare_ea=0x40D256,
+        select_ea=0x40D266,
+        condition_code=12,
+        predicate_register=20,
+        predicate_size=4,
+        predicate_constant=0x113,
+        true_values=frozenset({0xB13A6E93}),
+        false_values=frozenset({0x4D34CF70}),
+        state_carrier_store_ea=store_ea,
+        state_carrier_stack_displacement=carrier_displacement,
+    )
+    assert choice is not None
+
+    (bound,) = computed_goto_resolver._bind_static_stack_carrier_consumers(
+        (choice,),
+        consumer_load_eas_by_displacement={
+            carrier_displacement: (consumer_load_ea,),
+        },
+        native_stack_frame_offsets_by_ea={store_ea: (84,)},
+    )
+
+    assert bound.state_carrier_consumer_load_eas == (consumer_load_ea,)
+    assert bound.state_carrier_ida_stkoff == 84
+
+
+def test_static_stack_carried_choice_recognizes_test_zero_cmov_store(
+    monkeypatch,
+) -> None:
+    """Treat ``test reg, reg`` as the zero predicate feeding a CMOV choice."""
+    register_ids = {
+        name: reg for reg, name in computed_goto_resolver._SV_REG_NAMES.items()
+    }
+    eax = register_ids["eax"]
+    ecx = register_ids["ecx"]
+    edi = register_ids["edi"]
+    esp = register_ids["esp"]
+
+    idaapi = ModuleType("idaapi")
+    idaapi.o_void = 0
+    idaapi.o_reg = 1
+    idaapi.o_imm = 2
+    idaapi.o_displ = 4
+    idaapi.CF_CHG1 = 0x2
+    mnemonics = {
+        0x40D215: "test",
+        0x40D217: "mov",
+        0x40D21C: "mov",
+        0x40D221: "cmovz",
+        0x40D224: "mov",
+        0x40D228: "jmp",
+    }
+    idaapi.print_insn_mnem = lambda ea: mnemonics.get(int(ea), "")
+    monkeypatch.setitem(sys.modules, "idaapi", idaapi)
+    monkeypatch.setattr(computed_goto_resolver, "idaapi", idaapi)
+
+    class Operand:
+        def __init__(
+            self,
+            kind=0,
+            *,
+            reg=0,
+            value=0,
+            phrase=0,
+            addr=0,
+        ):
+            self.type = kind
+            self.reg = reg
+            self.value = value
+            self.phrase = phrase
+            self.addr = addr
+
+    class Instruction:
+        def __init__(self):
+            self.ops = [Operand(), Operand()]
+            self._feature = 0
+
+        def get_canon_feature(self) -> int:
+            return self._feature
+
+    encoded = {
+        0x40D215: (
+            2,
+            0,
+            Operand(idaapi.o_reg, reg=edi),
+            Operand(idaapi.o_reg, reg=edi),
+        ),
+        0x40D217: (
+            5,
+            idaapi.CF_CHG1,
+            Operand(idaapi.o_reg, reg=ecx),
+            Operand(idaapi.o_imm, value=0x142718FC),
+        ),
+        0x40D21C: (
+            5,
+            idaapi.CF_CHG1,
+            Operand(idaapi.o_reg, reg=eax),
+            Operand(idaapi.o_imm, value=0xF6D08EC5),
+        ),
+        0x40D221: (
+            3,
+            idaapi.CF_CHG1,
+            Operand(idaapi.o_reg, reg=eax),
+            Operand(idaapi.o_reg, reg=ecx),
+        ),
+        0x40D224: (
+            4,
+            idaapi.CF_CHG1,
+            Operand(idaapi.o_displ, reg=esp, phrase=esp, addr=0x4C),
+            Operand(idaapi.o_reg, reg=eax),
+        ),
+        0x40D228: (2, 0, Operand(), Operand()),
+    }
+
+    ida_ua = ModuleType("ida_ua")
+    ida_ua.insn_t = Instruction
+
+    def decode_insn(insn, ea):
+        length, feature, op0, op1 = encoded[int(ea)]
+        insn._feature = feature
+        insn.ops = [op0, op1]
+        return length
+
+    ida_ua.decode_insn = decode_insn
+    monkeypatch.setitem(sys.modules, "ida_ua", ida_ua)
+
+    ida_bytes = ModuleType("ida_bytes")
+    ida_bytes.get_bytes = lambda ea, size: (
+        b"\x0f\x44\xc1" if int(ea) == 0x40D221 else b"\x90" * int(size)
+    )
+    monkeypatch.setitem(sys.modules, "ida_bytes", ida_bytes)
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_register_mreg",
+        lambda name: 36 if name == "edi" else None,
+    )
+
+    assert computed_goto_resolver._static_conditional_state_choices(
+        {0x40D215: {}}
+    ) == (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40D221,
+            source_block_ea=0x40D215,
+            materialized_anchor_eas=(0x40D215, 0x40D221, 0x40D224),
+            target_eas=(),
+            condition_code=4,
+            predicate_register=36,
+            predicate_size=4,
+            predicate_compare_constant=0,
+            predicate_true_state=0x142718FC,
+            predicate_false_state=0xF6D08EC5,
+            resolver_kind="static_conditional_state_choice",
+            state_carrier_store_ea=0x40D224,
+            state_carrier_stack_displacement=0x4C,
+        ),
+    )
+
+
+def test_static_materialized_transfer_batch_persists_conditional_state_choice() -> None:
+    store_ea = 0x40D269
+    consumer_load_ea = 0x40EAA7
+    choice = _make_static_conditional_state_choice(
+        source_block_ea=0x40D252,
+        compare_ea=0x40D256,
+        select_ea=0x40D266,
+        condition_code=12,
+        predicate_register=20,
+        predicate_size=4,
+        predicate_constant=0x113,
+        true_values=frozenset({0xB13A6E93}),
+        false_values=frozenset({0x4D34CF70}),
+        state_carrier_store_ea=store_ea,
+        state_carrier_stack_displacement=0x44,
+    )
+    assert choice is not None
+    (choice,) = computed_goto_resolver._bind_static_stack_carrier_consumers(
+        (choice,),
+        consumer_load_eas_by_displacement={0x44: (consumer_load_ea,)},
+        native_stack_frame_offsets_by_ea={store_ea: (84,)},
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40D200,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+        conditional_state_choices=(choice,),
+    )
+    true_route = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40DAA3,
+        source_block_ea=0x40DAA3,
+        materialized_anchor_eas=(),
+        target_eas=(0x40DABB,),
+        selector_state_var_reg=28,
+        selector_state_constant=0xB13A6E93,
+        resolver_kind="static_handler_entry_route",
+    )
+    false_route = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40F1F1,
+        source_block_ea=0x40F1F1,
+        materialized_anchor_eas=(),
+        target_eas=(0x40F20B,),
+        selector_state_var_reg=28,
+        selector_state_constant=0x4D34CF70,
+        resolver_kind="static_handler_entry_route",
+    )
+
+    batch = computed_goto_resolver._static_materialized_transfer_batch(
+        resolution,
+        static_transfers=(),
+        equality_transfers=(),
+        static_handler_entry_routes=(true_route,),
+        native_handler_entry_routes=(false_route,),
+    )
+
+    assert batch[-1].resolver_kind == "static_stack_carried_state_choice"
+    assert batch[-1].target_eas == (0x40DABB, 0x40F20B)
+    assert batch[-1].predicate_register == 20
+    assert batch[-1].state_carrier_consumer_load_eas == (consumer_load_ea,)
+    assert batch[-1].state_carrier_ida_stkoff == 84
+
+
+def test_static_conditional_state_choice_abstains_on_ambiguous_or_missing_arm() -> None:
+    choice = _make_static_conditional_state_choice(
+        source_block_ea=0x1000,
+        compare_ea=0x1004,
+        select_ea=0x100E,
+        condition_code=12,
+        predicate_register=28,
+        predicate_size=4,
+        predicate_constant=0x113,
+        true_values=frozenset({0x11111111}),
+        false_values=frozenset({0x22222222}),
+    )
+    assert choice is not None
+    ambiguous_routes = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x2000,
+            source_block_ea=0x2000,
+            materialized_anchor_eas=(),
+            target_eas=(0x3000,),
+            selector_state_var_reg=28,
+            selector_state_constant=0x11111111,
+            resolver_kind="static_handler_entry_route",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x2010,
+            source_block_ea=0x2010,
+            materialized_anchor_eas=(),
+            target_eas=(0x3010,),
+            selector_state_var_reg=28,
+            selector_state_constant=0x11111111,
+            resolver_kind="static_handler_entry_route",
+        ),
+    )
+
+    assert _resolve_static_conditional_state_choice_targets(
+        (choice,), ambiguous_routes
+    ) == ()
 
 
 def test_zero_arg_call_type_requires_profile_and_first_access_clobbers() -> None:
@@ -1217,6 +1832,85 @@ def test_stkpnts_projects_native_spd_to_imported_and_call_eas(
     assert decision["stack_points_modified"] == 3
 
 
+def test_stkpnts_prefers_detached_call_push_delta_over_stale_native_spd(
+    monkeypatch,
+) -> None:
+    import ida_frame
+    import ida_funcs
+
+    function_ea = 0x1000
+    imported_call_ea = 0xF10020
+    imported_body_ea = 0xF10024
+    native_call_ea = 0x2030
+    native_body_ea = 0x2034
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    session, _state = _resolver_session(resolution)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "last_imported_detached_snippet_instruction_origins",
+        lambda _function_ea: (
+            (imported_call_ea, native_call_ea),
+            (imported_body_ea, native_body_ea),
+        ),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "detached_callinfo_template_eas",
+        lambda _function_ea: (),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "detached_preopt_call_stack_points",
+        lambda _function_ea: ((native_call_ea, -4),),
+        raising=False,
+    )
+    function = object()
+    monkeypatch.setattr(
+        ida_funcs,
+        "get_func",
+        lambda ea: function if int(ea) == function_ea else None,
+    )
+    monkeypatch.setattr(
+        ida_frame,
+        "get_spd",
+        lambda candidate, ea: 0 if candidate is function else 0,
+    )
+    applied: list[tuple[object, int, int]] = []
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_upsert_stkpnt",
+        lambda points, ea, spd: not applied.append((points, ea, spd)),
+    )
+    stack_points = object()
+    decision: dict[str, object] = {"session": session}
+
+    computed_goto_resolver._on_stkpnts(
+        function_ea=function_ea,
+        mba=SimpleNamespace(entry_ea=function_ea),
+        stack_points=stack_points,
+        decision=decision,
+    )
+
+    assert applied == [
+        (stack_points, native_call_ea, -4),
+        (stack_points, imported_call_ea, -4),
+        (stack_points, imported_body_ea, 0),
+    ]
+    assert decision == {"session": session, "stack_points_modified": 3}
+
+
 def test_stkpnts_projects_native_spd_into_isolated_capture_ranges(
     monkeypatch,
 ) -> None:
@@ -1457,9 +2151,7 @@ def test_build_callinfo_derives_exact_detached_reentry_before_calls(
         computed_goto_resolver,
         "_detached_static_terminal_transfers",
         lambda _resolution, entry_eas, *, entry_context_transfers=(): (
-            (exact,)
-            if entry_eas == (0x1010,) and entry_context_transfers == ()
-            else ()
+            (exact,) if entry_eas == (0x1010,) and entry_context_transfers == () else ()
         ),
     )
     monkeypatch.setattr(
@@ -1746,6 +2438,24 @@ def test_live_mba_native_eas_rebind_imported_instruction_origins() -> None:
     ) == frozenset({0x40B157, 0x40B163, 0x40B168})
 
 
+def test_live_mba_native_eas_excludes_empty_external_placeholder() -> None:
+    block = SimpleNamespace(
+        start=0x40CD46,
+        head=None,
+        tail=None,
+    )
+
+    class Mba:
+        qty = 1
+
+        @staticmethod
+        def get_mblock(serial: int):
+            assert serial == 0
+            return block
+
+    assert computed_goto_resolver._live_mba_native_eas(Mba()) == frozenset()
+
+
 def test_static_transfer_preserves_register_across_nonwriting_cmp(
     monkeypatch,
 ) -> None:
@@ -1770,6 +2480,201 @@ def test_static_transfer_preserves_register_across_nonwriting_cmp(
     _sv_process_writer("cmp", Instruction(), state)
 
     assert state["ebx"] == frozenset({0x7F9D6412})
+
+
+def test_static_transfer_setcc_updates_parent_of_separate_low_byte_register(
+    monkeypatch,
+) -> None:
+    idaapi = ModuleType("idaapi")
+    idaapi.o_reg = 1
+    idaapi.CF_CHG1 = 0x2
+    idaapi.get_reg_name = lambda reg, width: "dl" if (reg, width) == (99, 1) else ""
+    monkeypatch.setitem(sys.modules, "idaapi", idaapi)
+
+    class Operand:
+        type = idaapi.o_reg
+        reg = 99
+
+    class Instruction:
+        ops = (Operand(), Operand())
+
+        @staticmethod
+        def get_canon_feature() -> int:
+            return idaapi.CF_CHG1
+
+    state = {"edx": frozenset({0x123456FF})}
+
+    _sv_process_writer("setne", Instruction(), state)
+
+    assert state["edx"] == frozenset({0x12345600, 0x12345601})
+
+
+def test_two_way_replay_setcc_updates_parent_of_separate_low_byte_register(
+    monkeypatch,
+) -> None:
+    register_ids = {
+        name: reg for reg, name in computed_goto_resolver._SV_REG_NAMES.items()
+    }
+    edx = register_ids["edx"]
+    ebx = register_ids["ebx"]
+    dl = max(computed_goto_resolver._SV_REG_NAMES) + 100
+
+    idaapi = ModuleType("idaapi")
+    idaapi.o_void = 0
+    idaapi.o_reg = 1
+    idaapi.o_imm = 2
+    idaapi.CF_CHG1 = 0x2
+    idaapi.get_reg_name = lambda reg, width: "dl" if (reg, width) == (dl, 1) else ""
+    mnemonics = {
+        0x1000: "mov",
+        0x1005: "cmp",
+        0x100B: "setne",
+        0x100E: "jmp",
+    }
+    idaapi.print_insn_mnem = lambda ea: mnemonics.get(int(ea), "")
+    monkeypatch.setitem(sys.modules, "idaapi", idaapi)
+
+    class Operand:
+        def __init__(self, kind=0, *, reg=0, value=0):
+            self.type = kind
+            self.reg = reg
+            self.value = value
+
+    class Instruction:
+        def __init__(self):
+            self.ops = [Operand(), Operand()]
+            self._feature = 0
+
+        def get_canon_feature(self) -> int:
+            return self._feature
+
+    encoded = {
+        0x1000: (
+            5,
+            idaapi.CF_CHG1,
+            Operand(idaapi.o_reg, reg=edx),
+            Operand(idaapi.o_imm, value=0x2000),
+        ),
+        0x1005: (
+            6,
+            0,
+            Operand(idaapi.o_reg, reg=ebx),
+            Operand(idaapi.o_imm, value=0x64B9DC19),
+        ),
+        0x100B: (
+            3,
+            idaapi.CF_CHG1,
+            Operand(idaapi.o_reg, reg=dl),
+            Operand(),
+        ),
+        0x100E: (
+            2,
+            0,
+            Operand(idaapi.o_reg, reg=edx),
+            Operand(),
+        ),
+    }
+
+    ida_ua = ModuleType("ida_ua")
+    ida_ua.insn_t = Instruction
+
+    def decode_insn(insn, ea):
+        length, feature, op0, op1 = encoded[int(ea)]
+        insn._feature = feature
+        insn.ops = [op0, op1]
+        return length
+
+    ida_ua.decode_insn = decode_insn
+    monkeypatch.setitem(sys.modules, "ida_ua", ida_ua)
+
+    ida_bytes = ModuleType("ida_bytes")
+    ida_bytes.get_bytes = lambda ea, size: b"\x0f\x95\xc2"
+    monkeypatch.setitem(sys.modules, "ida_bytes", ida_bytes)
+
+    info = computed_goto_resolver._replay_two_way(
+        0x1000,
+        {"ebx": frozenset({0x64B9DC19})},
+        0x100E,
+    )
+
+    assert info == {
+        "ea": 0x100B,
+        "cc": 5,
+        "selector_register_name": "ebx",
+        "selector_compare_constant": 0x64B9DC19,
+        "selector_state_on_left": True,
+        "false": 0x2000,
+        "true": 0x2001,
+    }
+
+
+def test_native_return_epilogue_accepts_stack_loaded_return_value(
+    monkeypatch,
+) -> None:
+    idaapi = ModuleType("idaapi")
+    idaapi.o_void = 0
+    idaapi.o_reg = 1
+    idaapi.o_imm = 2
+    idaapi.o_displ = 4
+    idaapi.o_phrase = 5
+    mnemonics = {
+        0x40F821: "mov",
+        0x40F825: "add",
+        0x40F828: "pop",
+        0x40F829: "pop",
+        0x40F82A: "pop",
+        0x40F82B: "pop",
+        0x40F82C: "ret",
+    }
+    idaapi.print_insn_mnem = lambda ea: mnemonics.get(int(ea), "")
+    monkeypatch.setitem(sys.modules, "idaapi", idaapi)
+
+    class Operand:
+        def __init__(self, kind=0, *, reg=0, value=0):
+            self.type = kind
+            self.reg = reg
+            self.value = value
+
+    class Instruction:
+        def __init__(self):
+            self.ops = [Operand(), Operand()]
+
+    ida_ua = ModuleType("ida_ua")
+    ida_ua.insn_t = Instruction
+    return_destination_reg = [0]
+
+    def decode_insn(insn, ea):
+        sizes = {
+            0x40F821: 4,
+            0x40F825: 3,
+            0x40F828: 1,
+            0x40F829: 1,
+            0x40F82A: 1,
+            0x40F82B: 1,
+            0x40F82C: 3,
+        }
+        if int(ea) == 0x40F821:
+            insn.ops = [
+                Operand(idaapi.o_reg, reg=return_destination_reg[0]),
+                Operand(idaapi.o_displ, reg=4),
+            ]
+        elif int(ea) == 0x40F825:
+            insn.ops = [
+                Operand(idaapi.o_reg, reg=4),
+                Operand(idaapi.o_imm, value=0x78),
+            ]
+        elif int(ea) in {0x40F828, 0x40F829, 0x40F82A, 0x40F82B}:
+            insn.ops = [Operand(idaapi.o_reg, reg=6), Operand()]
+        else:
+            insn.ops = [Operand(), Operand()]
+        return sizes.get(int(ea), 0)
+
+    ida_ua.decode_insn = decode_insn
+    monkeypatch.setitem(sys.modules, "ida_ua", ida_ua)
+
+    assert _native_target_is_return_epilogue(0x40F821)
+    return_destination_reg[0] = 1
+    assert not _native_target_is_return_epilogue(0x40F821)
 
 
 def test_handler_state_replay_crosses_call_for_callee_saved_state_register(
@@ -1963,6 +2868,193 @@ def test_prepatch_handler_entry_route_replays_native_equality_leaf(
     ]
 
 
+def test_prepatch_handler_entry_route_uses_exact_entry_register_snapshot(
+    monkeypatch,
+) -> None:
+    state = 0x1EBFFA3C
+    invariant = 0xFDEE1C81
+    path_local = 0x48BD94
+    entry_ea = 0x40B149
+    target_ea = 0x40B163
+    row = _NativeEqualityRow(
+        register_name="ebx",
+        state_constant=state,
+        direct_target_ea=0x40B157,
+        block_entry_ea=entry_ea,
+        branch_ea=0x40B155,
+        branch_size=2,
+        condition_code=4,
+        terminal_jmp_ea=0x40B161,
+        terminal_end_ea=target_ea,
+        selector_kind="jcc",
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={},
+        reachable_eas=(0x40A560,),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+        function_context_register_values=(("esi", invariant),),
+        corridor_register_snapshots=((entry_ea, (("edi", path_local),)),),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_register_mreg",
+        lambda name: {"ebx": 20, "esi": 36, "edi": 40}.get(name),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_residual_context_mregs",
+        lambda values: {
+            {"ebx": 20, "esi": 36, "edi": 40}[name]: value
+            for name, value in values
+        },
+    )
+
+    def resolve(_start_ea: int, **kwargs):
+        return (
+            target_ea
+            if kwargs["initial_mregs"]
+            == {20: state, 36: invariant, 40: path_local}
+            else None
+        )
+
+    routes = computed_goto_resolver._recover_prepatch_handler_entry_routes(
+        resolution,
+        (row,),
+        route_resolver=resolve,
+        range_resolver=lambda resolved_ea: ((resolved_ea, 0x40B17F),),
+    )
+
+    assert len(routes) == 1
+    assert routes[0].target_eas == (target_ea,)
+
+
+def test_prepatch_handler_entry_route_replays_native_setcc_equality_leaf(
+    monkeypatch,
+) -> None:
+    state = 0x64B9DC19
+    context = 0x48BD94
+    row = _NativeEqualityRow(
+        register_name="ebx",
+        state_constant=state,
+        direct_target_ea=0x40CCDF,
+        block_entry_ea=0x40CCCB,
+        branch_ea=0x40CCDF,
+        branch_size=3,
+        condition_code=4,
+        terminal_jmp_ea=0x40CCE4,
+        terminal_end_ea=0x40CCE6,
+        selector_kind="setcc",
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40C8B0,
+        jmp_targets={},
+        reachable_eas=(0x40C8B0,),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+        function_context_register_values=(("esi", context),),
+    )
+    calls = []
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_register_mreg",
+        lambda name: {"ebx": 20, "esi": 36}.get(name),
+    )
+
+    def resolve(start_ea: int, **kwargs):
+        calls.append((start_ea, kwargs))
+        return 0x40CCE6
+
+    assert computed_goto_resolver._recover_prepatch_handler_entry_routes(
+        resolution,
+        (row,),
+        route_resolver=resolve,
+        range_resolver=lambda target_ea: ((target_ea, 0x40CCFB),),
+    ) == (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CCCB,
+            source_block_ea=0x40CCCB,
+            materialized_anchor_eas=(),
+            target_eas=(0x40CCE6,),
+            selector_state_var_reg=20,
+            selector_state_constant=state,
+            context_register_values=((36, context),),
+            resolver_kind="static_handler_entry_route",
+            owned_native_ranges=((0x40CCE6, 0x40CCFB),),
+        ),
+    )
+    assert calls == [
+        (
+            0x40CCCB,
+            {
+                "initial_mregs": {20: state, 36: context},
+                "handler_eas": frozenset(),
+                "return_first_indirect_target": True,
+            },
+        )
+    ]
+
+
+def test_static_fixpoint_equality_preserves_prepatch_handler_closure() -> None:
+    state = 0x64B9DC19
+    target_ea = 0x40CCE6
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CCE4,
+        source_block_ea=0x40CCCB,
+        materialized_anchor_eas=(0x40CCDF, 0x40CCE5),
+        target_eas=(target_ea, 0x40C9DB),
+        condition_code=4,
+        true_target_ea=target_ea,
+        false_target_ea=0x40C9DB,
+        selector_state_var_reg=20,
+        selector_compare_constant=state,
+        context_register_values=((36, 0x48BD94),),
+        resolver_kind="static_fixpoint",
+    )
+    handler_transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CCF9,
+        source_block_ea=target_ea,
+        materialized_anchor_eas=(0x40CCF0, 0x40CCF6),
+        target_eas=(0x40C9EC, 0x40CBB0),
+        condition_code=12,
+        true_target_ea=0x40C9EC,
+        false_target_ea=0x40CBB0,
+        selector_state_var_reg=20,
+        selector_compare_constant=0x69225E4,
+        resolver_kind="static_fixpoint",
+        materialized_region_end_ea=0x40CD00,
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40C8B0,
+        jmp_targets={},
+        reachable_eas=(0x40C8B0,),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+
+    assert computed_goto_resolver._recover_static_fixpoint_handler_entry_routes(
+        resolution,
+        (transfer, handler_transfer),
+        range_resolver=lambda entry_ea: ((entry_ea, 0x40CCFB),),
+    ) == (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CCCB,
+            source_block_ea=0x40CCCB,
+            materialized_anchor_eas=(),
+            target_eas=(target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=state,
+            context_register_values=((36, 0x48BD94),),
+            resolver_kind="static_handler_entry_route",
+            owned_native_ranges=((target_ea, 0x40CD00),),
+        ),
+    )
+
+
 def test_static_handler_entry_route_abstains_on_conflicting_context() -> None:
     leaf = MaterializedIndirectTransfer(
         source_jmp_ea=0x40B149,
@@ -2025,7 +3117,7 @@ def test_static_handler_entry_route_abstains_on_conflicting_leaf_proofs() -> Non
     )
 
 
-def test_prepare_detached_snippets_publishes_static_handler_entry_routes(
+def test_prepare_detached_snippets_enriches_session_before_union_gate(
     monkeypatch,
 ) -> None:
     function_ea = 0x40A560
@@ -2098,7 +3190,7 @@ def test_prepare_detached_snippets_publishes_static_handler_entry_routes(
 
     assert computed_goto_resolver.prepare_detached_handler_snippets(state) == 0
     assert state.materialized_transfers == (leaf, route)
-    assert planned == [(leaf, route)]
+    assert planned == []
 
 
 def test_prepare_terminal_return_carriers_is_independent_of_materialization(
@@ -2192,8 +3284,16 @@ def test_detached_static_terminal_transfers_seed_each_island_from_function_conte
     assert transfer.resolver_kind == "detached_static_fixpoint"
 
 
-def test_detached_static_terminal_transfers_replay_exact_target_context_and_polarity(
+@pytest.mark.parametrize(
+    "context_target_eas",
+    (
+        (0x402000,),
+        (0x402000, 0x405000),
+    ),
+)
+def test_detached_static_terminal_transfers_replay_common_target_context_and_polarity(
     monkeypatch,
+    context_target_eas,
 ) -> None:
     resolution = ComputedGotoResolution(
         function_ea=0x401000,
@@ -2210,7 +3310,7 @@ def test_detached_static_terminal_transfers_replay_exact_target_context_and_pola
         source_jmp_ea=0x401100,
         source_block_ea=0x4010F0,
         materialized_anchor_eas=(),
-        target_eas=(entry_ea,),
+        target_eas=context_target_eas,
         target_register_values=((32, 0x5000), (36, 0x6000)),
         resolver_kind="static_equality_candidate",
     )
@@ -2316,6 +3416,85 @@ def test_static_absorb_set_includes_resolver_proven_terminal_targets() -> None:
     )
 
 
+def test_static_transfer_evidence_names_router_sources_but_not_handler_sources(
+    monkeypatch,
+) -> None:
+    router_root = 0x40C9EC
+    equality_leaf = 0x40CA22
+    handler_entry = 0x40CA3D
+    plans = (
+        _PatchPlan(
+            jmp_ea=0x40CA05,
+            block_entry=router_root,
+            patch_start=0x40C9F2,
+            patch_bytes=b"\x90",
+            region_end=0x40CA07,
+            insn_heads=(0x40C9F2,),
+            new_block_eas=(0x40C9F8,),
+            target_eas=(equality_leaf, 0x40CA60),
+            condition_code=12,
+            true_target_ea=equality_leaf,
+            false_target_ea=0x40CA60,
+            selector_register_name="ebx",
+            selector_compare_constant=0xA7AFB008,
+            selector_state_on_left=True,
+        ),
+        _PatchPlan(
+            jmp_ea=0x40CA3B,
+            block_entry=equality_leaf,
+            patch_start=0x40CA28,
+            patch_bytes=b"\x90",
+            region_end=handler_entry,
+            insn_heads=(0x40CA28,),
+            new_block_eas=(0x40CA2E,),
+            target_eas=(0x40C9DB, handler_entry),
+            condition_code=4,
+            true_target_ea=handler_entry,
+            false_target_ea=0x40C9DB,
+            selector_register_name="ebx",
+            selector_compare_constant=0x960C145D,
+            selector_state_on_left=True,
+        ),
+        _PatchPlan(
+            jmp_ea=0x40CA50,
+            block_entry=handler_entry,
+            patch_start=0x40CA47,
+            patch_bytes=b"\x90",
+            region_end=0x40CA52,
+            insn_heads=(0x40CA47,),
+            new_block_eas=(0x40CA4D,),
+            target_eas=(router_root, 0x40CBB0),
+            condition_code=12,
+            true_target_ea=router_root,
+            false_target_ea=0x40CBB0,
+            selector_register_name="ebx",
+            selector_compare_constant=0x069225E4,
+            selector_state_on_left=True,
+        ),
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40C8B0,
+        jmp_targets={plan.jmp_ea: plan.target_eas for plan in plans},
+        reachable_eas=(0x40C8B0,),
+        arch="x86",
+        executed_insns=1,
+        seeds_run=0,
+        patch_plans=plans,
+        block_entries=tuple(plan.block_entry for plan in plans),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_register_mreg",
+        lambda name: 20 if name == "ebx" else None,
+    )
+
+    transfers = computed_goto_resolver._static_materialized_transfers(resolution)
+
+    assert {transfer.dispatcher_router_eas for transfer in transfers} == {
+        (router_root, equality_leaf)
+    }
+
+
 def test_residual_route_partition_preserves_live_conditional_predicate() -> None:
     desktop_predicate = 0x40C404
     message_predicate = 0x40C5D1
@@ -2408,6 +3587,7 @@ def test_conditional_handler_bridge_requires_residual_route_not_predicate_patch(
         SimpleNamespace(
             predicate_ea=0x40C404,
             source_block_ea=0x40C3F0,
+            condition_code=5,
             predicate_register=44,
             predicate_size=4,
             predicate_compare_register=None,
@@ -2515,6 +3695,7 @@ def test_conditional_handler_bridge_accepts_matching_static_native_state_choice(
         SimpleNamespace(
             predicate_ea=predicate_ea,
             source_block_ea=0x40E1F6,
+            condition_code=5,
             predicate_register=8,
             predicate_size=4,
             predicate_compare_register=None,
@@ -2548,6 +3729,101 @@ def test_conditional_handler_bridge_accepts_matching_static_native_state_choice(
     assert bridge.predicate_preserve_live is True
 
 
+def test_conditional_handler_bridge_refreshes_stale_targets_from_ranked_routes(
+    monkeypatch,
+) -> None:
+    state_register = 20
+    predicate_ea = 0x40CDB4
+    true_state = 0x09269BD2
+    false_state = 0x255387B6
+    true_target = 0x40CE3C
+    false_target = 0x40CEAB
+    dispatcher_target = 0x40CDF8
+    stale = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=0x40CDA0,
+        materialized_anchor_eas=(predicate_ea,),
+        target_eas=(0x40CE27, 0x40CF80),
+        condition_code=5,
+        true_target_ea=0x40CE27,
+        false_target_ea=0x40CF80,
+        selector_state_var_reg=state_register,
+        resolver_kind="conditional_handler_bridge",
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+    )
+    exact_true = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CD74,
+        source_block_ea=0x40CD5B,
+        materialized_anchor_eas=(0x40CD68, 0x40CD6E),
+        target_eas=(true_target, dispatcher_target),
+        condition_code=4,
+        true_target_ea=true_target,
+        false_target_ea=dispatcher_target,
+        selector_state_var_reg=state_register,
+        selector_compare_constant=true_state,
+        resolver_kind="static_equality_fixpoint",
+    )
+    exact_false = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CDBA,
+        source_block_ea=0x40CDB7,
+        materialized_anchor_eas=(),
+        target_eas=(false_target,),
+        selector_state_var_reg=state_register,
+        selector_state_constant=false_state,
+        resolver_kind="residual_state_route_evidence",
+    )
+    observed_targets: dict[int, int] = {}
+
+    def recognize(_mba, *, state_register, state_targets, **_kwargs):
+        assert state_register == 20
+        observed_targets.update(state_targets)
+        return (
+            SimpleNamespace(
+                predicate_ea=predicate_ea,
+                source_block_ea=0x40CDA0,
+                condition_code=5,
+                predicate_register=8,
+                predicate_size=4,
+                predicate_compare_register=None,
+                predicate_compare_constant=0,
+                predicate_predecessor_ea=0x40CDAF,
+                true_state=true_state,
+                false_state=false_state,
+                true_target_ea=state_targets[true_state],
+                false_target_ea=state_targets[false_state],
+                true_is_taken=True,
+            ),
+        )
+
+    bridge_module = ModuleType("d810.backends.hexrays.evidence.residual_entry_bridge")
+    bridge_module.recognize_conditional_handler_bridges = recognize
+    bridge_module.predicate_arm_reaches_ea = (
+        lambda _mba, *, predicate_ea, route_ea: (
+            predicate_ea == 0x40CDB4 and route_ea == 0x40CDBA
+        )
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.backends.hexrays.evidence.residual_entry_bridge",
+        bridge_module,
+    )
+
+    (refreshed,) = recover_conditional_handler_bridge_transfers_from_mba(
+        (stale, exact_true, exact_false),
+        object(),
+    )
+
+    assert observed_targets == {
+        true_state: true_target,
+        false_state: false_target,
+    }
+    assert refreshed.source_jmp_ea == predicate_ea
+    assert refreshed.target_eas == (true_target, false_target)
+    assert refreshed.true_target_ea == true_target
+    assert refreshed.false_target_ea == false_target
+
+
 def test_conditional_handler_bridge_accepts_imported_predicate_with_exact_arms(
     monkeypatch,
 ) -> None:
@@ -2555,6 +3831,8 @@ def test_conditional_handler_bridge_accepts_imported_predicate_with_exact_arms(
     true_state = 0x2100AFDD
     false_state = 0x0E9795EF
     predicate_ea = 0xF1C00248
+    native_predicate_ea = 0x40AE74
+    native_predecessor_ea = 0x40AE70
     true_target = 0x40AF00
     false_target = 0x40ACE7
     transfers = (
@@ -2594,11 +3872,12 @@ def test_conditional_handler_bridge_accepts_imported_predicate_with_exact_arms(
         SimpleNamespace(
             predicate_ea=predicate_ea,
             source_block_ea=predicate_ea,
+            condition_code=5,
             predicate_register=8,
             predicate_size=4,
             predicate_compare_register=None,
             predicate_compare_constant=None,
-            predicate_predecessor_ea=predicate_ea,
+            predicate_predecessor_ea=predicate_ea + 4,
             true_state=true_state,
             false_state=false_state,
             true_target_ea=true_target,
@@ -2617,13 +3896,45 @@ def test_conditional_handler_bridge_accepts_imported_predicate_with_exact_arms(
         transfers,
         object(),
         imported_predicate_eas=frozenset({predicate_ea}),
+        imported_instruction_origins={
+            predicate_ea: native_predicate_ea,
+            predicate_ea + 4: native_predecessor_ea,
+        },
     )
 
-    assert bridge.source_jmp_ea == predicate_ea
+    assert bridge.source_jmp_ea == native_predicate_ea
+    assert bridge.source_block_ea == native_predicate_ea
+    assert bridge.materialized_anchor_eas == (native_predicate_ea,)
+    assert bridge.predicate_predecessor_ea == native_predecessor_ea
     assert bridge.target_eas == (true_target, false_target)
     assert bridge.predicate_true_state == true_state
     assert bridge.predicate_false_state == false_state
     assert bridge.predicate_preserve_live is True
+
+    imported_sibling_ea = predicate_ea - 4
+    predicate_instruction = SimpleNamespace(ea=predicate_ea, next=None)
+    imported_sibling = SimpleNamespace(
+        ea=imported_sibling_ea,
+        next=predicate_instruction,
+    )
+    imported_source = SimpleNamespace(
+        head=imported_sibling,
+        tail=predicate_instruction,
+    )
+    imported_mba = SimpleNamespace(
+        qty=1,
+        get_mblock=lambda _serial: imported_source,
+    )
+    bridge_module.predicate_arm_reaches_ea = lambda *_args, **_kwargs: False
+
+    (block_owned_bridge,) = recover_conditional_handler_bridge_transfers_from_mba(
+        transfers,
+        imported_mba,
+        imported_predicate_eas=frozenset({imported_sibling_ea}),
+    )
+
+    assert block_owned_bridge.source_jmp_ea == predicate_ea
+    assert block_owned_bridge.predicate_preserve_live is True
 
 
 def test_imported_predicate_accepts_static_equality_state_register_proof(
@@ -2664,6 +3975,7 @@ def test_imported_predicate_accepts_static_equality_state_register_proof(
         SimpleNamespace(
             predicate_ea=predicate_ea,
             source_block_ea=predicate_ea,
+            condition_code=5,
             predicate_register=8,
             predicate_size=4,
             predicate_compare_register=None,
@@ -2722,6 +4034,7 @@ def test_live_opaque_bridge_accepts_exact_inherited_handler_route(
         SimpleNamespace(
             predicate_ea=predicate_ea,
             source_block_ea=0x40C20C,
+            condition_code=5,
             predicate_register=None,
             predicate_size=4,
             predicate_compare_register=None,
@@ -2783,6 +4096,7 @@ def test_live_register_predicate_accepts_exact_inherited_handler_route(
         SimpleNamespace(
             predicate_ea=predicate_ea,
             source_block_ea=0x40C5BD,
+            condition_code=5,
             predicate_register=44,
             predicate_size=4,
             predicate_compare_register=None,
@@ -2853,6 +4167,55 @@ def test_materialized_profile_is_published_during_staged_preanalysis():
     assert is_computed_goto_materialized(state)
 
 
+def test_flowchart_stages_static_resolution_until_between_decompile_capture(
+    monkeypatch,
+) -> None:
+    function_ea = 0x401000
+    plan = _PatchPlan(
+        jmp_ea=0x401020,
+        block_entry=0x401010,
+        patch_start=0x401018,
+        patch_bytes=b"\x90",
+        region_end=0x401022,
+        insn_heads=(0x401018,),
+        new_block_eas=(),
+        target_eas=(0x402000,),
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={plan.jmp_ea: plan.target_eas},
+        reachable_eas=(function_ea,),
+        arch="x86",
+        executed_insns=1,
+        seeds_run=0,
+        patch_plans=(plan,),
+    )
+    session, state = _resolver_session()
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_has_unresolved_computed_goto",
+        lambda _function_ea: True,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_resolve_computed_goto_resolution",
+        lambda _function_ea: resolution,
+        raising=False,
+    )
+    decision: dict[str, object] = {"session": session}
+
+    computed_goto_resolver._on_flowchart_preanalysis(
+        function_ea=function_ea,
+        mba=object(),
+        decision=decision,
+    )
+
+    assert state.pending_prepatch_materialization is resolution
+    assert state.resolution is resolution
+    assert state.materialization is not None
+    assert decision == {"session": session}
+
+
 def test_function_context_register_values_abstain_on_conflicting_or_unknown_values():
     states = {
         0x1000: {"esi": frozenset({1})},
@@ -2873,10 +4236,13 @@ def test_dispatcher_context_register_values_require_consensus_at_every_site():
     assert _dispatcher_context_register_values(states, (0x1000, 0x1010)) == (
         ("ebx", 0xD197A4AF),
     )
-    assert _dispatcher_context_register_values(
-        states,
-        (0x1000, 0x1010, 0x1020),
-    ) == ()
+    assert (
+        _dispatcher_context_register_values(
+            states,
+            (0x1000, 0x1010, 0x1020),
+        )
+        == ()
+    )
 
 
 def test_encode_two_way_branch_preserves_conditional_arm_polarity():
@@ -3097,10 +4463,13 @@ def test_setcc_equality_candidate_uses_replay_proven_post_terminal_match():
     assert ports[0].source_instruction_ea == 0x40AE5E
     assert ports[0].target_ea == 0x40A5F0
     assert ports[0].resolver_kind == "static_equality_candidate_dispatcher_cut"
-    assert _resolver_cut_target_for_synthetic_successor(
-        ports,
-        0x40AE5E,
-    ) == 0x40A5F0
+    assert (
+        _resolver_cut_target_for_synthetic_successor(
+            ports,
+            0x40AE5E,
+        )
+        == 0x40A5F0
+    )
 
 
 def test_setcc_equality_candidate_uses_replay_without_patch_plan():
@@ -3154,9 +4523,7 @@ def test_setcc_replay_uses_exact_corridor_entry_snapshot(monkeypatch):
         arch="x86",
         executed_insns=0,
         seeds_run=0,
-        corridor_register_snapshots=(
-            (0x40DAA3, (("ebx", 0xD1978CAF),)),
-        ),
+        corridor_register_snapshots=((0x40DAA3, (("ebx", 0xD1978CAF),)),),
     )
     seen_initial_values = []
     match_register_values_by_row = {}
@@ -3168,9 +4535,7 @@ def test_setcc_replay_uses_exact_corridor_entry_snapshot(monkeypatch):
     monkeypatch.setattr(
         computed_goto_resolver,
         "_residual_context_mregs",
-        lambda values: {
-            {"ebp": 20, "ebx": 36}[name]: value for name, value in values
-        },
+        lambda values: {{"ebp": 20, "ebx": 36}[name]: value for name, value in values},
     )
 
     def resolve_route(
@@ -3188,11 +4553,7 @@ def test_setcc_replay_uses_exact_corridor_entry_snapshot(monkeypatch):
         assert 0xD1978CAF in values
         target = 0x40DABB if 0xB13A6E93 in values else 0x40D370
         if return_first_indirect_result:
-            state = (
-                0xB13A6E93
-                if 0xB13A6E93 in values
-                else 0xB13A6E92
-            )
+            state = 0xB13A6E93 if 0xB13A6E93 in values else 0xB13A6E92
             return _ConcreteDispatchResult(
                 target,
                 (("ebp", state), ("ebx", 0xD1978CAF)),
@@ -3654,22 +5015,25 @@ def test_materialized_state_anchor_rejects_stale_unowned_self_route():
         resolver_kind="static_equality_route",
     )
 
-    assert _build_materialized_state_routes(
-        graph,
-        state_write_anchors=(
-            StateWriteAnchor(
-                233,
-                state,
-                state_var_reg=28,
-                instruction_ea=write_ea,
+    assert (
+        _build_materialized_state_routes(
+            graph,
+            state_write_anchors=(
+                StateWriteAnchor(
+                    233,
+                    state,
+                    state_var_reg=28,
+                    instruction_ea=write_ea,
+                ),
             ),
-        ),
-        out_reg_maps={233: {28: state}},
-        dispatcher_entry_serial=31,
-        state_var_reg=28,
-        handler_serials=frozenset({233}),
-        transfers=(transfer,),
-    ) == ()
+            out_reg_maps={233: {28: state}},
+            dispatcher_entry_serial=31,
+            state_var_reg=28,
+            handler_serials=frozenset({233}),
+            transfers=(transfer,),
+        )
+        == ()
+    )
 
 
 def test_materialized_state_anchor_keeps_live_constant_self_route():
@@ -3961,6 +5325,7 @@ def test_materialized_state_anchor_keeps_exact_terminal_endpoint():
         handler_serials=frozenset({239}),
         transfers=(static_fixpoint, condition_chain_continuation),
         handler_targets={state: 239},
+        replacement_handler_serials=frozenset({239}),
         route_resolver=lambda *_args, **_kwargs: 0x40A5D0,
         handler_state_resolver=lambda *_args, **_kwargs: None,
         terminal_target_resolver=lambda _target_ea: True,
@@ -3973,6 +5338,103 @@ def test_materialized_state_anchor_keeps_exact_terminal_endpoint():
             state,
             300,
             proof_kind="terminal_state_route",
+        ),
+    )
+
+
+def test_materialized_state_anchor_maps_omitted_terminal_endpoint_to_stop():
+    state = 0x69225E4
+    source_native_ea = 0x40CC1C
+    terminal_native_ea = 0x40CD8C
+    graph = FlowGraph(
+        blocks={
+            8: _block(8, 0x40C9DB),
+            41: BlockSnapshot(
+                serial=41,
+                block_type=0,
+                succs=(8,),
+                preds=(),
+                flags=0,
+                start_ea=0x40C8B0,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        ea=0xF1C0008C,
+                        opcode=4,
+                        operands=(),
+                        kind=InsnKind.MOV,
+                        l=MopSnapshot(
+                            t=2,
+                            size=4,
+                            kind=OperandKind.NUMBER,
+                            value=state,
+                        ),
+                        d=MopSnapshot(
+                            t=1,
+                            size=4,
+                            kind=OperandKind.REGISTER,
+                            reg=20,
+                        ),
+                    ),
+                ),
+            ),
+            74: BlockSnapshot(
+                serial=74,
+                block_type=7,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0xFFFFFFFFFFFFFFFF,
+                insn_snapshots=(),
+                kind=BlockKind.STOP,
+            ),
+        },
+        entry_serial=41,
+        func_ea=0x40C8B0,
+    )
+    static_fixpoint = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40C9D9,
+        source_block_ea=0x40C9C0,
+        materialized_anchor_eas=(0x40C9C6, 0x40C9DB),
+        target_eas=(0x40C9DB, terminal_native_ea),
+        condition_code=4,
+        true_target_ea=terminal_native_ea,
+        false_target_ea=0x40C9DB,
+        selector_state_var_reg=20,
+        selector_compare_constant=state,
+        selector_state_on_left=True,
+        resolver_kind="static_fixpoint",
+    )
+
+    routes = _build_materialized_state_routes(
+        graph,
+        state_write_anchors=(
+            StateWriteAnchor(
+                41,
+                state,
+                state_var_reg=20,
+                instruction_ea=0xF1C0008C,
+            ),
+        ),
+        out_reg_maps={41: {20: state}},
+        dispatcher_entry_serial=8,
+        state_var_reg=20,
+        handler_serials=frozenset({41}),
+        transfers=(static_fixpoint,),
+        handler_entry_eas_by_serial={41: source_native_ea},
+        route_resolver=lambda *_args, **_kwargs: None,
+        handler_state_resolver=lambda *_args, **_kwargs: None,
+        terminal_target_resolver=lambda target_ea: target_ea == terminal_native_ea,
+        state_register_name="ebx",
+    )
+
+    assert routes == (
+        MaterializedStateRoute(
+            41,
+            state,
+            74,
+            proof_kind="terminal_state_route",
+            source_native_ea=source_native_ea,
+            target_native_ea=terminal_native_ea,
         ),
     )
 
@@ -5542,6 +7004,26 @@ def test_unique_static_equality_handler_targets_select_matching_arm() -> None:
     }
 
 
+def test_unique_static_equality_handler_targets_accept_static_fixpoint_leaf() -> None:
+    state = 0x67C0FFE0
+    exact = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CD74,
+        source_block_ea=0x40CD5B,
+        materialized_anchor_eas=(0x40CD68, 0x40CD6E),
+        target_eas=(0x40C9DB, 0x40CD76),
+        condition_code=4,
+        true_target_ea=0x40CD76,
+        false_target_ea=0x40C9DB,
+        selector_state_var_reg=20,
+        selector_compare_constant=state,
+        resolver_kind="static_fixpoint",
+    )
+
+    assert _unique_static_equality_handler_targets((exact,), 20) == {
+        state: 0x40CD76,
+    }
+
+
 def test_claim_exact_function_tail_reparents_standalone_handler() -> None:
     parent = SimpleNamespace(start_ea=0x40A560, end_ea=0x40C700)
     detached = SimpleNamespace(start_ea=0x40B8E6, end_ea=0x40B940)
@@ -6010,3 +7492,2797 @@ def test_residual_route_patch_site_abstains_without_terminal_indirect(
         )
         is None
     )
+
+
+class _PreoptUnionFakeRanges:
+    def __init__(self) -> None:
+        self.ranges = self
+        self.items: list[tuple[int, int]] = []
+
+    def push_back(self, native_range: tuple[int, int]) -> None:
+        self.items.append(native_range)
+
+
+class _PreoptUnionFakeFailure:
+    def desc(self) -> str:
+        return "no error"
+
+
+class _PreoptUnionFakeMba:
+    def __init__(self, maturity: int, opcode: int, events: list[str]) -> None:
+        self.maturity = int(maturity)
+        self.qty = 1
+        empty_operand = SimpleNamespace(t=0)
+        instruction = SimpleNamespace(
+            ea=0x2004,
+            opcode=int(opcode),
+            l=empty_operand,
+            r=empty_operand,
+            d=empty_operand,
+            next=None,
+        )
+        self._block = SimpleNamespace(head=instruction, tail=instruction)
+        self._events = events
+
+    def get_mblock(self, serial: int):
+        assert int(serial) == 0
+        return self._block
+
+    def build_graph(self) -> None:
+        self._events.append("build_preopt_graph")
+
+
+def test_preopt_resolver_cuts_exclude_materialized_multi_target_sites() -> None:
+    resolution = ComputedGotoResolution(
+        function_ea=0x1000,
+        jmp_targets={
+            0x1010: (0x2000,),
+            0x1020: (0x2000, 0x3000),
+        },
+        reachable_eas=(0x1000,),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+
+    assert computed_goto_resolver._preopt_resolver_cut_eas(resolution) == (
+        0x1010,
+    )
+
+
+def _install_preopt_union_success_harness(
+    monkeypatch,
+    *,
+    closure_edges: tuple[NativeEdge, ...] | None = None,
+    live_eas: frozenset[int] = frozenset({0x1100}),
+    include_call: bool = True,
+    capture_succeeds: bool = True,
+    closure_terminal: NativeTerminalKind = NativeTerminalKind.NONE,
+) -> dict[str, object]:
+    import ida_funcs
+    import ida_hexrays
+    import idaapi
+
+    function_ea = 0x1000
+    seed_ea = 0x2000
+    cut_ea = 0x200C
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={cut_ea: tuple(sorted(live_eas))},
+        reachable_eas=(function_ea, seed_ea),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    route = MaterializedIndirectTransfer(
+        source_jmp_ea=0x1800,
+        source_block_ea=0x1800,
+        materialized_anchor_eas=(),
+        target_eas=(seed_ea,),
+        resolver_kind="static_handler_entry_route",
+    )
+    cut = MaterializedIndirectTransfer(
+        source_jmp_ea=cut_ea,
+        source_block_ea=seed_ea,
+        materialized_anchor_eas=(),
+        target_eas=tuple(sorted(live_eas)),
+        resolver_kind="detached_static_fixpoint",
+    )
+    _session, state = _resolver_session(resolution)
+    state.materialized = True
+    state.materialized_transfers = (route, cut)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_recover_static_handler_entry_route_transfers",
+        lambda _transfers: (),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: (),
+    )
+    range_calls: list[int] = []
+
+    def native_ranges(target_ea: int, **_kwargs):
+        range_calls.append(int(target_ea))
+        return ((seed_ea, 0x2020),)
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_residual_fragment_ranges",
+        native_ranges,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_live_mba_native_eas",
+        lambda _mba, **_kwargs: live_eas,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        ida_funcs,
+        "get_func",
+        lambda ea: (
+            SimpleNamespace(start_ea=function_ea, end_ea=0x3000)
+            if int(ea) == function_ea
+            else None
+        ),
+    )
+    edges = closure_edges
+    if edges is None:
+        edges = (
+            NativeEdge(
+                NativeEdgeKind.INDIRECT,
+                0x1100,
+                resolver_proven=True,
+                provenance="resolver_cut",
+                source_instruction_ea=cut_ea,
+            ),
+        )
+    backend_calls: list[dict[str, object]] = []
+
+    def build_cfg(function, **kwargs):
+        backend_calls.append({"function": function, **kwargs})
+        return SimpleNamespace(
+            cfg=NativeCfg(
+                {
+                    seed_ea: NativeBlock(
+                        seed_ea,
+                        0x2010,
+                        outgoing_edges=edges,
+                        terminal=closure_terminal,
+                    )
+                }
+            ),
+            abstentions=(),
+        )
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "build_native_semantic_cfg",
+        build_cfg,
+        raising=False,
+    )
+    monkeypatch.setattr(ida_hexrays, "mba_ranges_t", _PreoptUnionFakeRanges)
+    monkeypatch.setattr(ida_hexrays, "hexrays_failure_t", _PreoptUnionFakeFailure)
+    monkeypatch.setattr(ida_hexrays, "DECOMP_NO_WAIT", 0x10, raising=False)
+    monkeypatch.setattr(ida_hexrays, "DECOMP_ALL_BLKS", 0x20, raising=False)
+    monkeypatch.setattr(ida_hexrays, "MMAT_PREOPTIMIZED", 1, raising=False)
+    monkeypatch.setattr(ida_hexrays, "MMAT_CALLS", 4, raising=False)
+    monkeypatch.setattr(ida_hexrays, "m_call", 7, raising=False)
+    monkeypatch.setattr(ida_hexrays, "m_icall", 8, raising=False)
+    monkeypatch.setattr(idaapi, "range_t", lambda start, end: (start, end))
+
+    events: list[str] = []
+    generated: list[tuple[tuple[tuple[int, int], ...], int, int]] = []
+    preopt_mba = _PreoptUnionFakeMba(
+        ida_hexrays.MMAT_PREOPTIMIZED,
+        ida_hexrays.m_call if include_call else 0,
+        events,
+    )
+    def generate(_generator, ranges, _failure, _retlist, flags, maturity):
+        generated.append((tuple(ranges.items), int(flags), int(maturity)))
+        events.append(f"generate_{int(maturity)}")
+        return preopt_mba
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_generate_microcode_without_d810",
+        generate,
+    )
+    captures: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def capture(*args: object, **kwargs: object):
+        events.append("capture_preopt_union")
+        captures.append((args, kwargs))
+        return bool(capture_succeeds)
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "capture_preopt_union_snippet_template",
+        capture,
+        raising=False,
+    )
+    return {
+        "state": state,
+        "function_ea": function_ea,
+        "seed_ea": seed_ea,
+        "cut_ea": cut_ea,
+        "range_calls": range_calls,
+        "backend_calls": backend_calls,
+        "generated": generated,
+        "captures": captures,
+        "events": events,
+        "live_mba": object(),
+    }
+
+
+def test_prepare_preopt_union_closure_publishes_one_idempotent_union(
+    monkeypatch,
+) -> None:
+    harness = _install_preopt_union_success_harness(monkeypatch)
+
+    first = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+    second = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+
+    assert first.prepared and first.published
+    assert second.prepared and not second.published
+    assert first.primary_seed_ea == harness["seed_ea"]
+    assert first.seed_eas == (harness["seed_ea"],)
+    assert first.native_ranges == ((harness["seed_ea"], 0x2010),)
+    assert first.imported_block_entry_eas == (harness["seed_ea"],)
+    assert (
+        computed_goto_resolver.get_prepared_preopt_union_closure(harness["state"])
+        == first
+    )
+    assert len(harness["captures"]) == 1
+
+
+def test_prepare_preopt_union_recovers_live_conditional_bridges_before_ports(
+    monkeypatch,
+) -> None:
+    harness = _install_preopt_union_success_harness(monkeypatch)
+    observed: list[tuple[tuple[MaterializedIndirectTransfer, ...], object]] = []
+
+    def recover(transfers, mba, **_kwargs):
+        observed.append((transfers, mba))
+        return ()
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "recover_conditional_handler_bridge_transfers_from_mba",
+        recover,
+    )
+
+    result = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+
+    assert result.prepared
+    assert len(observed) == 1
+    assert observed[0][1] is harness["live_mba"]
+    assert {transfer.resolver_kind for transfer in observed[0][0]} == {
+        "static_handler_entry_route",
+        "detached_static_fixpoint",
+    }
+
+
+def test_prepare_preopt_union_binds_matching_prepatch_source_without_regeneration(
+    monkeypatch,
+) -> None:
+    harness = _install_preopt_union_success_harness(monkeypatch)
+    function_ea = harness["function_ea"]
+    seed_ea = harness["seed_ea"]
+    cut_ea = harness["cut_ea"]
+    live_eas = frozenset({0x1100})
+    pristine_cfg = NativeCfg(
+        {
+            seed_ea: NativeBlock(
+                seed_ea,
+                0x2010,
+                outgoing_edges=(
+                    NativeEdge(
+                        NativeEdgeKind.INDIRECT,
+                        0x1100,
+                        resolver_proven=True,
+                        provenance="resolver_cut",
+                        source_instruction_ea=cut_ea,
+                    ),
+                ),
+            )
+        }
+    )
+    pristine_closure = plan_native_semantic_closure(
+        pristine_cfg,
+        (
+            ResolverProvenHandlerEntry(
+                entry_ea=seed_ea,
+                provenance="static_handler_entry_route",
+            ),
+        ),
+        import_boundary_target_eas=live_eas,
+    )
+    harness["state"].prepatch_preopt_union_source = (
+        computed_goto_resolver._PrepatchPreoptUnionSource(
+        primary_seed_ea=seed_ea,
+        seed_eas=(seed_ea,),
+        native_ranges=((seed_ea, 0x2010),),
+        imported_block_entry_eas=(seed_ea,),
+        cfg=pristine_cfg,
+        closure=pristine_closure,
+        )
+    )
+    bound: list[tuple[int, int, object]] = []
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "bind_preopt_union_snippet_boundary_ports",
+        lambda owner_ea, target_ea, ports: (
+            bound.append((owner_ea, target_ea, ports)) or True
+        ),
+        raising=False,
+    )
+
+    result = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+
+    assert result.prepared
+    assert len(bound) == 1
+    assert bound[0][:2] == (function_ea, seed_ea)
+    assert harness["generated"] == []
+    assert harness["captures"] == []
+    assert harness["backend_calls"] == []
+    harness["state"].preopt_union_preparation = None
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: ((0xF1C00010, seed_ea),),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_live_mba_native_eas",
+        lambda _mba, *, imported_instruction_origins: (
+            live_eas
+            if not imported_instruction_origins
+            else frozenset({*live_eas, seed_ea})
+        ),
+    )
+
+    refreshed = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+        refresh_existing=True,
+    )
+
+    assert refreshed.prepared
+    assert len(bound) == 2
+    assert harness["generated"] == []
+    assert harness["captures"] == []
+    assert harness["backend_calls"] == []
+
+
+def test_preopt_refresh_preserves_proven_port_hidden_by_its_own_rewrite() -> None:
+    entry_port = DetachedSnippetDirectBoundaryPort(
+        source_block_ea=0x40D252,
+        source_instruction_ea=0x40D348,
+        endpoint_block_ea=0x40D348,
+        old_successor_eas=(),
+        target_ea=0x40EAA7,
+        state_register=28,
+        state_constant=0x699BC698,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        delivery_mode="redirect_edge",
+        resolver_kind="residual_state_route_evidence",
+    )
+    previous = DetachedSnippetBoundaryPorts((entry_port,), ())
+    refreshed = DetachedSnippetBoundaryPorts((), ())
+
+    merged = computed_goto_resolver._merge_preopt_union_boundary_ports(
+        previous,
+        refreshed,
+    )
+
+    assert merged == previous
+
+
+def test_preopt_refresh_conditional_boundary_supersedes_bootstrap_direct() -> None:
+    entry_port = DetachedSnippetDirectBoundaryPort(
+        source_block_ea=0x40D313,
+        source_instruction_ea=0x40D348,
+        endpoint_block_ea=0x40D348,
+        old_successor_eas=(),
+        target_ea=0x40EAA7,
+        state_register=28,
+        state_constant=0x699BC698,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        delivery_mode="redirect_edge",
+        resolver_kind="residual_state_route_evidence",
+    )
+    entry_choice = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=0x40D252,
+        predicate_ea=0x40D266,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=0x40DABB,
+        fallthrough_target_ea=0x40F20B,
+        state_register=28,
+        taken_state=0xB13A6E93,
+        fallthrough_state=0x4D34CF70,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        resolver_kind="resolver_proven_static_stack_carried_entry_choice",
+        logical_source_anchor_ea=0x40D348,
+        predicate_ida_stkoff=84,
+        predicate_stack_value=0xB13A6E93,
+        predicate_size=4,
+        condition_code=12,
+        predicate_register=8,
+        predicate_constant=0x113,
+        predicate_true_is_taken=True,
+    )
+
+    merged = computed_goto_resolver._merge_preopt_union_boundary_ports(
+        DetachedSnippetBoundaryPorts((entry_port,), ()),
+        DetachedSnippetBoundaryPorts((), (entry_choice,)),
+    )
+
+    assert merged.direct == ()
+    assert merged.conditional == (entry_choice,)
+
+
+def test_prepare_preopt_union_closure_uses_exact_ownership_and_atomic_cut_port(
+    monkeypatch,
+) -> None:
+    import ida_hexrays
+
+    harness = _install_preopt_union_success_harness(monkeypatch)
+
+    result = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+
+    assert result.prepared
+    assert harness["range_calls"] == [harness["seed_ea"]]
+    assert harness["backend_calls"][0]["resolver_cut_eas"] == (
+        harness["cut_ea"],
+    )
+    assert harness["backend_calls"][0]["seed_eas"] == (
+        harness["function_ea"],
+        harness["seed_ea"],
+    )
+    assert harness["backend_calls"][0][
+        "resolver_proven_unmarked_entry_eas"
+    ] == (harness["seed_ea"],)
+    assert harness["generated"] == [
+        (
+            ((harness["seed_ea"], 0x2010),),
+            int(ida_hexrays.DECOMP_NO_WAIT | ida_hexrays.DECOMP_ALL_BLKS),
+            int(ida_hexrays.MMAT_PREOPTIMIZED),
+        ),
+    ]
+    assert harness["events"] == [
+        "generate_1",
+        "build_preopt_graph",
+        "capture_preopt_union",
+    ]
+    ((function_ea, target_ea, _preopt, ranges), capture_kwargs) = harness[
+        "captures"
+    ][0]
+    assert (function_ea, target_ea, ranges) == (
+        harness["function_ea"],
+        harness["seed_ea"],
+        ((harness["seed_ea"], 0x2010),),
+    )
+    assert capture_kwargs["owned_block_entry_eas"] == (harness["seed_ea"],)
+    ports = capture_kwargs["boundary_ports"]
+    assert isinstance(ports, DetachedSnippetBoundaryPorts)
+    assert ports.conditional == ()
+    assert len(ports.direct) == 1
+    assert ports.direct[0].source_block_ea == harness["seed_ea"]
+    assert ports.direct[0].source_instruction_ea == harness["cut_ea"]
+    assert ports.direct[0].source_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+    assert ports.direct[0].target_owner is DetachedSnippetBoundaryPortOwner.LIVE
+
+
+def test_prepare_preopt_union_uses_generation_envelope_but_exact_capture_ownership(
+    monkeypatch,
+) -> None:
+    harness = _install_preopt_union_success_harness(monkeypatch)
+    generation_range = NativeRange(harness["seed_ea"], 0x2050)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "plan_native_generation_ranges",
+        lambda _closure, **_kwargs: (generation_range,),
+        raising=False,
+    )
+
+    result = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+
+    assert result.prepared
+    assert result.native_ranges == ((harness["seed_ea"], 0x2010),)
+    assert {
+        generated_ranges for generated_ranges, _flags, _maturity in harness["generated"]
+    } == {((harness["seed_ea"], 0x2050),)}
+    ((_, _, _, capture_ranges), capture_kwargs) = harness["captures"][0]
+    assert capture_ranges == ((harness["seed_ea"], 0x2010),)
+    assert capture_kwargs["owned_block_entry_eas"] == (harness["seed_ea"],)
+
+
+def test_prepare_preopt_union_threads_proven_native_return_entries(monkeypatch) -> None:
+    harness = _install_preopt_union_success_harness(
+        monkeypatch,
+        closure_edges=(),
+        closure_terminal=NativeTerminalKind.RETURN,
+    )
+
+    result = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+
+    assert result.prepared
+    (_capture_args, capture_kwargs) = harness["captures"][0]
+    assert capture_kwargs["terminal_return_entry_eas"] == (harness["seed_ea"],)
+
+
+def test_preopt_union_cut_port_classifies_an_imported_target() -> None:
+    source_ea = 0x2000
+    target_ea = 0x2100
+    cut_ea = 0x200C
+    closure = SimpleNamespace(
+        included_block_eas=(source_ea, target_ea),
+        proven_import_boundary_edges=(
+            SimpleNamespace(
+                source_ea=source_ea,
+                source_instruction_ea=cut_ea,
+                target_ea=target_ea,
+                kind=NativeEdgeKind.INDIRECT,
+                provenance="resolver_cut",
+            ),
+        ),
+    )
+
+    ports = computed_goto_resolver._preopt_union_boundary_ports(
+        closure,
+        live_native_eas=frozenset(),
+    )
+
+    assert ports is not None
+    assert len(ports.direct) == 1
+    assert ports.direct[0].source_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+    assert ports.direct[0].target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+
+
+def test_preopt_union_groups_two_resolver_cut_targets_into_one_conditional_port(
+) -> None:
+    source_ea = 0x40CDE0
+    resolver_ea = 0x40CDF6
+    true_target_ea = 0x40CDF8
+    false_target_ea = 0x40CF80
+    closure = SimpleNamespace(
+        included_block_eas=(source_ea, true_target_ea, false_target_ea),
+        proven_import_boundary_edges=tuple(
+            SimpleNamespace(
+                source_ea=source_ea,
+                source_instruction_ea=resolver_ea,
+                target_ea=target_ea,
+                kind=NativeEdgeKind.INDIRECT,
+                provenance="resolver_cut",
+            )
+            for target_ea in (true_target_ea, false_target_ea)
+        ),
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=resolver_ea,
+        source_block_ea=source_ea,
+        materialized_anchor_eas=(),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        selector_state_var_reg=16,
+        selector_compare_constant=0xA4C94734,
+        resolver_kind="static_fixpoint",
+    )
+
+    ports = computed_goto_resolver._preopt_union_boundary_ports(
+        closure,
+        live_native_eas=frozenset(),
+        transfers=(transfer,),
+    )
+
+    assert ports is not None
+    assert ports.direct == ()
+    assert len(ports.conditional) == 1
+    (port,) = ports.conditional
+    assert port.source_block_ea == source_ea
+    assert port.predicate_ea == resolver_ea
+    assert port.taken_target_ea == true_target_ea
+    assert port.fallthrough_target_ea == false_target_ea
+    assert port.predicate_register == 16
+    assert port.predicate_size == 4
+    assert port.predicate_constant == 0xA4C94734
+    assert port.condition_code == 5
+    assert port.source_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+    assert port.taken_target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+    assert port.fallthrough_target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+
+
+def test_preopt_union_routes_live_one_way_state_tail_into_imported_handler() -> None:
+    predicate_write_ea = 0x40CDAF
+    tail_write_ea = 0x40CDBA
+    tail_block_ea = 0x40CDB7
+    router_ea = 0x40CDF8
+    predicate_target_ea = 0x40CE3C
+    tail_target_ea = 0x40CEAB
+
+    def instruction(ea: int):
+        return SimpleNamespace(ea=ea, next=None)
+
+    predicate_write = instruction(predicate_write_ea)
+    predicate_tail = instruction(0x40CDB4)
+    predicate_write.next = predicate_tail
+    predicate = SimpleNamespace(
+        serial=0,
+        start=0x40CDA0,
+        end=tail_block_ea,
+        head=predicate_write,
+        tail=predicate_tail,
+        succset=(1, 2),
+    )
+    tail_entry = instruction(tail_block_ea)
+    tail_write = instruction(tail_write_ea)
+    tail_goto = instruction(0x40CDD0)
+    tail_entry.next = tail_write
+    tail_write.next = tail_goto
+    tail = SimpleNamespace(
+        serial=1,
+        start=tail_block_ea,
+        end=0x40CDD2,
+        head=tail_entry,
+        tail=tail_goto,
+        succset=(3,),
+    )
+    other = SimpleNamespace(
+        serial=2,
+        start=0x40CDB4,
+        end=tail_block_ea,
+        head=instruction(0x40CDB4),
+        tail=None,
+        succset=(1,),
+    )
+    other.tail = other.head
+    router = SimpleNamespace(
+        serial=3,
+        start=router_ea,
+        end=router_ea + 1,
+        head=instruction(router_ea),
+        tail=None,
+        succset=(),
+    )
+    router.tail = router.head
+    blocks = (predicate, tail, other, router)
+    live_mba = SimpleNamespace(
+        qty=len(blocks),
+        get_mblock=lambda serial: blocks[int(serial)],
+    )
+    closure = SimpleNamespace(
+        included_block_eas=(predicate_target_ea, tail_target_ea),
+        proven_import_boundary_edges=(),
+    )
+    native_cfg = NativeCfg(
+        {
+            0x40CDA0: NativeBlock(
+                0x40CDA0,
+                0x40CDD2,
+                outgoing_edges=(
+                    NativeEdge(
+                        NativeEdgeKind.DIRECT_JUMP,
+                        router_ea,
+                        source_instruction_ea=0x40CDD0,
+                    ),
+                ),
+            ),
+            tail_block_ea: NativeBlock(
+                tail_block_ea,
+                0x40CDD2,
+                outgoing_edges=(
+                    NativeEdge(
+                        NativeEdgeKind.DIRECT_JUMP,
+                        router_ea,
+                    ),
+                ),
+            ),
+        }
+    )
+    routes = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=predicate_write_ea,
+            source_block_ea=0x40CDA0,
+            materialized_anchor_eas=(),
+            target_eas=(predicate_target_ea,),
+            selector_state_var_reg=16,
+            selector_state_constant=0x09269BD2,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=tail_write_ea,
+            source_block_ea=tail_block_ea,
+            materialized_anchor_eas=(),
+            target_eas=(tail_target_ea,),
+            selector_state_var_reg=16,
+            selector_state_constant=0x255387B6,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=router_ea,
+            source_block_ea=router_ea,
+            materialized_anchor_eas=(),
+            target_eas=(tail_target_ea,),
+            selector_state_var_reg=16,
+            selector_state_constant=0x255387B6,
+            resolver_kind="condition_chain_handler_evidence",
+            dispatcher_router_eas=(router_ea,),
+        ),
+    )
+
+    ports = computed_goto_resolver._preopt_union_boundary_ports(
+        closure,
+        live_native_eas=frozenset(
+            {
+                0x40CDA0,
+                predicate_write_ea,
+                0x40CDB4,
+                tail_block_ea,
+                tail_write_ea,
+                0x40CDD0,
+                router_ea,
+            }
+        ),
+        transfers=routes,
+        live_mba=live_mba,
+        native_cfg=native_cfg,
+    )
+
+    assert ports is not None
+    assert ports.conditional == ()
+    assert len(ports.direct) == 1
+    (port,) = ports.direct
+    assert port.source_block_ea == tail_block_ea
+    assert port.source_instruction_ea == 0x40CDD0
+    assert port.endpoint_block_ea == 0x40CDD0
+    assert port.old_successor_eas == (router_ea,)
+    assert port.target_ea == tail_target_ea
+    assert port.state_register == 16
+    assert port.state_constant == 0x255387B6
+    assert port.source_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert port.endpoint_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert port.target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+    assert port.delivery_mode == "redirect_edge"
+
+
+def test_preopt_union_prefers_complete_live_conditional_bridge_over_shared_tail(
+) -> None:
+    predicate_ea = 0x40CDB4
+    true_state = 0x09269BD2
+    false_state = 0x255387B6
+    true_target_ea = 0x40CE3C
+    false_target_ea = 0x40CEAB
+    router_ea = 0x40CDF8
+    closure = SimpleNamespace(
+        included_block_eas=(true_target_ea, false_target_ea),
+        proven_import_boundary_edges=(),
+    )
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CDAF,
+            source_block_ea=0x40CDA0,
+            materialized_anchor_eas=(),
+            target_eas=(true_target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=true_state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CDBA,
+            source_block_ea=0x40CDB7,
+            materialized_anchor_eas=(),
+            target_eas=(false_target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=false_state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=router_ea,
+            source_block_ea=router_ea,
+            materialized_anchor_eas=(),
+            target_eas=(false_target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=false_state,
+            resolver_kind="condition_chain_handler_evidence",
+            dispatcher_router_eas=(router_ea,),
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=predicate_ea,
+            source_block_ea=0x40CDA0,
+            materialized_anchor_eas=(predicate_ea,),
+            target_eas=(true_target_ea, false_target_ea),
+            condition_code=5,
+            true_target_ea=true_target_ea,
+            false_target_ea=false_target_ea,
+            selector_state_var_reg=20,
+            resolver_kind="conditional_handler_bridge",
+            predicate_register=8,
+            predicate_size=4,
+            predicate_compare_constant=0,
+            predicate_true_state=true_state,
+            predicate_false_state=false_state,
+            predicate_true_is_taken=True,
+        ),
+    )
+
+    ports = computed_goto_resolver._preopt_union_boundary_ports(
+        closure,
+        live_native_eas=frozenset({0x40CDA0, predicate_ea}),
+        transfers=transfers,
+    )
+
+    assert ports is not None
+    assert ports.direct == ()
+    assert len(ports.conditional) == 1
+    (port,) = ports.conditional
+    assert port.source_block_ea == 0x40CDA0
+    assert port.predicate_ea == predicate_ea
+    assert port.taken_target_ea == true_target_ea
+    assert port.fallthrough_target_ea == false_target_ea
+    assert port.taken_state == true_state
+    assert port.fallthrough_state == false_state
+    assert port.source_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert port.taken_target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+    assert port.fallthrough_target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+    assert port.predicate_register == 8
+    assert port.predicate_size == 4
+    assert port.predicate_constant == 0
+    assert port.condition_code == 5
+    assert port.predicate_true_is_taken is True
+
+    imported_ports = computed_goto_resolver._preopt_union_boundary_ports(
+        SimpleNamespace(
+            included_block_eas=(
+                0x40CDA0,
+                true_target_ea,
+                false_target_ea,
+            ),
+            proven_import_boundary_edges=(),
+        ),
+        live_native_eas=frozenset(),
+        transfers=transfers,
+    )
+    assert imported_ports is not None
+    assert len(imported_ports.conditional) == 1
+    assert (
+        imported_ports.conditional[0].source_owner
+        is DetachedSnippetBoundaryPortOwner.IMPORTED
+    )
+
+
+def test_preopt_union_reanchors_imported_conditional_source_from_predicate() -> None:
+    function_ea = 0x40D200
+    source_ea = 0x40DFA2
+    predicate_ea = 0x40E04B
+    old_taken_ea = 0x40E052
+    old_fallthrough_ea = 0x40E04D
+    true_state = 0x11111111
+    false_state = 0x22222222
+    true_target_ea = 0x40D848
+    false_target_ea = 0x40F177
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=predicate_ea,
+            source_block_ea=function_ea,
+            materialized_anchor_eas=(predicate_ea,),
+            target_eas=(true_target_ea, false_target_ea),
+            condition_code=5,
+            true_target_ea=true_target_ea,
+            false_target_ea=false_target_ea,
+            selector_state_var_reg=28,
+            resolver_kind="conditional_handler_bridge",
+            predicate_register=8,
+            predicate_size=4,
+            predicate_true_state=true_state,
+            predicate_false_state=false_state,
+            predicate_true_is_taken=True,
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x5000,
+            source_block_ea=0x5000,
+            materialized_anchor_eas=(),
+            target_eas=(true_target_ea,),
+            selector_state_var_reg=28,
+            selector_state_constant=true_state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x5004,
+            source_block_ea=0x5004,
+            materialized_anchor_eas=(),
+            target_eas=(false_target_ea,),
+            selector_state_var_reg=28,
+            selector_state_constant=false_state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+    )
+    native_cfg = NativeCfg(
+        {
+            source_ea: NativeBlock(
+                source_ea,
+                0x40E04D,
+                outgoing_edges=(
+                    NativeEdge(
+                        NativeEdgeKind.CONDITIONAL_TRUE,
+                        old_taken_ea,
+                        source_instruction_ea=predicate_ea,
+                    ),
+                    NativeEdge(
+                        NativeEdgeKind.CONDITIONAL_FALSE,
+                        old_fallthrough_ea,
+                        source_instruction_ea=predicate_ea,
+                    ),
+                ),
+            ),
+            old_taken_ea: NativeBlock(old_taken_ea, old_taken_ea + 1),
+            old_fallthrough_ea: NativeBlock(
+                old_fallthrough_ea,
+                old_fallthrough_ea + 1,
+            ),
+            true_target_ea: NativeBlock(true_target_ea, true_target_ea + 1),
+            false_target_ea: NativeBlock(false_target_ea, false_target_ea + 1),
+        }
+    )
+
+    ports = computed_goto_resolver._preopt_live_conditional_bridge_boundary_ports(
+        transfers,
+        live_native_eas=frozenset(),
+        imported_entry_eas=frozenset(
+            {
+                source_ea,
+                old_taken_ea,
+                old_fallthrough_ea,
+                true_target_ea,
+                false_target_ea,
+            }
+        ),
+        native_cfg=native_cfg,
+    )
+
+    assert ports is not None
+    assert len(ports) == 1
+    assert ports[0].source_block_ea == source_ea
+    assert ports[0].predicate_ea == predicate_ea
+    assert ports[0].source_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+    assert ports[0].old_taken_target_ea == old_taken_ea
+    assert ports[0].old_fallthrough_target_ea == old_fallthrough_ea
+    assert (
+        ports[0].old_taken_target_owner
+        is DetachedSnippetBoundaryPortOwner.IMPORTED
+    )
+    assert (
+        ports[0].old_fallthrough_target_owner
+        is DetachedSnippetBoundaryPortOwner.IMPORTED
+    )
+
+
+def test_preopt_residual_route_rebinds_an_imported_handler_tail() -> None:
+    source_ea = 0x5000
+    write_ea = 0x5008
+    terminal_ea = 0x500E
+    router_ea = 0x6000
+    target_ea = 0x7000
+    state = 0x12345678
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=write_ea,
+            source_block_ea=source_ea,
+            materialized_anchor_eas=(),
+            target_eas=(target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=router_ea,
+            source_block_ea=router_ea,
+            materialized_anchor_eas=(),
+            target_eas=(target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=state,
+            resolver_kind="condition_chain_handler_evidence",
+            dispatcher_router_eas=(router_ea,),
+        ),
+    )
+    native_cfg = NativeCfg(
+        {
+            source_ea: NativeBlock(
+                source_ea,
+                0x5010,
+                outgoing_edges=(
+                    NativeEdge(
+                        NativeEdgeKind.DIRECT_JUMP,
+                        router_ea,
+                        source_instruction_ea=terminal_ea,
+                    ),
+                ),
+            )
+        }
+    )
+
+    ports = computed_goto_resolver._preopt_live_residual_route_boundary_ports(
+        transfers,
+        live_mba=SimpleNamespace(qty=0, get_mblock=lambda _serial: None),
+        live_native_eas=frozenset(),
+        imported_entry_eas=frozenset({source_ea, router_ea, target_ea}),
+        native_cfg=native_cfg,
+    )
+
+    assert ports is not None
+    assert len(ports) == 1
+    (port,) = ports
+    assert port.source_block_ea == source_ea
+    assert port.source_instruction_ea == terminal_ea
+    assert port.endpoint_block_ea == source_ea
+    assert port.old_successor_eas == (router_ea,)
+    assert port.target_ea == target_ea
+    assert port.source_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+    assert port.endpoint_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+    assert port.old_successor_owners == (
+        DetachedSnippetBoundaryPortOwner.IMPORTED,
+    )
+
+
+def test_preopt_residual_route_binds_live_tail_absent_from_native_closure() -> None:
+    source_ea = 0x5000
+    write_ea = 0x5008
+    terminal_ea = 0x500E
+    router_ea = 0x6000
+    target_ea = 0x7000
+    state = 0x12345678
+
+    def instruction(ea: int):
+        return SimpleNamespace(ea=ea, next=None)
+
+    source_head = instruction(source_ea)
+    source_write = instruction(write_ea)
+    source_tail = instruction(terminal_ea)
+    source_head.next = source_write
+    source_write.next = source_tail
+    source = SimpleNamespace(
+        serial=0,
+        start=source_ea,
+        end=terminal_ea + 1,
+        head=source_head,
+        tail=source_tail,
+        succset=(1,),
+    )
+    router_head = instruction(router_ea)
+    router = SimpleNamespace(
+        serial=1,
+        start=router_ea,
+        end=router_ea + 1,
+        head=router_head,
+        tail=router_head,
+        succset=(),
+    )
+    blocks = (source, router)
+    live_mba = SimpleNamespace(
+        qty=len(blocks),
+        get_mblock=lambda serial: blocks[int(serial)],
+    )
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=write_ea,
+            source_block_ea=source_ea,
+            materialized_anchor_eas=(),
+            target_eas=(target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=router_ea,
+            source_block_ea=router_ea,
+            materialized_anchor_eas=(),
+            target_eas=(target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=state,
+            resolver_kind="condition_chain_handler_evidence",
+            dispatcher_router_eas=(router_ea,),
+        ),
+    )
+
+    ports = computed_goto_resolver._preopt_live_residual_route_boundary_ports(
+        transfers,
+        live_mba=live_mba,
+        live_native_eas=frozenset({source_ea, write_ea, terminal_ea, router_ea}),
+        imported_entry_eas=frozenset({target_ea}),
+        native_cfg=NativeCfg({}),
+    )
+
+    assert ports is not None
+    assert len(ports) == 1
+    (port,) = ports
+    assert port.source_block_ea == source_ea
+    assert port.source_instruction_ea == terminal_ea
+    assert port.endpoint_block_ea == source_ea
+    assert port.old_successor_eas == (router_ea,)
+    assert port.target_ea == target_ea
+    assert port.source_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert port.endpoint_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert port.old_successor_owners == (DetachedSnippetBoundaryPortOwner.LIVE,)
+
+
+@pytest.mark.parametrize(
+    (
+        "condition_code",
+        "predicate_true_is_taken",
+        "expected_taken_state",
+        "expected_taken_target_ea",
+        "expected_fallthrough_state",
+        "expected_fallthrough_target_ea",
+    ),
+    (
+        (5, True, 0x09269BD2, 0x40CE3C, 0x255387B6, 0x40CEAB),
+        (4, False, 0x255387B6, 0x40CEAB, 0x09269BD2, 0x40CE3C),
+    ),
+    ids=("jnz_true_is_taken", "jz_true_is_fallthrough"),
+)
+def test_preopt_live_conditional_bridge_projects_physical_taken_and_fallthrough_arms(
+    condition_code: int,
+    predicate_true_is_taken: bool,
+    expected_taken_state: int,
+    expected_taken_target_ea: int,
+    expected_fallthrough_state: int,
+    expected_fallthrough_target_ea: int,
+) -> None:
+    true_state = 0x09269BD2
+    false_state = 0x255387B6
+    true_target_ea = 0x40CE3C
+    false_target_ea = 0x40CEAB
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CDAF,
+            source_block_ea=0x40CDA0,
+            materialized_anchor_eas=(),
+            target_eas=(true_target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=true_state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CDBA,
+            source_block_ea=0x40CDB7,
+            materialized_anchor_eas=(),
+            target_eas=(false_target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=false_state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CDB4,
+            source_block_ea=0x40CDA0,
+            materialized_anchor_eas=(0x40CDB4,),
+            target_eas=(true_target_ea, false_target_ea),
+            condition_code=condition_code,
+            true_target_ea=true_target_ea,
+            false_target_ea=false_target_ea,
+            selector_state_var_reg=20,
+            predicate_size=4,
+            predicate_true_state=true_state,
+            predicate_false_state=false_state,
+            predicate_register=8,
+            predicate_true_is_taken=predicate_true_is_taken,
+            resolver_kind="conditional_handler_bridge",
+        ),
+    )
+
+    ports = computed_goto_resolver._preopt_live_conditional_bridge_boundary_ports(
+        transfers,
+        live_native_eas=frozenset({0x40CDA0, 0x40CDB4}),
+        imported_entry_eas=frozenset({true_target_ea, false_target_ea}),
+    )
+
+    assert ports is not None
+    assert len(ports) == 1
+    (port,) = ports
+    assert port.condition_code == condition_code
+    assert port.predicate_true_is_taken is predicate_true_is_taken
+    assert port.taken_state == expected_taken_state
+    assert port.taken_target_ea == expected_taken_target_ea
+    assert port.fallthrough_state == expected_fallthrough_state
+    assert port.fallthrough_target_ea == expected_fallthrough_target_ea
+
+
+def test_preopt_stack_carried_choice_is_deferred_to_its_live_consumer(
+    monkeypatch,
+) -> None:
+    """The original predicate outranks its later stack-carried bootstrap."""
+    predicate_ea = 0x40D266
+    true_state = 0xB13A6E93
+    false_state = 0x4D34CF70
+    true_target_ea = 0x40DABB
+    false_target_ea = 0x40F20B
+    live_source = SimpleNamespace(serial=7, start=0x40D252)
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=0x40D252,
+        materialized_anchor_eas=(0x40D256, predicate_ea, 0x40D269),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=12,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        selector_state_var_reg=28,
+        resolver_kind="static_stack_carried_state_choice",
+        predicate_register=20,
+        predicate_size=4,
+        predicate_compare_constant=0x113,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        state_carrier_store_ea=0x40D269,
+        state_carrier_stack_displacement=0x44,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_find_unique_live_predicate_block",
+        lambda _mba, candidate_ea: (
+            live_source if int(candidate_ea) == predicate_ea else None
+        ),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "exact_live_predicate_true_is_taken",
+        lambda *_args, **_kwargs: False,
+    )
+
+    ports = computed_goto_resolver._preopt_live_conditional_bridge_boundary_ports(
+        (transfer,),
+        live_mba=object(),
+        live_native_eas=frozenset({0x40D252, 0x40D256, predicate_ea}),
+        imported_entry_eas=frozenset({true_target_ea, false_target_ea}),
+    )
+
+    assert ports == ()
+
+
+def test_preopt_static_branch_choice_defers_to_equivalent_live_bridge(
+    monkeypatch,
+) -> None:
+    predicate_ea = 0x40DD38
+    source_ea = 0x40DD21
+    taken_state = 0xF448A3A2
+    fallthrough_state = 0x4E9CC9CC
+    taken_target = 0x40D738
+    fallthrough_target = 0x40F562
+    static_choice = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=source_ea,
+        materialized_anchor_eas=(predicate_ea,),
+        target_eas=(taken_target, fallthrough_target),
+        condition_code=4,
+        true_target_ea=taken_target,
+        false_target_ea=fallthrough_target,
+        selector_state_var_reg=28,
+        predicate_true_state=taken_state,
+        predicate_false_state=fallthrough_state,
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    live_bridge = replace(
+        static_choice,
+        target_eas=(fallthrough_target, taken_target),
+        true_target_ea=fallthrough_target,
+        false_target_ea=taken_target,
+        predicate_register=8,
+        predicate_size=4,
+        predicate_true_state=fallthrough_state,
+        predicate_false_state=taken_state,
+        predicate_true_is_taken=False,
+        resolver_kind="conditional_handler_bridge",
+    )
+    residual_routes = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x5000,
+            source_block_ea=0x5000,
+            materialized_anchor_eas=(),
+            target_eas=(taken_target,),
+            selector_state_var_reg=28,
+            selector_state_constant=taken_state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x5010,
+            source_block_ea=0x5010,
+            materialized_anchor_eas=(),
+            target_eas=(fallthrough_target,),
+            selector_state_var_reg=28,
+            selector_state_constant=fallthrough_state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+    )
+    live_source = SimpleNamespace(serial=7, start=source_ea)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_find_unique_live_predicate_block",
+        lambda _mba, candidate_ea: (
+            live_source if int(candidate_ea) == predicate_ea else None
+        ),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "exact_live_predicate_true_is_taken",
+        lambda *_args, **_kwargs: True,
+    )
+
+    ports = computed_goto_resolver._preopt_live_conditional_bridge_boundary_ports(
+        (*residual_routes, static_choice, live_bridge),
+        live_mba=object(),
+        live_native_eas=frozenset({source_ea, predicate_ea}),
+        imported_entry_eas=frozenset({taken_target, fallthrough_target}),
+    )
+
+    assert ports is not None
+    assert len(ports) == 1
+    assert ports[0].resolver_kind == "resolver_proven_live_conditional_bridge"
+
+
+def test_preopt_stack_carrier_router_expands_to_nested_live_predicates() -> None:
+    """A selected router arm must retain the predicate that filled its cell."""
+    state_register = 28
+    outer_predicate_ea = 0x40D266
+    true_nested_predicate_ea = 0x40D299
+    false_nested_predicate_ea = 0x40D2BC
+    true_router_ea = 0x40DABB
+    false_router_ea = 0x40F20B
+
+    def choice(
+        predicate_ea: int,
+        displacement: int,
+        true_state: int,
+        false_state: int,
+        true_target_ea: int,
+        false_target_ea: int,
+    ) -> MaterializedIndirectTransfer:
+        return MaterializedIndirectTransfer(
+            source_jmp_ea=predicate_ea,
+            source_block_ea=0x40D200,
+            materialized_anchor_eas=(predicate_ea - 0xA, predicate_ea),
+            target_eas=(true_target_ea, false_target_ea),
+            condition_code=12,
+            true_target_ea=true_target_ea,
+            false_target_ea=false_target_ea,
+            selector_state_var_reg=state_register,
+            resolver_kind="static_stack_carried_state_choice",
+            predicate_register=20,
+            predicate_size=4,
+            predicate_compare_constant=1,
+            predicate_true_state=true_state,
+            predicate_false_state=false_state,
+            state_carrier_store_ea=predicate_ea + 3,
+            state_carrier_stack_displacement=displacement,
+        )
+
+    outer = choice(
+        outer_predicate_ea,
+        0x44,
+        0xB13A6E93,
+        0x4D34CF70,
+        true_router_ea,
+        false_router_ea,
+    )
+    true_nested = choice(
+        true_nested_predicate_ea,
+        0x58,
+        0xF950382B,
+        0x6633E533,
+        0x40D668,
+        0x40EFDD,
+    )
+    false_nested = choice(
+        false_nested_predicate_ea,
+        0x30,
+        0xF73564E5,
+        0xA3B8D347,
+        0x40DB04,
+        0x40D6D7,
+    )
+
+    def port(
+        transfer: MaterializedIndirectTransfer,
+        *,
+        taken_is_true: bool,
+    ) -> DetachedSnippetConditionalBoundaryPort:
+        assert transfer.predicate_true_state is not None
+        assert transfer.predicate_false_state is not None
+        assert transfer.true_target_ea is not None
+        assert transfer.false_target_ea is not None
+        return DetachedSnippetConditionalBoundaryPort(
+            source_block_ea=0x40D200,
+            predicate_ea=int(transfer.source_jmp_ea),
+            old_taken_target_ea=None,
+            old_fallthrough_target_ea=None,
+            taken_target_ea=int(
+                transfer.true_target_ea
+                if taken_is_true
+                else transfer.false_target_ea
+            ),
+            fallthrough_target_ea=int(
+                transfer.false_target_ea
+                if taken_is_true
+                else transfer.true_target_ea
+            ),
+            state_register=state_register,
+            taken_state=int(
+                transfer.predicate_true_state
+                if taken_is_true
+                else transfer.predicate_false_state
+            ),
+            fallthrough_state=int(
+                transfer.predicate_false_state
+                if taken_is_true
+                else transfer.predicate_true_state
+            ),
+            source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            resolver_kind="resolver_proven_static_conditional_state_choice",
+            predicate_true_is_taken=taken_is_true,
+        )
+
+    outer_port = port(outer, taken_is_true=False)
+    true_nested_port = port(true_nested, taken_is_true=False)
+    false_nested_port = port(false_nested, taken_is_true=False)
+    ports = computed_goto_resolver._compose_preopt_stack_carrier_router_ports(
+        (outer, true_nested, false_nested),
+        (outer_port, true_nested_port, false_nested_port),
+        imported_entry_eas=frozenset(
+            {
+                true_router_ea,
+                false_router_ea,
+                0x40D668,
+                0x40EFDD,
+                0x40DB04,
+                0x40D6D7,
+            }
+        ),
+        live_native_eas=frozenset(
+            {
+                outer_predicate_ea,
+                true_nested_predicate_ea,
+                false_nested_predicate_ea,
+            }
+        ),
+        native_cfg=NativeCfg(
+            {
+                true_router_ea: NativeBlock(true_router_ea, 0x40DACE),
+                false_router_ea: NativeBlock(false_router_ea, 0x40F21F),
+            }
+        ),
+        consumer_load_eas_by_displacement={
+            0x58: (true_router_ea,),
+            0x30: (false_router_ea,),
+        },
+    )
+
+    rewritten_outer = next(
+        candidate
+        for candidate in ports
+        if candidate.predicate_ea == outer_predicate_ea
+    )
+    # The live jge is inverse to cmovl: taken is the outer false-state arm.
+    assert rewritten_outer.taken_target_ea == false_nested_predicate_ea
+    assert rewritten_outer.taken_target_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert rewritten_outer.taken_target_is_boundary_source is True
+    assert rewritten_outer.fallthrough_target_ea == true_nested_predicate_ea
+    assert (
+        rewritten_outer.fallthrough_target_owner
+        is DetachedSnippetBoundaryPortOwner.LIVE
+    )
+    assert rewritten_outer.fallthrough_target_is_boundary_source is True
+    assert true_nested_port in ports
+    assert false_nested_port in ports
+
+
+def test_preopt_stack_carrier_router_materializes_choice_at_imported_consumer(
+) -> None:
+    """A carried choice consumed by an imported arm must branch at the load."""
+    outer_predicate_ea = 0x1010
+    choice_predicate_ea = 0x1020
+    consumer_ea = 0x2000
+    consumer_load_ea = 0x2004
+    other_outer_target_ea = 0x2100
+    true_target_ea = 0x3000
+    false_target_ea = 0x3100
+    true_state = 0x11223344
+    false_state = 0x55667788
+    store_ea = 0x1024
+    choice = MaterializedIndirectTransfer(
+        source_jmp_ea=choice_predicate_ea,
+        source_block_ea=0x1000,
+        materialized_anchor_eas=(choice_predicate_ea - 4, choice_predicate_ea),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        selector_state_var_reg=20,
+        resolver_kind="static_stack_carried_state_choice",
+        predicate_register=8,
+        predicate_size=4,
+        predicate_compare_constant=0,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        state_carrier_store_ea=store_ea,
+        state_carrier_stack_displacement=0x44,
+    )
+    outer = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=0x1100,
+        predicate_ea=outer_predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=consumer_ea,
+        fallthrough_target_ea=other_outer_target_ea,
+        state_register=20,
+        taken_state=0xAABBCCDD,
+        fallthrough_state=0xDDEEFF00,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        resolver_kind="resolver_proven_live_conditional_bridge",
+    )
+
+    ports = computed_goto_resolver._compose_preopt_stack_carrier_router_ports(
+        (choice,),
+        (outer,),
+        imported_entry_eas=frozenset(
+            {
+                consumer_ea,
+                other_outer_target_ea,
+                true_target_ea,
+                false_target_ea,
+            }
+        ),
+        live_native_eas=frozenset(
+            {0x1000, choice_predicate_ea, 0x1100, outer_predicate_ea}
+        ),
+        native_cfg=NativeCfg(
+            {consumer_ea: NativeBlock(consumer_ea, consumer_load_ea + 1)}
+        ),
+        consumer_load_eas_by_displacement={0x44: (consumer_load_ea,)},
+        native_stack_frame_offsets_by_ea={store_ea: (0x5C,)},
+    )
+
+    assert len(ports) == 2
+    rewritten_outer = next(port for port in ports if port is not outer)
+    generated = next(
+        port
+        for port in ports
+        if port.resolver_kind
+        == "resolver_proven_static_stack_carried_router_choice"
+    )
+    rewritten_outer = next(
+        port for port in ports if port.predicate_ea == outer_predicate_ea
+    )
+    assert rewritten_outer.taken_target_ea == choice_predicate_ea
+    assert rewritten_outer.taken_target_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert rewritten_outer.taken_target_is_boundary_source is True
+    assert generated.logical_source_anchor_ea == consumer_load_ea
+    assert (
+        generated.logical_source_owner
+        is DetachedSnippetBoundaryPortOwner.IMPORTED
+    )
+    assert generated.predicate_ida_stkoff == 0x5C
+    assert generated.predicate_stack_value == true_state
+    assert generated.taken_target_ea == true_target_ea
+    assert generated.fallthrough_target_ea == false_target_ea
+
+
+def test_preopt_stack_carrier_router_does_not_recursively_expand_relocated_choice(
+) -> None:
+    """A relocated bootstrap choice is a target, not a new expansion root."""
+    outer_predicate_ea = 0x1010
+    outer_consumer_ea = 0x2000
+    outer_load_ea = 0x2004
+    bootstrap_predicate_ea = 0x1020
+    bootstrap_anchor_ea = 0x1100
+    nested_predicate_ea = 0x1030
+    nested_consumer_ea = 0x2200
+    nested_load_ea = 0x2204
+
+    def choice(
+        predicate_ea: int,
+        displacement: int,
+        store_ea: int,
+        true_target_ea: int,
+        false_target_ea: int,
+    ) -> MaterializedIndirectTransfer:
+        return MaterializedIndirectTransfer(
+            source_jmp_ea=predicate_ea,
+            source_block_ea=0x1000,
+            materialized_anchor_eas=(predicate_ea - 4, predicate_ea),
+            target_eas=(true_target_ea, false_target_ea),
+            condition_code=5,
+            true_target_ea=true_target_ea,
+            false_target_ea=false_target_ea,
+            selector_state_var_reg=20,
+            resolver_kind="static_stack_carried_state_choice",
+            predicate_register=8,
+            predicate_size=4,
+            predicate_compare_constant=0,
+            predicate_true_state=0x11223344,
+            predicate_false_state=0x55667788,
+            state_carrier_store_ea=store_ea,
+            state_carrier_stack_displacement=displacement,
+        )
+
+    outer_choice = choice(
+        bootstrap_predicate_ea,
+        0x44,
+        0x1024,
+        0x3000,
+        0x3100,
+    )
+    nested_choice = choice(
+        nested_predicate_ea,
+        0x58,
+        0x1034,
+        0x3200,
+        0x3300,
+    )
+    outer = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=0x1000,
+        predicate_ea=outer_predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=outer_consumer_ea,
+        fallthrough_target_ea=0x2100,
+        state_register=20,
+        taken_state=0xAABBCCDD,
+        fallthrough_state=0xDDEEFF00,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        resolver_kind="resolver_proven_live_conditional_bridge",
+    )
+    relocated_bootstrap = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=0x1000,
+        predicate_ea=bootstrap_predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=nested_consumer_ea,
+        fallthrough_target_ea=0x2300,
+        state_register=20,
+        taken_state=0x11223344,
+        fallthrough_state=0x55667788,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        resolver_kind="resolver_proven_static_stack_carried_entry_choice",
+        logical_source_anchor_ea=bootstrap_anchor_ea,
+        predicate_ida_stkoff=0x5C,
+        predicate_stack_value=0x11223344,
+        predicate_size=4,
+    )
+
+    ports = computed_goto_resolver._compose_preopt_stack_carrier_router_ports(
+        (outer_choice, nested_choice),
+        (outer, relocated_bootstrap),
+        imported_entry_eas=frozenset(
+            {
+                outer_consumer_ea,
+                0x2100,
+                nested_consumer_ea,
+                0x2300,
+                0x3000,
+                0x3100,
+                0x3200,
+                0x3300,
+            }
+        ),
+        live_native_eas=frozenset(
+            {outer_predicate_ea, bootstrap_predicate_ea, nested_predicate_ea}
+        ),
+        native_cfg=NativeCfg(
+            {
+                outer_consumer_ea: NativeBlock(
+                    outer_consumer_ea, outer_load_ea + 1
+                ),
+                nested_consumer_ea: NativeBlock(
+                    nested_consumer_ea, nested_load_ea + 1
+                ),
+            }
+        ),
+        consumer_load_eas_by_displacement={
+            0x44: (outer_load_ea,),
+            0x58: (nested_load_ea,),
+        },
+        native_stack_frame_offsets_by_ea={
+            0x1024: (0x5C,),
+            0x1034: (0x6C,),
+        },
+    )
+
+    assert len(ports) == 3
+    assert not any(
+        port.predicate_ea == nested_predicate_ea for port in ports
+    )
+
+
+def test_preopt_stack_carrier_router_expansion_abstains_on_ambiguous_choice(
+) -> None:
+    predicate_ea = 0x1010
+    router_ea = 0x2000
+    outer = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=0x1000,
+        materialized_anchor_eas=(predicate_ea,),
+        target_eas=(router_ea, 0x2100),
+        condition_code=12,
+        true_target_ea=router_ea,
+        false_target_ea=0x2100,
+        selector_state_var_reg=20,
+        resolver_kind="static_stack_carried_state_choice",
+        predicate_register=8,
+        predicate_size=4,
+        predicate_compare_constant=3,
+        predicate_true_state=1,
+        predicate_false_state=2,
+        state_carrier_store_ea=0x1014,
+        state_carrier_stack_displacement=0x44,
+    )
+    nested = MaterializedIndirectTransfer(
+        source_jmp_ea=0x1020,
+        source_block_ea=0x1000,
+        materialized_anchor_eas=(0x1020,),
+        target_eas=(0x3000, 0x3100),
+        condition_code=12,
+        true_target_ea=0x3000,
+        false_target_ea=0x3100,
+        selector_state_var_reg=20,
+        resolver_kind="static_stack_carried_state_choice",
+        predicate_register=8,
+        predicate_size=4,
+        predicate_compare_constant=4,
+        predicate_true_state=3,
+        predicate_false_state=4,
+        state_carrier_store_ea=0x1024,
+        state_carrier_stack_displacement=0x58,
+    )
+    conflicting_nested = replace(nested, source_jmp_ea=0x1030)
+    outer_port = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=0x1000,
+        predicate_ea=predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=router_ea,
+        fallthrough_target_ea=0x2100,
+        state_register=20,
+        taken_state=1,
+        fallthrough_state=2,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        resolver_kind="resolver_proven_static_conditional_state_choice",
+    )
+
+    ports = computed_goto_resolver._compose_preopt_stack_carrier_router_ports(
+        (outer, nested, conflicting_nested),
+        (outer_port,),
+        imported_entry_eas=frozenset({router_ea, 0x2100}),
+        live_native_eas=frozenset({predicate_ea, 0x1020, 0x1030}),
+        native_cfg=NativeCfg({router_ea: NativeBlock(router_ea, router_ea + 8)}),
+        consumer_load_eas_by_displacement={0x58: (router_ea,)},
+    )
+
+    assert ports == (outer_port,)
+
+
+def test_preopt_stack_entry_fallback_does_not_duplicate_expanded_live_choice(
+) -> None:
+    fixture = _preopt_stack_carried_prologue_boundary_fixture()
+    direct = computed_goto_resolver._preopt_live_residual_route_boundary_ports(
+        fixture.transfers,
+        live_mba=fixture.live_mba,
+        live_native_eas=fixture.live_native_eas,
+        imported_entry_eas=frozenset(fixture.closure.included_block_eas),
+        native_cfg=fixture.native_cfg,
+    )
+    assert direct is not None
+    expanded = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=fixture.choice.source_block_ea,
+        predicate_ea=fixture.predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=0x1024,
+        fallthrough_target_ea=0x1034,
+        state_register=fixture.choice.selector_state_var_reg,
+        taken_state=fixture.true_state,
+        fallthrough_state=fixture.false_state,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        resolver_kind="resolver_proven_static_conditional_state_choice",
+        taken_target_is_boundary_source=True,
+        fallthrough_target_is_boundary_source=True,
+    )
+
+    direct_rows, synthetic = (
+        computed_goto_resolver._compose_preopt_stack_carried_entry_choice_ports(
+            fixture.transfers,
+            direct,
+            live_native_eas=fixture.live_native_eas,
+            imported_entry_eas=frozenset(fixture.closure.included_block_eas),
+            native_cfg=fixture.native_cfg,
+            consumer_load_eas_by_displacement={
+                0x44: (fixture.bootstrap_load_ea,),
+            },
+            native_stack_frame_offsets_by_ea={
+                fixture.choice.state_carrier_store_ea: (84,),
+            },
+            existing_conditional_ports=(expanded,),
+        )
+    )
+
+    assert direct_rows == direct
+    assert synthetic == ()
+
+
+def _preopt_stack_carried_prologue_boundary_fixture(
+    *,
+    extra_consumer_blocks: tuple[tuple[int, int], ...] = (),
+    direct_target_ea: int | None = None,
+) -> SimpleNamespace:
+    source_ea = 0x1000
+    compare_ea = 0x1010
+    predicate_ea = 0x1014
+    store_ea = 0x1018
+    prologue_entry_ea = 0x1100
+    prologue_write_ea = 0x1104
+    prologue_terminal_ea = 0x1108
+    router_ea = 0x1110
+    bootstrap_handler_ea = 0x2000
+    bootstrap_load_ea = 0x2004
+    unmatched_handler_ea = 0x2010
+    predicate_register = 36
+    state_register = 28
+    true_state = 0xB13A6E93
+    false_state = 0x4D34CF70
+    true_target_ea = 0x2100
+    false_target_ea = 0x2200
+    unrelated_compare_ea = 0x1200
+    unrelated_predicate_ea = 0x1204
+    unrelated_store_ea = 0x1208
+    unrelated_true_target_ea = 0x2300
+    unrelated_false_target_ea = 0x2400
+
+    def instruction(ea: int, next_instruction: object | None = None):
+        return SimpleNamespace(ea=ea, next=next_instruction)
+
+    prologue_terminal = instruction(prologue_terminal_ea)
+    prologue_write = instruction(prologue_write_ea, prologue_terminal)
+    prologue_entry = instruction(prologue_entry_ea, prologue_write)
+    prologue_block = SimpleNamespace(
+        serial=0,
+        start=prologue_entry_ea,
+        end=prologue_terminal_ea + 1,
+        head=prologue_entry,
+        tail=prologue_terminal,
+        succset=(1,),
+    )
+    router_instruction = instruction(router_ea)
+    router_block = SimpleNamespace(
+        serial=1,
+        start=router_ea,
+        end=router_ea + 1,
+        head=router_instruction,
+        tail=router_instruction,
+        succset=(),
+    )
+    live_mba = SimpleNamespace(
+        qty=2,
+        get_mblock=lambda serial: (prologue_block, router_block)[int(serial)],
+    )
+    choice = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=source_ea,
+        materialized_anchor_eas=(compare_ea, predicate_ea, store_ea),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=12,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        selector_state_var_reg=state_register,
+        resolver_kind="static_stack_carried_state_choice",
+        predicate_register=predicate_register,
+        predicate_size=4,
+        predicate_compare_constant=0x113,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        state_carrier_store_ea=store_ea,
+        state_carrier_stack_displacement=0x44,
+    )
+    unrelated_choice = MaterializedIndirectTransfer(
+        source_jmp_ea=unrelated_predicate_ea,
+        source_block_ea=unrelated_compare_ea,
+        materialized_anchor_eas=(
+            unrelated_compare_ea,
+            unrelated_predicate_ea,
+            unrelated_store_ea,
+        ),
+        target_eas=(unrelated_true_target_ea, unrelated_false_target_ea),
+        condition_code=5,
+        true_target_ea=unrelated_true_target_ea,
+        false_target_ea=unrelated_false_target_ea,
+        selector_state_var_reg=state_register,
+        resolver_kind="static_stack_carried_state_choice",
+        predicate_register=predicate_register,
+        predicate_size=4,
+        predicate_compare_constant=0x314,
+        predicate_true_state=0xA1A2A3A4,
+        predicate_false_state=0xB1B2B3B4,
+        state_carrier_store_ea=unrelated_store_ea,
+        state_carrier_stack_displacement=0x48,
+    )
+    direct_target_ea = (
+        bootstrap_handler_ea if direct_target_ea is None else int(direct_target_ea)
+    )
+    bootstrap_state = 0x699BC698
+    bootstrap_route = MaterializedIndirectTransfer(
+        source_jmp_ea=prologue_write_ea,
+        source_block_ea=prologue_entry_ea,
+        materialized_anchor_eas=(),
+        target_eas=(direct_target_ea,),
+        selector_state_var_reg=state_register,
+        selector_state_constant=bootstrap_state,
+        resolver_kind="residual_state_route_evidence",
+    )
+    router_route = MaterializedIndirectTransfer(
+        source_jmp_ea=router_ea,
+        source_block_ea=router_ea,
+        materialized_anchor_eas=(),
+        target_eas=(direct_target_ea,),
+        selector_state_var_reg=state_register,
+        selector_state_constant=bootstrap_state,
+        resolver_kind="condition_chain_handler_evidence",
+        dispatcher_router_eas=(router_ea,),
+    )
+    native_blocks = {
+        source_ea: NativeBlock(
+            source_ea,
+            store_ea + 1,
+        ),
+        prologue_entry_ea: NativeBlock(
+            prologue_entry_ea,
+            prologue_terminal_ea + 1,
+            outgoing_edges=(
+                NativeEdge(
+                    NativeEdgeKind.DIRECT_JUMP,
+                    router_ea,
+                    source_instruction_ea=prologue_terminal_ea,
+                ),
+            ),
+        ),
+        bootstrap_handler_ea: NativeBlock(
+            bootstrap_handler_ea,
+            bootstrap_load_ea + 1,
+        ),
+    }
+    for handler_ea, load_ea in extra_consumer_blocks:
+        native_blocks[int(handler_ea)] = NativeBlock(
+            int(handler_ea),
+            int(load_ea) + 1,
+        )
+    imported_entry_eas = {
+        bootstrap_handler_ea,
+        unmatched_handler_ea,
+        true_target_ea,
+        false_target_ea,
+        unrelated_true_target_ea,
+        unrelated_false_target_ea,
+        *(int(handler_ea) for handler_ea, _load_ea in extra_consumer_blocks),
+        direct_target_ea,
+    }
+    return SimpleNamespace(
+        choice=choice,
+        unrelated_choice=unrelated_choice,
+        bootstrap_route=bootstrap_route,
+        router_route=router_route,
+        bootstrap_handler_ea=bootstrap_handler_ea,
+        bootstrap_load_ea=bootstrap_load_ea,
+        direct_target_ea=direct_target_ea,
+        true_state=true_state,
+        false_state=false_state,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        predicate_ea=predicate_ea,
+        compare_ea=compare_ea,
+        prologue_entry_ea=prologue_entry_ea,
+        prologue_terminal_ea=prologue_terminal_ea,
+        predicate_register=predicate_register,
+        live_mba=live_mba,
+        live_native_eas=frozenset(
+            {
+                prologue_entry_ea,
+                prologue_write_ea,
+                prologue_terminal_ea,
+                router_ea,
+                source_ea,
+                compare_ea,
+                predicate_ea,
+                store_ea,
+            }
+        ),
+        native_cfg=NativeCfg(native_blocks),
+        closure=SimpleNamespace(
+            included_block_eas=(
+                *sorted(imported_entry_eas),
+            ),
+            proven_import_boundary_edges=(),
+        ),
+        transfers=(choice, unrelated_choice, bootstrap_route, router_route),
+    )
+
+
+def test_preopt_stack_carried_state_choice_materializes_live_prologue_predicate(
+) -> None:
+    fixture = _preopt_stack_carried_prologue_boundary_fixture()
+
+    ports = computed_goto_resolver._preopt_union_boundary_ports(
+        fixture.closure,
+        live_native_eas=fixture.live_native_eas,
+        transfers=fixture.transfers,
+        live_mba=fixture.live_mba,
+        native_cfg=fixture.native_cfg,
+        stack_carrier_consumer_load_eas_by_displacement={
+            0x44: (fixture.bootstrap_load_ea,),
+        },
+        native_stack_frame_offsets_by_ea={
+            fixture.choice.state_carrier_store_ea: (84,),
+        },
+    )
+
+    assert ports is not None
+    assert ports.direct == ()
+    assert len(ports.conditional) == 1
+    (conditional,) = ports.conditional
+    assert conditional.predicate_ea == fixture.predicate_ea
+    assert conditional.logical_source_anchor_ea == fixture.prologue_terminal_ea
+    assert conditional.taken_state == fixture.true_state
+    assert conditional.taken_target_ea == fixture.true_target_ea
+    assert conditional.fallthrough_state == fixture.false_state
+    assert conditional.fallthrough_target_ea == fixture.false_target_ea
+    assert conditional.resolver_kind == (
+        "resolver_proven_static_stack_carried_entry_choice"
+    )
+
+
+def test_preopt_stack_carried_state_choice_abstains_on_ambiguous_consumer_mapping(
+) -> None:
+    alternate_handler_ea = 0x2500
+    alternate_load_ea = 0x2504
+    fixture = _preopt_stack_carried_prologue_boundary_fixture(
+        extra_consumer_blocks=((alternate_handler_ea, alternate_load_ea),),
+    )
+    direct = computed_goto_resolver._preopt_live_residual_route_boundary_ports(
+        fixture.transfers,
+        live_mba=fixture.live_mba,
+        live_native_eas=fixture.live_native_eas,
+        imported_entry_eas=frozenset(fixture.closure.included_block_eas),
+        native_cfg=fixture.native_cfg,
+    )
+
+    ports = computed_goto_resolver._preopt_union_boundary_ports(
+        fixture.closure,
+        live_native_eas=fixture.live_native_eas,
+        transfers=fixture.transfers,
+        live_mba=fixture.live_mba,
+        native_cfg=fixture.native_cfg,
+        stack_carrier_consumer_load_eas_by_displacement={
+            0x44: (fixture.bootstrap_load_ea, alternate_load_ea),
+        },
+        native_stack_frame_offsets_by_ea={
+            fixture.choice.state_carrier_store_ea: (84,),
+        },
+    )
+
+    assert direct is not None
+    assert ports is not None
+    assert ports.direct == direct
+    assert ports.conditional == ()
+
+
+def test_preopt_stack_carried_state_choice_abstains_without_matching_bootstrap_route(
+) -> None:
+    unmatched_handler_ea = 0x2010
+    fixture = _preopt_stack_carried_prologue_boundary_fixture(
+        direct_target_ea=unmatched_handler_ea,
+    )
+    direct = computed_goto_resolver._preopt_live_residual_route_boundary_ports(
+        fixture.transfers,
+        live_mba=fixture.live_mba,
+        live_native_eas=fixture.live_native_eas,
+        imported_entry_eas=frozenset(fixture.closure.included_block_eas),
+        native_cfg=fixture.native_cfg,
+    )
+
+    ports = computed_goto_resolver._preopt_union_boundary_ports(
+        fixture.closure,
+        live_native_eas=fixture.live_native_eas,
+        transfers=fixture.transfers,
+        live_mba=fixture.live_mba,
+        native_cfg=fixture.native_cfg,
+        stack_carrier_consumer_load_eas_by_displacement={
+            0x44: (fixture.bootstrap_load_ea,),
+        },
+        native_stack_frame_offsets_by_ea={
+            fixture.choice.state_carrier_store_ea: (84,),
+        },
+    )
+
+    assert direct is not None
+    assert ports is not None
+    assert ports.direct == direct
+    assert ports.conditional == ()
+
+
+def test_preopt_union_boundary_ports_retain_unrelated_exact_residual_route_with_shared_state_target(
+) -> None:
+    predicate_ea = 0x5008
+    source_block_ea = 0x5000
+    unrelated_source_block_ea = 0x5100
+    unrelated_state_write_ea = 0x5104
+    unrelated_terminal_ea = 0x5108
+    router_ea = 0x5200
+    true_state = 0x09269BD2
+    false_state = 0x255387B6
+    true_target_ea = 0x6000
+    false_target_ea = 0x6100
+
+    def instruction(ea: int, next_instruction: object | None = None):
+        return SimpleNamespace(ea=ea, next=next_instruction)
+
+    unrelated_terminal = instruction(unrelated_terminal_ea)
+    unrelated_write = instruction(unrelated_state_write_ea, unrelated_terminal)
+    unrelated_entry = instruction(unrelated_source_block_ea, unrelated_write)
+    unrelated_block = SimpleNamespace(
+        serial=1,
+        start=unrelated_source_block_ea,
+        end=unrelated_terminal_ea + 1,
+        head=unrelated_entry,
+        tail=unrelated_terminal,
+        succset=(2,),
+    )
+    router_instruction = instruction(router_ea)
+    router_block = SimpleNamespace(
+        serial=2,
+        start=router_ea,
+        end=router_ea + 1,
+        head=router_instruction,
+        tail=router_instruction,
+        succset=(),
+    )
+    live_mba = SimpleNamespace(
+        qty=2,
+        get_mblock=lambda serial: (unrelated_block, router_block)[int(serial)],
+    )
+    native_cfg = NativeCfg(
+        {
+            unrelated_source_block_ea: NativeBlock(
+                unrelated_source_block_ea,
+                unrelated_terminal_ea + 1,
+                outgoing_edges=(
+                    NativeEdge(
+                        NativeEdgeKind.DIRECT_JUMP,
+                        router_ea,
+                        source_instruction_ea=unrelated_terminal_ea,
+                    ),
+                ),
+            ),
+        }
+    )
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x5004,
+            source_block_ea=source_block_ea,
+            materialized_anchor_eas=(),
+            target_eas=(true_target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=true_state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x500C,
+            source_block_ea=source_block_ea,
+            materialized_anchor_eas=(),
+            target_eas=(false_target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=false_state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=unrelated_state_write_ea,
+            source_block_ea=unrelated_source_block_ea,
+            materialized_anchor_eas=(),
+            target_eas=(true_target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=true_state,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=router_ea,
+            source_block_ea=router_ea,
+            materialized_anchor_eas=(),
+            target_eas=(false_target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=false_state,
+            resolver_kind="condition_chain_handler_evidence",
+            dispatcher_router_eas=(router_ea,),
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=predicate_ea,
+            source_block_ea=source_block_ea,
+            materialized_anchor_eas=(predicate_ea,),
+            target_eas=(true_target_ea, false_target_ea),
+            condition_code=5,
+            true_target_ea=true_target_ea,
+            false_target_ea=false_target_ea,
+            selector_state_var_reg=20,
+            predicate_size=4,
+            predicate_true_state=true_state,
+            predicate_false_state=false_state,
+            predicate_register=8,
+            predicate_true_is_taken=True,
+            resolver_kind="conditional_handler_bridge",
+        ),
+    )
+
+    ports = computed_goto_resolver._preopt_union_boundary_ports(
+        SimpleNamespace(
+            included_block_eas=(true_target_ea, false_target_ea),
+            proven_import_boundary_edges=(),
+        ),
+        live_native_eas=frozenset(
+            {
+                source_block_ea,
+                predicate_ea,
+                unrelated_source_block_ea,
+                unrelated_state_write_ea,
+                unrelated_terminal_ea,
+                router_ea,
+            }
+        ),
+        transfers=transfers,
+        live_mba=live_mba,
+        native_cfg=native_cfg,
+    )
+
+    assert ports is not None
+    assert len(ports.conditional) == 1
+    assert len(ports.direct) == 1
+    (direct,) = ports.direct
+    assert direct.source_block_ea == unrelated_source_block_ea
+    assert direct.source_instruction_ea == unrelated_terminal_ea
+    assert direct.old_successor_eas == (router_ea,)
+    assert direct.target_ea == true_target_ea
+    assert direct.state_register == 20
+    assert direct.state_constant == true_state
+
+
+def test_preopt_union_rebinds_pruned_state_write_through_live_block_range() -> None:
+    source_block_ea = 0x40CDB7
+    state_write_ea = 0x40CDBA
+    source_tail_ea = 0x40CDD0
+    router_ea = 0x40CDF8
+    target_ea = 0x40CEAB
+
+    live_head = SimpleNamespace(ea=0x40CDA0, next=None)
+    live_tail = SimpleNamespace(ea=source_tail_ea, next=None)
+    live_head.next = live_tail
+    folded_source = SimpleNamespace(
+        serial=0,
+        start=0x40CDA0,
+        end=0x40CDD2,
+        head=live_head,
+        tail=live_tail,
+        succset=(1,),
+    )
+    external_target = SimpleNamespace(
+        serial=1,
+        start=target_ea,
+        end=target_ea,
+        head=None,
+        tail=None,
+        succset=(),
+    )
+    blocks = (folded_source, external_target)
+    live_mba = SimpleNamespace(
+        qty=len(blocks),
+        get_mblock=lambda serial: blocks[int(serial)],
+    )
+    closure = SimpleNamespace(
+        included_block_eas=(target_ea,),
+        proven_import_boundary_edges=(),
+    )
+    native_cfg = NativeCfg(
+        {
+            source_block_ea: NativeBlock(
+                source_block_ea,
+                0x40CDD2,
+                outgoing_edges=(
+                    NativeEdge(
+                        NativeEdgeKind.DIRECT_JUMP,
+                        router_ea,
+                        source_instruction_ea=source_tail_ea,
+                    ),
+                ),
+            ),
+        }
+    )
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=state_write_ea,
+            source_block_ea=source_block_ea,
+            materialized_anchor_eas=(),
+            target_eas=(target_ea,),
+            selector_state_var_reg=16,
+            selector_state_constant=0x255387B6,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=router_ea,
+            source_block_ea=router_ea,
+            materialized_anchor_eas=(),
+            target_eas=(target_ea,),
+            selector_state_var_reg=16,
+            selector_state_constant=0x255387B6,
+            resolver_kind="condition_chain_handler_evidence",
+            dispatcher_router_eas=(router_ea,),
+        ),
+    )
+
+    ports = computed_goto_resolver._preopt_union_boundary_ports(
+        closure,
+        live_native_eas=frozenset({0x40CDA0, source_tail_ea}),
+        transfers=transfers,
+        live_mba=live_mba,
+        native_cfg=native_cfg,
+    )
+
+    assert ports is not None
+    assert len(ports.direct) == 1
+    (port,) = ports.direct
+    assert port.source_block_ea == source_block_ea
+    assert port.source_instruction_ea == source_tail_ea
+    assert port.old_successor_eas == (router_ea,)
+    assert port.target_ea == target_ea
+
+
+def test_prepare_preopt_union_closure_defers_raw_call_analysis_to_live_mba(
+    monkeypatch,
+) -> None:
+    import ida_hexrays
+
+    harness = _install_preopt_union_success_harness(
+        monkeypatch,
+        include_call=True,
+    )
+
+    result = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+
+    assert result.prepared
+    assert len(harness["generated"]) == 1
+    assert harness["generated"][0][2] == int(ida_hexrays.MMAT_PREOPTIMIZED)
+
+
+def test_prepare_preopt_union_closure_abstains_without_resolver_evidence(
+    monkeypatch,
+) -> None:
+    function_ea = 0x1000
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={},
+        reachable_eas=(function_ea,),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    _session, state = _resolver_session(resolution)
+    state.materialized = True
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_recover_static_handler_entry_route_transfers",
+        lambda _transfers: (),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: (),
+    )
+    captures: list[object] = []
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "capture_preopt_union_snippet_template",
+        lambda *_args, **_kwargs: captures.append(object()),
+        raising=False,
+    )
+
+    result = computed_goto_resolver.prepare_preopt_union_closure(
+        state,
+        live_mba=object(),
+    )
+
+    assert not result.prepared
+    assert result.primary_seed_ea is None
+    assert captures == []
+    assert computed_goto_resolver.get_prepared_preopt_union_closure(state) is None
+
+
+def test_prepare_preopt_union_closure_abstains_on_unknown_indirect(
+    monkeypatch,
+) -> None:
+    harness = _install_preopt_union_success_harness(
+        monkeypatch,
+        closure_edges=(
+            NativeEdge(
+                NativeEdgeKind.INDIRECT,
+                resolver_proven=False,
+                provenance="unknown_indirect",
+                source_instruction_ea=0x200C,
+            ),
+        ),
+    )
+
+    result = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+
+    assert not result.prepared
+    assert harness["generated"] == []
+    assert harness["captures"] == []
+    assert (
+        computed_goto_resolver.get_prepared_preopt_union_closure(harness["state"])
+        is None
+    )
+
+
+def test_prepare_preopt_union_closure_does_not_publish_recovered_routes_on_abstention(
+    monkeypatch,
+) -> None:
+    harness = _install_preopt_union_success_harness(
+        monkeypatch,
+        closure_edges=(
+            NativeEdge(
+                NativeEdgeKind.INDIRECT,
+                resolver_proven=False,
+                provenance="unknown_indirect",
+                source_instruction_ea=0x200C,
+            ),
+        ),
+    )
+    recovered = MaterializedIndirectTransfer(
+        source_jmp_ea=0x1810,
+        source_block_ea=0x1810,
+        materialized_anchor_eas=(),
+        target_eas=(harness["seed_ea"],),
+        resolver_kind="static_handler_entry_route",
+    )
+    transfers_before = harness["state"].materialized_transfers
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_recover_static_handler_entry_route_transfers",
+        lambda _transfers: (recovered,),
+    )
+
+    result = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+
+    assert not result.prepared
+    assert harness["state"].materialized_transfers == transfers_before
+
+
+def test_prepare_preopt_union_closure_abstains_on_incomplete_conditional_boundary(
+    monkeypatch,
+) -> None:
+    harness = _install_preopt_union_success_harness(
+        monkeypatch,
+        closure_edges=(NativeEdge(NativeEdgeKind.CONDITIONAL_TRUE, 0x1100),),
+    )
+
+    result = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+
+    assert not result.prepared
+    assert harness["generated"] == []
+    assert harness["captures"] == []
+
+
+def test_prepare_preopt_union_closure_abstains_on_conflicting_cut_owners(
+    monkeypatch,
+) -> None:
+    harness = _install_preopt_union_success_harness(
+        monkeypatch,
+        live_eas=frozenset({0x1100, 0x1200}),
+        closure_edges=(
+            NativeEdge(
+                NativeEdgeKind.INDIRECT,
+                0x1100,
+                resolver_proven=True,
+                provenance="first_cut",
+                source_instruction_ea=0x200C,
+            ),
+            NativeEdge(
+                NativeEdgeKind.INDIRECT,
+                0x1200,
+                resolver_proven=True,
+                provenance="second_cut",
+                source_instruction_ea=0x200C,
+            ),
+        ),
+    )
+
+    result = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+
+    assert not result.prepared
+    assert harness["generated"] == []
+    assert harness["captures"] == []
+
+
+def test_prepare_preopt_union_closure_does_not_publish_after_capture_failure(
+    monkeypatch,
+) -> None:
+    harness = _install_preopt_union_success_harness(
+        monkeypatch,
+        capture_succeeds=False,
+    )
+
+    result = computed_goto_resolver.prepare_preopt_union_closure(
+        harness["state"],
+        live_mba=harness["live_mba"],
+    )
+
+    assert not result.prepared
+    assert len(harness["captures"]) == 1
+    assert (
+        computed_goto_resolver.get_prepared_preopt_union_closure(harness["state"])
+        is None
+    )
+
+
+def test_prepare_detached_snippets_union_success_uses_session_path(
+    monkeypatch,
+) -> None:
+    function_ea = 0x1000
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={},
+        reachable_eas=(function_ea,),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    _session, state = _resolver_session(resolution)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_preopt_union_closure",
+        lambda _state, *, live_mba: SimpleNamespace(
+            prepared=True,
+            published=True,
+        ),
+        raising=False,
+    )
+
+    assert (
+        computed_goto_resolver.prepare_detached_handler_snippets(
+            state,
+            live_mba=object(),
+        )
+        == 1
+    )
+
+
+def test_prepare_detached_snippets_cached_union_stops_decompile_rounds(
+    monkeypatch,
+) -> None:
+    function_ea = 0x1000
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={},
+        reachable_eas=(function_ea,),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    _session, state = _resolver_session(resolution)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_preopt_union_closure",
+        lambda _state, *, live_mba: SimpleNamespace(
+            prepared=True,
+            published=False,
+        ),
+        raising=False,
+    )
+
+    assert (
+        computed_goto_resolver.prepare_detached_handler_snippets(
+            state,
+            live_mba=object(),
+        )
+        == 0
+    )
+
+
+def test_prepare_detached_snippets_consumes_pending_preopt_reimport(
+    monkeypatch,
+) -> None:
+    function_ea = 0x1000
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={},
+        reachable_eas=(function_ea,),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    _session, state = _resolver_session(resolution)
+    state.pending_preopt_reimport = True
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_preopt_union_closure",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a rebound template needs only a new top-level decompile"
+        ),
+    )
+
+    assert (
+        computed_goto_resolver.prepare_detached_handler_snippets(
+            state,
+            live_mba=object(),
+        )
+        == 1
+    )
+    assert not state.pending_preopt_reimport
+
+
+def test_staged_delivery_prepares_union_from_prepatch_live_mba_before_retry(
+    monkeypatch,
+) -> None:
+    function_ea = 0x1000
+    live_mba = object()
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={},
+        reachable_eas=(function_ea,),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    _session, state = _resolver_session(resolution)
+    state.begin_materialization(resolution)
+    state.pending_prepatch_materialization = resolution
+    prepared_from: list[object] = []
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_static_prepatch_union_source_transfers",
+        lambda _resolution: (),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_capture_prepatch_preopt_union_source",
+        lambda _state, _resolution, _transfers: True,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "materialize_computed_gotos",
+        lambda _resolution, *, state: 1,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_preopt_union_closure",
+        lambda _state, *, live_mba: (
+            prepared_from.append(live_mba)
+            or SimpleNamespace(prepared=True, published=True)
+        ),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver.ida_hexrays,
+        "decompile",
+        lambda _function_ea: pytest.fail("staged decompile must not run"),
+    )
+
+    assert (
+        computed_goto_resolver.prepare_detached_handler_snippets(
+            state,
+            live_mba=live_mba,
+        )
+        == 1
+    )
+    assert prepared_from == [live_mba]
+
+
+@pytest.mark.parametrize("union_behavior", ("abstain", "raise"))
+def test_prepare_detached_snippets_union_failure_has_no_fallback(
+    monkeypatch,
+    union_behavior: str,
+) -> None:
+    function_ea = 0x1000
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x1010,
+        source_block_ea=0x1010,
+        materialized_anchor_eas=(),
+        target_eas=(0x1020,),
+        resolver_kind="condition_chain_handler_evidence",
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={},
+        reachable_eas=(function_ea,),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    _session, state = _resolver_session(resolution)
+    state.materialized_transfers = (transfer,)
+    events: list[object] = []
+
+    def prepare_union(_state: object, *, live_mba: object):
+        del live_mba
+        events.append("union_abstain")
+        if union_behavior == "raise":
+            raise RuntimeError("synthetic union preparation failure")
+        return SimpleNamespace(prepared=False, published=False)
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_preopt_union_closure",
+        prepare_union,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_recover_static_handler_entry_route_transfers",
+        lambda _transfers: (),
+    )
+    assert (
+        computed_goto_resolver.prepare_detached_handler_snippets(
+            state,
+            live_mba=object(),
+        )
+        == 0
+    )
+    assert events == ["union_abstain"]

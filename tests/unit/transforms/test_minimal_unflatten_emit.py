@@ -42,6 +42,9 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 )
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
+from d810.analyses.control_flow.state_machine_analysis import (
+    run_snapshot_constant_fixpoint,
+)
 from d810.analyses.value_flow.state_write import (
     MicrocodeEvalSeams,
     forward_eval_insn as _portable_forward_eval_insn,
@@ -72,15 +75,20 @@ from d810.transforms.minimal_unflatten_emit import (
     _applied_conditional_boundary_edge_keys,
     _applied_direct_boundary_edge_keys,
     _exact_live_state_edge_keys,
+    _preserve_deferred_materialized_handler_exit_paths,
     _recover_initial_state,
     _prove_bound_bootstrap_entry_routes,
+    _resolver_proven_dynamic_entry_edges,
     build_conditional_arm_redirects,
     build_exact_terminal_state_route_redirects,
     build_loop_guard_exit_redirects,
     build_materialized_conditional_handler_bridges,
+    build_materialized_state_entry_bridges,
+    build_materialized_state_route_redirects,
     build_resolver_proven_indirect_call_neutralizations,
     build_stack_carried_state_selector_lowerings,
     _normalize_degenerate_branch_redirects,
+    _rebind_materialized_state_route_sources,
     build_source_keyed_handler_redirects,
     build_state_write_redirects,
     emit_minimal_unflatten,
@@ -420,6 +428,62 @@ def test_emits_back_edge_redirect_and_entry_bridge(_seam) -> None:
     assert (0, 2, 10) in gotos
 
 
+def test_materialized_state_route_rebinds_to_exact_imported_handler_owner() -> None:
+    """Handler-exit replay follows the exact PREOPT handler replacement."""
+    native_write_ea = 0x40E207
+    native_source = 10
+    imported_source = 30
+    cleanup_handler = 40
+    owner_state = 0xD919DEB2
+    selected_state = 0x85AE90D3
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (), ()),
+            native_source: _b(
+                native_source,
+                (20, 21),
+                (),
+                (_mov_state(native_write_ea, selected_state),),
+            ),
+            imported_source: _b(
+                imported_source,
+                (20, 21),
+                (),
+                (_mov_state(0xF1C01448, selected_state),),
+            ),
+            20: _b(20, (), (native_source, imported_source)),
+            21: _b(21, (), (native_source, imported_source)),
+            cleanup_handler: _b(cleanup_handler, (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+    route = MaterializedStateRoute(
+        source_block_serial=native_source,
+        state_constant=selected_state,
+        target_handler_serial=cleanup_handler,
+        source_handler_serial=native_source,
+        handler_exit_proven=True,
+        proof_kind="handler_replay",
+    )
+
+    assert _rebind_materialized_state_route_sources(
+        fg,
+        (route,),
+        legacy_handler_by_state={owner_state: native_source},
+        materialized_handler_by_state={owner_state: imported_source},
+        imported_native_eas_by_serial={
+            imported_source: frozenset({native_write_ea}),
+        },
+    ) == (
+        replace(
+            route,
+            source_block_serial=imported_source,
+            source_handler_serial=imported_source,
+        ),
+    )
+
+
 def test_resolver_proof_routes_unmatched_folded_state_to_live_handler(_seam) -> None:
     # The state value is not an equality-router key, so legacy recovery marks
     # this concrete back-edge terminal. A materialized-transfer record may
@@ -593,6 +657,43 @@ def test_emitter_scans_imported_materialized_handler_root(_seam) -> None:
         old_target=31,
         new_target=40,
     ) in plan.as_graph_modifications()
+
+
+def test_emitter_abstains_atomically_on_incomplete_materialized_handler_map(
+    monkeypatch,
+) -> None:
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10,), (0, 10)),
+            10: _b(10, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    def fail_if_recovery_runs(*_args, **_kwargs):
+        raise AssertionError("incomplete exact map must abstain before recovery")
+
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    monkeypatch.setattr(
+        emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        fail_if_recovery_runs,
+    )
+    plan = emit_minimal_unflatten(
+        fg,
+        _disp({0x10: 10}, exit_block=99),
+        state_var_stkoff=None,
+        state_var_reg=20,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        materialized_computed_goto_profile=True,
+        missing_materialized_handler_targets=((0x20, 0x402000),),
+    )
+
+    assert plan.as_graph_modifications() == []
 
 
 @pytest.mark.parametrize(
@@ -2285,6 +2386,457 @@ def test_exact_terminal_state_writer_routes_to_canonical_stop(_seam) -> None:
     ) == [RedirectGoto(from_serial=261, old_target=262, new_target=313)]
 
 
+def test_materialized_state_route_rebinds_external_handler_placeholder(
+    _seam,
+) -> None:
+    state = 0x12345678
+    state_reg = 20
+    target_ea = 0x401800
+    external = replace(
+        _b(20, (), (10,)),
+        start_ea=target_ea,
+        kind=BlockKind.EXTERNAL,
+    )
+    fg = FlowGraph(
+        blocks={
+            10: _b(
+                10,
+                (20,),
+                (),
+                (_mov_reg(0x401700, state, state_reg),),
+            ),
+            20: external,
+            30: _b(30, (), ()),
+        },
+        entry_serial=10,
+        func_ea=0x401000,
+    )
+
+    assert build_materialized_state_route_redirects(
+        fg,
+        (MaterializedStateRoute(10, state, 30),),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset(),
+        authoritative_handler_serials=frozenset({30}),
+        handler_entry_eas_by_serial={30: target_ea},
+    ) == [RedirectGoto(from_serial=10, old_target=20, new_target=30)]
+
+
+def test_materialized_state_route_placeholder_rebind_abstains_without_local_write(
+    _seam,
+) -> None:
+    state = 0x12345678
+    state_reg = 20
+    target_ea = 0x401800
+    fg = FlowGraph(
+        blocks={
+            10: _b(10, (20,), ()),
+            20: replace(
+                _b(20, (), (10,)),
+                start_ea=target_ea,
+                kind=BlockKind.EXTERNAL,
+            ),
+            30: _b(30, (), ()),
+        },
+        entry_serial=10,
+        func_ea=0x401000,
+    )
+
+    assert build_materialized_state_route_redirects(
+        fg,
+        (MaterializedStateRoute(10, state, 30),),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset(),
+        authoritative_handler_serials=frozenset({30}),
+        handler_entry_eas_by_serial={30: target_ea},
+    ) == []
+
+
+def test_materialized_state_route_dispatcher_rebind_requires_handler_exit_proof(
+    _seam,
+) -> None:
+    state = 0x12345678
+    state_reg = 20
+    fg = FlowGraph(
+        blocks={
+            10: _b(
+                10,
+                (20,),
+                (),
+                (_mov_reg(0x401700, state, state_reg),),
+            ),
+            20: _b(20, (), (10,)),
+            30: _b(30, (), ()),
+        },
+        entry_serial=10,
+        func_ea=0x401000,
+    )
+
+    assert build_materialized_state_route_redirects(
+        fg,
+        (MaterializedStateRoute(10, state, 30),),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({20}),
+        authoritative_handler_serials=frozenset({30}),
+    ) == []
+    assert build_materialized_state_route_redirects(
+        fg,
+        (
+            MaterializedStateRoute(
+                10,
+                state,
+                30,
+                source_handler_serial=10,
+                handler_exit_proven=True,
+            ),
+        ),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({20}),
+        authoritative_handler_serials=frozenset({30}),
+    ) == [RedirectGoto(from_serial=10, old_target=20, new_target=30)]
+
+
+def test_materialized_handler_exit_keeps_replayed_semantic_body_ownership(
+    _seam,
+) -> None:
+    state = 0x4D34CF70
+    state_reg = 20
+    imported_clone = 30
+    live_handler = 31
+    fg = FlowGraph(
+        blocks={
+            10: _b(
+                10,
+                (20,),
+                (),
+                (_mov_reg(0x401700, state, state_reg),),
+            ),
+            20: _b(20, (), (10,)),
+            imported_clone: _b(imported_clone, (), ()),
+            live_handler: _b(live_handler, (), ()),
+        },
+        entry_serial=10,
+        func_ea=0x401000,
+    )
+
+    assert build_materialized_state_route_redirects(
+        fg,
+        (
+            MaterializedStateRoute(
+                10,
+                state,
+                imported_clone,
+                source_handler_serial=10,
+                handler_exit_proven=True,
+            ),
+        ),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({20}),
+        authoritative_handler_serials=frozenset(
+            {imported_clone, live_handler}
+        ),
+    ) == [
+        RedirectGoto(
+            from_serial=10,
+            old_target=20,
+            new_target=imported_clone,
+        )
+    ]
+
+
+def test_materialized_handler_local_next_state_proves_imported_exit(
+    _seam,
+) -> None:
+    entry_state = 0x4A7ECCB8
+    next_state = 0xDC71BBC5
+    state_reg = 20
+    handler = 10
+    router = 20
+    next_handler = 30
+    fg = FlowGraph(
+        blocks={
+            handler: _b(
+                handler,
+                (router,),
+                (),
+                (_mov_reg(0x40EF7D, next_state, state_reg),),
+            ),
+            router: _b(router, (), (handler,)),
+            next_handler: _b(next_handler, (), ()),
+        },
+        entry_serial=handler,
+        func_ea=0x40D200,
+    )
+
+    assert build_materialized_state_route_redirects(
+        fg,
+        (
+            MaterializedStateRoute(99, entry_state, handler),
+            MaterializedStateRoute(handler, next_state, next_handler),
+            MaterializedStateRoute(
+                98,
+                next_state,
+                next_handler,
+                source_handler_serial=handler,
+                handler_exit_proven=True,
+            ),
+        ),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({router}),
+        authoritative_handler_serials=frozenset({handler, next_handler}),
+    ) == [
+        RedirectGoto(
+            from_serial=handler,
+            old_target=router,
+            new_target=next_handler,
+        )
+    ]
+
+
+def test_materialized_handler_local_entry_state_does_not_prove_exit(
+    _seam,
+) -> None:
+    entry_state = 0x4A7ECCB8
+    state_reg = 20
+    handler = 10
+    router = 20
+    fg = FlowGraph(
+        blocks={
+            handler: _b(
+                handler,
+                (router,),
+                (),
+                (_mov_reg(0x40EF7D, entry_state, state_reg),),
+            ),
+            router: _b(router, (), (handler,)),
+        },
+        entry_serial=handler,
+        func_ea=0x40D200,
+    )
+
+    assert build_materialized_state_route_redirects(
+        fg,
+        (
+            MaterializedStateRoute(99, entry_state, handler),
+            MaterializedStateRoute(handler, entry_state, handler),
+        ),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({router}),
+        authoritative_handler_serials=frozenset({handler}),
+    ) == []
+
+
+def test_materialized_handler_ambiguous_replay_does_not_prove_clone_exit(
+    _seam,
+) -> None:
+    next_state = 0xDC71BBC5
+    state_reg = 20
+    handler = 10
+    router = 20
+    first_target = 30
+    second_target = 31
+    fg = FlowGraph(
+        blocks={
+            handler: _b(
+                handler,
+                (router,),
+                (),
+                (_mov_reg(0x40EF7D, next_state, state_reg),),
+            ),
+            router: _b(router, (), (handler,)),
+            first_target: _b(first_target, (), ()),
+            second_target: _b(second_target, (), ()),
+        },
+        entry_serial=handler,
+        func_ea=0x40D200,
+    )
+
+    assert build_materialized_state_route_redirects(
+        fg,
+        (
+            MaterializedStateRoute(handler, next_state, first_target),
+            MaterializedStateRoute(
+                98,
+                next_state,
+                first_target,
+                source_handler_serial=handler,
+                handler_exit_proven=True,
+            ),
+            MaterializedStateRoute(
+                99,
+                next_state,
+                second_target,
+                source_handler_serial=handler,
+                handler_exit_proven=True,
+            ),
+        ),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({router}),
+        authoritative_handler_serials=frozenset(
+            {handler, first_target, second_target}
+        ),
+    ) == []
+
+
+def test_materialized_handler_exit_collapses_two_way_dispatcher_port(
+    _seam,
+) -> None:
+    state = 0x6EA4D36E
+    state_reg = 20
+    route = MaterializedStateRoute(
+        10,
+        state,
+        30,
+        source_handler_serial=5,
+        handler_exit_proven=True,
+    )
+    fg = FlowGraph(
+        blocks={
+            10: _b(10, (20, 21), (5,)),
+            20: _b(20, (), (10,)),
+            21: _b(21, (), (10,)),
+            30: _b(30, (), ()),
+        },
+        entry_serial=10,
+        func_ea=0x40D200,
+    )
+
+    assert build_materialized_state_route_redirects(
+        fg,
+        (route, route),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({20, 21}),
+        authoritative_handler_serials=frozenset({30}),
+    ) == [ConvertToGoto(block_serial=10, goto_target=30)]
+
+
+def test_materialized_handler_exit_two_way_port_abstains_for_semantic_arm(
+    _seam,
+) -> None:
+    state_reg = 20
+    fg = FlowGraph(
+        blocks={
+            10: _b(10, (20, 22), (5,)),
+            20: _b(20, (), (10,)),
+            22: _b(22, (), (10,)),
+            30: _b(30, (), ()),
+        },
+        entry_serial=10,
+        func_ea=0x40D200,
+    )
+
+    assert build_materialized_state_route_redirects(
+        fg,
+        (
+            MaterializedStateRoute(
+                10,
+                0x6EA4D36E,
+                30,
+                source_handler_serial=5,
+                handler_exit_proven=True,
+            ),
+        ),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({20}),
+        authoritative_handler_serials=frozenset({30}),
+    ) == []
+
+
+def test_materialized_handler_exit_two_way_port_abstains_on_conflicting_route(
+    _seam,
+) -> None:
+    state_reg = 20
+    fg = FlowGraph(
+        blocks={
+            10: _b(10, (20, 21), (5,)),
+            20: _b(20, (), (10,)),
+            21: _b(21, (), (10,)),
+            30: _b(30, (), ()),
+            31: _b(31, (), ()),
+        },
+        entry_serial=10,
+        func_ea=0x40D200,
+    )
+
+    assert build_materialized_state_route_redirects(
+        fg,
+        (
+            MaterializedStateRoute(
+                10,
+                0x6EA4D36E,
+                30,
+                source_handler_serial=5,
+                handler_exit_proven=True,
+            ),
+            MaterializedStateRoute(
+                10,
+                0x6955B42A,
+                31,
+                source_handler_serial=5,
+                handler_exit_proven=True,
+            ),
+        ),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({20, 21}),
+        authoritative_handler_serials=frozenset({30, 31}),
+    ) == []
+
+
+def test_materialized_handler_exit_rebinds_after_router_classification_is_lost(
+    _seam,
+) -> None:
+    state = 0xB8D2E088
+    state_reg = 20
+    fg = FlowGraph(
+        blocks={
+            10: _b(10, (11,), ()),
+            11: _b(
+                11,
+                (20,),
+                (10,),
+                (),
+            ),
+            20: _b(20, (), (11,)),
+            30: _b(30, (), ()),
+        },
+        entry_serial=10,
+        func_ea=0x40D200,
+    )
+    route = MaterializedStateRoute(
+        11,
+        state,
+        30,
+        source_handler_serial=10,
+        handler_exit_proven=True,
+    )
+
+    assert build_materialized_state_route_redirects(
+        fg,
+        (route,),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset(),
+        authoritative_handler_serials=frozenset({30}),
+    ) == [RedirectGoto(from_serial=11, old_target=20, new_target=30)]
+
+
+def test_deferred_materialized_handler_exit_preserves_parent_path() -> None:
+    route = MaterializedStateRoute(
+        11,
+        0xB8D2E088,
+        30,
+        source_handler_serial=10,
+        handler_exit_proven=True,
+    )
+
+    assert _preserve_deferred_materialized_handler_exit_paths(
+        [
+            RedirectGoto(from_serial=10, old_target=11, new_target=10),
+            RedirectGoto(from_serial=11, old_target=20, new_target=30),
+        ],
+        (route,),
+    ) == [RedirectGoto(from_serial=11, old_target=20, new_target=30)]
+
+
 def test_source_keyed_shared_terminal_redirects_each_owned_predecessor(
     _seam,
 ) -> None:
@@ -2640,6 +3192,216 @@ def test_applied_direct_boundary_prefers_attached_target_anchor_over_native_clon
             ),
         ),
     ) == {(10, 21)}
+
+
+def test_resolver_proven_router_port_is_a_dynamic_entry_bridge() -> None:
+    endpoint_anchor_ea = 0x40D313
+    router_ea = 0x40EAA7
+    router_anchor_ea = 0xF1C01FD4
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (10,), ()),
+            10: _b(
+                10,
+                (20,),
+                (0,),
+                (InsnSnapshot(opcode=4, ea=endpoint_anchor_ea, operands=()),),
+            ),
+            20: _b(
+                20,
+                (30, 40),
+                (10,),
+                (InsnSnapshot(opcode=4, ea=router_anchor_ea, operands=()),),
+            ),
+            30: _b(30, (), (20,)),
+            40: _b(40, (), (20,)),
+        },
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+    port = DetachedSnippetDirectBoundaryPort(
+        source_block_ea=endpoint_anchor_ea,
+        source_instruction_ea=0x40D348,
+        endpoint_block_ea=endpoint_anchor_ea,
+        old_successor_eas=(0x40D370,),
+        target_ea=router_ea,
+        state_register=28,
+        state_constant=0x699BC698,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        delivery_mode="redirect_edge",
+        resolver_kind="residual_state_route_evidence",
+    )
+    evidence = AppliedDetachedSnippetDirectBoundaryPort(
+        port=port,
+        endpoint_anchor_eas=(endpoint_anchor_ea,),
+        target_anchor_eas=(router_anchor_ea,),
+    )
+    router_transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40EAA5,
+        source_block_ea=0x40EA9B,
+        materialized_anchor_eas=(),
+        target_eas=(0x40D370,),
+        dispatcher_router_eas=(router_ea, 0x40D370),
+    )
+
+    assert _resolver_proven_dynamic_entry_edges(
+        fg,
+        (evidence,),
+        (router_transfer,),
+    ) == frozenset({(10, 20)})
+
+
+def test_imported_router_origin_is_a_dynamic_entry_bridge() -> None:
+    router_ea = 0x40EAA7
+    router_anchor_ea = 0xF1C01FD4
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (10, 50), ()),
+            10: _b(
+                10,
+                (20,),
+                (0,),
+                (InsnSnapshot(opcode=4, ea=0x40D313, operands=()),),
+            ),
+            20: _b(
+                20,
+                (30, 40),
+                (10,),
+                (InsnSnapshot(opcode=4, ea=router_anchor_ea, operands=()),),
+            ),
+            30: _b(30, (), (20,)),
+            40: _b(40, (), (20,)),
+            50: BlockSnapshot(
+                serial=50,
+                block_type=0,
+                succs=(60,),
+                preds=(0,),
+                flags=0,
+                start_ea=0x40D200,
+                insn_snapshots=(),
+            ),
+            60: BlockSnapshot(
+                serial=60,
+                block_type=0,
+                succs=(),
+                preds=(50,),
+                flags=0,
+                start_ea=0x40D200,
+                insn_snapshots=(
+                    InsnSnapshot(opcode=4, ea=0xF1C01000, operands=()),
+                ),
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+    router_transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40EAA5,
+        source_block_ea=0x40EA9B,
+        materialized_anchor_eas=(),
+        target_eas=(0x40D370,),
+        dispatcher_router_eas=(router_ea, 0x40D370, 0x40DBEA),
+    )
+
+    assert _resolver_proven_dynamic_entry_edges(
+        fg,
+        (),
+        (router_transfer,),
+        imported_native_eas_by_serial={
+            20: frozenset({router_ea, 0x40EABA}),
+            60: frozenset({0x40DBEA}),
+        },
+    ) == frozenset({(10, 20)})
+
+
+def test_dynamic_entry_bridge_suppresses_scalar_entry_shortcut() -> None:
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 20), (0, 10)),
+            10: _b(10, (2,), (2,), (_mov_state(0x1010, 0x20),)),
+            20: _b(20, (), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dispatcher = _disp({0x10: 10, 0x20: 20}, exit_block=99)
+    transitions = (StateWriteTransition(10, 0x20, 20, False, None),)
+
+    mods = build_state_write_redirects(
+        fg,
+        dispatcher,
+        transitions,
+        dispatcher_entry_serial=2,
+        pre_header_serial=0,
+        initial_state=0x10,
+        dynamic_entry_bridge_edges=frozenset({(0, 2)}),
+    )
+
+    redirects = {
+        (mod.from_serial, mod.old_target, mod.new_target)
+        for mod in mods
+        if isinstance(mod, RedirectGoto)
+    }
+    assert (10, 2, 20) in redirects
+    assert not any(source == 0 for source, _old, _new in redirects)
+
+
+def test_dynamic_entry_bridge_suppresses_materialized_scalar_route(_seam) -> None:
+    state_reg = 28
+    transient_state = 0x699BC698
+    router_ea = 0x40EAA7
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(
+                1,
+                (2,),
+                (0,),
+                (_mov_reg(0x1010, transient_state, state_reg),),
+            ),
+            2: _b(2, (10,), (1, 10)),
+            10: _b(10, (2,), (2,)),
+            99: _b(99, (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dispatcher = _disp({transient_state: 10}, exit_block=99)
+    router_transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40EAA5,
+        source_block_ea=0x40EA9B,
+        materialized_anchor_eas=(),
+        target_eas=(0x1500,),
+        dispatcher_router_eas=(router_ea,),
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        dispatcher,
+        state_var_stkoff=None,
+        state_var_reg=state_reg,
+        dispatcher_entry_serial=2,
+        initial_state=transient_state,
+        materialized_computed_goto_profile=True,
+        materialized_indirect_transfers=(router_transfer,),
+        materialized_state_routes=(
+            MaterializedStateRoute(1, transient_state, 10),
+        ),
+        condition_chain_handlers=frozenset({10}),
+        authoritative_handler_serials=frozenset({10}),
+        dispatcher_region_serials=frozenset({2}),
+        imported_native_eas_by_serial={2: frozenset({router_ea})},
+    )
+
+    assert not any(
+        isinstance(modification, (RedirectGoto, RedirectBranch))
+        and int(modification.from_serial) == 1
+        and int(modification.old_target) == 2
+        for modification in plan.as_graph_modifications()
+    )
 
 
 def test_applied_direct_boundary_tracks_folded_live_endpoint_into_predecessor() -> None:
@@ -3094,7 +3856,10 @@ def test_materialized_conditional_handler_bridge_preserves_live_opaque_predicate
         false_target_ea=0x40AAA2,
         resolver_kind="conditional_handler_bridge",
         predicate_register=None,
-        predicate_size=4,
+        # A live opaque predicate (including a memory comparison) does not
+        # need a width because d810 preserves its existing microcode instead
+        # of synthesizing a replacement operand.
+        predicate_size=None,
         predicate_compare_constant=0x62,
         predicate_predecessor_ea=None,
         predicate_true_state=0xCCEC5DE0,
@@ -3137,6 +3902,192 @@ def test_materialized_conditional_handler_bridge_preserves_live_opaque_predicate
             reason="resolver_proven_live_conditional_handler_bridge",
         ),
     ]
+    assert build_materialized_conditional_handler_bridges(
+        fg,
+        (replace(transfer, condition_code=3),),
+        materialized_state_routes=state_routes,
+        handler_entry_eas_by_serial={20: 0x40C16A, 30: 0x40AAA2},
+    ) == [
+        LowerConditionalStateTransition(
+            source_serial=10,
+            old_dispatcher_serial=12,
+            rewrite_from_ea=predicate_ea,
+            condition_operand=PreserveLivePredicateCondition(
+                predicate_ea=predicate_ea,
+                true_is_taken=True,
+            ),
+            false_target_serial=30,
+            true_target_serial=20,
+            proof_id=(
+                "conditional_handler_bridge:"
+                f"source_ea=0x{fg.get_block(10).start_ea:X}:"
+                f"predicate_ea=0x{predicate_ea:X}"
+            ),
+            reason="resolver_proven_live_conditional_handler_bridge",
+        ),
+    ]
+
+    # PREOPT replay can publish the same live predicate twice: once under its
+    # stable native EA and once under the imported synthetic instruction EA.
+    # Equivalent source, polarity, and arm targets are corroborating evidence,
+    # not an ambiguity that should erase the conditional.
+    imported_predicate_ea = 0xF1C01008
+    imported_predicate = replace(predicate, ea=imported_predicate_ea)
+    imported_blocks = {
+        serial: block
+        for serial, block in fg.blocks.items()
+        if serial not in {41, 42, 43}
+    }
+    imported_blocks[10] = replace(
+        imported_blocks[10],
+        insn_snapshots=(imported_predicate,),
+    )
+    imported_graph = FlowGraph(
+        blocks=imported_blocks,
+        entry_serial=fg.entry_serial,
+        func_ea=fg.func_ea,
+    )
+    synthetic_transfer = replace(
+        transfer,
+        source_jmp_ea=imported_predicate_ea,
+        materialized_anchor_eas=(imported_predicate_ea,),
+    )
+    assert build_materialized_conditional_handler_bridges(
+        imported_graph,
+        (transfer, synthetic_transfer),
+        materialized_state_routes=state_routes,
+        handler_entry_eas_by_serial={20: 0x40C16A, 30: 0x40AAA2},
+        imported_native_eas_by_serial={10: frozenset({predicate_ea})},
+    ) == [
+        LowerConditionalStateTransition(
+            source_serial=10,
+            old_dispatcher_serial=12,
+            rewrite_from_ea=imported_predicate_ea,
+            condition_operand=PreserveLivePredicateCondition(
+                predicate_ea=imported_predicate_ea,
+                true_is_taken=True,
+            ),
+            false_target_serial=30,
+            true_target_serial=20,
+            proof_id=(
+                "conditional_handler_bridge:"
+                f"source_ea=0x{fg.get_block(10).start_ea:X}:"
+                f"predicate_ea=0x{imported_predicate_ea:X}:"
+                f"native_predicate_ea=0x{predicate_ea:X}"
+            ),
+            reason="resolver_proven_live_conditional_handler_bridge",
+        ),
+    ]
+
+
+def test_applied_late_logical_source_owns_native_predicate_replay(
+    _seam,
+) -> None:
+    owned_predicate_ea = 0x1290
+    unrelated_predicate_ea = 0x1690
+
+    def predicate(ea: int, taken: int) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=55,
+            ea=ea,
+            operands=(),
+            d=MopSnapshot(t=0, size=0, block_ref=taken, kind=OperandKind.BLOCK),
+            kind=InsnKind.COND_JUMP,
+            is_conditional_jump=True,
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (10, 40), ()),
+            10: _b(10, (11, 12), (0,), (predicate(owned_predicate_ea, 12),)),
+            11: _b(11, (), (10,)),
+            12: _b(12, (), (10,)),
+            20: _b(20, (), ()),
+            30: _b(30, (), ()),
+            40: _b(
+                40,
+                (41, 42),
+                (0,),
+                (predicate(unrelated_predicate_ea, 42),),
+            ),
+            41: _b(41, (), (40,)),
+            42: _b(42, (), (40,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    true_state = 0xB13A6E93
+    false_state = 0x4D34CF70
+
+    def transfer(source: int, predicate_ea: int) -> MaterializedIndirectTransfer:
+        return MaterializedIndirectTransfer(
+            source_jmp_ea=predicate_ea,
+            source_block_ea=flow_graph.get_block(source).start_ea,
+            materialized_anchor_eas=(predicate_ea,),
+            target_eas=(
+                flow_graph.get_block(20).start_ea,
+                flow_graph.get_block(30).start_ea,
+            ),
+            condition_code=5,
+            true_target_ea=flow_graph.get_block(20).start_ea,
+            false_target_ea=flow_graph.get_block(30).start_ea,
+            resolver_kind="conditional_handler_bridge",
+            predicate_size=4,
+            predicate_true_state=true_state,
+            predicate_false_state=false_state,
+            predicate_true_is_taken=True,
+            predicate_preserve_live=True,
+        )
+
+    owned_port = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=flow_graph.get_block(10).start_ea,
+        predicate_ea=owned_predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=flow_graph.get_block(20).start_ea,
+        fallthrough_target_ea=flow_graph.get_block(30).start_ea,
+        state_register=20,
+        taken_state=true_state,
+        fallthrough_state=false_state,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        resolver_kind="static_stack_carried_state_choice",
+        logical_source_anchor_ea=0x1A00,
+        predicate_ida_stkoff=0x44,
+        predicate_stack_value=1,
+        predicate_size=4,
+        condition_code=5,
+    )
+    applied_evidence = AppliedDetachedSnippetConditionalBoundaryPort(
+        port=owned_port,
+        taken_target_anchor_eas=(flow_graph.get_block(20).start_ea,),
+        fallthrough_target_anchor_eas=(flow_graph.get_block(30).start_ea,),
+    )
+    modifications = build_materialized_conditional_handler_bridges(
+        flow_graph,
+        (
+            transfer(10, owned_predicate_ea),
+            transfer(40, unrelated_predicate_ea),
+        ),
+        materialized_state_routes=(
+            MaterializedStateRoute(10, true_state, 20),
+            MaterializedStateRoute(10, false_state, 30),
+            MaterializedStateRoute(40, true_state, 20),
+            MaterializedStateRoute(40, false_state, 30),
+        ),
+        handler_entry_eas_by_serial={
+            20: flow_graph.get_block(20).start_ea,
+            30: flow_graph.get_block(30).start_ea,
+        },
+        applied_conditional_boundary_evidence=(applied_evidence,),
+    )
+
+    assert [
+        modification.rewrite_from_ea
+        for modification in modifications
+        if isinstance(modification, LowerConditionalStateTransition)
+    ] == [unrelated_predicate_ea]
 
 
 def test_emit_accepts_exact_materialized_conditional_entry_without_scalar_state(
@@ -3332,6 +4283,89 @@ def test_materialized_computed_goto_profile_recovers_multi_entry_state_writer(
     assert (10, 11, 20) in redirects
 
 
+def test_entry_bridge_prefers_unique_materialized_state_route_over_stale_map(
+    _seam,
+) -> None:
+    initial_state = 0x34170401
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (20,), (1, 10, 20)),
+            10: _b(10, (2,), ()),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    stale_dispatcher = _disp({0xB101A588: 20}, exit_block=99)
+
+    modifications = build_state_write_redirects(
+        flow_graph,
+        stale_dispatcher,
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=1,
+        initial_state=initial_state,
+        materialized_state_routes=(
+            MaterializedStateRoute(1, initial_state, 10),
+        ),
+        condition_chain_handlers=frozenset({10, 20}),
+    )
+
+    assert modifications == [
+        RedirectGoto(from_serial=1, old_target=2, new_target=10),
+    ]
+
+
+def test_materialized_state_entry_bridge_bypasses_proven_router_region() -> None:
+    state = 0x34170401
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10,), (1, 10)),
+            10: _b(10, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    assert build_materialized_state_entry_bridges(
+        flow_graph,
+        (MaterializedStateRoute(1, state, 10),),
+        dispatcher_region_serials=frozenset({2}),
+        authoritative_handler_serials=frozenset({10}),
+    ) == [
+        RedirectGoto(from_serial=1, old_target=2, new_target=10),
+    ]
+
+
+def test_materialized_state_entry_bridge_abstains_on_conflicting_routes() -> None:
+    state = 0x34170401
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10, 20), (1, 10, 20)),
+            10: _b(10, (2,), (2,)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    assert build_materialized_state_entry_bridges(
+        flow_graph,
+        (
+            MaterializedStateRoute(1, state, 10),
+            MaterializedStateRoute(1, state, 20),
+        ),
+        dispatcher_region_serials=frozenset({2}),
+        authoritative_handler_serials=frozenset({10, 20}),
+    ) == []
+
+
 def test_emit_accepts_applied_preopt_conditional_port_when_one_router_row_was_pruned(
     _seam,
     monkeypatch,
@@ -3435,6 +4469,715 @@ def test_emit_accepts_applied_preopt_conditional_port_when_one_router_row_was_pr
         if isinstance(modification, RedirectGoto)
     }
     assert (20, 3, 10) in redirects
+
+
+def test_imported_conditional_entry_prefers_native_origin_over_stale_arm_anchor() -> None:
+    predicate_ea = 0x1100
+    predicate = InsnSnapshot(
+        opcode=55,
+        ea=predicate_ea,
+        operands=(),
+        d=MopSnapshot(t=0, size=0, block_ref=3, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2, 3), (0,), (predicate,)),
+            2: _b(2, (20,), (1,)),
+            3: _b(3, (30,), (1,)),
+            20: _b(20, (), (2,), (_mov_reg(0xF100, 0xB0, 20),)),
+            30: _b(30, (), (3,), (_mov_reg(0xF200, 0xA0, 20),)),
+            # A maturity-local clone retained the old arm anchor but is not the
+            # block reached by the successfully applied conditional port.
+            40: _b(40, (), (), (_mov_reg(0xDEAD, 0xB0, 20),)),
+            50: _b(50, (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    port = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=0x1080,
+        predicate_ea=predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=0x1500,
+        fallthrough_target_ea=0x1600,
+        state_register=20,
+        taken_state=0xA0,
+        fallthrough_state=0xB0,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        resolver_kind="resolver_proven_static_conditional_state_choice",
+    )
+    evidence = AppliedDetachedSnippetConditionalBoundaryPort(
+        port=port,
+        taken_target_anchor_eas=(0xF200,),
+        fallthrough_target_anchor_eas=(0xDEAD,),
+    )
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    plan = emit_module._plan_imported_conditional_entry_bridges(
+        flow_graph,
+        (evidence,),
+        dispatcher_entry_serial=50,
+        handler_serials=frozenset({20, 30, 40}),
+        state_var_reg=20,
+        imported_native_eas_by_serial={
+            20: frozenset({0x1600}),
+            30: frozenset({0x1500}),
+        },
+    )
+
+    assert plan == emit_module.ConditionalEntryBridgePlan(
+        proofs=(
+            emit_module.ConditionalEntryBridgeProof(
+                source_serial=1,
+                predicate_ea=predicate_ea,
+                false_target_serial=20,
+                true_target_serial=30,
+            ),
+        ),
+        root_source_serials=(1,),
+    )
+
+
+def test_imported_conditional_entry_prefers_canonical_handler_for_leaf_ea() -> None:
+    predicate_ea = 0x40D299
+    taken_target_ea = 0x40EFDD
+    fallthrough_target_ea = 0x40D668
+    predicate = InsnSnapshot(
+        opcode=50,
+        ea=predicate_ea,
+        operands=(),
+        d=MopSnapshot(t=0, size=0, block_ref=2, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2, 3), (0,), (predicate,)),
+            2: _b(2, (30,), (1,)),
+            3: _b(3, (40,), (1,)),
+            # PREOPT imported ownership clones reached by the applied arms.
+            30: _b(30, (50,), (2,)),
+            40: _b(40, (50,), (3,)),
+            # Canonical equality-router handlers for the same native EAs.
+            10: _b(10, (50,), (50,)),
+            20: _b(20, (50,), (50,)),
+            50: _b(50, (10, 20), (10, 20, 30, 40)),
+        },
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+    evidence = AppliedDetachedSnippetConditionalBoundaryPort(
+        port=DetachedSnippetConditionalBoundaryPort(
+            source_block_ea=0x40D252,
+            predicate_ea=predicate_ea,
+            old_taken_target_ea=None,
+            old_fallthrough_target_ea=None,
+            taken_target_ea=taken_target_ea,
+            fallthrough_target_ea=fallthrough_target_ea,
+            state_register=28,
+            taken_state=0xB13A6E93,
+            fallthrough_state=0x4D34CF70,
+            source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            resolver_kind="resolver_proven_static_conditional_state_choice",
+        ),
+        taken_target_anchor_eas=(),
+        fallthrough_target_anchor_eas=(),
+    )
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    plan = emit_module._plan_imported_conditional_entry_bridges(
+        flow_graph,
+        (evidence,),
+        dispatcher_entry_serial=50,
+        handler_serials=frozenset({10, 20}),
+        state_var_reg=28,
+        imported_native_eas_by_serial={
+            30: frozenset({taken_target_ea}),
+            40: frozenset({fallthrough_target_ea}),
+        },
+        handler_entry_eas_by_serial={
+            10: taken_target_ea,
+            20: fallthrough_target_ea,
+        },
+    )
+
+    assert plan == emit_module.ConditionalEntryBridgePlan(
+        proofs=(
+            emit_module.ConditionalEntryBridgeProof(
+                source_serial=1,
+                predicate_ea=predicate_ea,
+                false_target_serial=20,
+                true_target_serial=10,
+            ),
+        ),
+        root_source_serials=(1,),
+    )
+
+
+def test_imported_conditional_entry_abstains_on_ambiguous_leaf_handler_ea() -> None:
+    predicate_ea = 0x40D299
+    taken_target_ea = 0x40EFDD
+    fallthrough_target_ea = 0x40D668
+    predicate = InsnSnapshot(
+        opcode=50,
+        ea=predicate_ea,
+        operands=(),
+        d=MopSnapshot(t=0, size=0, block_ref=2, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2, 3), (0,), (predicate,)),
+            2: _b(2, (30,), (1,)),
+            3: _b(3, (40,), (1,)),
+            10: _b(10, (50,), (50,)),
+            11: _b(11, (50,), (50,)),
+            20: _b(20, (50,), (50,)),
+            30: _b(30, (50,), (2,)),
+            40: _b(40, (50,), (3,)),
+            50: _b(50, (10, 11, 20), (10, 11, 20, 30, 40)),
+        },
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+    evidence = AppliedDetachedSnippetConditionalBoundaryPort(
+        port=DetachedSnippetConditionalBoundaryPort(
+            source_block_ea=0x40D252,
+            predicate_ea=predicate_ea,
+            old_taken_target_ea=None,
+            old_fallthrough_target_ea=None,
+            taken_target_ea=taken_target_ea,
+            fallthrough_target_ea=fallthrough_target_ea,
+            state_register=28,
+            taken_state=0xB13A6E93,
+            fallthrough_state=0x4D34CF70,
+            source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            resolver_kind="resolver_proven_static_conditional_state_choice",
+        ),
+        taken_target_anchor_eas=(),
+        fallthrough_target_anchor_eas=(),
+    )
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    assert emit_module._plan_imported_conditional_entry_bridges(
+        flow_graph,
+        (evidence,),
+        dispatcher_entry_serial=50,
+        handler_serials=frozenset({10, 11, 20}),
+        state_var_reg=28,
+        imported_native_eas_by_serial={
+            30: frozenset({taken_target_ea}),
+            40: frozenset({fallthrough_target_ea}),
+        },
+        handler_entry_eas_by_serial={
+            10: taken_target_ea,
+            11: taken_target_ea,
+            20: fallthrough_target_ea,
+        },
+    ) is None
+
+
+def test_imported_conditional_entry_routes_both_states_to_authoritative_handlers() -> None:
+    predicate_ea = 0x40D266
+    true_state = 0xB13A6E93
+    false_state = 0x4D34CF70
+    predicate = InsnSnapshot(
+        opcode=50,
+        ea=predicate_ea,
+        operands=(),
+        d=MopSnapshot(t=0, size=0, block_ref=2, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2, 3), (0,), (predicate,)),
+            2: _b(2, (40,), (1,)),
+            3: _b(3, (30,), (1,)),
+            # Applied PREOPT clone targets.
+            30: _b(30, (50,), (3,)),
+            40: _b(40, (50,), (2,)),
+            # Authoritative equality-router handlers for the two states.
+            10: _b(10, (50,), ()),
+            20: _b(20, (50,), ()),
+            50: _b(50, (10, 20), (10, 20, 30, 40)),
+        },
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+    port = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=0x40D252,
+        predicate_ea=predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        # The live jge is the inverse of the native cmovl condition.
+        taken_target_ea=0x40F20B,
+        fallthrough_target_ea=0x40DABB,
+        state_register=28,
+        taken_state=false_state,
+        fallthrough_state=true_state,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        resolver_kind="resolver_proven_static_stack_carried_entry_choice",
+        predicate_true_is_taken=False,
+    )
+    evidence = AppliedDetachedSnippetConditionalBoundaryPort(
+        port=port,
+        taken_target_anchor_eas=(0xF1C02000,),
+        fallthrough_target_anchor_eas=(0xF1C01000,),
+    )
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    plan = emit_module._plan_imported_conditional_entry_bridges(
+        flow_graph,
+        (evidence,),
+        dispatcher_entry_serial=50,
+        handler_serials=frozenset({10, 20}),
+        state_var_reg=28,
+        materialized_state_routes=(
+            MaterializedStateRoute(100, true_state, 10),
+            MaterializedStateRoute(101, false_state, 20),
+        ),
+    )
+
+    assert plan == emit_module.ConditionalEntryBridgePlan(
+        proofs=(
+            emit_module.ConditionalEntryBridgeProof(
+                source_serial=1,
+                predicate_ea=predicate_ea,
+                false_target_serial=20,
+                true_target_serial=10,
+                true_is_taken=False,
+            ),
+        ),
+        root_source_serials=(1,),
+    )
+
+
+def test_imported_conditional_entry_binds_distinct_logical_source_owner() -> None:
+    proof_predicate_ea = 0x40D221
+    logical_source_ea = 0x40E9A8
+    live_predicate_ea = 0xF1C02004
+    true_state = 0x142718FC
+    false_state = 0xF6D08EC5
+
+    def predicate(ea: int, taken: int) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=50,
+            ea=ea,
+            operands=(),
+            d=MopSnapshot(t=0, size=0, block_ref=taken, kind=OperandKind.BLOCK),
+            kind=InsnKind.COND_JUMP,
+            is_conditional_jump=True,
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (4,), ()),
+            # The original proof predicate remains elsewhere in the MBA.  It
+            # is not the source where PREOPT applied the logical boundary.
+            1: _b(1, (6, 7), (), (predicate(proof_predicate_ea, 6),)),
+            4: _b(4, (2, 3), (0,), (predicate(live_predicate_ea, 2),)),
+            2: _b(2, (10,), (4,)),
+            3: _b(3, (20,), (4,)),
+            6: _b(6, (50,), (1,)),
+            7: _b(7, (50,), (1,)),
+            10: _b(10, (50,), (2, 50)),
+            20: _b(20, (50,), (3, 50)),
+            50: _b(50, (10, 20), (6, 7, 10, 20)),
+        },
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+    evidence = AppliedDetachedSnippetConditionalBoundaryPort(
+        port=DetachedSnippetConditionalBoundaryPort(
+            source_block_ea=0x40D200,
+            predicate_ea=proof_predicate_ea,
+            old_taken_target_ea=None,
+            old_fallthrough_target_ea=None,
+            taken_target_ea=0x40F1C1,
+            fallthrough_target_ea=0x40DDB0,
+            state_register=28,
+            taken_state=true_state,
+            fallthrough_state=false_state,
+            source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            resolver_kind="resolver_proven_static_stack_carried_entry_choice",
+            logical_source_anchor_ea=logical_source_ea,
+            logical_source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            logical_source_replaces_dispatcher_envelope=True,
+        ),
+        taken_target_anchor_eas=(),
+        fallthrough_target_anchor_eas=(),
+    )
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    plan = emit_module._plan_imported_conditional_entry_bridges(
+        flow_graph,
+        (evidence,),
+        dispatcher_entry_serial=50,
+        handler_serials=frozenset({10, 20}),
+        state_var_reg=28,
+        imported_native_eas_by_serial={
+            4: frozenset({logical_source_ea}),
+        },
+        materialized_state_routes=(
+            MaterializedStateRoute(100, true_state, 10),
+            MaterializedStateRoute(101, false_state, 20),
+        ),
+    )
+
+    assert plan == emit_module.ConditionalEntryBridgePlan(
+        proofs=(
+            emit_module.ConditionalEntryBridgeProof(
+                source_serial=4,
+                predicate_ea=live_predicate_ea,
+                false_target_serial=20,
+                true_target_serial=10,
+            ),
+        ),
+        root_source_serials=(4,),
+    )
+
+
+def test_imported_conditional_entry_abstains_on_unproven_nested_boundary_sources() -> None:
+    predicate_ea = 0x40D266
+    false_nested_predicate_ea = 0x40D2BC
+    true_nested_predicate_ea = 0x40D299
+    true_state = 0xB13A6E93
+    false_state = 0x4D34CF70
+    predicate = InsnSnapshot(
+        opcode=50,
+        ea=predicate_ea,
+        operands=(),
+        d=MopSnapshot(t=0, size=0, block_ref=2, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2, 3), (0,), (predicate,)),
+            2: _b(2, (20,), (1,), (_mov_reg(false_nested_predicate_ea, 1, 8),)),
+            3: _b(3, (10,), (1,), (_mov_reg(true_nested_predicate_ea, 1, 8),)),
+            10: _b(10, (50,), (3,)),
+            20: _b(20, (50,), (2,)),
+            50: _b(50, (10, 20), (10, 20)),
+        },
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+    port = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=0x40D200,
+        predicate_ea=predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=false_nested_predicate_ea,
+        fallthrough_target_ea=true_nested_predicate_ea,
+        state_register=28,
+        taken_state=false_state,
+        fallthrough_state=true_state,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        resolver_kind="resolver_proven_static_conditional_state_choice",
+        predicate_true_is_taken=False,
+        taken_target_is_boundary_source=True,
+        fallthrough_target_is_boundary_source=True,
+    )
+    evidence = AppliedDetachedSnippetConditionalBoundaryPort(
+        port=port,
+        taken_target_anchor_eas=(false_nested_predicate_ea,),
+        fallthrough_target_anchor_eas=(true_nested_predicate_ea,),
+    )
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    plan = emit_module._plan_imported_conditional_entry_bridges(
+        flow_graph,
+        (evidence,),
+        dispatcher_entry_serial=50,
+        handler_serials=frozenset({10, 20}),
+        state_var_reg=28,
+        materialized_state_routes=(
+            MaterializedStateRoute(100, true_state, 10),
+            MaterializedStateRoute(101, false_state, 20),
+        ),
+    )
+
+    assert plan is None
+
+
+def test_imported_conditional_entry_plan_includes_complete_nested_tree() -> None:
+    outer_ea = 0x40D266
+    taken_nested_ea = 0x40D2BC
+    fallthrough_nested_ea = 0x40D299
+    state_reg = 28
+    states = (0x10, 0x20, 0x30, 0x40)
+
+    def predicate(ea: int, taken_serial: int) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=50,
+            ea=ea,
+            operands=(),
+            d=MopSnapshot(
+                t=0,
+                size=0,
+                block_ref=taken_serial,
+                kind=OperandKind.BLOCK,
+            ),
+            kind=InsnKind.COND_JUMP,
+            is_conditional_jump=True,
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2, 3), (0,), (predicate(outer_ea, 2),)),
+            2: _b(2, (20, 21), (1,), (predicate(taken_nested_ea, 20),)),
+            3: _b(3, (30, 31), (1,), (predicate(fallthrough_nested_ea, 30),)),
+            20: _b(20, (50,), (2, 50)),
+            21: _b(21, (50,), (2, 50)),
+            30: _b(30, (50,), (3, 50)),
+            31: _b(31, (50,), (3, 50)),
+            50: _b(50, (20, 21, 30, 31), (20, 21, 30, 31)),
+        },
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+
+    outer = AppliedDetachedSnippetConditionalBoundaryPort(
+        port=DetachedSnippetConditionalBoundaryPort(
+            source_block_ea=0x40D200,
+            predicate_ea=outer_ea,
+            old_taken_target_ea=None,
+            old_fallthrough_target_ea=None,
+            taken_target_ea=taken_nested_ea,
+            fallthrough_target_ea=fallthrough_nested_ea,
+            state_register=state_reg,
+            taken_state=states[0],
+            fallthrough_state=states[1],
+            source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            taken_target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            resolver_kind="resolver_proven_static_conditional_state_choice",
+            taken_target_is_boundary_source=True,
+            fallthrough_target_is_boundary_source=True,
+        ),
+        taken_target_anchor_eas=(taken_nested_ea,),
+        fallthrough_target_anchor_eas=(fallthrough_nested_ea,),
+    )
+
+    def nested_evidence(
+        predicate_ea: int,
+        taken_state: int,
+        fallthrough_state: int,
+    ) -> AppliedDetachedSnippetConditionalBoundaryPort:
+        return AppliedDetachedSnippetConditionalBoundaryPort(
+            port=DetachedSnippetConditionalBoundaryPort(
+                source_block_ea=predicate_ea,
+                predicate_ea=predicate_ea,
+                old_taken_target_ea=None,
+                old_fallthrough_target_ea=None,
+                taken_target_ea=0xF0000000 + taken_state,
+                fallthrough_target_ea=0xF0000000 + fallthrough_state,
+                state_register=state_reg,
+                taken_state=taken_state,
+                fallthrough_state=fallthrough_state,
+                source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+                taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                resolver_kind="resolver_proven_static_conditional_state_choice",
+            ),
+            taken_target_anchor_eas=(),
+            fallthrough_target_anchor_eas=(),
+        )
+
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    plan = emit_module._plan_imported_conditional_entry_bridges(
+        flow_graph,
+        (
+            outer,
+            nested_evidence(taken_nested_ea, states[0], states[1]),
+            nested_evidence(fallthrough_nested_ea, states[2], states[3]),
+        ),
+        dispatcher_entry_serial=50,
+        handler_serials=frozenset({20, 21, 30, 31}),
+        state_var_reg=state_reg,
+        materialized_state_routes=(
+            MaterializedStateRoute(100, states[0], 20),
+            MaterializedStateRoute(101, states[1], 21),
+            MaterializedStateRoute(102, states[2], 30),
+            MaterializedStateRoute(103, states[3], 31),
+        ),
+    )
+
+    assert plan == emit_module.ConditionalEntryBridgePlan(
+        proofs=(
+            emit_module.ConditionalEntryBridgeProof(1, outer_ea, 3, 2),
+            emit_module.ConditionalEntryBridgeProof(2, taken_nested_ea, 21, 20),
+            emit_module.ConditionalEntryBridgeProof(
+                3,
+                fallthrough_nested_ea,
+                31,
+                30,
+            ),
+        ),
+        root_source_serials=(1,),
+    )
+    lowerings = emit_module._lower_conditional_entry_bridge_plan(
+        flow_graph,
+        plan,
+    )
+    assert tuple(lowering.source_serial for lowering in lowerings) == (1, 2, 3)
+
+
+def test_imported_conditional_entry_plan_abstains_on_missing_nested_source() -> None:
+    outer_ea = 0x40D266
+    nested_ea = 0x40D2BC
+    predicate = InsnSnapshot(
+        opcode=50,
+        ea=outer_ea,
+        operands=(),
+        d=MopSnapshot(t=0, size=0, block_ref=2, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2, 20), (0,), (predicate,)),
+            2: _b(2, (20,), (1,), (_mov_reg(nested_ea, 1, 8),)),
+            20: _b(20, (50,), (1, 2, 50)),
+            50: _b(50, (20,), (20,)),
+        },
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+    evidence = AppliedDetachedSnippetConditionalBoundaryPort(
+        port=DetachedSnippetConditionalBoundaryPort(
+            source_block_ea=0x40D200,
+            predicate_ea=outer_ea,
+            old_taken_target_ea=None,
+            old_fallthrough_target_ea=None,
+            taken_target_ea=nested_ea,
+            fallthrough_target_ea=0x40D400,
+            state_register=28,
+            taken_state=0x10,
+            fallthrough_state=0x20,
+            source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            taken_target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            resolver_kind="resolver_proven_static_conditional_state_choice",
+            taken_target_is_boundary_source=True,
+        ),
+        taken_target_anchor_eas=(nested_ea,),
+        fallthrough_target_anchor_eas=(),
+    )
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    assert emit_module._plan_imported_conditional_entry_bridges(
+        flow_graph,
+        (evidence,),
+        dispatcher_entry_serial=50,
+        handler_serials=frozenset({20}),
+        state_var_reg=28,
+        materialized_state_routes=(MaterializedStateRoute(100, 0x20, 20),),
+    ) is None
+
+
+def test_imported_conditional_entry_plan_ignores_handler_local_ambiguity() -> None:
+    entry_ea = 0x40D266
+    handler_ea = 0x40D4A2
+    state_reg = 28
+
+    def predicate(ea: int, target: int) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=50,
+            ea=ea,
+            operands=(),
+            d=MopSnapshot(t=0, size=0, block_ref=target, kind=OperandKind.BLOCK),
+            kind=InsnKind.COND_JUMP,
+            is_conditional_jump=True,
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (20, 21), (0,), (predicate(entry_ea, 20),)),
+            20: _b(20, (21, 50), (1, 50), (predicate(handler_ea, 21),)),
+            21: _b(21, (50,), (1, 20, 50)),
+            50: _b(50, (20, 21), (20, 21)),
+        },
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+
+    def evidence(
+        predicate_ea: int,
+        taken_state: int,
+        fallthrough_state: int,
+    ) -> AppliedDetachedSnippetConditionalBoundaryPort:
+        return AppliedDetachedSnippetConditionalBoundaryPort(
+            port=DetachedSnippetConditionalBoundaryPort(
+                source_block_ea=predicate_ea,
+                predicate_ea=predicate_ea,
+                old_taken_target_ea=None,
+                old_fallthrough_target_ea=None,
+                taken_target_ea=0xF0000000 + taken_state,
+                fallthrough_target_ea=0xF0000000 + fallthrough_state,
+                state_register=state_reg,
+                taken_state=taken_state,
+                fallthrough_state=fallthrough_state,
+                source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+                taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                resolver_kind="resolver_proven_static_conditional_state_choice",
+            ),
+            taken_target_anchor_eas=(),
+            fallthrough_target_anchor_eas=(),
+        )
+
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    plan = emit_module._plan_imported_conditional_entry_bridges(
+        flow_graph,
+        (
+            evidence(entry_ea, 0x10, 0x20),
+            evidence(handler_ea, 0x20, 0x10),
+            evidence(handler_ea, 0x30, 0x40),
+        ),
+        dispatcher_entry_serial=50,
+        handler_serials=frozenset({20, 21}),
+        state_var_reg=state_reg,
+        materialized_state_routes=(
+            MaterializedStateRoute(100, 0x10, 20),
+            MaterializedStateRoute(101, 0x20, 21),
+            MaterializedStateRoute(102, 0x30, 20),
+            MaterializedStateRoute(103, 0x40, 21),
+        ),
+    )
+
+    assert plan == emit_module.ConditionalEntryBridgePlan(
+        proofs=(emit_module.ConditionalEntryBridgeProof(1, entry_ea, 21, 20),),
+        root_source_serials=(1,),
+    )
 
 
 def test_emit_does_not_accept_handler_local_conditional_as_entry_bridge(
@@ -3589,6 +5332,174 @@ def test_live_predicate_keeps_exact_arm_when_state_route_precedes_it(
                 "conditional_handler_bridge:"
                 f"source_ea=0x{fg.get_block(10).start_ea:X}:"
                 f"predicate_ea=0x{predicate_ea:X}"
+            ),
+            reason="resolver_proven_live_conditional_handler_bridge",
+        )
+    ]
+
+
+def test_live_predicate_uses_native_anchored_dispatcher_targets(_seam) -> None:
+    """Canonical dispatcher rows can prove both arms without source routes."""
+    predicate_ea = 0xF1C000B8
+    true_state = 0x5C46FC3C
+    false_state = 0x3EEFBA76
+    true_target_ea = 0x40CF38
+    false_target_ea = 0x40CF01
+    predicate = InsnSnapshot(
+        opcode=55,
+        ea=predicate_ea,
+        operands=(),
+        d=MopSnapshot(t=0, size=0, block_ref=12, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            10: _b(10, (11, 12), (), (predicate,)),
+            11: _b(11, (), (10,)),
+            12: _b(12, (), (10,)),
+            20: _b(20, (), ()),
+            30: _b(30, (), ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    dispatcher = _disp(
+        {true_state: 20, false_state: 30},
+        exit_block=99,
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=flow_graph.get_block(10).start_ea,
+        materialized_anchor_eas=(predicate_ea,),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        resolver_kind="conditional_handler_bridge",
+        predicate_size=4,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+    )
+
+    assert build_materialized_conditional_handler_bridges(
+        flow_graph,
+        (transfer,),
+        dispatcher=dispatcher,
+        handler_entry_eas_by_serial={
+            20: true_target_ea,
+            30: false_target_ea,
+        },
+    ) == [
+        LowerConditionalStateTransition(
+            source_serial=10,
+            old_dispatcher_serial=12,
+            rewrite_from_ea=predicate_ea,
+            condition_operand=PreserveLivePredicateCondition(
+                predicate_ea=predicate_ea,
+                true_is_taken=True,
+            ),
+            false_target_serial=30,
+            true_target_serial=20,
+            proof_id=(
+                "conditional_handler_bridge:"
+                f"source_ea=0x{flow_graph.get_block(10).start_ea:X}:"
+                f"predicate_ea=0x{predicate_ea:X}"
+            ),
+            reason="resolver_proven_live_conditional_handler_bridge",
+        )
+    ]
+
+
+def test_live_predicate_resolves_imported_source_by_native_origin(_seam) -> None:
+    native_predicate_ea = 0x40F651
+    imported_predicate_ea = 0xF1C01234
+    true_state = 0x53514884
+    false_state = 0xF940AB9D
+    true_target_ea = 0x40F453
+    false_target_ea = 0x40E3F0
+    predicate = InsnSnapshot(
+        opcode=55,
+        ea=imported_predicate_ea,
+        operands=(),
+        d=MopSnapshot(t=0, size=0, block_ref=12, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            10: BlockSnapshot(
+                serial=10,
+                block_type=0,
+                succs=(11, 12),
+                preds=(9,),
+                flags=0,
+                start_ea=0x40D200,
+                insn_snapshots=(predicate,),
+            ),
+            11: _b(11, (), (10,)),
+            12: _b(12, (), (10,)),
+            13: BlockSnapshot(
+                serial=13,
+                block_type=0,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x40D200,
+                insn_snapshots=(InsnSnapshot(opcode=4, ea=0xF1C05678, operands=()),),
+            ),
+            20: _b(20, (), ()),
+            30: _b(30, (), ()),
+        },
+        entry_serial=10,
+        func_ea=0x40D200,
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=native_predicate_ea,
+        source_block_ea=0x40D200,
+        materialized_anchor_eas=(native_predicate_ea,),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        resolver_kind="conditional_handler_bridge",
+        predicate_size=4,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+    )
+
+    assert build_materialized_conditional_handler_bridges(
+        flow_graph,
+        (transfer,),
+        dispatcher=_disp({true_state: 20, false_state: 30}, exit_block=99),
+        handler_entry_eas_by_serial={
+            20: true_target_ea,
+            30: false_target_ea,
+        },
+        imported_native_eas_by_serial={
+            10: frozenset({native_predicate_ea}),
+            13: frozenset({0x40F700}),
+        },
+    ) == [
+        LowerConditionalStateTransition(
+            source_serial=10,
+            old_dispatcher_serial=12,
+            rewrite_from_ea=imported_predicate_ea,
+            condition_operand=PreserveLivePredicateCondition(
+                predicate_ea=imported_predicate_ea,
+                true_is_taken=True,
+            ),
+            false_target_serial=30,
+            true_target_serial=20,
+            proof_id=(
+                "conditional_handler_bridge:"
+                "source_ea=0x40D200:"
+                f"predicate_ea=0x{imported_predicate_ea:X}:"
+                f"native_predicate_ea=0x{native_predicate_ea:X}"
             ),
             reason="resolver_proven_live_conditional_handler_bridge",
         )
@@ -3828,6 +5739,147 @@ def test_materialized_conditional_handler_bridge_prefers_source_keyed_replacemen
             MaterializedStateRoute(12, true_state, 40, proof_kind="conditional_arm"),
         ),
         handler_entry_eas_by_serial={30: 0x40A7AE},
+    )
+
+    assert modification.false_target_serial == 30
+    assert modification.true_target_serial == 40
+
+def test_materialized_conditional_handler_bridge_maps_folded_target_prefix(
+    _seam,
+) -> None:
+    predicate_ea = 0xF1C015DC
+    true_state = 0xBC6EC36C
+    false_state = 0x67B7A2BD
+    false_handler_entry = 0x40ED00
+    false_target_ea = 0x40ED0C
+    next_handler_entry = 0x40EE00
+    predicate = InsnSnapshot(
+        opcode=55,
+        ea=predicate_ea,
+        operands=(),
+        d=MopSnapshot(t=0, size=0, block_ref=12, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    false_handler = BlockSnapshot(
+        serial=30,
+        block_type=0,
+        succs=(),
+        preds=(),
+        flags=0,
+        start_ea=false_handler_entry,
+        insn_snapshots=(
+            InsnSnapshot(opcode=4, ea=0x40ED14, operands=()),
+            InsnSnapshot(opcode=55, ea=0x40ED65, operands=()),
+        ),
+    )
+    fg = FlowGraph(
+        blocks={
+            9: _b(9, (10,), ()),
+            10: _b(10, (11, 12), (9,), (predicate,)),
+            11: _b(11, (), (10,)),
+            12: _b(12, (), (10,)),
+            30: false_handler,
+            31: BlockSnapshot(
+                serial=31,
+                block_type=0,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=next_handler_entry,
+                insn_snapshots=(),
+            ),
+            40: _b(40, (), ()),
+        },
+        entry_serial=9,
+        func_ea=0x40D200,
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=fg.get_block(10).start_ea,
+        materialized_anchor_eas=(predicate_ea,),
+        target_eas=(fg.get_block(40).start_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=fg.get_block(40).start_ea,
+        false_target_ea=false_target_ea,
+        resolver_kind="conditional_handler_bridge",
+        predicate_size=4,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+    )
+    dispatcher = _disp({true_state: 40, false_state: 30}, exit_block=99)
+
+    (modification,) = build_materialized_conditional_handler_bridges(
+        fg,
+        (transfer,),
+        dispatcher=dispatcher,
+        materialized_state_routes=(
+            MaterializedStateRoute(11, false_state, 30, proof_kind="conditional_arm"),
+            MaterializedStateRoute(12, true_state, 40, proof_kind="conditional_arm"),
+        ),
+        # The exact live route can be outside the recovered handler registry;
+        # its current block provenance must still prove the folded prefix.
+        handler_entry_eas_by_serial={31: next_handler_entry},
+    )
+
+    assert modification.false_target_serial == 30
+    assert modification.true_target_serial == 40
+
+    # A route's recovered handler entry can be the only later registry label.
+    # The exact branch target may still be folded between that entry and the
+    # route's first surviving instruction.  The route-local bounded interval
+    # must remain authoritative instead of requiring an unrelated next
+    # handler entry to bound the lookup.
+    (modification,) = build_materialized_conditional_handler_bridges(
+        fg,
+        (transfer,),
+        dispatcher=dispatcher,
+        materialized_state_routes=(
+            MaterializedStateRoute(11, false_state, 30, proof_kind="conditional_arm"),
+            MaterializedStateRoute(12, true_state, 40, proof_kind="conditional_arm"),
+        ),
+        handler_entry_eas_by_serial={30: false_handler_entry},
+    )
+
+    assert modification.false_target_serial == 30
+    assert modification.true_target_serial == 40
+
+    imported_shadow_serial = 32
+    blocks_with_shadow = dict(fg.blocks)
+    blocks_with_shadow[30] = replace(false_handler, preds=(9,))
+    blocks_with_shadow[imported_shadow_serial] = replace(
+        false_handler,
+        serial=imported_shadow_serial,
+        start_ea=fg.func_ea,
+    )
+    graph_with_shadow = FlowGraph(
+        blocks=blocks_with_shadow,
+        entry_serial=fg.entry_serial,
+        func_ea=fg.func_ea,
+    )
+    route_args = {
+        "dispatcher": dispatcher,
+        "materialized_state_routes": (
+            MaterializedStateRoute(11, false_state, 30, proof_kind="conditional_arm"),
+            MaterializedStateRoute(12, true_state, 40, proof_kind="conditional_arm"),
+        ),
+        "handler_entry_eas_by_serial": {30: false_handler_entry},
+    }
+    assert build_materialized_conditional_handler_bridges(
+        graph_with_shadow,
+        (transfer,),
+        **route_args,
+    ) == []
+    (modification,) = build_materialized_conditional_handler_bridges(
+        graph_with_shadow,
+        (transfer,),
+        imported_native_eas_by_serial={
+            30: frozenset({0x40ED14, 0x40ED65}),
+            imported_shadow_serial: frozenset({0x40ED14, 0x40ED65}),
+        },
+        **route_args,
     )
 
     assert modification.false_target_serial == 30
@@ -4101,6 +6153,311 @@ def test_stack_carried_state_selector_lowers_at_handler_consumer(_seam) -> None:
         handler_serials=frozenset({10, 21, 22}),
     ) == expected
 
+    # A PREOPT-imported handler can carry a detached-MBA stack offset that does
+    # not match the connected prologue store.  Stable native store/load EAs plus
+    # the top-level MBA's converted offset must recover the same two-arm route
+    # without requiring the producer diamond to survive in this snapshot.
+    detached_stkoff = 0xDC
+    detached_blocks = {
+        serial: block
+        for serial, block in fg.blocks.items()
+        if serial not in {0, 1, 2}
+    }
+    detached_blocks[10] = _b(
+        10,
+        (4, 6),
+        (21,),
+        (
+            _mov_reg_from_stack(0xF0000010, state_reg, detached_stkoff),
+            replace(
+                consumer_tail,
+                l=MopSnapshot(
+                    t=_T_STK,
+                    size=4,
+                    stkoff=detached_stkoff,
+                    kind=OperandKind.STACK,
+                ),
+            ),
+        ),
+    )
+    detached_graph = FlowGraph(
+        blocks=detached_blocks,
+        entry_serial=10,
+        func_ea=fg.func_ea,
+    )
+    portable_choice = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=0x40D252,
+        materialized_anchor_eas=(0x40D256, predicate_ea, predicate_ea + 3),
+        target_eas=(0x2100, 0x2200),
+        condition_code=12,
+        true_target_ea=0x2100,
+        false_target_ea=0x2200,
+        selector_state_var_reg=state_reg,
+        resolver_kind="static_stack_carried_state_choice",
+        predicate_register=20,
+        predicate_size=4,
+        predicate_compare_constant=0x113,
+        predicate_true_state=first_state,
+        predicate_false_state=second_state,
+        state_carrier_store_ea=predicate_ea + 3,
+        state_carrier_stack_displacement=0x44,
+        state_carrier_consumer_load_eas=(consumer_ea,),
+        state_carrier_ida_stkoff=84,
+    )
+    portable_expected = [
+        replace(
+            expected[0],
+            condition_operand=replace(
+                expected[0].condition_operand,
+                stack_stkoff=carrier_stkoff,
+                stack_size=4,
+            ),
+            proof_id=(
+                "stack_carried_state_selector_native:"
+                "source_ea=0x1280:store_ea=0x40D269:load_ea=0x40EAA7"
+            ),
+            reason="resolver_proven_native_stack_carried_state_selector",
+        )
+    ]
+    assert build_stack_carried_state_selector_lowerings(
+        detached_graph,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+        materialized_indirect_transfers=(portable_choice,),
+        handler_entry_eas_by_serial={21: 0x2100, 22: 0x2200},
+        state_carrier_vd_stkoffs_by_store_ea={predicate_ea + 3: carrier_stkoff},
+        native_carrier_consumer_serials_by_load_ea={consumer_ea: 10},
+    ) == portable_expected
+
+    # Resolver-proven imported handlers must not replace a still-live
+    # dispatcher frontier while the choice itself is owned by a detached
+    # native consumer.  Connecting those imported regions before the carrier
+    # has folded into a live source can expose their synthetic router sink.
+    native_stale_leaf_serial = 20
+    native_stale_blocks = dict(detached_graph.blocks)
+    native_stale_blocks[native_stale_leaf_serial] = _b(
+        native_stale_leaf_serial,
+        (4,),
+        (4,),
+    )
+    native_stale_graph = FlowGraph(
+        blocks=native_stale_blocks,
+        entry_serial=10,
+        func_ea=fg.func_ea,
+    )
+    exact_first_target = MaterializedIndirectTransfer(
+        source_jmp_ea=0x2110,
+        source_block_ea=0x2100,
+        materialized_anchor_eas=(),
+        target_eas=(0x2100,),
+        selector_state_var_reg=state_reg,
+        selector_state_constant=first_state,
+        resolver_kind="static_equality_candidate",
+    )
+    exact_second_target = MaterializedIndirectTransfer(
+        source_jmp_ea=0x2210,
+        source_block_ea=0x2200,
+        materialized_anchor_eas=(),
+        target_eas=(0x2200,),
+        selector_state_var_reg=state_reg,
+        selector_state_constant=second_state,
+        resolver_kind="static_equality_candidate",
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        native_stale_graph,
+        _disp(
+            {first_state: native_stale_leaf_serial, second_state: 22},
+            exit_block=99,
+        ),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, native_stale_leaf_serial, 21, 22}),
+        materialized_indirect_transfers=(
+            portable_choice,
+            exact_first_target,
+            exact_second_target,
+        ),
+        handler_entry_eas_by_serial={21: 0x2100, 22: 0x2200},
+        state_carrier_vd_stkoffs_by_store_ea={predicate_ea + 3: carrier_stkoff},
+        native_carrier_consumer_serials_by_load_ea={consumer_ea: 10},
+    ) == [
+        replace(
+            portable_expected[0],
+            true_target_serial=native_stale_leaf_serial,
+        )
+    ]
+
+    # A union-imported consumer may have predecessors inside the imported
+    # subgraph and may already use the top-level VD stack offset.  Its native
+    # origin still identifies it as imported, so internal connectivity alone
+    # must not promote it to the live folded owner.
+    connected_imported_blocks = dict(native_stale_blocks)
+    connected_imported_blocks[10] = replace(
+        connected_imported_blocks[10],
+        insn_snapshots=(
+            connected_imported_blocks[10].insn_snapshots[0],
+            replace(
+                connected_imported_blocks[10].insn_snapshots[-1],
+                l=MopSnapshot(
+                    t=_T_STK,
+                    size=4,
+                    stkoff=carrier_stkoff,
+                    kind=OperandKind.STACK,
+                ),
+            ),
+        ),
+    )
+    connected_imported_graph = FlowGraph(
+        blocks=connected_imported_blocks,
+        entry_serial=10,
+        func_ea=fg.func_ea,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        connected_imported_graph,
+        _disp(
+            {first_state: native_stale_leaf_serial, second_state: 22},
+            exit_block=99,
+        ),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, native_stale_leaf_serial, 21, 22}),
+        materialized_indirect_transfers=(
+            portable_choice,
+            exact_first_target,
+            exact_second_target,
+        ),
+        imported_native_eas_by_serial={10: frozenset({consumer_ea})},
+        handler_entry_eas_by_serial={21: 0x2100, 22: 0x2200},
+        state_carrier_vd_stkoffs_by_store_ea={predicate_ea + 3: carrier_stkoff},
+        native_carrier_consumer_serials_by_load_ea={consumer_ea: 10},
+    ) == [
+        replace(
+            portable_expected[0],
+            true_target_serial=native_stale_leaf_serial,
+        )
+    ]
+
+    # A PREOPT-imported consumer can remain as a zero-predecessor clone while
+    # LOCOPT folds the same stack-carried choice into a connected live handler.
+    # At CALLS-pre the live consumer can still compare the exact stack cell to
+    # a BST threshold; state equality appears only after route rewrites.  The
+    # unique connected two-way consumer of that exact cell must own the
+    # lowering, rather than the orphan named by the native load-EA map.
+    live_consumer_serial = 11
+    live_tail_ea = 0x40DBD3
+    live_tail = replace(
+        consumer_tail,
+        ea=live_tail_ea,
+        l=MopSnapshot(
+            t=_T_STK,
+            size=4,
+            stkoff=carrier_stkoff,
+            kind=OperandKind.STACK,
+        ),
+        r=MopSnapshot(
+            t=_T_NUM,
+            size=4,
+            value=0x10B85E45,
+            kind=OperandKind.NUMBER,
+        ),
+    )
+    folded_blocks = dict(detached_graph.blocks)
+    folded_blocks[10] = replace(folded_blocks[10], preds=())
+    folded_blocks[live_consumer_serial] = _b(
+        live_consumer_serial,
+        (4, 6),
+        (21,),
+        (live_tail,),
+    )
+    folded_graph = FlowGraph(
+        blocks=folded_blocks,
+        entry_serial=live_consumer_serial,
+        func_ea=fg.func_ea,
+    )
+    live_expected = [
+        replace(
+            portable_expected[0],
+            source_serial=live_consumer_serial,
+            rewrite_from_ea=live_tail_ea,
+            proof_id=(
+                "stack_carried_state_selector_native:"
+                "source_ea=0x12C0:store_ea=0x40D269:load_ea=0x40EAA7"
+            ),
+        )
+    ]
+    assert build_stack_carried_state_selector_lowerings(
+        folded_graph,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, live_consumer_serial, 21, 22}),
+        materialized_indirect_transfers=(portable_choice,),
+        handler_entry_eas_by_serial={21: 0x2100, 22: 0x2200},
+        state_carrier_vd_stkoffs_by_store_ea={predicate_ea + 3: carrier_stkoff},
+        native_carrier_consumer_serials_by_load_ea={consumer_ea: 10},
+    ) == live_expected
+
+    # The live dispatcher map can still name a comparison leaf for a state
+    # whose resolver-proven equality target is an imported handler.  Once the
+    # selector source is connected, the exact handler must outrank that stale
+    # leaf or the selected semantic region remains orphaned.
+    stale_leaf_serial = 20
+    stale_target_blocks = dict(folded_blocks)
+    stale_target_blocks[stale_leaf_serial] = _b(
+        stale_leaf_serial,
+        (4,),
+        (4,),
+    )
+    stale_target_graph = FlowGraph(
+        blocks=stale_target_blocks,
+        entry_serial=live_consumer_serial,
+        func_ea=fg.func_ea,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        stale_target_graph,
+        _disp(
+            {first_state: stale_leaf_serial, second_state: 22},
+            exit_block=99,
+        ),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset(
+            {10, live_consumer_serial, stale_leaf_serial, 21, 22}
+        ),
+        materialized_indirect_transfers=(
+            portable_choice,
+            exact_first_target,
+            exact_second_target,
+        ),
+        handler_entry_eas_by_serial={21: 0x2100, 22: 0x2200},
+        state_carrier_vd_stkoffs_by_store_ea={predicate_ea + 3: carrier_stkoff},
+        native_carrier_consumer_serials_by_load_ea={consumer_ea: 10},
+    ) == live_expected
+
+    # Ownership must remain fail-closed when two connected folded consumers
+    # match the same stack cell and state pair.
+    ambiguous_blocks = dict(folded_blocks)
+    ambiguous_blocks[12] = _b(12, (4, 6), (22,), (live_tail,))
+    ambiguous_graph = FlowGraph(
+        blocks=ambiguous_blocks,
+        entry_serial=live_consumer_serial,
+        func_ea=fg.func_ea,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        ambiguous_graph,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 11, 12, 21, 22}),
+        materialized_indirect_transfers=(portable_choice,),
+        handler_entry_eas_by_serial={21: 0x2100, 22: 0x2200},
+        state_carrier_vd_stkoffs_by_store_ea={predicate_ea + 3: carrier_stkoff},
+        native_carrier_consumer_serials_by_load_ea={consumer_ea: 10},
+    ) == []
+
     # LOCOPT can fold ``mov state_reg, [stack]`` into the conditional tail.
     # The storage identity remains explicit in the tail and must carry the
     # same proof as the unfused form.
@@ -4138,6 +6495,18 @@ def test_stack_carried_state_selector_lowers_at_handler_consumer(_seam) -> None:
         handler_serials=frozenset({10, 21, 22}),
     ) == direct_expected
 
+
+    # A computed-goto equality leaf can consume the stack-carried state
+    # directly.  It remains a valid selector source even when exact imported
+    # handler ownership removes that router block from the handler map.
+    assert build_stack_carried_state_selector_lowerings(
+        direct_graph,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5, 10}),
+        handler_serials=frozenset({21, 22}),
+    ) == direct_expected
+
     imported_target_ea = 0x40DD70
     imported_candidate = MaterializedIndirectTransfer(
         source_jmp_ea=0x40DD6E,
@@ -4156,6 +6525,34 @@ def test_stack_carried_state_selector_lowers_at_handler_consumer(_seam) -> None:
         handler_serials=frozenset({10, 21}),
         materialized_indirect_transfers=(imported_candidate,),
         handler_entry_eas_by_serial={22: imported_target_ea},
+    ) == expected
+
+    # PREOPT equality evidence proves the native state-to-handler identity; it
+    # does not replace a handler that the current live dispatcher map already
+    # owns.  Prefer the maturity-local live handler when both representations
+    # are present, otherwise a detached clone can orphan the live frontier.
+    imported_clone_serial = 23
+    blocks_with_imported_clone = dict(fg.blocks)
+    blocks_with_imported_clone[imported_clone_serial] = _b(
+        imported_clone_serial,
+        (),
+        (),
+    )
+    graph_with_imported_clone = FlowGraph(
+        blocks=blocks_with_imported_clone,
+        entry_serial=fg.entry_serial,
+        func_ea=fg.func_ea,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        graph_with_imported_clone,
+        _disp({first_state: 21, second_state: 22}, exit_block=99),
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22, imported_clone_serial}),
+        materialized_indirect_transfers=(imported_candidate,),
+        handler_entry_eas_by_serial={
+            imported_clone_serial: imported_target_ea,
+        },
     ) == expected
 
     # Exact imported equality ownership outranks a stale legacy route for the
@@ -4377,12 +6774,69 @@ def test_stack_carried_state_selector_lowers_at_handler_consumer(_seam) -> None:
     ) == []
 
 
+def test_snapshot_fixpoint_visits_entry_before_default_budget_expires(
+    _seam,
+) -> None:
+    carrier_reg = 28
+    constant = 0x4D34CF70
+    branch_ea = 0x40D266
+    blocks = {
+        0: _b(
+            0,
+            (1, 2),
+            (),
+            (
+                _mov_reg(branch_ea - 5, constant, carrier_reg),
+                InsnSnapshot(
+                    opcode=0x32,
+                    ea=branch_ea,
+                    operands=(),
+                    l=MopSnapshot(
+                        t=_T_REG,
+                        size=4,
+                        reg=carrier_reg,
+                        kind=OperandKind.REGISTER,
+                    ),
+                    r=MopSnapshot(
+                        t=_T_NUM,
+                        size=4,
+                        value=0x113,
+                        kind=OperandKind.NUMBER,
+                    ),
+                    d=MopSnapshot(
+                        kind=OperandKind.BLOCK,
+                        block_ref=2,
+                    ),
+                    kind=InsnKind.COND_JUMP,
+                    branch_predicate=PredicateKind.SLT,
+                    is_conditional_jump=True,
+                ),
+            ),
+        ),
+        1: _b(1, (), (0,)),
+        2: _b(2, (), (0,)),
+    }
+    blocks.update(
+        {serial: _b(serial, (), ()) for serial in range(3, 1005)}
+    )
+    graph = FlowGraph(
+        blocks=blocks,
+        entry_serial=0,
+        func_ea=0x40D200,
+    )
+
+    result = run_snapshot_constant_fixpoint(graph, -1)
+
+    assert result.out_reg_maps[0][carrier_reg] == constant
+
+
 def test_folded_imported_stack_selector_bypasses_converged_indirect_router(
     _seam,
 ) -> None:
     state_reg = 28
     carrier_reg = 7
     carrier_stkoff = 0x6C
+    imported_frame_stkoff = 0xF4
     first_state = 0x142718FC
     second_state = 0x1D4F9917
     predicate_ea = 0x1100
@@ -4445,7 +6899,23 @@ def test_folded_imported_stack_selector_bypasses_converged_indirect_router(
                 (0, 1),
                 (_mov_stack_from_reg(predicate_ea + 3, carrier_stkoff, carrier_reg),),
             ),
-            10: _b(10, (11, 12), (2,), (consumer_tail,)),
+            # Imported snippets can retain a separate frame load into the
+            # state register before a folded tail that compares the actual
+            # selector cell directly.  The tail operand is authoritative: the
+            # lowering keeps this source block and rewrites only its targets.
+            10: _b(
+                10,
+                (11, 12),
+                (2,),
+                (
+                    _mov_reg_from_stack(
+                        consumer_ea,
+                        state_reg,
+                        imported_frame_stkoff,
+                    ),
+                    consumer_tail,
+                ),
+            ),
             11: _b(
                 11,
                 (12,),
@@ -4980,6 +7450,83 @@ def test_register_conditional_entry_prefers_exact_detached_equality_target(_seam
     }
     assert (1, 3, 21) in edges
     assert (2, 3, 22) in edges
+
+
+def test_register_conditional_entry_rejects_external_exact_target(_seam) -> None:
+    """An XTRN placeholder must not outrank the imported dispatcher handler."""
+    reg = 20
+    first_state = 0x09269BD2
+    second_state = 0xA4C94734
+    external_target_ea = 0x40CE3C
+    external = BlockSnapshot(
+        serial=22,
+        block_type=6,
+        succs=(),
+        preds=(),
+        flags=0,
+        start_ea=external_target_ea,
+        insn_snapshots=(),
+        kind=BlockKind.EXTERNAL,
+    )
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2, 3), (0,), (_mov_reg(0x1100, first_state, reg),)),
+            2: _b(2, (3,), (1,), (_mov_reg(0x1200, second_state, reg),)),
+            3: _b(3, (4,), (1, 2), (_mov_state(0x1300, 0xDEAD),)),
+            4: _b(4, (21, 23), (3, 21, 23)),
+            21: _b(21, (4,), (4,)),
+            22: external,
+            23: _b(23, (4,), (4,)),
+            99: _b(99, (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dispatcher = _disp(
+        {first_state: 21, second_state: 23},
+        exit_block=99,
+    )
+    exact_first = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CEC6,
+        source_block_ea=0x40CEAB,
+        materialized_anchor_eas=(0x40CEB0,),
+        target_eas=(external_target_ea, fg.blocks[99].start_ea),
+        condition_code=4,
+        true_target_ea=external_target_ea,
+        false_target_ea=fg.blocks[99].start_ea,
+        selector_state_var_reg=reg,
+        selector_compare_constant=first_state,
+        selector_state_on_left=True,
+        resolver_kind="static_equality_fixpoint",
+    )
+
+    modifications = build_state_write_redirects(
+        fg,
+        dispatcher,
+        recover_state_write_transitions(
+            fg,
+            dispatcher,
+            _STATE,
+            dispatcher_entry_serial=4,
+        ),
+        dispatcher_entry_serial=4,
+        pre_header_serial=None,
+        initial_state=None,
+        state_var_stkoff=_STATE,
+        state_var_reg=reg,
+        materialized_indirect_transfers=(exact_first,),
+        condition_chain_handlers=frozenset({21, 22, 23}),
+    )
+
+    edges = {
+        (modification.from_serial, modification.old_target, modification.new_target)
+        for modification in modifications
+        if isinstance(modification, (RedirectGoto, RedirectBranch))
+    }
+    assert (1, 3, 21) in edges
+    assert (2, 3, 23) in edges
+    assert all(new_target != 22 for _source, _old, new_target in edges)
 
 
 def test_register_conditional_entry_uses_evidence_store_anchor_past_false_merge(

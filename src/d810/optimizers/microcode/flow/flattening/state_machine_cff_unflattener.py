@@ -27,19 +27,24 @@ from d810.analyses.control_flow.dispatcher_recovery import (
     recover_dispatcher,
     register_extra_dispatcher_resolver,
 )
-from d810.analyses.control_flow.detached_handler_island import (
-    select_unique_block_native_ea,
-)
 from d810.analyses.control_flow.linearized_state_dag import (
     build_live_linearized_state_dag_from_graph,
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     exact_materialized_handler_override_serial,
+    instruction_backed_materialized_handler_owners,
+    materialized_state_register_candidates,
+    materialized_dispatcher_router_native_ranges,
     merge_materialized_handler_maps,
+    missing_materialized_handler_targets,
+    native_origin_blocks_in_ranges,
     override_materialized_handler_targets,
     plan_terminal_return_carrier_requests,
+    select_materialized_handler_owner_serial,
+    unique_materialized_conditional_handler_entry_eas,
     unique_materialized_equality_target_eas,
+    unique_materialized_state_register,
 )
 from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteBindingEvidence,
@@ -144,9 +149,12 @@ from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     ResolverSessionState,
 )
 from d810.hexrays.mutation.detached_handler_island import (
+    find_materialized_handler_block_by_native_ea,
     find_unique_live_block_by_ea,
+    find_unique_live_block_by_native_ea,
     imported_detached_snippet_conditional_boundary_evidence,
     imported_detached_snippet_direct_boundary_evidence,
+    imported_detached_snippet_instruction_origins,
     imported_detached_snippet_target_eas,
 )
 from d810.passes.function_pass_manager import FunctionPassManager
@@ -948,9 +956,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 materialized_indirect_transfers = (
                     resolver_state.materialized_transfers
                 )
-        materialized_state_routes = ()
-        materialized_handler_entry_eas: dict[int, int] = {}
-        resolver_native_state_reg = (
+        materialized_state_var_reg = (
             _resolver_native_state_register(
                 prelim,
                 materialized_indirect_transfers,
@@ -961,11 +967,92 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if prelim is not None
             else None
         )
+        state_register_candidates = materialized_state_register_candidates(
+            materialized_indirect_transfers
+        )
+        candidate_state_var_reg = unique_materialized_state_register(
+            materialized_indirect_transfers
+        )
+        if candidate_state_var_reg is not None:
+            if materialized_state_var_reg != int(candidate_state_var_reg):
+                logger.warning(
+                    "materialized state-register conflict: recovered=%s resolver=%d",
+                    materialized_state_var_reg,
+                    int(candidate_state_var_reg),
+                )
+            if state_register_candidates != frozenset({candidate_state_var_reg}):
+                logger.info(
+                    "materialized state-register selected by state-bearing "
+                    "evidence: selected=%d navigation_candidates=%s",
+                    int(candidate_state_var_reg),
+                    sorted(state_register_candidates),
+                )
+        elif len(state_register_candidates) > 1:
+            logger.warning(
+                "materialized state-register conflict: resolver_candidates=%s",
+                sorted(state_register_candidates),
+            )
+        materialized_state_routes = ()
+        legacy_handler_by_state: dict[int, int] = {}
+        materialized_handler_entry_eas: dict[int, int] = {}
+        authoritative_handler_serials: frozenset[int] = frozenset()
+        unmapped_materialized_handler_targets: tuple[tuple[int, int], ...] = ()
+        materialized_dispatcher_router_serials: frozenset[int] = frozenset()
+        imported_instruction_origins = (
+            dict(imported_detached_snippet_instruction_origins(mba))
+            if materialized_computed_goto_profile
+            else {}
+        )
+        imported_native_eas_by_serial = {
+            int(block.serial): frozenset(
+                int(imported_instruction_origins[int(instruction.ea)])
+                for instruction in block.insn_snapshots
+                if int(instruction.ea) in imported_instruction_origins
+            )
+            for block in source.flow_graph.blocks.values()
+            if any(
+                int(instruction.ea) in imported_instruction_origins
+                for instruction in block.insn_snapshots
+            )
+        }
+        native_origin_eas_by_serial = {
+            int(block.serial): frozenset(
+                int(
+                    imported_instruction_origins.get(
+                        int(instruction.ea),
+                        int(instruction.ea),
+                    )
+                )
+                for instruction in block.insn_snapshots
+                if int(instruction.ea) > 0
+            )
+            for block in source.flow_graph.blocks.values()
+            if block.insn_snapshots
+        }
+        native_carrier_load_eas = tuple(
+            sorted(
+                {
+                    int(load_ea)
+                    for transfer in materialized_indirect_transfers
+                    for load_ea in transfer.state_carrier_consumer_load_eas
+                }
+            )
+        )
+        native_carrier_consumer_serials_by_load_ea: dict[int, int] = {}
+        for load_ea in native_carrier_load_eas:
+            consumer_block = find_unique_live_block_by_native_ea(mba, load_ea)
+            if consumer_block is None:
+                continue
+            consumer_serial = int(consumer_block.serial)
+            graph_consumer = source.flow_graph.get_block(consumer_serial)
+            if graph_consumer is None or not graph_consumer.insn_snapshots:
+                continue
+            native_carrier_consumer_serials_by_load_ea[load_ea] = consumer_serial
         if (
             prelim is not None
             and prelim.dispatch_map is not None
             and prelim.dispatcher_block_serial is not None
-            and resolver_native_state_reg is not None
+            and materialized_state_var_reg is not None
             and materialized_indirect_transfers
         ):
             _, state_write_anchors = facts_from_validated_view(fact_view)
@@ -974,6 +1061,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 -1,
             )
             exact_state_to_handler = prelim.dispatch_map.state_to_handler()
+            legacy_handler_by_state = {
+                int(state): int(serial)
+                for state, serial in exact_state_to_handler.items()
+            }
             handler_states, handler_targets, handler_serials = (
                 merge_materialized_handler_maps(
                     exact_state_to_handler,
@@ -995,32 +1086,70 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
             equality_target_eas = unique_materialized_equality_target_eas(
                 materialized_indirect_transfers,
-                int(resolver_native_state_reg),
+                materialized_state_var_reg,
                 validated_candidate_target_eas=imported_target_eas,
             )
             materialized_handler_overrides: dict[int, int] = {}
+            materialized_handler_owners = (
+                instruction_backed_materialized_handler_owners(
+                    equality_target_eas,
+                    handler_targets,
+                    source.flow_graph,
+                )
+            )
             imported_handler_serials: set[int] = set()
             for state_constant, target_ea in equality_target_eas.items():
-                target_block = find_unique_live_block_by_ea(mba, int(target_ea))
+                target_block = find_materialized_handler_block_by_native_ea(
+                    mba,
+                    int(target_ea),
+                )
                 if target_block is None:
                     continue
                 target_serial = int(target_block.serial)
                 graph_target = source.flow_graph.get_block(target_serial)
-                if graph_target is None:
+                if graph_target is None or not graph_target.insn_snapshots:
                     continue
-                target_native_identity_ea = select_unique_block_native_ea(
-                    int(graph_target.start_ea),
-                    tuple(
-                        int(instruction.ea)
-                        for instruction in graph_target.insn_snapshots
-                    ),
+                selected_owner = select_materialized_handler_owner_serial(
+                    state_constant=int(state_constant),
+                    instruction_backed_owners=materialized_handler_owners,
+                    exact_target_serial=target_serial,
+                    exact_target_ea=int(target_ea),
+                    flow_graph=source.flow_graph,
                 )
-                if target_native_identity_ea is None:
+                if selected_owner != target_serial:
+                    existing_entry_ea = materialized_handler_entry_eas.get(
+                        selected_owner
+                    )
+                    if existing_entry_ea is None:
+                        materialized_handler_entry_eas[selected_owner] = int(
+                            target_ea
+                        )
+                    elif int(existing_entry_ea) != int(target_ea):
+                        del materialized_handler_entry_eas[selected_owner]
+                    selected_block = source.flow_graph.get_block(selected_owner)
+                    if selected_block is not None:
+                        logger.info(
+                            "instruction-backed handler owner retained: "
+                            "state=0x%X target_ea=0x%X live=blk%d@0x%X "
+                            "imported_clone=blk%d@0x%X",
+                            int(state_constant),
+                            int(target_ea),
+                            selected_owner,
+                            int(selected_block.start_ea),
+                            target_serial,
+                            int(graph_target.start_ea),
+                        )
                     continue
+                exact_instruction_owner = any(
+                    int(instruction.ea) == int(target_ea)
+                    for instruction in graph_target.insn_snapshots
+                )
+                if exact_instruction_owner:
+                    materialized_handler_owners[int(state_constant)] = target_serial
                 override_serial = exact_materialized_handler_override_serial(
                     target_ea=int(target_ea),
                     target_serial=target_serial,
-                    target_native_identity_ea=target_native_identity_ea,
+                    target_native_identity_ea=int(target_ea),
                     imported_target_eas=imported_target_eas,
                 )
                 if override_serial is None:
@@ -1028,6 +1157,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 materialized_handler_overrides[int(state_constant)] = (
                     override_serial
                 )
+                materialized_handler_owners[int(state_constant)] = override_serial
                 materialized_handler_entry_eas[override_serial] = int(target_ea)
                 if int(target_ea) in imported_target_eas:
                     imported_handler_serials.add(override_serial)
@@ -1046,15 +1176,93 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     materialized_handler_overrides,
                 )
             )
+            for target_serial, target_ea in (
+                unique_materialized_conditional_handler_entry_eas(
+                    materialized_indirect_transfers,
+                    handler_targets,
+                ).items()
+            ):
+                target_block = find_materialized_handler_block_by_native_ea(
+                    mba,
+                    int(target_ea),
+                )
+                if (
+                    target_block is None
+                    or int(target_block.serial) != int(target_serial)
+                ):
+                    continue
+                existing_entry_ea = materialized_handler_entry_eas.get(
+                    int(target_serial)
+                )
+                if (
+                    existing_entry_ea is not None
+                    and int(existing_entry_ea) != int(target_ea)
+                ):
+                    del materialized_handler_entry_eas[int(target_serial)]
+                    logger.warning(
+                        "materialized handler native-entry conflict: "
+                        "blk%d@0x%X entries=[0x%X,0x%X]",
+                        int(target_serial),
+                        int(target_block.start),
+                        int(existing_entry_ea),
+                        int(target_ea),
+                    )
+                    continue
+                materialized_handler_entry_eas[int(target_serial)] = int(
+                    target_ea
+                )
+                logger.info(
+                    "conditional handler native-entry ownership: "
+                    "target_ea=0x%X live=blk%d@0x%X",
+                    int(target_ea),
+                    int(target_serial),
+                    int(target_block.start),
+                )
             authoritative_handler_serials = frozenset(
-                {
-                    *(int(serial) for serial in exact_state_to_handler.values()),
-                    *(
-                        int(serial)
-                        for serial in materialized_handler_overrides.values()
-                    ),
-                }
+                int(serial) for serial in handler_targets.values()
             )
+            materialized_router_eas = frozenset(
+                int(ea)
+                for transfer in materialized_indirect_transfers
+                for ea in transfer.dispatcher_router_eas
+            )
+            live_materialized_routers: set[int] = set()
+            for router_ea in sorted(materialized_router_eas):
+                router_block = find_unique_live_block_by_ea(mba, router_ea)
+                if router_block is None:
+                    continue
+                router_serial = int(router_block.serial)
+                if router_serial in authoritative_handler_serials:
+                    continue
+                graph_router = source.flow_graph.get_block(router_serial)
+                if graph_router is not None:
+                    live_materialized_routers.add(router_serial)
+            proven_router_ranges = materialized_dispatcher_router_native_ranges(
+                materialized_indirect_transfers
+            )
+            live_materialized_routers.update(
+                serial
+                for serial in native_origin_blocks_in_ranges(
+                    native_origin_eas_by_serial,
+                    proven_router_ranges,
+                )
+                if serial not in authoritative_handler_serials
+            )
+            materialized_dispatcher_router_serials = frozenset(
+                live_materialized_routers
+            )
+            if materialized_dispatcher_router_serials:
+                logger.info(
+                    "materialized dispatcher routers: %s",
+                    ",".join(
+                        "blk%d@0x%X"
+                        % (
+                            serial,
+                            int(source.flow_graph.get_block(serial).start_ea),
+                        )
+                        for serial in sorted(materialized_dispatcher_router_serials)
+                    ),
+                )
             materialized_state_routes = _build_materialized_state_routes(
                 source.flow_graph,
                 state_write_anchors=state_write_anchors,
@@ -1063,7 +1271,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 out_stk_maps=register_fixpoint.out_stk_maps,
                 out_reg_maps=register_fixpoint.out_reg_maps,
                 dispatcher_entry_serial=int(prelim.dispatcher_block_serial),
-                state_var_reg=int(resolver_native_state_reg),
+                state_var_reg=materialized_state_var_reg,
                 handler_serials=handler_serials,
                 authoritative_handler_serials=authoritative_handler_serials,
                 dispatcher_block_serials=frozenset(
@@ -1121,10 +1329,40 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     else None
                 ),
             )
+            terminal_state_targets: list[tuple[int, int]] = []
+            for route in materialized_state_routes:
+                if route.proof_kind != "terminal_state_route":
+                    continue
+                target_ea = route.target_native_ea
+                if target_ea is None:
+                    terminal_block = source.flow_graph.get_block(
+                        int(route.target_handler_serial)
+                    )
+                    if terminal_block is not None:
+                        target_ea = int(terminal_block.start_ea)
+                if target_ea is not None and 0 < int(target_ea) < 0xFFFFFFFFFFFFFFFF:
+                    terminal_state_targets.append(
+                        (int(route.state_constant), int(target_ea))
+                    )
+            unmapped_materialized_handler_targets = (
+                missing_materialized_handler_targets(
+                    equality_target_eas,
+                    materialized_handler_owners,
+                    terminal_state_targets=terminal_state_targets,
+                )
+            )
+            if unmapped_materialized_handler_targets:
+                logger.info(
+                    "materialized handler map incomplete: %s",
+                    ",".join(
+                        "state=0x%08X@0x%X" % (state, target_ea)
+                        for state, target_ea in unmapped_materialized_handler_targets
+                    ),
+                )
             terminal_carrier_requests = plan_terminal_return_carrier_requests(
                 source.flow_graph,
                 materialized_state_routes,
-                state_var_reg=int(resolver_native_state_reg),
+                state_var_reg=materialized_state_var_reg,
             )
             if terminal_carrier_requests:
                 resolver_state = self.current_resolver_session_state()
@@ -1144,7 +1382,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     ],
                 )
             def resolve_live_target_serial(target_ea: int) -> int | None:
-                target_block = find_unique_live_block_by_ea(mba, int(target_ea))
+                target_block = find_materialized_handler_block_by_native_ea(
+                    mba,
+                    int(target_ea),
+                )
                 target_serial = (
                     int(target_block.serial) if target_block is not None else None
                 )
@@ -1282,6 +1523,95 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if materialized_computed_goto_profile
             else ()
         )
+        if materialized_computed_goto_profile and logger.info_on:
+            router_eas = {
+                int(router_ea)
+                for transfer in materialized_indirect_transfers
+                for router_ea in transfer.dispatcher_router_eas
+            }
+            logger.info(
+                "imported native-origin router blocks: origins=%d blocks=%s "
+                "live_boundaries=%s",
+                len(imported_instruction_origins),
+                [
+                    {
+                        "block": (
+                            f"blk{int(serial)}@"
+                            f"0x{int(source.flow_graph.get_block(int(serial)).start_ea):X}"
+                        ),
+                        "router_eas": [
+                            f"0x{int(ea):X}"
+                            for ea in sorted(native_eas & router_eas)
+                        ],
+                        "preds": [
+                            (
+                                f"blk{int(pred)}@"
+                                f"0x{int(source.flow_graph.get_block(int(pred)).start_ea):X}"
+                            )
+                            for pred in source.flow_graph.get_block(int(serial)).preds
+                        ],
+                    }
+                    for serial, native_eas in imported_native_eas_by_serial.items()
+                    if native_eas & router_eas
+                ],
+                [
+                    {
+                        "block": (
+                            f"blk{int(serial)}@"
+                            f"0x{int(source.flow_graph.get_block(int(serial)).start_ea):X}"
+                        ),
+                        "native_range": (
+                            f"0x{min(native_eas):X}-0x{max(native_eas):X}"
+                        ),
+                        "live_preds": [
+                            (
+                                f"blk{int(pred)}@"
+                                f"0x{int(source.flow_graph.get_block(int(pred)).start_ea):X}"
+                            )
+                            for pred in source.flow_graph.get_block(int(serial)).preds
+                            if int(pred) not in imported_native_eas_by_serial
+                        ],
+                    }
+                    for serial, native_eas in imported_native_eas_by_serial.items()
+                    if any(
+                        int(pred) not in imported_native_eas_by_serial
+                        for pred in source.flow_graph.get_block(int(serial)).preds
+                    )
+                ],
+            )
+        for load_ea in native_carrier_load_eas:
+            if load_ea in native_carrier_consumer_serials_by_load_ea:
+                continue
+            authoritative_consumers = {
+                int(serial)
+                for serial, entry_ea in materialized_handler_entry_eas.items()
+                if int(entry_ea) == int(load_ea)
+            }
+            if len(authoritative_consumers) == 1:
+                native_carrier_consumer_serials_by_load_ea[load_ea] = next(
+                    iter(authoritative_consumers)
+                )
+        if native_carrier_load_eas:
+            logger.info(
+                "native stack-carrier consumer ownership: resolved=%s "
+                "unresolved=%s",
+                {
+                    f"0x{int(load_ea):X}": "blk%d@0x%X"
+                    % (
+                        int(serial),
+                        int(source.flow_graph.get_block(serial).start_ea),
+                    )
+                    for load_ea, serial in sorted(
+                        native_carrier_consumer_serials_by_load_ea.items()
+                    )
+                },
+                [
+                    f"0x{int(load_ea):X}"
+                    for load_ea in native_carrier_load_eas
+                    if load_ea
+                    not in native_carrier_consumer_serials_by_load_ea
+                ],
+            )
         if materialized_computed_goto_profile:
             logger.info(
                 "imported boundary-port evidence: direct=%d conditional=%d "
@@ -1308,8 +1638,25 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             "imported_conditional_boundary_evidence": (
                 imported_conditional_boundary_evidence
             ),
+            "imported_native_eas_by_serial": imported_native_eas_by_serial,
+            "native_carrier_consumer_serials_by_load_ea": (
+                native_carrier_consumer_serials_by_load_ea
+            ),
             "materialized_state_routes": materialized_state_routes,
+            "legacy_handler_by_state": legacy_handler_by_state,
+            "materialized_handler_by_state": {
+                int(state): int(serial)
+                for state, serial in handler_targets.items()
+            },
+            "materialized_state_var_reg": materialized_state_var_reg,
             "materialized_handler_entry_eas": materialized_handler_entry_eas,
+            "authoritative_handler_serials": authoritative_handler_serials,
+            "unmapped_materialized_handler_targets": (
+                unmapped_materialized_handler_targets
+            ),
+            "materialized_dispatcher_router_serials": (
+                materialized_dispatcher_router_serials
+            ),
             "residual_entry_bridge_evidence": residual_entry_bridge_evidence,
             "materialized_computed_goto_profile": bool(
                 materialized_computed_goto_profile

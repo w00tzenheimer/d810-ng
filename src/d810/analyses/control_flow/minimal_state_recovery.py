@@ -3117,6 +3117,18 @@ def resolve_materialized_handler_exit_states(
     ] = {}
     owned_candidates: dict[tuple[int, int], set[tuple[int, int, int]]] = {}
     fallback_candidates: dict[tuple[int, int], set[tuple[int, int, int]]] = {}
+    clone_targets_by_handler_state: dict[tuple[int, int], set[int]] = {}
+    for route in routes:
+        if route.source_handler_serial is not None or route.handler_exit_proven:
+            continue
+        target = int(route.target_handler_serial)
+        if target not in handler_serials:
+            continue
+        key = (
+            int(route.source_block_serial),
+            int(route.state_constant) & 0xFFFFFFFF,
+        )
+        clone_targets_by_handler_state.setdefault(key, set()).add(target)
     for route in routes:
         target = int(route.target_handler_serial)
         if target not in handler_serials:
@@ -3156,10 +3168,37 @@ def resolve_materialized_handler_exit_states(
                     and int(arm.target_handler) == int(transition.handler)
                     and not arm.is_return
                 )
+                clone_owned_self_loop = False
+                if (
+                    bool(route.handler_exit_proven)
+                    and source_handler is not None
+                    and source == int(source_handler)
+                    and source == int(transition.handler)
+                    and source in arm.ordered_path
+                    and arm.next_state is not None
+                    and (int(arm.next_state) & 0xFFFFFFFF)
+                    in {
+                        int(state) & 0xFFFFFFFF
+                        for state in transition.states
+                    }
+                    and arm.target_handler is not None
+                    and not arm.is_return
+                ):
+                    clone_targets = clone_targets_by_handler_state.get(
+                        (
+                            int(transition.handler),
+                            int(arm.next_state) & 0xFFFFFFFF,
+                        ),
+                        set(),
+                    )
+                    clone_owned_self_loop = clone_targets == {
+                        int(arm.target_handler)
+                    }
                 if (
                     missing_state_on_path
                     or exact_exit_owner
                     or handler_owned_self_loop
+                    or clone_owned_self_loop
                 ):
                     matches.append((transition_index, arm_index))
         if len(matches) == 1:

@@ -61,6 +61,10 @@ import itertools
 import struct
 from dataclasses import dataclass, field, replace
 
+import ida_funcs  # type: ignore[import-untyped]
+import ida_hexrays  # type: ignore[import-untyped]
+import idaapi  # type: ignore[import-untyped]
+
 from d810.core.typing import Callable, Mapping, NamedTuple, Sequence
 
 from d810.backends.emulation.common import CorridorEventKind
@@ -76,6 +80,35 @@ from d810.analyses.control_flow.call_abi import (
     StackCallAbiProof,
     prove_three_argument_callee_purged_call,
 )
+from d810.analyses.control_flow.detached_handler_island import (
+    DetachedSnippetBoundaryPortOwner,
+    DetachedSnippetBoundaryPorts,
+    DetachedSnippetConditionalBoundaryPort,
+    DetachedSnippetDirectBoundaryPort,
+    make_resolver_cut_boundary_port,
+    merge_detached_snippet_ranges,
+    normalize_detached_snippet_boundary_ports,
+    select_unique_block_native_ea,
+)
+from d810.analyses.control_flow.native_semantic_closure import (
+    NativeCfg,
+    NativeEdgeKind,
+    NativeSemanticClosure,
+    NativeTerminalKind,
+    ResolverProvenHandlerEntry,
+    plan_native_generation_ranges,
+    plan_native_semantic_closure,
+)
+from d810.analyses.control_flow.preopt_union_region import (
+    plan_preopt_union_region,
+    select_missing_preopt_union_region,
+)
+from d810.backends.hexrays.evidence.native_semantic_closure import (
+    build_native_semantic_cfg,
+)
+from d810.backends.hexrays.evidence.residual_entry_bridge import (
+    predicate_arm_reaches_ea,
+)
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
@@ -85,6 +118,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     is_conditional_handler_bridge_kind,
     route_materialized_transfer_chain,
     route_transfer_target_through_condition_chain,
+    unique_materialized_equality_target_eas,
 )
 from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.analyses.control_flow.semantic_transition import StateWriteAnchor
@@ -121,12 +155,17 @@ from d810.hexrays.preanalysis.stkpnts_preanalysis import (
     register_stkpnts_preanalysis_handler,
     unregister_stkpnts_preanalysis_handler,
 )
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.hexrays.hooks.optimization_suppression import (
     suppress_d810_optimization,
 )
 from d810.hexrays.mutation.detached_handler_island import (
+    bind_preopt_union_snippet_boundary_ports,
     capture_detached_callinfo_templates,
+    capture_preopt_union_snippet_template,
     detached_callinfo_template_eas,
+    detached_preopt_call_stack_points,
+    exact_live_predicate_true_is_taken,
     imported_detached_snippet_instruction_origins,
     last_imported_detached_snippet_instruction_origins,
     native_stack_frame_offsets_for_ranges,
@@ -206,9 +245,9 @@ class ComputedGotoResolution:
     native_stack_frame_offsets: tuple[tuple[int, tuple[int, ...]], ...] = field(
         default_factory=tuple
     )
-    #: Native conditional branches whose arms select distinct concrete
-    #: dispatcher states. Targets remain unresolved until independently
-    #: recovered state-to-handler routes prove both arms unambiguously.
+    #: Native compare/CMOV choices whose two concrete values may be dispatcher
+    #: states.  Targets remain unresolved here; the prepatch evidence stage
+    #: publishes a bridge only when both states map to unique handlers.
     conditional_state_choices: tuple[MaterializedIndirectTransfer, ...] = field(
         default_factory=tuple
     )
@@ -220,6 +259,35 @@ class ComputedGotoResolution:
     @property
     def target_count(self) -> int:
         return sum(len(v) for v in self.jmp_targets.values())
+
+
+@dataclass(frozen=True, slots=True)
+class PreoptUnionPreparationResult:
+    """EA-keyed outcome of one production PREOPT union preparation."""
+
+    function_ea: int
+    prepared: bool
+    published: bool
+    primary_seed_ea: int | None = None
+    seed_eas: tuple[int, ...] = ()
+    native_ranges: tuple[tuple[int, int], ...] = ()
+    imported_block_entry_eas: tuple[int, ...] = ()
+    boundary_ports: DetachedSnippetBoundaryPorts = field(
+        default_factory=lambda: DetachedSnippetBoundaryPorts((), ())
+    )
+    abstention_reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _PrepatchPreoptUnionSource:
+    """PREOPT source captured before resolver byte delivery changes reachability."""
+
+    primary_seed_ea: int
+    seed_eas: tuple[int, ...]
+    native_ranges: tuple[tuple[int, int], ...]
+    imported_block_entry_eas: tuple[int, ...]
+    cfg: NativeCfg
+    closure: NativeSemanticClosure
 
 
 # --------------------------------------------------------------------------- #
@@ -642,7 +710,12 @@ def _resolve_static_conditional_state_choice_targets(
     choices: Sequence[MaterializedIndirectTransfer],
     transfers: Sequence[MaterializedIndirectTransfer],
 ) -> tuple[MaterializedIndirectTransfer, ...]:
-    """Bind exact native state choices to one unambiguous dispatcher map."""
+    """Bind exact native state choices to one unambiguous dispatcher map.
+
+    The native resolver proves the predicate and both selected constants before
+    import.  This stage deliberately waits for independently recovered
+    state-to-handler routes.  Missing, conflicting, or same-target arms abstain.
+    """
     state_registers = {
         int(transfer.selector_state_var_reg)
         for transfer in transfers
@@ -690,14 +763,20 @@ def _resolve_static_conditional_state_choice_targets(
             )
         ):
             continue
-        true_target = state_targets.get(int(choice.predicate_true_state) & _MASK32)
-        false_target = state_targets.get(int(choice.predicate_false_state) & _MASK32)
+        true_state = int(choice.predicate_true_state) & _MASK32
+        false_state = int(choice.predicate_false_state) & _MASK32
+        true_target = state_targets.get(true_state)
+        false_target = state_targets.get(false_state)
         if (
             true_target is None
             or false_target is None
             or int(true_target) == int(false_target)
         ):
             continue
+        carried_through_stack = (
+            choice.state_carrier_store_ea is not None
+            and choice.state_carrier_stack_displacement is not None
+        )
         resolved.append(
             replace(
                 choice,
@@ -707,13 +786,20 @@ def _resolve_static_conditional_state_choice_targets(
                 selector_state_var_reg=state_register,
                 predicate_true_is_taken=True,
                 predicate_preserve_live=True,
-                resolver_kind="static_conditional_state_choice_bridge",
+                resolver_kind=(
+                    "static_stack_carried_state_choice"
+                    if carried_through_stack
+                    else "static_conditional_state_choice_bridge"
+                ),
             )
         )
     return tuple(
         sorted(
             set(resolved),
-            key=lambda row: (int(row.source_block_ea), int(row.source_jmp_ea)),
+            key=lambda row: (
+                int(row.source_block_ea),
+                int(row.source_jmp_ea),
+            ),
         )
     )
 
@@ -894,6 +980,229 @@ def _static_native_bootstrap_route_candidates(
         if found_entry_state_write:
             break
     return tuple(sorted(candidates))
+
+
+def _static_materialized_transfer_batch(
+    resolution: ComputedGotoResolution,
+    *,
+    static_transfers: Sequence[MaterializedIndirectTransfer],
+    equality_transfers: Sequence[MaterializedIndirectTransfer],
+    static_handler_entry_routes: Sequence[MaterializedIndirectTransfer],
+    native_handler_entry_routes: Sequence[MaterializedIndirectTransfer],
+    static_handler_exit_routes: Sequence[MaterializedIndirectTransfer] = (),
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Compose the persistent static evidence, including bound state choices.
+
+    Conditional state choices are discovered before byte materialization, but
+    their handler targets are known only after the state-to-handler routes have
+    been recovered.  Keep the bridge in the same batch as those routes so the
+    later PREOPT boundary-port planner can consume the proof.
+    """
+    source_transfers = (
+        *static_transfers,
+        *static_handler_entry_routes,
+        *native_handler_entry_routes,
+    )
+    return (
+        *static_transfers,
+        *equality_transfers,
+        *static_handler_entry_routes,
+        *native_handler_entry_routes,
+        *static_handler_exit_routes,
+        *_resolve_static_conditional_state_choice_targets(
+            resolution.conditional_state_choices,
+            source_transfers,
+        ),
+    )
+
+
+def _resolve_static_handler_exit_routes(
+    terminal_transfers: Sequence[MaterializedIndirectTransfer],
+    handler_entry_routes: Sequence[MaterializedIndirectTransfer],
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Map exact native handler-exit states directly to final handlers.
+
+    The detached static replay proves the state register at the original
+    ``jmp reg`` boundary.  The independently recovered BST map proves the
+    handler for that state.  Their composition is the native semantic edge
+    that the reference rewriter materializes, without retaining a trip through
+    the dispatcher.  Missing or conflicting state-register evidence abstains.
+    """
+    state_registers = {
+        int(route.selector_state_var_reg)
+        for route in handler_entry_routes
+        if route.resolver_kind == "static_handler_entry_route"
+        and route.selector_state_var_reg is not None
+    }
+    if len(state_registers) != 1:
+        return ()
+    state_register = next(iter(state_registers))
+    state_targets = _unique_static_equality_handler_targets(
+        handler_entry_routes,
+        state_register,
+    )
+    routes: set[MaterializedIndirectTransfer] = set()
+    for terminal in terminal_transfers:
+        state_values = {
+            int(value) & _MASK32
+            for register, value in terminal.source_register_values
+            if int(register) == state_register
+        }
+        if len(state_values) != 1:
+            continue
+        state = next(iter(state_values))
+        target_ea = state_targets.get(state)
+        if target_ea is None:
+            continue
+        routes.add(
+            MaterializedIndirectTransfer(
+                source_jmp_ea=int(terminal.source_jmp_ea),
+                source_block_ea=int(terminal.source_block_ea),
+                materialized_anchor_eas=(),
+                target_eas=(int(target_ea),),
+                selector_state_var_reg=state_register,
+                selector_state_constant=state,
+                source_register_values=tuple(
+                    sorted(terminal.source_register_values)
+                ),
+                dispatcher_envelope_target_eas=tuple(
+                    sorted(
+                        {
+                            int(target_ea)
+                            for target_ea in terminal.target_eas
+                        }
+                    )
+                ),
+                resolver_kind="static_handler_exit_route",
+            )
+        )
+    return tuple(
+        sorted(
+            routes,
+            key=lambda route: (
+                int(route.source_jmp_ea),
+                int(route.target_eas[0]),
+            ),
+        )
+    )
+
+
+def _recover_prepatch_handler_exit_routes(
+    resolution: ComputedGotoResolution,
+    static_transfers: Sequence[MaterializedIndirectTransfer],
+    handler_entry_routes: Sequence[MaterializedIndirectTransfer],
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Replay every proven handler entry to its original indirect frontier."""
+    connected_routes = _recover_connected_static_handler_exit_routes(
+        resolution,
+        handler_entry_routes,
+    )
+    entry_eas = tuple(
+        sorted(
+            {
+                int(route.target_eas[0])
+                for route in handler_entry_routes
+                if route.resolver_kind == "static_handler_entry_route"
+                and len(route.target_eas) == 1
+            }
+        )
+    )
+    terminal_transfers = _detached_static_terminal_transfers(
+        resolution,
+        entry_eas,
+        entry_context_transfers=tuple(static_transfers),
+    )
+    detached_routes = _resolve_static_handler_exit_routes(
+        terminal_transfers, handler_entry_routes
+    )
+    return tuple(dict.fromkeys((*connected_routes, *detached_routes)))
+
+
+def _recover_connected_static_handler_exit_routes(
+    resolution: ComputedGotoResolution,
+    handler_entry_routes: Sequence[MaterializedIndirectTransfer],
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Project connected-fixpoint snapshots onto original indirect exits."""
+    state_registers = {
+        int(route.selector_state_var_reg)
+        for route in handler_entry_routes
+        if route.resolver_kind == "static_handler_entry_route"
+        and route.selector_state_var_reg is not None
+    }
+    if len(state_registers) != 1:
+        return ()
+    state_register = next(iter(state_registers))
+    state_register_name = next(
+        (
+            name
+            for name in _SV_REG_NAMES.values()
+            if _native_register_mreg(name) == state_register
+        ),
+        None,
+    )
+    if state_register_name is None:
+        return ()
+    snapshots = {
+        int(block_entry): {
+            str(name): _sv_singleton(int(value))
+            for name, value in register_values
+        }
+        for block_entry, register_values in resolution.corridor_register_snapshots
+    }
+    terminal_transfers: list[MaterializedIndirectTransfer] = []
+    for plan in resolution.patch_plans:
+        entry_state = snapshots.get(int(plan.block_entry))
+        if entry_state is None:
+            continue
+        exit_state = _static_register_state_before_jmp(
+            int(plan.block_entry),
+            entry_state,
+            int(plan.jmp_ea),
+        )
+        state_values = exit_state.get(state_register_name)
+        if state_values is None or len(state_values) != 1:
+            continue
+        source_register_values = tuple(
+            sorted(
+                _residual_context_mregs(
+                    _sv_concrete_register_values(exit_state)
+                ).items()
+            )
+        )
+        terminal_transfers.append(
+            MaterializedIndirectTransfer(
+                source_jmp_ea=int(plan.jmp_ea),
+                source_block_ea=int(plan.block_entry),
+                materialized_anchor_eas=(),
+                target_eas=tuple(int(target) for target in plan.target_eas),
+                source_register_values=source_register_values,
+                resolver_kind="connected_static_fixpoint",
+            )
+        )
+    return _resolve_static_handler_exit_routes(
+        terminal_transfers,
+        handler_entry_routes,
+    )
+
+
+def _resolver_targets_by_source(
+    transfers: Sequence[MaterializedIndirectTransfer],
+) -> dict[int, tuple[int, ...]]:
+    """Prefer final handler routes over their obsolete dispatcher envelope."""
+    candidates: dict[int, set[int]] = {}
+    exact: dict[int, set[int]] = {}
+    for transfer in transfers:
+        if not transfer.target_eas:
+            continue
+        source_ea = int(transfer.source_jmp_ea)
+        targets = {int(target_ea) for target_ea in transfer.target_eas}
+        candidates.setdefault(source_ea, set()).update(targets)
+        if transfer.resolver_kind == "static_handler_exit_route":
+            exact.setdefault(source_ea, set()).update(targets)
+    return {
+        source_ea: tuple(sorted(exact.get(source_ea, targets)))
+        for source_ea, targets in sorted(candidates.items())
+    }
 
 
 def _build_residual_state_route_evidence(
@@ -1484,7 +1793,11 @@ def _sv_process_writer(mnem: str, insn, state) -> None:
     op0 = insn.ops[0]
     if op0.type != idaapi.o_reg or not _insn_writes_first_operand(insn, idaapi.CF_CHG1):
         return
-    dst = _sv_reg_name(op0)
+    dst = (
+        _sv_setcc_reg_name(op0)
+        if mnem.startswith("set") and len(mnem) > 3
+        else _sv_reg_name(op0)
+    )
     if dst is None:
         return
     if mnem == "mov":
@@ -1649,6 +1962,399 @@ def _dispatcher_context_register_values(
     return tuple(result)
 
 
+def _make_static_conditional_state_choice(
+    *,
+    source_block_ea: int,
+    compare_ea: int,
+    select_ea: int,
+    condition_code: int | None,
+    predicate_register: int | None,
+    predicate_size: int,
+    predicate_constant: int,
+    true_values: frozenset[int] | None,
+    false_values: frozenset[int] | None,
+    state_carrier_store_ea: int | None = None,
+    state_carrier_stack_displacement: int | None = None,
+) -> MaterializedIndirectTransfer | None:
+    """Normalize one exact native compare/CMOV into portable state evidence."""
+    if (
+        int(source_block_ea) <= 0
+        or int(compare_ea) <= 0
+        or int(select_ea) <= 0
+        or condition_code not in {2, 3, 4, 5, 6, 7, 12, 13, 14, 15}
+        or predicate_register is None
+        or int(predicate_size) <= 0
+        or true_values is None
+        or false_values is None
+        or len(true_values) != 1
+        or len(false_values) != 1
+    ):
+        return None
+    true_state = int(next(iter(true_values))) & _MASK32
+    false_state = int(next(iter(false_values))) & _MASK32
+    if true_state == false_state:
+        return None
+    return MaterializedIndirectTransfer(
+        source_jmp_ea=int(select_ea),
+        source_block_ea=int(source_block_ea),
+        materialized_anchor_eas=(
+            int(compare_ea),
+            int(select_ea),
+            *(
+                ()
+                if state_carrier_store_ea is None
+                else (int(state_carrier_store_ea),)
+            ),
+        ),
+        target_eas=(),
+        condition_code=int(condition_code),
+        predicate_register=int(predicate_register),
+        predicate_size=int(predicate_size),
+        predicate_compare_constant=int(predicate_constant) & _MASK32,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        resolver_kind="static_conditional_state_choice",
+        state_carrier_store_ea=(
+            None
+            if state_carrier_store_ea is None
+            else int(state_carrier_store_ea)
+        ),
+        state_carrier_stack_displacement=(
+            None
+            if state_carrier_stack_displacement is None
+            else int(state_carrier_stack_displacement) & _MASK32
+        ),
+    )
+
+
+def _branch_state_choice_candidates(
+    *,
+    source_block_ea: int,
+    predicate_ea: int,
+    condition_code: int | None,
+    source_state: Mapping[str, frozenset[int] | None],
+    taken_state: Mapping[str, frozenset[int] | None],
+    fallthrough_state: Mapping[str, frozenset[int] | None],
+    taken_resolved_target_ea: int,
+    fallthrough_resolved_target_ea: int,
+    register_mregs: Mapping[str, int],
+    predicate_register_names: frozenset[str] = frozenset(),
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Prove a native branch that overrides one default dispatcher state.
+
+    Both arms must already terminate at distinct resolver-owned computed-jump
+    frontiers.  A candidate register qualifies only when its value is singleton
+    on all three observations, the two arms differ, and the pre-branch value is
+    retained by exactly one arm.  The independently recovered equality router
+    later decides whether that register and both constants are dispatcher state.
+    """
+    if (
+        int(source_block_ea) <= 0
+        or int(predicate_ea) <= 0
+        or condition_code not in _SV_JCC_CONDITION_CODES.values()
+        or int(taken_resolved_target_ea) <= 0
+        or int(fallthrough_resolved_target_ea) <= 0
+        or int(taken_resolved_target_ea) == int(fallthrough_resolved_target_ea)
+    ):
+        return ()
+    candidates: list[MaterializedIndirectTransfer] = []
+    for register_name in sorted(
+        set(source_state) & set(taken_state) & set(fallthrough_state)
+    ):
+        mreg = register_mregs.get(register_name)
+        source_values = source_state.get(register_name)
+        taken_values = taken_state.get(register_name)
+        fallthrough_values = fallthrough_state.get(register_name)
+        if (
+            mreg is None
+            or register_name in predicate_register_names
+            or source_values is None
+            or taken_values is None
+            or fallthrough_values is None
+            or len(source_values) != 1
+            or len(taken_values) != 1
+            or len(fallthrough_values) != 1
+        ):
+            continue
+        source_value = int(next(iter(source_values))) & _MASK32
+        taken_value = int(next(iter(taken_values))) & _MASK32
+        fallthrough_value = int(next(iter(fallthrough_values))) & _MASK32
+        if (
+            taken_value == fallthrough_value
+            or source_value not in {taken_value, fallthrough_value}
+        ):
+            continue
+        candidates.append(
+            MaterializedIndirectTransfer(
+                source_jmp_ea=int(predicate_ea),
+                source_block_ea=int(source_block_ea),
+                materialized_anchor_eas=(int(predicate_ea),),
+                target_eas=(),
+                condition_code=int(condition_code),
+                selector_state_var_reg=int(mreg),
+                predicate_true_state=taken_value,
+                predicate_false_state=fallthrough_value,
+                resolver_kind="static_conditional_state_choice",
+            )
+        )
+    return tuple(candidates)
+
+
+def _sv_stack_pointer_displacement(op) -> int | None:
+    """Return one exact x86 ESP-relative displacement, if present."""
+    import idaapi  # type: ignore[import-untyped]
+
+    if int(op.type) != int(idaapi.o_displ):
+        return None
+    base_name = _SV_REG_NAMES.get(int(op.phrase)) or _SV_REG_NAMES.get(int(op.reg))
+    if base_name != "esp":
+        return None
+    return int(op.addr) & _MASK32
+
+
+def _static_stack_carrier_frame_offset_overrides(
+    choices: Sequence[MaterializedIndirectTransfer],
+    *,
+    consumer_load_eas_by_displacement: Mapping[int, Sequence[int]],
+    native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]],
+) -> dict[int, tuple[int, ...]]:
+    """Project a connected prologue store identity onto detached consumers.
+
+    IDA can assign ``spd=0`` to a detached handler even though the resolver
+    proves that it is entered from the function's established stack frame.
+    Match only an explicit stack-carried state choice and an exact native
+    ESP displacement; the connected prologue store's IDA-frame identity then
+    overrides the detached consumer's transient one.
+    """
+    overrides: dict[int, tuple[int, ...]] = {}
+    for choice in choices:
+        store_ea = choice.state_carrier_store_ea
+        displacement = choice.state_carrier_stack_displacement
+        if store_ea is None or displacement is None:
+            continue
+        store_offsets = native_stack_frame_offsets_by_ea.get(int(store_ea), ())
+        if len(store_offsets) != 1:
+            continue
+        for consumer_ea in consumer_load_eas_by_displacement.get(
+            int(displacement) & _MASK32,
+            (),
+        ):
+            overrides[int(consumer_ea)] = tuple(int(value) for value in store_offsets)
+    return overrides
+
+
+def _bind_static_stack_carrier_consumers(
+    choices: Sequence[MaterializedIndirectTransfer],
+    *,
+    consumer_load_eas_by_displacement: Mapping[int, Sequence[int]],
+    native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]],
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Attach stable native producer/consumer identities to carried choices."""
+    bound: list[MaterializedIndirectTransfer] = []
+    for choice in choices:
+        store_ea = choice.state_carrier_store_ea
+        displacement = choice.state_carrier_stack_displacement
+        if store_ea is None or displacement is None:
+            bound.append(choice)
+            continue
+        store_offsets = native_stack_frame_offsets_by_ea.get(int(store_ea), ())
+        consumer_load_eas = tuple(
+            sorted(
+                {
+                    int(ea)
+                    for ea in consumer_load_eas_by_displacement.get(
+                        int(displacement) & _MASK32,
+                        (),
+                    )
+                }
+            )
+        )
+        if len(store_offsets) != 1 or not consumer_load_eas:
+            bound.append(choice)
+            continue
+        bound.append(
+            replace(
+                choice,
+                state_carrier_consumer_load_eas=consumer_load_eas,
+                state_carrier_ida_stkoff=int(store_offsets[0]),
+            )
+        )
+    return tuple(bound)
+
+
+def _static_conditional_state_choices(
+    entry_state: Mapping[int, Mapping[str, frozenset[int] | None]],
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Recover exact compare/CMOV state choices before byte materialization.
+
+    Only a register-vs-immediate compare followed by flag-neutral instructions
+    and a CMOV with two singleton values qualifies.  The selected constants are
+    evidence only; a later stage must map both through the dispatcher.
+    """
+    import ida_ua  # type: ignore[import-untyped]
+
+    choices: set[MaterializedIndirectTransfer] = set()
+    for block_entry, block_state in sorted(entry_state.items()):
+        state = dict(block_state)
+        pending_compare: tuple[int, int, int] | None = None
+        pending_choice: tuple[MaterializedIndirectTransfer, str] | None = None
+        instruction = ida_ua.insn_t()
+        ea = int(block_entry)
+        while True:
+            length = int(ida_ua.decode_insn(instruction, ea))
+            if length <= 0:
+                break
+            mnemonic = idaapi.print_insn_mnem(ea) or ""
+            if not mnemonic:
+                break
+            next_ea = ea + length
+            if pending_choice is not None:
+                choice, selected_register = pending_choice
+                destination = instruction.ops[0]
+                source = instruction.ops[1]
+                stack_displacement = _sv_stack_pointer_displacement(destination)
+                if (
+                    mnemonic == "mov"
+                    and stack_displacement is not None
+                    and source.type == idaapi.o_reg
+                    and _sv_reg_name(source) == selected_register
+                ):
+                    choices.discard(choice)
+                    choice = replace(
+                        choice,
+                        materialized_anchor_eas=(
+                            *choice.materialized_anchor_eas,
+                            int(ea),
+                        ),
+                        state_carrier_store_ea=int(ea),
+                        state_carrier_stack_displacement=stack_displacement,
+                    )
+                    choices.add(choice)
+                # The carrier store must immediately follow the select.  This
+                # avoids carrying flag/register assumptions across unrelated
+                # native instructions.
+                pending_choice = None
+            if mnemonic in {"cmp", "test"}:
+                left = instruction.ops[0]
+                right = instruction.ops[1]
+                left_name = _sv_reg_name(left)
+                left_mreg = _native_register_mreg(left_name)
+                if (
+                    left.type == idaapi.o_reg
+                    and left_mreg is not None
+                    and (
+                        (
+                            mnemonic == "cmp"
+                            and right.type == idaapi.o_imm
+                        )
+                        or (
+                            mnemonic == "test"
+                            and right.type == idaapi.o_reg
+                            and _sv_reg_name(right) == left_name
+                        )
+                    )
+                ):
+                    pending_compare = (
+                        int(ea),
+                        int(left_mreg),
+                        (
+                            int(right.value) & _MASK32
+                            if mnemonic == "cmp"
+                            else 0
+                        ),
+                    )
+                else:
+                    pending_compare = None
+            elif mnemonic in _SV_CMOV_MNEMS:
+                destination_name = _sv_reg_name(instruction.ops[0])
+                source_values = _sv_resolve_source(
+                    instruction.ops[1],
+                    state,
+                    is_lea=False,
+                )
+                if pending_compare is not None and destination_name is not None:
+                    compare_ea, predicate_register, predicate_constant = (
+                        pending_compare
+                    )
+                    choice = _make_static_conditional_state_choice(
+                        source_block_ea=int(block_entry),
+                        compare_ea=compare_ea,
+                        select_ea=int(ea),
+                        condition_code=_select_cc_nibble(int(ea), length),
+                        predicate_register=predicate_register,
+                        predicate_size=4,
+                        predicate_constant=predicate_constant,
+                        true_values=source_values,
+                        false_values=state.get(destination_name),
+                    )
+                    if choice is not None:
+                        choices.add(choice)
+                        pending_choice = (choice, destination_name)
+                pending_compare = None
+            elif mnemonic not in _SV_FLAG_SAFE_RELOC:
+                pending_compare = None
+
+            if mnemonic == "call":
+                for register in _SV_CALLER_CLOBBERED:
+                    state[register] = None
+                pending_compare = None
+            else:
+                _sv_process_writer(mnemonic, instruction, state)
+            if (
+                mnemonic == "jmp"
+                or mnemonic in _SV_JCC_MNEMS
+                or mnemonic in ("retn", "ret", "retf")
+            ):
+                break
+            ea = next_ea
+    return tuple(
+        sorted(
+            choices,
+            key=lambda row: (
+                int(row.source_block_ea),
+                int(row.source_jmp_ea),
+            ),
+        )
+    )
+
+
+def _static_stack_carrier_consumer_load_eas(
+    resolution: ComputedGotoResolution,
+) -> dict[int, tuple[int, ...]]:
+    """Find exact native state-register reloads before resolver-owned exits."""
+    import ida_ua  # type: ignore[import-untyped]
+
+    by_displacement: dict[int, set[int]] = {}
+    for plan in resolution.patch_plans:
+        selector_name = plan.selector_register_name
+        if selector_name is None:
+            continue
+        instruction = ida_ua.insn_t()
+        ea = int(plan.block_entry)
+        while ea <= int(plan.jmp_ea):
+            length = int(ida_ua.decode_insn(instruction, ea))
+            if length <= 0:
+                break
+            mnemonic = idaapi.print_insn_mnem(ea) or ""
+            if (
+                mnemonic == "mov"
+                and instruction.ops[0].type == idaapi.o_reg
+                and _sv_reg_name(instruction.ops[0]) == selector_name
+            ):
+                displacement = _sv_stack_pointer_displacement(
+                    instruction.ops[1]
+                )
+                if displacement is not None:
+                    by_displacement.setdefault(displacement, set()).add(int(ea))
+            if ea == int(plan.jmp_ea):
+                break
+            ea += length
+    return {
+        displacement: tuple(sorted(load_eas))
+        for displacement, load_eas in sorted(by_displacement.items())
+    }
+
+
 def _static_resolver_fixpoint(
     function_ea: int,
     *,
@@ -1792,6 +2498,190 @@ def _static_register_state_before_jmp(
     return state if ea == int(jmp_ea) else {}
 
 
+def _static_branch_state_choices(
+    entry_state: Mapping[int, Mapping[str, frozenset[int] | None]],
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Recover default-state/override-state branches before materialization.
+
+    Each arm is replayed independently by the existing bounded static fixpoint
+    and must reach exactly one uniquely resolved ``jmp reg`` frontier.
+    """
+    import ida_ua  # type: ignore[import-untyped]
+
+    def first_block_overrides(
+        arm_entry_ea: int,
+        source_state: Mapping[str, frozenset[int] | None],
+    ) -> frozenset[str]:
+        arm_state = dict(source_state)
+        arm_instruction = ida_ua.insn_t()
+        arm_ea = int(arm_entry_ea)
+        while True:
+            arm_length = int(ida_ua.decode_insn(arm_instruction, arm_ea))
+            if arm_length <= 0:
+                return frozenset()
+            arm_mnemonic = idaapi.print_insn_mnem(arm_ea) or ""
+            if not arm_mnemonic:
+                return frozenset()
+            if (
+                arm_mnemonic == "jmp"
+                or arm_mnemonic in _SV_JCC_MNEMS
+                or arm_mnemonic in {"retn", "ret", "retf"}
+            ):
+                break
+            if arm_mnemonic == "call":
+                for register in _SV_CALLER_CLOBBERED:
+                    arm_state[register] = None
+            else:
+                _sv_process_writer(arm_mnemonic, arm_instruction, arm_state)
+            arm_ea += arm_length
+        return frozenset(
+            register_name
+            for register_name, source_values in source_state.items()
+            for arm_values in (arm_state.get(register_name),)
+            if source_values is not None
+            and arm_values is not None
+            and len(source_values) == 1
+            and len(arm_values) == 1
+            and source_values != arm_values
+        )
+
+    arm_frontier_cache: dict[
+        tuple[int, tuple[tuple[str, int], ...]],
+        tuple[int, Mapping[str, frozenset[int] | None]] | None,
+    ] = {}
+
+    def arm_frontier(
+        arm_entry_ea: int,
+        source_state: Mapping[str, frozenset[int] | None],
+    ) -> tuple[int, Mapping[str, frozenset[int] | None]] | None:
+        initial_register_values = _sv_concrete_register_values(source_state)
+        cache_key = (int(arm_entry_ea), initial_register_values)
+        if cache_key in arm_frontier_cache:
+            return arm_frontier_cache[cache_key]
+        initial_mregs = {
+            int(mreg): int(value)
+            for register_name, value in initial_register_values
+            for mreg in (_native_register_mreg(register_name),)
+            if mreg is not None
+        }
+        resolved = _resolve_concrete_dispatch_corridor(
+            int(arm_entry_ea),
+            initial_mregs=initial_mregs,
+            handler_eas=frozenset(),
+            return_first_indirect_target=True,
+            return_first_indirect_result=True,
+        )
+        result = None
+        if isinstance(resolved, _ConcreteDispatchResult):
+            result = (
+                int(resolved.target_ea),
+                {
+                    str(register_name): _sv_singleton(int(value))
+                    for register_name, value in resolved.register_values
+                },
+            )
+        arm_frontier_cache[cache_key] = result
+        return result
+
+    choices: set[MaterializedIndirectTransfer] = set()
+    instruction = ida_ua.insn_t()
+    for source_block_ea, initial_state in sorted(entry_state.items()):
+        state = dict(initial_state)
+        predicate_register_names: frozenset[str] = frozenset()
+        ea = int(source_block_ea)
+        while True:
+            length = int(ida_ua.decode_insn(instruction, ea))
+            if length <= 0:
+                break
+            mnemonic = idaapi.print_insn_mnem(ea) or ""
+            if not mnemonic:
+                break
+            next_ea = ea + length
+            if mnemonic in _SV_JCC_MNEMS:
+                condition_code = _SV_JCC_CONDITION_CODES.get(mnemonic)
+                target = instruction.ops[0]
+                if condition_code is None or target.type not in {
+                    idaapi.o_near,
+                    idaapi.o_far,
+                }:
+                    break
+                taken_entry = int(target.addr)
+                fallthrough_entry = int(next_ea)
+                taken_overrides = first_block_overrides(taken_entry, state)
+                fallthrough_overrides = first_block_overrides(
+                    fallthrough_entry,
+                    state,
+                )
+                if not taken_overrides and not fallthrough_overrides:
+                    break
+                taken_result = arm_frontier(
+                    taken_entry,
+                    state,
+                )
+                fallthrough_result = arm_frontier(
+                    fallthrough_entry,
+                    state,
+                )
+                if taken_result is None or fallthrough_result is None:
+                    break
+                taken_resolved_target, taken_register_state = taken_result
+                fallthrough_resolved_target, fallthrough_register_state = (
+                    fallthrough_result
+                )
+                register_mregs = {
+                    register_name: mreg
+                    for register_name in (
+                        set(state)
+                        & set(taken_register_state)
+                        & set(fallthrough_register_state)
+                    )
+                    for mreg in (_native_register_mreg(register_name),)
+                    if mreg is not None
+                }
+                choices.update(
+                    _branch_state_choice_candidates(
+                        source_block_ea=int(source_block_ea),
+                        predicate_ea=int(ea),
+                        condition_code=condition_code,
+                        source_state=state,
+                        taken_state=taken_register_state,
+                        fallthrough_state=fallthrough_register_state,
+                        taken_resolved_target_ea=taken_resolved_target,
+                        fallthrough_resolved_target_ea=(
+                            fallthrough_resolved_target
+                        ),
+                        register_mregs=register_mregs,
+                        predicate_register_names=predicate_register_names,
+                    )
+                )
+                break
+            if mnemonic in {"jmp", "retn", "ret", "retf"}:
+                break
+            if mnemonic in {"cmp", "test"}:
+                predicate_register_names = frozenset(
+                    register_name
+                    for operand in (instruction.ops[0], instruction.ops[1])
+                    for register_name in (_sv_reg_name(operand),)
+                    if operand.type == idaapi.o_reg and register_name is not None
+                )
+            if mnemonic == "call":
+                for register in _SV_CALLER_CLOBBERED:
+                    state[register] = None
+            else:
+                _sv_process_writer(mnemonic, instruction, state)
+            ea = next_ea
+    return tuple(
+        sorted(
+            choices,
+            key=lambda row: (
+                int(row.source_block_ea),
+                int(row.source_jmp_ea),
+                int(row.selector_state_var_reg or -1),
+            ),
+        )
+    )
+
+
 def _detached_static_terminal_transfers(
     resolution: ComputedGotoResolution,
     entry_eas: tuple[int, ...],
@@ -1811,8 +2701,7 @@ def _detached_static_terminal_transfers(
         target_snapshots = {
             tuple(sorted(transfer.target_register_values))
             for transfer in entry_context_transfers
-            if len(transfer.target_eas) == 1
-            and int(transfer.target_eas[0]) == int(entry_ea)
+            if int(entry_ea) in {int(target_ea) for target_ea in transfer.target_eas}
             and transfer.target_register_values
         }
         target_context: dict[int, int] = {}
@@ -1904,9 +2793,7 @@ def _detached_static_terminal_transfers(
                         int(two_way["false"]) if two_way is not None else None
                     ),
                     selector_state_var_reg=(
-                        _native_register_mreg(
-                            two_way.get("selector_register_name")
-                        )
+                        _native_register_mreg(two_way.get("selector_register_name"))
                         if two_way is not None
                         else None
                     ),
@@ -1987,7 +2874,9 @@ def _replay_two_way(block_entry: int, entry_state0: dict, jmp_ea: int) -> dict |
             and len(mnem) > 3
             and insn.ops[0].type == idaapi.o_reg
         ):
-            dst = _sv_reg_name(insn.ops[0])
+            dst = _sv_setcc_reg_name(insn.ops[0])
+            if dst is None:
+                return None
             old_t = state_t.get(dst)
             old_f = state_f.get(dst)
             base_t = (
@@ -2492,7 +3381,19 @@ def resolve_computed_gotos_static(function_ea: int) -> ComputedGotoResolution | 
             entry_state,
             tuple(int(plan.block_entry) for plan in plans),
         ),
-        conditional_state_choices=_static_branch_state_choices(entry_state),
+        conditional_state_choices=tuple(
+            sorted(
+                {
+                    *_static_conditional_state_choices(entry_state),
+                    *_static_branch_state_choices(entry_state),
+                },
+                key=lambda row: (
+                    int(row.source_block_ea),
+                    int(row.source_jmp_ea),
+                    int(row.selector_state_var_reg or -1),
+                ),
+            )
+        ),
     )
 
 
@@ -2570,7 +3471,46 @@ def _static_materialized_transfers(
                 materialized_region_end_ea=int(plan.region_end),
             )
         )
-    return tuple(transfers)
+    router_eas_by_state_register: dict[int, tuple[int, ...]] = {}
+    state_registers = {
+        int(transfer.selector_state_var_reg)
+        for transfer in transfers
+        if transfer.selector_state_var_reg is not None
+    }
+    for state_register in state_registers:
+        handler_entry_eas = frozenset(
+            unique_materialized_equality_target_eas(
+                transfers,
+                state_register,
+            ).values()
+        )
+        router_eas_by_state_register[state_register] = tuple(
+            sorted(
+                {
+                    int(transfer.source_block_ea)
+                    for transfer in transfers
+                    if transfer.selector_state_var_reg == state_register
+                    and transfer.resolver_kind
+                    in {
+                        "static_fixpoint",
+                        "static_equality_fixpoint",
+                    }
+                    and int(transfer.source_block_ea) not in handler_entry_eas
+                }
+            )
+        )
+    return tuple(
+        replace(
+            transfer,
+            dispatcher_router_eas=router_eas_by_state_register.get(
+                int(transfer.selector_state_var_reg),
+                (),
+            ),
+        )
+        if transfer.selector_state_var_reg is not None
+        else transfer
+        for transfer in transfers
+    )
 
 
 def _native_register_mreg(name: str | None) -> int | None:
@@ -2645,14 +3585,16 @@ def _native_target_is_return_epilogue(
 
     Hex-Rays can expose a resolver-proven function epilogue as ``BLT_XTRN``
     after disconnecting its native tail from the MBA.  This bounded recognizer
-    classifies only straight-line stack/frame teardown; calls, branches,
-    stores, arithmetic on non-stack registers, and undecodable bytes abstain.
+    classifies only a straight-line return-value load plus stack/frame teardown;
+    calls, branches, stores, arithmetic on non-stack registers, and undecodable
+    bytes abstain.
     """
     import ida_ua  # type: ignore[import-untyped]
     import idaapi  # type: ignore[import-untyped]
 
     ea = int(target_ea)
     saw_teardown = False
+    saw_return_value_load = False
     insn = ida_ua.insn_t()
     for _ in range(int(max_instructions)):
         length = int(ida_ua.decode_insn(insn, ea))
@@ -2675,7 +3617,17 @@ def _native_target_is_return_epilogue(
                 return False
             saw_teardown = True
         elif mnemonic == "mov":
-            if (
+            is_stack_return_value_load = (
+                not saw_teardown
+                and not saw_return_value_load
+                and insn.ops[0].type == idaapi.o_reg
+                and _sv_reg_name(insn.ops[0]) == "eax"
+                and insn.ops[1].type in {idaapi.o_displ, idaapi.o_phrase}
+                and _SV_REG_NAMES.get(insn.ops[1].reg) in {"esp", "ebp"}
+            )
+            if is_stack_return_value_load:
+                saw_return_value_load = True
+            elif (
                 insn.ops[0].type != idaapi.o_reg
                 or insn.ops[1].type != idaapi.o_reg
                 or _sv_reg_name(insn.ops[0]) != "esp"
@@ -2723,6 +3675,25 @@ class _ConcreteDispatchResult(NamedTuple):
 
     target_ea: int
     register_values: tuple[tuple[str, int], ...]
+
+
+def _common_concrete_register_values(
+    *snapshots: tuple[tuple[str, int], ...],
+) -> tuple[tuple[str, int], ...]:
+    """Return singleton register values identical in every target snapshot."""
+    if not snapshots:
+        return ()
+    states = [dict(snapshot) for snapshot in snapshots]
+    shared_names = set(states[0])
+    for state in states[1:]:
+        shared_names.intersection_update(state)
+    return tuple(
+        sorted(
+            (name, int(states[0][name]))
+            for name in shared_names
+            if all(int(state[name]) == int(states[0][name]) for state in states[1:])
+        )
+    )
 
 
 def _resolve_concrete_dispatch_corridor(
@@ -3243,13 +4214,20 @@ def _recover_prepatch_handler_entry_routes(
 
     candidates: dict[tuple[int, int], set[tuple[int, int]]] = {}
     for row in native_rows:
-        if row.selector_kind != "jcc":
+        if row.selector_kind not in {"jcc", "setcc"}:
             continue
         state_var_reg = _native_register_mreg(row.register_name)
         if state_var_reg is None:
             continue
         state = int(row.state_constant) & _MASK32
+        entry_mregs = _corridor_entry_mregs(
+            resolution,
+            int(row.block_entry_ea),
+        )
+        if entry_mregs is None:
+            continue
         initial_mregs = dict(context_mregs)
+        initial_mregs.update(entry_mregs)
         initial_mregs[int(state_var_reg)] = state
         target_ea = route_resolver(
             int(row.block_entry_ea),
@@ -3301,6 +4279,138 @@ def _recover_prepatch_handler_entry_routes(
                 context_register_values=context_register_values,
                 resolver_kind="static_handler_entry_route",
                 owned_native_ranges=owned_native_ranges,
+            )
+        )
+    return tuple(result)
+
+
+def _recover_static_fixpoint_handler_entry_routes(
+    resolution: ComputedGotoResolution,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    range_resolver=None,
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Preserve exact equality-handler closures before byte delivery.
+
+    The static fixpoint already proves the selected arm of every equality
+    leaf.  Replaying that leaf from function-wide register invariants can lose
+    path-local address registers, so native ownership is derived directly from
+    the proven target while its handler still ends at the original indirect
+    transfer.
+    """
+    if resolution.arch != "x86":
+        return ()
+    if range_resolver is None:
+        envelope_end = (
+            max(
+                (
+                    int(ea)
+                    for ea in (*resolution.reachable_eas, *resolution.block_entries)
+                ),
+                default=int(resolution.function_ea),
+            )
+            + 0x100
+        )
+
+        def range_resolver(target_ea: int):
+            return _native_residual_fragment_ranges(
+                int(target_ea),
+                envelope_start_ea=int(resolution.function_ea),
+                envelope_end_ea=int(envelope_end),
+                max_blocks=128,
+                max_bytes=max(0x100, int(envelope_end) - int(resolution.function_ea)),
+                require_indirect=False,
+            )
+
+    candidates: dict[
+        tuple[int, int, int],
+        set[
+            tuple[
+                int,
+                tuple[tuple[int, int], ...],
+                tuple[tuple[int, int], ...],
+            ]
+        ],
+    ] = {}
+    for transfer in transfers:
+        if (
+            transfer.resolver_kind
+            not in {
+                "static_equality_fixpoint",
+                "static_fixpoint",
+            }
+            or transfer.selector_state_var_reg is None
+            or transfer.selector_compare_constant is None
+            or transfer.condition_code not in {4, 5}
+        ):
+            continue
+        target_ea = (
+            transfer.true_target_ea
+            if int(transfer.condition_code) == 4
+            else transfer.false_target_ea
+        )
+        if target_ea is None or int(target_ea) not in {
+            int(candidate) for candidate in transfer.target_eas
+        }:
+            continue
+        prepatch_ranges = tuple(
+            sorted(
+                (int(start_ea), int(end_ea))
+                for start_ea, end_ea in range_resolver(int(target_ea))
+                if int(start_ea) < int(end_ea)
+            )
+        )
+        if not prepatch_ranges:
+            continue
+        materialized_ranges = tuple(
+            (
+                int(candidate.source_block_ea),
+                int(candidate.materialized_region_end_ea),
+            )
+            for candidate in transfers
+            if candidate.materialized_region_end_ea is not None
+            and int(candidate.materialized_region_end_ea)
+            > int(candidate.source_block_ea)
+            and any(
+                int(start_ea) <= int(candidate.source_block_ea) < int(end_ea)
+                for start_ea, end_ea in prepatch_ranges
+            )
+        )
+        owned_ranges = merge_detached_snippet_ranges(
+            (*prepatch_ranges, *materialized_ranges)
+        )
+        key = (
+            int(transfer.selector_state_var_reg),
+            int(transfer.selector_compare_constant) & _MASK32,
+            int(target_ea),
+        )
+        candidates.setdefault(key, set()).add(
+            (
+                int(transfer.source_block_ea),
+                tuple(sorted(transfer.context_register_values)),
+                owned_ranges,
+            )
+        )
+
+    result: list[MaterializedIndirectTransfer] = []
+    for (state_var_reg, state, target_ea), facts in sorted(candidates.items()):
+        contexts = {context for _source_ea, context, _ranges in facts}
+        owned_range_sets = {ranges for _source_ea, _context, ranges in facts}
+        if len(contexts) != 1 or len(owned_range_sets) != 1:
+            continue
+        result.append(
+            MaterializedIndirectTransfer(
+                source_jmp_ea=min(source_ea for source_ea, _context, _ranges in facts),
+                source_block_ea=min(
+                    source_ea for source_ea, _context, _ranges in facts
+                ),
+                materialized_anchor_eas=(),
+                target_eas=(int(target_ea),),
+                selector_state_var_reg=int(state_var_reg),
+                selector_state_constant=int(state),
+                context_register_values=next(iter(contexts)),
+                resolver_kind="static_handler_entry_route",
+                owned_native_ranges=next(iter(owned_range_sets)),
             )
         )
     return tuple(result)
@@ -3455,9 +4565,7 @@ def _block_has_live_register_state_write(
     must not publish an unowned route from a handler back to itself.
     """
     for instruction in block.insn_snapshots:
-        if instruction_ea is not None and int(instruction.ea) != int(
-            instruction_ea
-        ):
+        if instruction_ea is not None and int(instruction.ea) != int(instruction_ea):
             continue
         if instruction.kind is not InsnKind.MOV:
             continue
@@ -3468,8 +4576,7 @@ def _block_has_live_register_state_write(
         if (
             source.kind is OperandKind.NUMBER
             and source.value is not None
-            and (int(source.value) & _MASK32)
-            == (int(state_constant) & _MASK32)
+            and (int(source.value) & _MASK32) == (int(state_constant) & _MASK32)
             and destination.kind is OperandKind.REGISTER
             and destination.reg is not None
             and int(destination.reg) == int(state_var_reg)
@@ -3734,6 +4841,9 @@ def _build_materialized_state_routes(
             transfers,
             state_constant,
         )
+        exact_native_target_ea = (
+            int(exact_native_route[0]) if exact_native_route is not None else None
+        )
         exact_target_serial = (
             find_unique_target_entry_block(flow_graph, *exact_native_route)
             if exact_native_route is not None
@@ -3742,6 +4852,75 @@ def _build_materialized_state_routes(
         expected_target_serial = (
             handler_targets.get(state_constant) if handler_targets else None
         )
+        terminal_target_omitted = False
+        exact_target_is_terminal = False
+        if exact_target_serial is not None:
+            exact_target_block = flow_graph.get_block(int(exact_target_serial))
+            exact_target_is_terminal = (
+                exact_target_block is not None
+                and exact_target_block.kind is BlockKind.STOP
+            )
+            if (
+                exact_target_block is not None
+                and exact_target_block.kind is BlockKind.EXTERNAL
+            ):
+                try:
+                    exact_target_is_terminal = bool(
+                        terminal_target_resolver(int(exact_target_block.start_ea))
+                    )
+                except Exception:
+                    exact_target_is_terminal = False
+        elif exact_native_target_ea is not None:
+            try:
+                exact_target_is_terminal = bool(
+                    terminal_target_resolver(exact_native_target_ea)
+                )
+            except Exception:
+                exact_target_is_terminal = False
+            if exact_target_is_terminal:
+                stop_serials = {
+                    int(serial)
+                    for serial, block in flow_graph.blocks.items()
+                    if block.kind is BlockKind.STOP
+                }
+                if len(stop_serials) == 1:
+                    exact_target_serial = next(iter(stop_serials))
+                    terminal_target_omitted = True
+                else:
+                    exact_target_is_terminal = False
+        if exact_target_is_terminal and exact_target_serial is not None:
+            # The byte-patch plan proves this exact state reaches the native
+            # terminal arm.  A coarse imported equality handler is an
+            # intermediate selector block and must not replace the terminal
+            # endpoint merely because it is a trusted import.  If Hex-Rays
+            # omitted the endpoint entirely, retain its stable native identity
+            # while projecting the route onto the unique live STOP.
+            source_native_ea = None
+            if terminal_target_omitted:
+                source_native_ea = handler_entry_eas_by_serial.get(
+                    int(anchor.block_serial)
+                )
+                if (
+                    source_native_ea is None
+                    and int(anchor.block_serial) not in replacement_handler_serials
+                    and 0 < int(source_block.start_ea) < 0xFFFFFFFFFFFFFFFF
+                ):
+                    source_native_ea = int(source_block.start_ea)
+            routes.add(
+                MaterializedStateRoute(
+                    source_block_serial=int(anchor.block_serial),
+                    state_constant=state_constant,
+                    target_handler_serial=int(exact_target_serial),
+                    proof_kind="terminal_state_route",
+                    source_native_ea=(
+                        int(source_native_ea) if source_native_ea is not None else None
+                    ),
+                    target_native_ea=(
+                        exact_native_target_ea if terminal_target_omitted else None
+                    ),
+                )
+            )
+            continue
         if (
             expected_target_serial is not None
             and int(expected_target_serial) in trusted_handler_override_serials
@@ -3772,38 +4951,6 @@ def _build_materialized_state_routes(
                 )
             )
             continue
-        if exact_target_serial is not None:
-            exact_target_block = flow_graph.get_block(int(exact_target_serial))
-            exact_target_is_terminal = (
-                exact_target_block is not None
-                and exact_target_block.kind is BlockKind.STOP
-            )
-            if (
-                exact_target_block is not None
-                and exact_target_block.kind is BlockKind.EXTERNAL
-            ):
-                try:
-                    exact_target_is_terminal = bool(
-                        terminal_target_resolver(int(exact_target_block.start_ea))
-                    )
-                except Exception:
-                    exact_target_is_terminal = False
-            if exact_target_is_terminal:
-                # Preserve the exact live microcode endpoint.  Consumers union
-                # route targets into their authoritative target set, so the
-                # terminal arm can bypass the dispatcher without inferring a
-                # return from an unmatched state.  Weaker condition-chain or
-                # corridor evidence must not replace this with a synthetic
-                # handler self-loop.
-                routes.add(
-                    MaterializedStateRoute(
-                        source_block_serial=int(anchor.block_serial),
-                        state_constant=state_constant,
-                        target_handler_serial=int(exact_target_serial),
-                        proof_kind="terminal_state_route",
-                    )
-                )
-                continue
         expected_handler_eas = (
             handler_eas_by_serial.get(int(expected_target_serial), frozenset())
             if expected_target_serial is not None
@@ -4623,10 +5770,7 @@ def _static_equality_route_candidate(
             return None
         replay_match = int(replay_match_target_ea)
         replay_nonmatch = int(replay_nonmatch_target_ea)
-        if (
-            replay_match != int(row.terminal_end_ea)
-            or replay_match == replay_nonmatch
-        ):
+        if replay_match != int(row.terminal_end_ea) or replay_match == replay_nonmatch:
             return None
         selected_target_ea = replay_match
         dispatcher_entry_ea = replay_nonmatch
@@ -4923,11 +6067,7 @@ def _corridor_entry_mregs(
         if int(source_ea) != int(entry_ea):
             continue
         snapshots.add(
-            tuple(
-                sorted(
-                    (str(name), int(value)) for name, value in register_values
-                )
-            )
+            tuple(sorted((str(name), int(value)) for name, value in register_values))
         )
     if len(snapshots) > 1:
         return None
@@ -4984,9 +6124,7 @@ def _resolve_native_setcc_route_facts(
         if match_register_values_by_row is not None:
             if not isinstance(match_result, _ConcreteDispatchResult):
                 continue
-            match_register_values_by_row[row] = tuple(
-                match_result.register_values
-            )
+            match_register_values_by_row[row] = tuple(match_result.register_values)
             match_target = int(match_result.target_ea)
         else:
             match_target = match_result
@@ -5149,7 +6287,17 @@ def _materialize_static_equality_fragments(
     context_mregs = _dispatcher_replay_context_mregs(resolution)
     if context_mregs is None:
         context_mregs = {}
-    facts_by_branch: dict[int, set[tuple[_NativeEqualityRow, int, int]]] = {}
+    facts_by_branch: dict[
+        int,
+        set[
+            tuple[
+                _NativeEqualityRow,
+                int,
+                int,
+                tuple[tuple[str, int], ...],
+            ]
+        ],
+    ] = {}
     route_candidates: list[MaterializedIndirectTransfer] = []
     setcc_replay_facts: dict[_NativeEqualityRow, set[tuple[int, int]]] = {}
     for replay_row, match_target, nonmatch_target in native_setcc_routes:
@@ -5203,20 +6351,31 @@ def _materialize_static_equality_fragments(
         match_mregs[int(state_var_reg)] = int(row.state_constant)
         nonmatch_mregs = dict(entry_mregs)
         nonmatch_mregs[int(state_var_reg)] = int(row.state_constant) ^ 1
-        match_target = _resolve_concrete_dispatch_corridor(
+        match_result = _resolve_concrete_dispatch_corridor(
             int(row.block_entry_ea),
             initial_mregs=match_mregs,
             handler_eas=frozenset(),
             return_first_indirect_target=True,
+            return_first_indirect_result=True,
         )
-        nonmatch_target = _resolve_concrete_dispatch_corridor(
+        nonmatch_result = _resolve_concrete_dispatch_corridor(
             int(row.block_entry_ea),
             initial_mregs=nonmatch_mregs,
             handler_eas=frozenset(),
             return_first_indirect_target=True,
+            return_first_indirect_result=True,
         )
-        if match_target is None or nonmatch_target is None:
+        if not isinstance(match_result, _ConcreteDispatchResult) or not isinstance(
+            nonmatch_result,
+            _ConcreteDispatchResult,
+        ):
             continue
+        match_target = int(match_result.target_ea)
+        nonmatch_target = int(nonmatch_result.target_ea)
+        common_target_register_values = _common_concrete_register_values(
+            match_result.register_values,
+            nonmatch_result.register_values,
+        )
         if not _native_equality_selector_is_materializable(row.selector_kind):
             continue
         if row.condition_code == 4:
@@ -5226,7 +6385,12 @@ def _materialize_static_equality_fragments(
         else:
             continue
         facts_by_branch.setdefault(int(row.branch_ea), set()).add(
-            (row, true_target, false_target)
+            (
+                row,
+                true_target,
+                false_target,
+                common_target_register_values,
+            )
         )
 
     transfers: list[MaterializedIndirectTransfer] = []
@@ -5234,7 +6398,7 @@ def _materialize_static_equality_fragments(
     for branch_ea, facts in sorted(facts_by_branch.items()):
         if len(facts) != 1:
             continue
-        row, true_target, false_target = next(iter(facts))
+        row, true_target, false_target, target_register_values = next(iter(facts))
         body = _encode_two_way_branch(
             branch_ea=int(branch_ea),
             condition_code=int(row.condition_code),
@@ -5270,6 +6434,9 @@ def _materialize_static_equality_fragments(
                 selector_compare_constant=int(row.state_constant),
                 selector_state_on_left=True,
                 context_register_values=tuple(sorted(context_mregs.items())),
+                target_register_values=tuple(
+                    sorted(_residual_context_mregs(target_register_values).items())
+                ),
                 resolver_kind="static_equality_fixpoint",
                 materialized_region_end_ea=int(row.terminal_end_ea),
             )
@@ -7077,12 +8244,70 @@ def _recover_condition_chain_handler_transfers_from_mba(
     )
 
 
+def _unique_import_owned_tail_eas(
+    mba: object,
+    imported_instruction_eas: frozenset[int],
+) -> frozenset[int]:
+    """Return unique live block tails whose block contains imported code."""
+    if not imported_instruction_eas:
+        return frozenset()
+    try:
+        quantity = int(mba.qty)
+    except (AttributeError, TypeError, ValueError):
+        return frozenset()
+    block_instruction_eas: list[frozenset[int]] = []
+    candidate_tail_eas: set[int] = set()
+    for serial in range(quantity):
+        try:
+            block = mba.get_mblock(serial)
+            current = block.head
+            tail = block.tail
+        except (AttributeError, TypeError):
+            continue
+        instruction_eas: set[int] = set()
+        while current is not None:
+            instruction_eas.add(int(current.ea))
+            if current is tail or current == tail:
+                break
+            current = current.next
+        frozen_eas = frozenset(instruction_eas)
+        block_instruction_eas.append(frozen_eas)
+        if tail is not None and not frozen_eas.isdisjoint(imported_instruction_eas):
+            candidate_tail_eas.add(int(tail.ea))
+    return frozenset(
+        tail_ea
+        for tail_ea in candidate_tail_eas
+        if sum(tail_ea in instruction_eas for instruction_eas in block_instruction_eas)
+        == 1
+    )
+
+
+def _predicate_block_has_imported_instruction(
+    mba: object,
+    predicate_ea: int,
+    imported_instruction_eas: frozenset[int],
+) -> bool:
+    """Prove that one unique live predicate block belongs to an import.
+
+    Hex-Rays may synthesize a normalized conditional instruction and therefore
+    give it no direct native-origin row.  Sibling instructions in the same
+    unique live block retain their imported-EA provenance.  That block-local
+    provenance is sufficient only while the predicate itself is still present
+    in exactly one current block.
+    """
+    return int(predicate_ea) in _unique_import_owned_tail_eas(
+        mba,
+        imported_instruction_eas,
+    )
+
+
 def recover_conditional_handler_bridge_transfers_from_mba(
     transfers: tuple[MaterializedIndirectTransfer, ...],
     mba: object,
     *,
     inherited_states_by_predicate_ea: Mapping[int, int] | None = None,
     imported_predicate_eas: frozenset[int] = frozenset(),
+    imported_instruction_origins: Mapping[int, int] | None = None,
     arm_states_by_predicate_ea: Mapping[int, tuple[int, int]] | None = None,
 ) -> tuple[MaterializedIndirectTransfer, ...]:
     """Preserve live handler predicates before staged routing folds them.
@@ -7114,6 +8339,7 @@ def recover_conditional_handler_bridge_transfers_from_mba(
     }
     if len(state_registers) != 1:
         return ()
+    state_register = next(iter(state_registers))
     target_candidates: dict[int, set[int]] = {}
     for transfer in transfers:
         state: int | None = None
@@ -7131,6 +8357,7 @@ def recover_conditional_handler_bridge_transfers_from_mba(
             "static_handler_entry_route",
             "static_equality_route",
             "residual_state_route",
+            "residual_state_route_evidence",
         }:
             if (
                 transfer.selector_state_constant is None
@@ -7142,20 +8369,19 @@ def recover_conditional_handler_bridge_transfers_from_mba(
         if state is None or target is None or int(target) not in transfer.target_eas:
             continue
         target_candidates.setdefault(state, set()).add(int(target))
-    state_targets = {
+    fallback_state_targets = {
         state: next(iter(targets))
         for state, targets in target_candidates.items()
         if len(targets) == 1
     }
+    state_targets = _unique_static_equality_handler_targets(
+        transfers,
+        state_register,
+    )
+    for state, target in fallback_state_targets.items():
+        state_targets.setdefault(state, target)
     if not state_targets:
         return ()
-    existing_predicates = {
-        int(transfer.source_jmp_ea)
-        for transfer in transfers
-        if is_conditional_handler_bridge_kind(transfer.resolver_kind)
-        and transfer.condition_code == 5
-        and transfer.predicate_size is not None
-    }
     static_choices_by_predicate: dict[
         int,
         set[tuple[int, int, int]],
@@ -7178,6 +8404,17 @@ def recover_conditional_handler_bridge_transfers_from_mba(
                 int(transfer.predicate_false_state) & _MASK32,
             )
         )
+    existing_bridges_by_predicate: dict[
+        int,
+        set[MaterializedIndirectTransfer],
+    ] = {}
+    for transfer in transfers:
+        if transfer.resolver_kind != "conditional_handler_bridge":
+            continue
+        existing_bridges_by_predicate.setdefault(
+            int(transfer.source_jmp_ea),
+            set(),
+        ).add(transfer)
     residual_route_proofs = tuple(
         (
             int(transfer.source_jmp_ea),
@@ -7185,20 +8422,49 @@ def recover_conditional_handler_bridge_transfers_from_mba(
             int(transfer.target_eas[0]),
         )
         for transfer in transfers
-        if transfer.resolver_kind == "residual_state_route"
+        if transfer.resolver_kind
+        in {
+            "residual_state_route",
+            "residual_state_route_evidence",
+        }
         and transfer.selector_state_constant is not None
         and len(transfer.target_eas) == 1
     )
-    state_register = next(iter(state_registers))
+    preserve_live_predicate_eas = _unique_import_owned_tail_eas(
+        mba,
+        imported_predicate_eas,
+    )
     evidence = recognize_conditional_handler_bridges(
         mba,
         state_register=state_register,
         state_targets=state_targets,
         inherited_states_by_predicate_ea=inherited_states_by_predicate_ea,
         arm_states_by_predicate_ea=arm_states_by_predicate_ea,
+        preserve_live_predicate_eas=preserve_live_predicate_eas,
     )
     result: list[MaterializedIndirectTransfer] = []
     for row in evidence:
+        predicate_ea = int(row.predicate_ea)
+        source_block_ea = int(row.source_block_ea)
+        predicate_predecessor_ea = (
+            int(row.predicate_predecessor_ea)
+            if row.predicate_predecessor_ea is not None
+            else None
+        )
+        if imported_instruction_origins is not None:
+            predicate_ea = int(
+                imported_instruction_origins.get(predicate_ea, predicate_ea)
+            )
+            source_block_ea = int(
+                imported_instruction_origins.get(source_block_ea, source_block_ea)
+            )
+            if predicate_predecessor_ea is not None:
+                predicate_predecessor_ea = int(
+                    imported_instruction_origins.get(
+                        predicate_predecessor_ea,
+                        predicate_predecessor_ea,
+                    )
+                )
         arm_proofs = {
             (
                 int(row.true_state) & _MASK32,
@@ -7228,7 +8494,15 @@ def recover_conditional_handler_bridge_transfers_from_mba(
             and state_targets.get(int(state)) == int(target_ea)
             for state, target_ea in arm_proofs
         )
-        imported_arm_proven = int(row.predicate_ea) in imported_predicate_eas and all(
+        imported_predicate_proven = (
+            int(row.predicate_ea) in imported_predicate_eas
+            or _predicate_block_has_imported_instruction(
+                mba,
+                int(row.predicate_ea),
+                imported_predicate_eas,
+            )
+        )
+        imported_arm_proven = imported_predicate_proven and all(
             state_targets.get(int(state)) == int(target_ea)
             for state, target_ea in arm_proofs
         )
@@ -7256,18 +8530,15 @@ def recover_conditional_handler_bridge_transfers_from_mba(
             and not static_choice_proven
         ):
             continue
-        if int(row.predicate_ea) in existing_predicates:
-            continue
-        result.append(
-            MaterializedIndirectTransfer(
-                source_jmp_ea=int(row.predicate_ea),
-                source_block_ea=int(row.source_block_ea),
-                materialized_anchor_eas=(int(row.predicate_ea),),
+        candidate = MaterializedIndirectTransfer(
+                source_jmp_ea=predicate_ea,
+                source_block_ea=source_block_ea,
+                materialized_anchor_eas=(predicate_ea,),
                 target_eas=(
                     int(row.true_target_ea),
                     int(row.false_target_ea),
                 ),
-                condition_code=5,
+                condition_code=int(row.condition_code),
                 true_target_ea=int(row.true_target_ea),
                 false_target_ea=int(row.false_target_ea),
                 selector_state_var_reg=state_register,
@@ -7284,11 +8555,7 @@ def recover_conditional_handler_bridge_transfers_from_mba(
                 predicate_size=int(row.predicate_size),
                 predicate_compare_register=row.predicate_compare_register,
                 predicate_compare_constant=row.predicate_compare_constant,
-                predicate_predecessor_ea=(
-                    int(row.predicate_predecessor_ea)
-                    if row.predicate_predecessor_ea is not None
-                    else None
-                ),
+                predicate_predecessor_ea=predicate_predecessor_ea,
                 predicate_true_state=int(row.true_state) & _MASK32,
                 predicate_false_state=int(row.false_state) & _MASK32,
                 predicate_true_is_taken=bool(row.true_is_taken),
@@ -7298,9 +8565,44 @@ def recover_conditional_handler_bridge_transfers_from_mba(
                     or static_choice_proven
                 ),
             )
-        )
-        existing_predicates.add(int(row.predicate_ea))
+        if candidate in existing_bridges_by_predicate.get(
+            predicate_ea,
+            set(),
+        ):
+            continue
+        result.append(candidate)
+        existing_bridges_by_predicate.setdefault(
+            predicate_ea,
+            set(),
+        ).add(candidate)
     return tuple(result)
+
+
+def _canonicalize_imported_transfer_eas(
+    transfer: MaterializedIndirectTransfer,
+    imported_instruction_origins: Mapping[int, int],
+) -> MaterializedIndirectTransfer:
+    """Translate transient imported instruction identities back to native EAs."""
+
+    def native(ea: int | None) -> int | None:
+        if ea is None:
+            return None
+        value = int(ea)
+        return int(imported_instruction_origins.get(value, value))
+
+    source_jmp_ea = native(transfer.source_jmp_ea)
+    source_block_ea = native(transfer.source_block_ea)
+    assert source_jmp_ea is not None
+    assert source_block_ea is not None
+    return replace(
+        transfer,
+        source_jmp_ea=source_jmp_ea,
+        source_block_ea=source_block_ea,
+        materialized_anchor_eas=tuple(
+            int(native(anchor_ea)) for anchor_ea in transfer.materialized_anchor_eas
+        ),
+        predicate_predecessor_ea=native(transfer.predicate_predecessor_ea),
+    )
 
 
 # Compatibility for existing diagnostic probes; production imports the public
@@ -7401,7 +8703,20 @@ def _materialize_static(
             + resolution.conditional_state_choices,
         )
     )
-
+    static_handler_entry_routes = _recover_static_fixpoint_handler_entry_routes(
+        resolution,
+        static_transfers,
+    )
+    handler_entry_routes = (
+        *static_handler_entry_routes,
+        *native_handler_entry_routes,
+        *static_choice_handler_entry_routes,
+    )
+    static_handler_exit_routes = _recover_prepatch_handler_exit_routes(
+        resolution,
+        static_transfers,
+        handler_entry_routes,
+    )
     # 1) apply every byte patch, then re-decode each rewritten region in place.
     new_block_eas: list[int] = []
     for plan in resolution.patch_plans:
@@ -7423,9 +8738,7 @@ def _materialize_static(
         resolution,
         native_rows=native_equality_rows,
         native_setcc_routes=native_setcc_routes,
-        native_setcc_match_register_values=(
-            native_setcc_match_register_values
-        ),
+        native_setcc_match_register_values=(native_setcc_match_register_values),
     )
 
     seg = ida_segment.getseg(int(resolution.function_ea))
@@ -7467,22 +8780,21 @@ def _materialize_static(
         ida_funcs.reanalyze_function(func)
     if seg is not None:
         ida_auto.plan_and_wait(seg.start_ea, seg.end_ea)
-    route_transfers = (
-        static_transfers
-        + native_handler_entry_routes
-        + static_choice_handler_entry_routes
-    )
-    conditional_bridges = _resolve_static_conditional_state_choice_targets(
-        resolution.conditional_state_choices,
-        route_transfers,
-    )
     state.merge_materialized_transfers(
-        static_transfers
-        + equality_transfers
-        + native_handler_entry_routes
-        + static_choice_handler_entry_routes
-        + resolution.conditional_state_choices
-        + conditional_bridges
+        (
+            *resolution.conditional_state_choices,
+            *_static_materialized_transfer_batch(
+                resolution,
+                static_transfers=static_transfers,
+                equality_transfers=equality_transfers,
+                static_handler_entry_routes=(
+                    *static_handler_entry_routes,
+                    *static_choice_handler_entry_routes,
+                ),
+                native_handler_entry_routes=native_handler_entry_routes,
+                static_handler_exit_routes=static_handler_exit_routes,
+            ),
+        )
     )
     return len(resolution.patch_plans) + int(equality_count)
 
@@ -7748,17 +9060,10 @@ def _has_unresolved_computed_goto(function_ea: int) -> bool:
     return False
 
 
-def resolve_and_materialize(
-    function_ea: int,
-    *,
-    state: ResolverSessionState,
-    **kwargs: object,
+def _resolve_computed_goto_resolution(
+    function_ea: int, **kwargs: object
 ) -> ComputedGotoResolution | None:
-    """Full pipeline for one function: resolve then materialise. Concolic
-    execution is tried first (the fixture's cmov-pointer-select shape); when it
-    finds nothing -- e.g. an x86 loader whose prologue the from-entry trace
-    cannot execute -- the static const-prop fixpoint is the fallback. Returns the
-    resolution (or None if nothing to do)."""
+    """Resolve one computed goto without changing native bytes."""
     resolution = resolve_computed_gotos(int(function_ea), **kwargs)  # type: ignore[arg-type]
     if resolution is None or not resolution.jmp_targets:
         static = resolve_computed_gotos_static(int(function_ea))
@@ -7766,28 +9071,60 @@ def resolve_and_materialize(
             resolution = static
     if resolution is None:
         return None
-    if resolution.patch_plans and not resolution.native_stack_frame_offsets:
-        stack_envelope_end = (
-            max(
-                (
-                    int(ea)
-                    for ea in (
-                        *resolution.reachable_eas,
-                        *resolution.block_entries,
-                    )
-                ),
-                default=int(function_ea),
+    if resolution.patch_plans:
+        native_stack_offsets = dict(resolution.native_stack_frame_offsets)
+        if not native_stack_offsets:
+            stack_envelope_end = (
+                max(
+                    (
+                        int(ea)
+                        for ea in (
+                            *resolution.reachable_eas,
+                            *resolution.block_entries,
+                        )
+                    ),
+                    default=int(function_ea),
+                )
+                + 0x100
             )
-            + 0x100
+            native_stack_offsets = native_stack_frame_offsets_for_ranges(
+                int(function_ea),
+                ((int(function_ea), int(stack_envelope_end)),),
+            )
+        consumer_load_eas = _static_stack_carrier_consumer_load_eas(resolution)
+        carrier_overrides = _static_stack_carrier_frame_offset_overrides(
+            resolution.conditional_state_choices,
+            consumer_load_eas_by_displacement=consumer_load_eas,
+            native_stack_frame_offsets_by_ea=native_stack_offsets,
         )
-        native_stack_offsets = native_stack_frame_offsets_for_ranges(
-            int(function_ea),
-            ((int(function_ea), int(stack_envelope_end)),),
-        )
+        native_stack_offsets.update(carrier_overrides)
         resolution = replace(
             resolution,
             native_stack_frame_offsets=tuple(sorted(native_stack_offsets.items())),
+            conditional_state_choices=_bind_static_stack_carrier_consumers(
+                resolution.conditional_state_choices,
+                consumer_load_eas_by_displacement=consumer_load_eas,
+                native_stack_frame_offsets_by_ea=native_stack_offsets,
+            ),
         )
+    return resolution
+
+
+def resolve_and_materialize(
+    function_ea: int,
+    *,
+    state: ResolverSessionState,
+    **kwargs: object,
+) -> ComputedGotoResolution | None:
+    """Resolve one computed goto and immediately apply its byte delivery.
+
+    The flowchart hook stages static x86 plans through the between-decompile
+    preparer so their PREOPT source can be captured first.  This public helper
+    retains immediate delivery for explicit callers and non-static profiles.
+    """
+    resolution = _resolve_computed_goto_resolution(function_ea, **kwargs)
+    if resolution is None:
+        return None
     materialised = materialize_computed_gotos(resolution, state=state)
     logger.info(
         "computed-goto: func=0x%x sites=%d targets=%d materialised=%d reachable=%d arch=%s",
@@ -7899,7 +9236,12 @@ def _live_mba_native_eas(
     *,
     imported_instruction_origins: tuple[tuple[int, int], ...] = (),
 ) -> frozenset[int]:
-    """Enumerate live MBA EAs, rebinding imported instructions to native EAs."""
+    """Enumerate instruction-backed MBA EAs with imported origins rebound.
+
+    An empty ``BLT_XTRN`` block names an address outside the generated MBA; its
+    start EA is a frontier placeholder, not proof that the target body is live.
+    Require at least one microinstruction before admitting a block start.
+    """
     origins = {
         int(imported_ea): int(native_ea)
         for imported_ea, native_ea in imported_instruction_origins
@@ -7909,10 +9251,10 @@ def _live_mba_native_eas(
         block = mba.get_mblock(serial)
         if block is None:
             continue
-        start_ea = int(block.start)
-        if 0 < start_ea < 0xFFFFFFFFFFFFFFFF:
-            live_eas.add(origins.get(start_ea, start_ea))
         instruction = block.head
+        start_ea = int(block.start)
+        if instruction is not None and 0 < start_ea < 0xFFFFFFFFFFFFFFFF:
+            live_eas.add(origins.get(start_ea, start_ea))
         while instruction is not None:
             instruction_ea = int(instruction.ea)
             if 0 < instruction_ea < 0xFFFFFFFFFFFFFFFF:
@@ -8034,10 +9376,9 @@ def _unique_native_register_indirect_exit(
             size = int(ida_ua.decode_insn(insn, ea))
             if size <= 0:
                 break
-            if (
-                (idaapi.print_insn_mnem(ea) or "").lower() == "jmp"
-                and insn.ops[0].type == idaapi.o_reg
-            ):
+            if (idaapi.print_insn_mnem(ea) or "").lower() == "jmp" and insn.ops[
+                0
+            ].type == idaapi.o_reg:
                 exits.add((int(start_ea), ea))
             ea += size
     return next(iter(exits)) if len(exits) == 1 else None
@@ -8082,6 +9423,2406 @@ def _plan_detached_resolver_cut_boundary_ports(
     )
 
 
+def get_prepared_preopt_union_closure(
+    state: ResolverSessionState,
+) -> PreoptUnionPreparationResult | None:
+    """Return this lifecycle session's published PREOPT union preparation."""
+    prepared = state.preopt_union_preparation
+    return prepared if isinstance(prepared, PreoptUnionPreparationResult) else None
+
+
+def _preopt_union_abstention(
+    function_ea: int,
+    *reasons: str,
+) -> PreoptUnionPreparationResult:
+    result = PreoptUnionPreparationResult(
+        function_ea=int(function_ea),
+        prepared=False,
+        published=False,
+        abstention_reasons=tuple(str(reason) for reason in reasons),
+    )
+    logger.info(
+        "PREOPT union preparation abstained: func=0x%X reasons=%s",
+        int(function_ea),
+        result.abstention_reasons,
+    )
+    return result
+
+
+def _preopt_resolver_cut_eas(
+    resolution: ComputedGotoResolution,
+    transfers: Sequence[MaterializedIndirectTransfer] = (),
+) -> tuple[int, ...]:
+    """Keep only native indirect sites not replaced by a two-arm byte patch."""
+    return tuple(
+        sorted(
+            {
+                *(
+                    int(source_ea)
+                    for source_ea, target_eas in resolution.jmp_targets.items()
+                    if len({int(target_ea) for target_ea in target_eas}) == 1
+                ),
+                *(
+                    int(transfer.source_jmp_ea)
+                    for transfer in transfers
+                    if transfer.resolver_kind == "static_handler_exit_route"
+                    and len(transfer.target_eas) == 1
+                ),
+            }
+        )
+    )
+
+
+def _enrich_preopt_union_route_ranges(
+    resolution: ComputedGotoResolution,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Attach native ranges to EA-keyed handler routes before pure planning."""
+    missing_targets = {
+        int(transfer.target_eas[0])
+        for transfer in transfers
+        if transfer.resolver_kind == "static_handler_entry_route"
+        and len(transfer.target_eas) == 1
+        and not transfer.owned_native_ranges
+    }
+    if not missing_targets:
+        return transfers
+    envelope_end = (
+        max(
+            (
+                int(ea)
+                for ea in (
+                    *resolution.reachable_eas,
+                    *resolution.block_entries,
+                )
+            ),
+            default=int(resolution.function_ea),
+        )
+        + 0x100
+    )
+    ranges_by_target = {
+        target_ea: merge_detached_snippet_ranges(
+            _native_residual_fragment_ranges(
+                target_ea,
+                envelope_start_ea=int(resolution.function_ea),
+                envelope_end_ea=int(envelope_end),
+                max_blocks=128,
+                max_bytes=max(
+                    0x100,
+                    int(envelope_end) - int(resolution.function_ea),
+                ),
+                require_indirect=False,
+            )
+        )
+        for target_ea in sorted(missing_targets)
+    }
+    return tuple(
+        replace(
+            transfer,
+            owned_native_ranges=ranges_by_target[int(transfer.target_eas[0])],
+        )
+        if transfer.resolver_kind == "static_handler_entry_route"
+        and len(transfer.target_eas) == 1
+        and not transfer.owned_native_ranges
+        else transfer
+        for transfer in transfers
+    )
+
+
+def _capture_prepatch_preopt_union_source(
+    state: ResolverSessionState,
+    resolution: ComputedGotoResolution,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+) -> bool:
+    """Capture one source union before byte delivery can detach its handlers.
+
+    Boundary ownership is intentionally not bound here.  The first live
+    top-level MBA supplies that evidence later through
+    :func:`prepare_preopt_union_closure`.
+    """
+    key = int(resolution.function_ea)
+    if state.prepatch_preopt_union_source is not None or state.snippet_capture_active:
+        return state.prepatch_preopt_union_source is not None
+
+    def abstain(reason: str, detail: object = ()) -> bool:
+        logger.info(
+            "PREOPT prepatch source abstained: func=0x%X reason=%s detail=%s",
+            key,
+            reason,
+            detail,
+        )
+        return False
+
+    enriched = _enrich_preopt_union_route_ranges(resolution, transfers)
+    region = plan_preopt_union_region(enriched)
+    if region.abstentions or region.primary_seed_ea is None or not region.native_ranges:
+        return abstain(
+            "no_complete_union_region",
+            tuple(
+                (hex(int(row.target_ea)), row.reason.value)
+                for row in region.abstentions
+            ),
+        )
+    function = ida_funcs.get_func(key)
+    if function is None:
+        return abstain("function_not_found")
+
+    resolver_targets_by_source = _resolver_targets_by_source(enriched)
+    cfg_result = build_native_semantic_cfg(
+        function,
+        live_native_eas=frozenset(),
+        seed_eas=tuple(dict.fromkeys((key, *region.seed_eas))),
+        resolver_cut_eas=tuple(
+            sorted(
+                {
+                    *(int(source_ea) for source_ea in resolution.jmp_targets),
+                    *(
+                        int(transfer.source_jmp_ea)
+                        for transfer in enriched
+                        if transfer.resolver_kind
+                        == "static_handler_exit_route"
+                    ),
+                }
+            )
+        ),
+        resolver_proven_unmarked_entry_eas=region.seed_eas,
+        resolver_target_eas_by_source={
+            source_ea: tuple(sorted(target_eas))
+            for source_ea, target_eas in resolver_targets_by_source.items()
+        },
+    )
+    if cfg_result.abstentions:
+        return abstain(
+            "native_cfg_abstention",
+            tuple(
+                (
+                    row.reason.value,
+                    hex(int(row.entry_ea)),
+                    hex(int(row.cursor_ea)),
+                )
+                for row in cfg_result.abstentions
+            ),
+        )
+    closure_seed_eas = tuple(
+        sorted(
+            set(int(seed_ea) for seed_ea in region.seed_eas)
+            | {
+                int(target_ea)
+                for target_eas in resolver_targets_by_source.values()
+                for target_ea in target_eas
+                if int(target_ea) in cfg_result.cfg.blocks_by_ea
+            }
+        )
+    )
+    closure = plan_native_semantic_closure(
+        cfg_result.cfg,
+        tuple(
+            ResolverProvenHandlerEntry(
+                entry_ea=int(seed_ea),
+                provenance=(
+                    "static_handler_entry_route"
+                    if int(seed_ea) in region.seed_eas
+                    else "resolver_proven_dispatch_target"
+                ),
+            )
+            for seed_ea in closure_seed_eas
+        ),
+    )
+    if closure.abstentions or not closure.native_ranges:
+        return abstain(
+            "semantic_closure_abstention",
+            tuple(
+                (
+                    row.reason.value,
+                    None
+                    if row.source_block_ea is None
+                    else hex(int(row.source_block_ea)),
+                    None if row.target_ea is None else hex(int(row.target_ea)),
+                )
+                for row in closure.abstentions
+            ),
+        )
+
+    normalized_ranges = tuple(
+        (int(native_range.start_ea), int(native_range.end_ea))
+        for native_range in closure.native_ranges
+    )
+    terminal_return_entry_eas = tuple(
+        int(entry_ea)
+        for entry_ea in closure.included_block_eas
+        if cfg_result.cfg.blocks_by_ea[int(entry_ea)].terminal
+        is NativeTerminalKind.RETURN
+    )
+    generation_ranges = tuple(
+        (int(native_range.start_ea), int(native_range.end_ea))
+        for native_range in plan_native_generation_ranges(
+            closure,
+            required_entry_eas=terminal_return_entry_eas,
+        )
+    )
+    ranges = ida_hexrays.mba_ranges_t()
+    for start_ea, end_ea in generation_ranges:
+        ranges.ranges.push_back(idaapi.range_t(start_ea, end_ea))
+    failure = ida_hexrays.hexrays_failure_t()
+    if not state.begin_snippet_capture(key):
+        return False
+    try:
+        preopt_mba = _generate_microcode_without_d810(
+            ida_hexrays.gen_microcode,
+            ranges,
+            failure,
+            None,
+            int(ida_hexrays.DECOMP_NO_WAIT | ida_hexrays.DECOMP_ALL_BLKS),
+            int(ida_hexrays.MMAT_PREOPTIMIZED),
+        )
+        if preopt_mba is None:
+            return abstain("preopt_generation_failed", failure.desc())
+        preopt_mba.build_graph()
+        authoritative_stack_offsets = (
+            _static_stack_carrier_frame_offset_overrides(
+                resolution.conditional_state_choices,
+                consumer_load_eas_by_displacement=(
+                    _static_stack_carrier_consumer_load_eas(resolution)
+                ),
+                native_stack_frame_offsets_by_ea=dict(
+                    resolution.native_stack_frame_offsets
+                ),
+            )
+        )
+        if not capture_preopt_union_snippet_template(
+            key,
+            int(region.primary_seed_ea),
+            preopt_mba,
+            normalized_ranges,
+            owned_block_entry_eas=tuple(closure.included_block_eas),
+            terminal_return_entry_eas=terminal_return_entry_eas,
+            native_stack_frame_offsets_by_ea=dict(
+                resolution.native_stack_frame_offsets
+            ),
+            authoritative_stack_frame_offsets_by_ea=(
+                authoritative_stack_offsets
+            ),
+        ):
+            return abstain("preopt_capture_failed")
+    except Exception:
+        logger.info(
+            "PREOPT prepatch source capture failed: func=0x%X ranges=%s",
+            key,
+            generation_ranges,
+            exc_info=True,
+        )
+        return False
+    finally:
+        state.finish_snippet_capture()
+
+    state.prepatch_preopt_union_source = _PrepatchPreoptUnionSource(
+        primary_seed_ea=int(region.primary_seed_ea),
+        seed_eas=tuple(int(seed_ea) for seed_ea in region.seed_eas),
+        native_ranges=normalized_ranges,
+        imported_block_entry_eas=tuple(closure.included_block_eas),
+        cfg=cfg_result.cfg,
+        closure=closure,
+    )
+    logger.info(
+        "PREOPT prepatch source captured: func=0x%X primary=0x%X "
+        "seeds=%s ranges=%s owned_entries=%s",
+        key,
+        int(region.primary_seed_ea),
+        [hex(int(seed_ea)) for seed_ea in region.seed_eas],
+        [(hex(start_ea), hex(end_ea)) for start_ea, end_ea in normalized_ranges],
+        [hex(int(entry_ea)) for entry_ea in closure.included_block_eas],
+    )
+    return True
+
+
+def _static_prepatch_union_source_transfers(
+    resolution: ComputedGotoResolution,
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Recover source routes while every native computed goto is still intact."""
+    equality_envelope_end = (
+        max(
+            (
+                int(ea)
+                for ea in (*resolution.reachable_eas, *resolution.block_entries)
+            ),
+            default=int(resolution.function_ea),
+        )
+        + 0x100
+    )
+    native_rows = _native_equality_state_rows(
+        int(resolution.function_ea),
+        envelope_end_ea=equality_envelope_end,
+    )
+    static_transfers = _static_materialized_transfers(resolution)
+    static_handler_entry_routes = _recover_static_fixpoint_handler_entry_routes(
+        resolution,
+        static_transfers,
+    )
+    native_handler_entry_routes = _recover_prepatch_handler_entry_routes(
+        resolution,
+        native_rows,
+    )
+    handler_entry_routes = (
+        *static_handler_entry_routes,
+        *native_handler_entry_routes,
+    )
+    static_handler_exit_routes = _recover_prepatch_handler_exit_routes(
+        resolution,
+        static_transfers,
+        handler_entry_routes,
+    )
+    return _static_materialized_transfer_batch(
+        resolution,
+        static_transfers=static_transfers,
+        equality_transfers=(),
+        static_handler_entry_routes=static_handler_entry_routes,
+        native_handler_entry_routes=native_handler_entry_routes,
+        static_handler_exit_routes=static_handler_exit_routes,
+    )
+
+
+def _preopt_union_boundary_ports(
+    closure,
+    *,
+    live_native_eas: frozenset[int],
+    transfers: tuple[MaterializedIndirectTransfer, ...] = (),
+    live_mba: object | None = None,
+    native_cfg: NativeCfg | None = None,
+    imported_seed_eas: tuple[int, ...] = (),
+    stack_carrier_consumer_load_eas_by_displacement: Mapping[
+        int, Sequence[int]
+    ] | None = None,
+    native_stack_frame_offsets_by_ea: Mapping[
+        int, tuple[int, ...]
+    ] | None = None,
+) -> DetachedSnippetBoundaryPorts | None:
+    """Convert exact resolver cuts to the existing atomic port contract."""
+    imported_entry_eas = {int(entry_ea) for entry_ea in closure.included_block_eas}
+    edges_by_source: dict[tuple[int, int], list[object]] = {}
+    for edge in closure.proven_import_boundary_edges:
+        rejection_reason = None
+        if edge.kind is not NativeEdgeKind.INDIRECT:
+            rejection_reason = f"edge_kind:{edge.kind.value}"
+        elif edge.source_instruction_ea is None:
+            rejection_reason = "missing_source_instruction"
+        elif int(edge.source_ea) not in imported_entry_eas:
+            rejection_reason = "source_not_imported"
+        target_ea = int(edge.target_ea)
+        target_is_imported = target_ea in imported_entry_eas
+        target_is_live = target_ea in live_native_eas
+        if not target_is_imported and not target_is_live:
+            rejection_reason = "target_neither_imported_nor_live"
+        if rejection_reason is not None:
+            logger.info(
+                "PREOPT union boundary rejected: reason=%s source=0x%X "
+                "instruction=%s target=0x%X imported=%s live=%s",
+                rejection_reason,
+                int(edge.source_ea),
+                (
+                    "none"
+                    if edge.source_instruction_ea is None
+                    else f"0x{int(edge.source_instruction_ea):X}"
+                ),
+                target_ea,
+                target_is_imported,
+                target_is_live,
+            )
+            return None
+        assert edge.source_instruction_ea is not None
+        edges_by_source.setdefault(
+            (int(edge.source_ea), int(edge.source_instruction_ea)),
+            [],
+        ).append(edge)
+
+    def target_owner(target_ea: int) -> DetachedSnippetBoundaryPortOwner | None:
+        if int(target_ea) in imported_entry_eas:
+            return DetachedSnippetBoundaryPortOwner.IMPORTED
+        if int(target_ea) in live_native_eas:
+            return DetachedSnippetBoundaryPortOwner.LIVE
+        return None
+
+    direct_ports: list[DetachedSnippetDirectBoundaryPort] = []
+    conditional_ports: list[DetachedSnippetConditionalBoundaryPort] = []
+    for (source_ea, source_instruction_ea), edges in sorted(
+        edges_by_source.items()
+    ):
+        target_eas = {int(edge.target_ea) for edge in edges}
+        conditional_candidates = tuple(
+            transfer
+            for transfer in transfers
+            if int(transfer.source_block_ea) == source_ea
+            and int(transfer.source_jmp_ea) == source_instruction_ea
+            and transfer.condition_code is not None
+            and transfer.true_target_ea is not None
+            and transfer.false_target_ea is not None
+            and transfer.selector_state_var_reg is not None
+            and transfer.selector_compare_constant is not None
+            and {
+                int(transfer.true_target_ea),
+                int(transfer.false_target_ea),
+            }
+            == target_eas
+        )
+        if len(target_eas) == 2 and len(conditional_candidates) == 1:
+            transfer = conditional_candidates[0]
+            assert transfer.true_target_ea is not None
+            assert transfer.false_target_ea is not None
+            assert transfer.selector_state_var_reg is not None
+            assert transfer.selector_compare_constant is not None
+            assert transfer.condition_code is not None
+            true_target_ea = int(transfer.true_target_ea)
+            false_target_ea = int(transfer.false_target_ea)
+            true_owner = target_owner(true_target_ea)
+            false_owner = target_owner(false_target_ea)
+            if true_owner is None or false_owner is None:
+                return None
+            conditional_ports.append(
+                DetachedSnippetConditionalBoundaryPort(
+                    source_block_ea=source_ea,
+                    predicate_ea=source_instruction_ea,
+                    old_taken_target_ea=None,
+                    old_fallthrough_target_ea=None,
+                    taken_target_ea=true_target_ea,
+                    fallthrough_target_ea=false_target_ea,
+                    state_register=None,
+                    taken_state=None,
+                    fallthrough_state=None,
+                    source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                    taken_target_owner=true_owner,
+                    fallthrough_target_owner=false_owner,
+                    resolver_kind="resolver_proven_register_compare_cut",
+                    predicate_size=4,
+                    condition_code=int(transfer.condition_code),
+                    predicate_register=int(transfer.selector_state_var_reg),
+                    predicate_constant=(
+                        int(transfer.selector_compare_constant) & _MASK32
+                    ),
+                )
+            )
+            continue
+        if len(target_eas) != 1:
+            logger.info(
+                "PREOPT union boundary rejected: reason=unresolved_multitarget_cut "
+                "source=0x%X instruction=0x%X targets=%s candidates=%d",
+                source_ea,
+                source_instruction_ea,
+                [hex(target_ea) for target_ea in sorted(target_eas)],
+                len(conditional_candidates),
+            )
+            return None
+        target_ea = next(iter(target_eas))
+        owner = target_owner(target_ea)
+        if owner is None:
+            return None
+        handler_exit_candidates = tuple(
+            transfer
+            for transfer in transfers
+            if transfer.resolver_kind == "static_handler_exit_route"
+            and int(transfer.source_jmp_ea) == source_instruction_ea
+            and transfer.target_eas == (target_ea,)
+        )
+        if (
+            len(handler_exit_candidates) == 1
+            and handler_exit_candidates[0].dispatcher_envelope_target_eas
+        ):
+            handler_exit = handler_exit_candidates[0]
+            direct_ports.append(
+                DetachedSnippetDirectBoundaryPort(
+                    source_block_ea=source_ea,
+                    source_instruction_ea=source_instruction_ea,
+                    endpoint_block_ea=source_ea,
+                    old_successor_eas=(),
+                    target_ea=target_ea,
+                    state_register=handler_exit.selector_state_var_reg,
+                    state_constant=handler_exit.selector_state_constant,
+                    source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                    endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                    target_owner=owner,
+                    delivery_mode="terminal_goto",
+                    resolver_kind="static_handler_exit_route",
+                    source_replaces_dispatcher_envelope=True,
+                )
+            )
+        else:
+            direct_ports.append(
+                make_resolver_cut_boundary_port(
+                    source_block_ea=source_ea,
+                    source_instruction_ea=source_instruction_ea,
+                    target_ea=target_ea,
+                    source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                    target_owner=owner,
+                    provenance=(
+                        edges[0].provenance or "resolver_proven_native_cut"
+                    ),
+                )
+            )
+    live_conditional_ports = _preopt_live_conditional_bridge_boundary_ports(
+        transfers,
+        live_mba=live_mba,
+        live_native_eas=live_native_eas,
+        imported_entry_eas=frozenset(imported_entry_eas),
+        native_cfg=native_cfg,
+    )
+    if live_conditional_ports is None:
+        return None
+    conditional_ports.extend(live_conditional_ports)
+    conditional_bridges = tuple(
+        transfer
+        for transfer in transfers
+        if transfer.resolver_kind == "conditional_handler_bridge"
+        and transfer.predicate_true_state is not None
+        and transfer.predicate_false_state is not None
+        and transfer.true_target_ea is not None
+        and transfer.false_target_ea is not None
+    )
+
+    def consumed_by_conditional_bridge(
+        transfer: MaterializedIndirectTransfer,
+    ) -> bool:
+        if (
+            live_mba is None
+            or transfer.resolver_kind != "residual_state_route_evidence"
+            or transfer.selector_state_constant is None
+            or len(transfer.target_eas) != 1
+        ):
+            return False
+        state_target = (
+            int(transfer.selector_state_constant) & _MASK32,
+            int(transfer.target_eas[0]),
+        )
+        route_ea = int(transfer.source_jmp_ea)
+        for bridge in conditional_bridges:
+            bridge_arms = {
+                (
+                    int(bridge.predicate_true_state) & _MASK32,
+                    int(bridge.true_target_ea),
+                ),
+                (
+                    int(bridge.predicate_false_state) & _MASK32,
+                    int(bridge.false_target_ea),
+                ),
+            }
+            if state_target not in bridge_arms:
+                continue
+            if (
+                bridge.predicate_predecessor_ea is not None
+                and route_ea == int(bridge.predicate_predecessor_ea)
+            ) or predicate_arm_reaches_ea(
+                live_mba,
+                predicate_ea=int(bridge.source_jmp_ea),
+                route_ea=route_ea,
+            ):
+                return True
+        return False
+
+    remaining_transfers = tuple(
+        transfer
+        for transfer in transfers
+        if not consumed_by_conditional_bridge(transfer)
+    )
+    live_entry_ports = _preopt_live_residual_route_boundary_ports(
+        remaining_transfers,
+        live_mba=live_mba,
+        live_native_eas=live_native_eas,
+        imported_entry_eas=frozenset(imported_entry_eas),
+        native_cfg=native_cfg,
+    )
+    if live_entry_ports is None:
+        return None
+    direct_ports.extend(live_entry_ports)
+    composed_direct_ports, entry_choice_ports = (
+        _compose_preopt_stack_carried_entry_choice_ports(
+            transfers,
+            tuple(direct_ports),
+            live_native_eas=live_native_eas,
+            imported_entry_eas=frozenset(imported_entry_eas),
+            native_cfg=native_cfg,
+            consumer_load_eas_by_displacement=(
+                {}
+                if stack_carrier_consumer_load_eas_by_displacement is None
+                else stack_carrier_consumer_load_eas_by_displacement
+            ),
+            native_stack_frame_offsets_by_ea=(
+                {}
+                if native_stack_frame_offsets_by_ea is None
+                else native_stack_frame_offsets_by_ea
+            ),
+            existing_conditional_ports=tuple(conditional_ports),
+        )
+    )
+    direct_ports = list(composed_direct_ports)
+    conditional_ports.extend(entry_choice_ports)
+    conditional_ports = list(
+        _compose_preopt_stack_carrier_router_ports(
+            transfers,
+            tuple(conditional_ports),
+            imported_entry_eas=frozenset(imported_entry_eas),
+            live_native_eas=live_native_eas,
+            native_cfg=native_cfg,
+            consumer_load_eas_by_displacement=(
+                {}
+                if stack_carrier_consumer_load_eas_by_displacement is None
+                else stack_carrier_consumer_load_eas_by_displacement
+            ),
+            native_stack_frame_offsets_by_ea=(
+                {}
+                if native_stack_frame_offsets_by_ea is None
+                else native_stack_frame_offsets_by_ea
+            ),
+        )
+    )
+    try:
+        return normalize_detached_snippet_boundary_ports(
+            tuple(direct_ports),
+            tuple(conditional_ports),
+        )
+    except ValueError as exc:
+        logger.info("PREOPT union boundary normalization rejected: %s", exc)
+        return None
+
+
+def _live_block_instruction_eas(block: object) -> tuple[int, ...]:
+    instruction = block.head
+    result: list[int] = []
+    while instruction is not None:
+        ea = int(instruction.ea)
+        if 0 < ea < 0xFFFFFFFFFFFFFFFF:
+            result.append(ea)
+        if instruction is block.tail or instruction == block.tail:
+            break
+        instruction = instruction.next
+    return tuple(dict.fromkeys(result))
+
+
+def _find_unique_live_predicate_block(mba: object, predicate_ea: int) -> object | None:
+    """Select the jcond owner when CMOV lowering reuses its EA for a copy."""
+    matches = tuple(
+        block
+        for serial in range(int(mba.qty))
+        for block in (mba.get_mblock(serial),)
+        if block is not None
+        and block.tail is not None
+        and int(block.tail.ea) == int(predicate_ea)
+        and ida_hexrays.is_mcode_jcond(int(block.tail.opcode))
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
+def _preopt_live_conditional_bridge_boundary_ports(
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    live_mba: object | None = None,
+    live_native_eas: frozenset[int],
+    imported_entry_eas: frozenset[int],
+    native_cfg: NativeCfg | None = None,
+) -> tuple[DetachedSnippetConditionalBoundaryPort, ...] | None:
+    """Project a complete live predicate and both exact state routes to PREOPT.
+
+    The source is deliberately not required to survive in the MBA used for
+    preparation.  A later fresh PREOPT import must bind the predicate by its
+    stable native EA before applying the port.  Both state-to-handler arms must
+    independently exist as residual-route evidence, so this projection cannot
+    invent an initial state or infer a return from an unmatched state.
+    """
+    residual_state_targets = {
+        (
+            int(transfer.selector_state_constant) & _MASK32,
+            int(transfer.target_eas[0]),
+        )
+        for transfer in transfers
+        if transfer.resolver_kind == "residual_state_route_evidence"
+        and transfer.selector_state_constant is not None
+        and len(transfer.target_eas) == 1
+    }
+    live_bridge_semantics_by_source: dict[
+        int,
+        set[frozenset[tuple[int, int]]],
+    ] = {}
+    for transfer in transfers:
+        if (
+            transfer.resolver_kind != "conditional_handler_bridge"
+            or transfer.predicate_true_state is None
+            or transfer.predicate_false_state is None
+            or transfer.true_target_ea is None
+            or transfer.false_target_ea is None
+        ):
+            continue
+        live_bridge_semantics_by_source.setdefault(
+            int(transfer.source_jmp_ea),
+            set(),
+        ).add(
+            frozenset(
+                {
+                    (
+                        int(transfer.predicate_true_state) & _MASK32,
+                        int(transfer.true_target_ea),
+                    ),
+                    (
+                        int(transfer.predicate_false_state) & _MASK32,
+                        int(transfer.false_target_ea),
+                    ),
+                }
+            )
+        )
+
+    def target_owner(
+        target_ea: int,
+    ) -> DetachedSnippetBoundaryPortOwner | None:
+        if int(target_ea) in imported_entry_eas:
+            return DetachedSnippetBoundaryPortOwner.IMPORTED
+        if int(target_ea) in live_native_eas:
+            return DetachedSnippetBoundaryPortOwner.LIVE
+        return None
+
+    candidates: dict[
+        tuple[int, int], set[DetachedSnippetConditionalBoundaryPort]
+    ] = {}
+    for transfer in transfers:
+        is_static_state_choice = (
+            transfer.resolver_kind == "static_conditional_state_choice_bridge"
+        )
+        if (
+            transfer.resolver_kind
+            not in {
+                "conditional_handler_bridge",
+                "static_conditional_state_choice_bridge",
+            }
+            or transfer.condition_code
+            not in {2, 3, 4, 5, 6, 7, 12, 13, 14, 15}
+            or transfer.true_target_ea is None
+            or transfer.false_target_ea is None
+            or transfer.predicate_true_state is None
+            or transfer.predicate_false_state is None
+            or transfer.predicate_compare_register is not None
+            or (
+                not is_static_state_choice
+                and (
+                    transfer.predicate_register is None
+                    or transfer.predicate_size is None
+                    or int(transfer.predicate_size) <= 0
+                )
+            )
+        ):
+            continue
+        if is_static_state_choice:
+            static_semantics = frozenset(
+                {
+                    (
+                        int(transfer.predicate_true_state) & _MASK32,
+                        int(transfer.true_target_ea),
+                    ),
+                    (
+                        int(transfer.predicate_false_state) & _MASK32,
+                        int(transfer.false_target_ea),
+                    ),
+                }
+            )
+            if static_semantics in live_bridge_semantics_by_source.get(
+                int(transfer.source_jmp_ea),
+                set(),
+            ):
+                continue
+        true_target_ea = int(transfer.true_target_ea)
+        false_target_ea = int(transfer.false_target_ea)
+        true_state = int(transfer.predicate_true_state) & _MASK32
+        false_state = int(transfer.predicate_false_state) & _MASK32
+        if (
+            true_target_ea == false_target_ea
+            or true_state == false_state
+            or (
+                not is_static_state_choice
+                and (
+                    (true_state, true_target_ea) not in residual_state_targets
+                    or (false_state, false_target_ea)
+                    not in residual_state_targets
+                )
+            )
+        ):
+            continue
+        true_owner = target_owner(true_target_ea)
+        false_owner = target_owner(false_target_ea)
+        if (
+            true_owner is None
+            or false_owner is None
+            or DetachedSnippetBoundaryPortOwner.IMPORTED
+            not in {true_owner, false_owner}
+        ):
+            continue
+        predicate_ea = int(transfer.source_jmp_ea)
+        source_block_ea = int(transfer.source_block_ea)
+        predicate_true_is_taken = transfer.predicate_true_is_taken
+        if is_static_state_choice:
+            if live_mba is None:
+                continue
+            live_source = _find_unique_live_predicate_block(
+                live_mba,
+                predicate_ea,
+            )
+            if live_source is None:
+                logger.info(
+                    "PREOPT static conditional choice abstained: "
+                    "source=0x%X compare=%s predicate=0x%X reason=live_predicate",
+                    source_block_ea,
+                    (
+                        "none"
+                        if not transfer.materialized_anchor_eas
+                        else f"0x{int(transfer.materialized_anchor_eas[0]):X}"
+                    ),
+                    predicate_ea,
+                )
+                continue
+            predicate_true_is_taken = exact_live_predicate_true_is_taken(
+                live_source,
+                predicate_ea=predicate_ea,
+                condition_code=int(transfer.condition_code),
+                predicate_register=transfer.predicate_register,
+                predicate_size=transfer.predicate_size,
+                predicate_constant=(
+                    None
+                    if is_static_state_choice
+                    and transfer.predicate_register is None
+                    and transfer.predicate_size is None
+                    else (
+                        0
+                        if transfer.predicate_compare_constant is None
+                        else int(transfer.predicate_compare_constant)
+                    )
+                ),
+            )
+            if predicate_true_is_taken not in (True, False):
+                logger.info(
+                    "PREOPT static conditional choice abstained: "
+                    "source=blk%d@0x%X predicate=0x%X reason=orientation",
+                    int(live_source.serial),
+                    int(live_source.start),
+                    predicate_ea,
+                )
+        if predicate_true_is_taken not in (True, False):
+            continue
+        native_source = None
+        if native_cfg is not None:
+            exact_source = native_cfg.blocks_by_ea.get(source_block_ea)
+            if exact_source is not None and (
+                int(exact_source.start_ea)
+                <= predicate_ea
+                < int(exact_source.end_ea)
+            ):
+                native_source = exact_source
+            else:
+                native_sources = tuple(
+                    block
+                    for block in native_cfg.blocks_by_ea.values()
+                    if int(block.start_ea) <= predicate_ea < int(block.end_ea)
+                )
+                if len(native_sources) == 1:
+                    native_source = native_sources[0]
+                    source_block_ea = int(native_source.start_ea)
+        if predicate_ea <= 0 or source_block_ea <= 0:
+            continue
+        if source_block_ea in imported_entry_eas:
+            source_owner = DetachedSnippetBoundaryPortOwner.IMPORTED
+        elif source_block_ea in live_native_eas:
+            source_owner = DetachedSnippetBoundaryPortOwner.LIVE
+        else:
+            continue
+        old_taken_target_ea = None
+        old_fallthrough_target_ea = None
+        old_taken_target_owner = None
+        old_fallthrough_target_owner = None
+        if native_source is not None:
+            old_taken_edges = tuple(
+                edge
+                for edge in native_source.outgoing_edges
+                if edge.kind is NativeEdgeKind.CONDITIONAL_TRUE
+                and edge.target_ea is not None
+                and (
+                    edge.source_instruction_ea is None
+                    or int(edge.source_instruction_ea) == predicate_ea
+                )
+            )
+            old_fallthrough_edges = tuple(
+                edge
+                for edge in native_source.outgoing_edges
+                if edge.kind is NativeEdgeKind.CONDITIONAL_FALSE
+                and edge.target_ea is not None
+                and (
+                    edge.source_instruction_ea is None
+                    or int(edge.source_instruction_ea) == predicate_ea
+                )
+            )
+            has_native_conditional = bool(old_taken_edges or old_fallthrough_edges)
+            if has_native_conditional:
+                if len(old_taken_edges) != 1 or len(old_fallthrough_edges) != 1:
+                    continue
+                old_taken_target_ea = int(old_taken_edges[0].target_ea)
+                old_fallthrough_target_ea = int(
+                    old_fallthrough_edges[0].target_ea
+                )
+                old_taken_target_owner = target_owner(old_taken_target_ea)
+                old_fallthrough_target_owner = target_owner(
+                    old_fallthrough_target_ea
+                )
+                if (
+                    old_taken_target_owner is None
+                    or old_fallthrough_target_owner is None
+                ):
+                    continue
+        if bool(predicate_true_is_taken):
+            taken_state = true_state
+            taken_target_ea = true_target_ea
+            taken_owner = true_owner
+            fallthrough_state = false_state
+            fallthrough_target_ea = false_target_ea
+            fallthrough_owner = false_owner
+        else:
+            taken_state = false_state
+            taken_target_ea = false_target_ea
+            taken_owner = false_owner
+            fallthrough_state = true_state
+            fallthrough_target_ea = true_target_ea
+            fallthrough_owner = true_owner
+        port = DetachedSnippetConditionalBoundaryPort(
+            source_block_ea=source_block_ea,
+            predicate_ea=predicate_ea,
+            old_taken_target_ea=old_taken_target_ea,
+            old_fallthrough_target_ea=old_fallthrough_target_ea,
+            taken_target_ea=taken_target_ea,
+            fallthrough_target_ea=fallthrough_target_ea,
+            state_register=(
+                int(transfer.selector_state_var_reg)
+                if transfer.selector_state_var_reg is not None
+                else None
+            ),
+            taken_state=taken_state,
+            fallthrough_state=fallthrough_state,
+            source_owner=source_owner,
+            taken_target_owner=taken_owner,
+            fallthrough_target_owner=fallthrough_owner,
+            resolver_kind=(
+                "resolver_proven_static_conditional_state_choice"
+                if is_static_state_choice
+                else "resolver_proven_live_conditional_bridge"
+            ),
+            old_taken_target_owner=old_taken_target_owner,
+            old_fallthrough_target_owner=old_fallthrough_target_owner,
+            logical_source_anchor_ea=(
+                int(transfer.materialized_anchor_eas[0])
+                if is_static_state_choice and transfer.materialized_anchor_eas
+                else predicate_ea
+            ),
+            predicate_size=transfer.predicate_size,
+            condition_code=int(transfer.condition_code),
+            predicate_register=transfer.predicate_register,
+            predicate_constant=(
+                None
+                if is_static_state_choice
+                and transfer.predicate_register is None
+                and transfer.predicate_size is None
+                else (
+                    0
+                    if transfer.predicate_compare_constant is None
+                    else int(transfer.predicate_compare_constant) & _MASK32
+                )
+            ),
+            predicate_true_is_taken=bool(predicate_true_is_taken),
+        )
+        if is_static_state_choice:
+            logger.info(
+                "PREOPT static conditional choice port: "
+                "source=0x%X compare=0x%X predicate=0x%X "
+                "taken_state=0x%X taken_target=0x%X "
+                "fallthrough_state=0x%X fallthrough_target=0x%X",
+                source_block_ea,
+                int(transfer.materialized_anchor_eas[0]),
+                predicate_ea,
+                taken_state,
+                taken_target_ea,
+                fallthrough_state,
+                fallthrough_target_ea,
+            )
+        candidates.setdefault((source_block_ea, predicate_ea), set()).add(port)
+    if any(len(ports) != 1 for ports in candidates.values()):
+        return None
+    return tuple(
+        next(iter(ports))
+        for _source, ports in sorted(candidates.items())
+    )
+
+
+def _preopt_live_residual_route_boundary_ports(
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    live_mba: object | None,
+    live_native_eas: frozenset[int],
+    imported_entry_eas: frozenset[int],
+    native_cfg: NativeCfg | None,
+) -> tuple[DetachedSnippetDirectBoundaryPort, ...] | None:
+    """Bind a proven live one-way state tail to its imported handler.
+
+    A state choice may occur in an earlier two-way block and reconverge before
+    the actual dispatcher state write.  Only the one-way post-dominator that
+    contains an exact residual state-write anchor may cross into the imported
+    union.  Its sole old successor must remain a recovered dispatcher router.
+    """
+    if live_mba is None or native_cfg is None:
+        return ()
+    dispatcher_router_eas = {
+        int(router_ea)
+        for transfer in transfers
+        for router_ea in transfer.dispatcher_router_eas
+    }
+    rejections: list[tuple[str, int, int]] = []
+    candidates: list[tuple[int, DetachedSnippetDirectBoundaryPort]] = []
+
+    def live_candidate(
+        transfer: MaterializedIndirectTransfer,
+        source_write_ea: int,
+        target_ea: int,
+    ) -> DetachedSnippetDirectBoundaryPort | None:
+        source_matches = tuple(
+            block
+            for serial in range(int(live_mba.qty))
+            for block in (live_mba.get_mblock(serial),)
+            if block is not None
+            and int(block.start) <= source_write_ea < int(block.end)
+        )
+        if len(source_matches) != 1:
+            return None
+        represented = source_matches[0]
+        represented_eas = _live_block_instruction_eas(represented)
+        represented_entry_ea = select_unique_block_native_ea(
+            int(represented.start),
+            represented_eas,
+        )
+        successor_serials = tuple(int(serial) for serial in represented.succset)
+        if represented_entry_ea is None or len(successor_serials) != 1:
+            return None
+        old_successor = live_mba.get_mblock(successor_serials[0])
+        if old_successor is None:
+            return None
+        old_successor_ea = select_unique_block_native_ea(
+            int(old_successor.start),
+            _live_block_instruction_eas(old_successor),
+        )
+        if (
+            old_successor_ea is None
+            or int(old_successor_ea) not in dispatcher_router_eas
+            or int(represented_entry_ea) not in live_native_eas
+        ):
+            return None
+        source_instruction_ea = int(represented.tail.ea)
+        if source_instruction_ea <= 0:
+            source_instruction_ea = source_write_ea
+        return DetachedSnippetDirectBoundaryPort(
+            source_block_ea=int(represented_entry_ea),
+            source_instruction_ea=source_instruction_ea,
+            endpoint_block_ea=int(represented_entry_ea),
+            old_successor_eas=(int(old_successor_ea),),
+            target_ea=target_ea,
+            state_register=int(transfer.selector_state_var_reg),
+            state_constant=int(transfer.selector_state_constant) & _MASK32,
+            source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            endpoint_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            delivery_mode="redirect_edge",
+            resolver_kind=transfer.resolver_kind,
+            old_successor_owners=(DetachedSnippetBoundaryPortOwner.LIVE,),
+        )
+
+    for transfer in transfers:
+        if (
+            transfer.resolver_kind != "residual_state_route_evidence"
+            or transfer.selector_state_var_reg is None
+            or transfer.selector_state_constant is None
+            or len(transfer.target_eas) != 1
+        ):
+            continue
+        source_write_ea = int(transfer.source_jmp_ea)
+        source_block_ea = int(transfer.source_block_ea)
+        target_ea = int(transfer.target_eas[0])
+        if target_ea not in imported_entry_eas:
+            rejections.append(("target_ownership", source_write_ea, target_ea))
+            continue
+        native_matches = tuple(
+            block
+            for block in native_cfg.blocks_by_ea.values()
+            if int(block.start_ea) <= source_write_ea < int(block.end_ea)
+        )
+        exact_native_source = native_cfg.blocks_by_ea.get(source_block_ea)
+        if exact_native_source is not None and (
+            int(exact_native_source.start_ea)
+            <= source_write_ea
+            < int(exact_native_source.end_ea)
+        ):
+            native_source = exact_native_source
+        else:
+            if len(native_matches) != 1:
+                port = live_candidate(transfer, source_write_ea, target_ea)
+                if port is not None:
+                    candidates.append((source_write_ea, port))
+                    continue
+                rejections.append(("native_range_owner", source_write_ea, target_ea))
+                continue
+            (native_source,) = native_matches
+        if len(native_source.outgoing_edges) != 1:
+            rejections.append(("native_edge_count", source_write_ea, target_ea))
+            continue
+        edge = native_source.outgoing_edges[0]
+        compatible_terminal_eas = {
+            int(candidate_edge.source_instruction_ea)
+            for candidate_block in native_matches
+            if len(candidate_block.outgoing_edges) == 1
+            for candidate_edge in candidate_block.outgoing_edges
+            if candidate_edge.kind is edge.kind
+            and candidate_edge.target_ea == edge.target_ea
+            and candidate_edge.source_instruction_ea is not None
+        }
+        if len(compatible_terminal_eas) == 1:
+            edge = replace(
+                edge,
+                source_instruction_ea=next(iter(compatible_terminal_eas)),
+            )
+        elif len(compatible_terminal_eas) > 1:
+            rejections.append(
+                ("native_terminal_conflict", source_write_ea, target_ea)
+            )
+            continue
+        if (
+            edge.kind
+            not in {NativeEdgeKind.DIRECT_JUMP, NativeEdgeKind.FALLTHROUGH}
+            or edge.target_ea is None
+            or edge.source_instruction_ea is None
+            or int(edge.target_ea) not in dispatcher_router_eas
+        ):
+            edge_target = (
+                "none" if edge.target_ea is None else f"0x{int(edge.target_ea):X}"
+            )
+            edge_source = (
+                "none"
+                if edge.source_instruction_ea is None
+                else f"0x{int(edge.source_instruction_ea):X}"
+            )
+            rejections.append(
+                (
+                    "native_router_edge:"
+                    f"{edge.kind.value}:{edge_source}:{edge_target}",
+                    source_write_ea,
+                    target_ea,
+                )
+            )
+            continue
+        source_instruction_ea = int(edge.source_instruction_ea)
+        old_successor_ea = int(edge.target_ea)
+        native_source_entry_ea = int(native_source.start_ea)
+        if native_source_entry_ea in imported_entry_eas:
+            old_successor_owner = (
+                DetachedSnippetBoundaryPortOwner.IMPORTED
+                if old_successor_ea in imported_entry_eas
+                else (
+                    DetachedSnippetBoundaryPortOwner.LIVE
+                    if old_successor_ea in live_native_eas
+                    else None
+                )
+            )
+            if old_successor_owner is None:
+                rejections.append(
+                    ("imported_old_successor_owner", source_write_ea, target_ea)
+                )
+                continue
+            candidates.append(
+                (
+                    source_write_ea,
+                    DetachedSnippetDirectBoundaryPort(
+                        source_block_ea=native_source_entry_ea,
+                        source_instruction_ea=source_instruction_ea,
+                        endpoint_block_ea=native_source_entry_ea,
+                        old_successor_eas=(old_successor_ea,),
+                        target_ea=target_ea,
+                        state_register=int(transfer.selector_state_var_reg),
+                        state_constant=(
+                            int(transfer.selector_state_constant) & _MASK32
+                        ),
+                        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                        delivery_mode="redirect_edge",
+                        resolver_kind=transfer.resolver_kind,
+                        old_successor_owners=(old_successor_owner,),
+                    ),
+                )
+            )
+            continue
+        source_matches = tuple(
+            block
+            for serial in range(int(live_mba.qty))
+            for block in (live_mba.get_mblock(serial),)
+            if block is not None
+            and int(block.start) <= source_write_ea < int(block.end)
+        )
+        if len(source_matches) != 1:
+            logger.info(
+                "PREOPT live residual-route range lookup: "
+                "write=0x%X source_block=0x%X target=0x%X matches=%s blocks=%s",
+                source_write_ea,
+                source_block_ea,
+                target_ea,
+                tuple(int(block.serial) for block in source_matches),
+                tuple(
+                    (
+                        int(block.serial),
+                        int(block.start),
+                        int(block.end),
+                        _live_block_instruction_eas(block),
+                    )
+                    for serial in range(int(live_mba.qty))
+                    for block in (live_mba.get_mblock(serial),)
+                    if block is not None
+                ),
+            )
+            rejections.append(("live_range_owner", source_write_ea, target_ea))
+            continue
+        represented = source_matches[0]
+        represented_eas = _live_block_instruction_eas(represented)
+        represented_entry_ea = select_unique_block_native_ea(
+            int(represented.start),
+            represented_eas,
+        )
+        if (
+            represented_entry_ea is None
+            or int(represented_entry_ea) not in live_native_eas
+            or source_instruction_ea not in represented_eas
+        ):
+            rejections.append(("live_terminal_anchor", source_write_ea, target_ea))
+            continue
+        candidates.append(
+            (
+                source_write_ea,
+                DetachedSnippetDirectBoundaryPort(
+                source_block_ea=source_block_ea,
+                source_instruction_ea=source_instruction_ea,
+                endpoint_block_ea=source_instruction_ea,
+                old_successor_eas=(old_successor_ea,),
+                target_ea=target_ea,
+                state_register=int(transfer.selector_state_var_reg),
+                state_constant=(int(transfer.selector_state_constant) & _MASK32),
+                source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+                endpoint_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+                target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                delivery_mode="redirect_edge",
+                resolver_kind=transfer.resolver_kind,
+                old_successor_owners=(
+                    DetachedSnippetBoundaryPortOwner.LIVE,
+                ),
+            ),
+        )
+        )
+    if rejections:
+        logger.info(
+            "PREOPT live residual-route boundary candidates: routers=%s "
+            "accepted=%s rejected=%s",
+            [hex(ea) for ea in sorted(dispatcher_router_eas)],
+            [
+                (
+                    hex(proof_write_ea),
+                    hex(int(port.source_block_ea)),
+                    hex(int(port.source_instruction_ea)),
+                    hex(int(port.target_ea)),
+                )
+                for proof_write_ea, port in candidates
+            ],
+            [
+                (reason, hex(source_write_ea), hex(target_ea))
+                for reason, source_write_ea, target_ea in rejections
+            ],
+        )
+    latest_by_terminal: dict[
+        tuple[int, int],
+        tuple[int, set[DetachedSnippetDirectBoundaryPort]],
+    ] = {}
+    for proof_write_ea, port in candidates:
+        terminal_key = (
+            int(port.source_instruction_ea),
+            int(port.old_successor_eas[0]),
+        )
+        previous = latest_by_terminal.get(terminal_key)
+        if previous is None or proof_write_ea > previous[0]:
+            latest_by_terminal[terminal_key] = (proof_write_ea, {port})
+        elif proof_write_ea == previous[0]:
+            previous[1].add(port)
+    if any(len(ports) != 1 for _write_ea, ports in latest_by_terminal.values()):
+        return None
+    selected_candidates = tuple(
+        next(iter(ports))
+        for _write_ea, ports in latest_by_terminal.values()
+    )
+    by_source: dict[tuple[int, int], set[DetachedSnippetDirectBoundaryPort]] = {}
+    for port in selected_candidates:
+        by_source.setdefault(
+            (int(port.source_block_ea), int(port.source_instruction_ea)),
+            set(),
+        ).add(port)
+    if any(len(ports) != 1 for ports in by_source.values()):
+        return None
+    return tuple(
+        sorted(
+            (next(iter(ports)) for ports in by_source.values()),
+            key=lambda port: (
+                int(port.source_instruction_ea),
+                int(port.target_ea),
+            ),
+        )
+    )
+
+
+def _compose_preopt_stack_carrier_router_ports(
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    conditional_ports: tuple[DetachedSnippetConditionalBoundaryPort, ...],
+    *,
+    imported_entry_eas: frozenset[int],
+    live_native_eas: frozenset[int],
+    native_cfg: NativeCfg | None,
+    consumer_load_eas_by_displacement: Mapping[int, Sequence[int]],
+    native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]] | None = None,
+) -> tuple[DetachedSnippetConditionalBoundaryPort, ...]:
+    """Retain nested prologue predicates selected through stack routers.
+
+    A static state choice can route to a handler that merely loads another
+    prologue-selected state from a stack cell and re-enters the dispatcher.
+    The resolver already proves both facts before import: which predicate
+    filled the cell and which imported native block consumes it.  Connect the
+    outer arm to that exact live predicate instead of the synthetic router.
+
+    The result is a small resolver-proven decision tree made from the existing
+    binary conditional-port contract.  Missing or ambiguous choices, consumer
+    ownership, predicate ports, or cycles preserve the original ports.
+    """
+    if native_cfg is None or not conditional_ports:
+        return conditional_ports
+
+    choices_by_displacement: dict[
+        int, list[MaterializedIndirectTransfer]
+    ] = {}
+    for transfer in transfers:
+        if (
+            transfer.resolver_kind != "static_stack_carried_state_choice"
+            or transfer.state_carrier_stack_displacement is None
+            or transfer.predicate_true_state is None
+            or transfer.predicate_false_state is None
+            or transfer.true_target_ea is None
+            or transfer.false_target_ea is None
+        ):
+            continue
+        displacement = int(transfer.state_carrier_stack_displacement) & _MASK32
+        choices_by_displacement.setdefault(displacement, []).append(transfer)
+
+    unique_choice_by_displacement = {
+        displacement: choices[0]
+        for displacement, choices in choices_by_displacement.items()
+        if len(choices) == 1
+    }
+
+    def port_matches_choice(
+        port: DetachedSnippetConditionalBoundaryPort,
+        choice: MaterializedIndirectTransfer,
+    ) -> bool:
+        assert choice.predicate_true_state is not None
+        assert choice.predicate_false_state is not None
+        assert choice.true_target_ea is not None
+        assert choice.false_target_ea is not None
+        return (
+            int(port.predicate_ea) == int(choice.source_jmp_ea)
+            and port.source_owner is DetachedSnippetBoundaryPortOwner.LIVE
+            and port.taken_state is not None
+            and port.fallthrough_state is not None
+            and {
+                int(port.taken_state) & _MASK32,
+                int(port.fallthrough_state) & _MASK32,
+            }
+            == {
+                int(choice.predicate_true_state) & _MASK32,
+                int(choice.predicate_false_state) & _MASK32,
+            }
+            and {
+                int(port.taken_target_ea),
+                int(port.fallthrough_target_ea),
+            }
+            == {
+                int(choice.true_target_ea),
+                int(choice.false_target_ea),
+            }
+        )
+
+    def imported_owner_entry(ea: int) -> int | None:
+        matches = {
+            int(entry_ea)
+            for entry_ea in imported_entry_eas
+            for block in (native_cfg.blocks_by_ea.get(int(entry_ea)),)
+            if block is not None
+            and int(block.start_ea) <= int(ea) < int(block.end_ea)
+        }
+        if not matches and int(ea) in imported_entry_eas:
+            matches.add(int(ea))
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    displacements_by_consumer_entry: dict[int, set[int]] = {}
+    for displacement, load_eas in consumer_load_eas_by_displacement.items():
+        for load_ea in load_eas:
+            owner_entry = imported_owner_entry(int(load_ea))
+            if owner_entry is not None:
+                displacements_by_consumer_entry.setdefault(
+                    owner_entry, set()
+                ).add(int(displacement) & _MASK32)
+
+    def target_owner(target_ea: int) -> DetachedSnippetBoundaryPortOwner | None:
+        if int(target_ea) in imported_entry_eas:
+            return DetachedSnippetBoundaryPortOwner.IMPORTED
+        if int(target_ea) in live_native_eas:
+            return DetachedSnippetBoundaryPortOwner.LIVE
+        return None
+
+    def is_expansion_source(
+        port: DetachedSnippetConditionalBoundaryPort,
+    ) -> bool:
+        """Expand native predicates, never a previously relocated choice."""
+        return (
+            port.logical_source_anchor_ea is None
+            or int(port.logical_source_anchor_ea) == int(port.predicate_ea)
+        )
+
+    expansion_sources = tuple(
+        port for port in conditional_ports if is_expansion_source(port)
+    )
+
+    referenced_displacements = {
+        displacement
+        for port in expansion_sources
+        for target_ea, target_owner in (
+            (port.taken_target_ea, port.taken_target_owner),
+            (port.fallthrough_target_ea, port.fallthrough_target_owner),
+        )
+        if target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+        for consumer_entry in (imported_owner_entry(int(target_ea)),)
+        if consumer_entry is not None
+        for displacement in displacements_by_consumer_entry.get(
+            consumer_entry, set()
+        )
+    }
+    frame_offsets = (
+        {}
+        if native_stack_frame_offsets_by_ea is None
+        else native_stack_frame_offsets_by_ea
+    )
+    generated_nested_ports: list[DetachedSnippetConditionalBoundaryPort] = []
+    nested_port_by_displacement: dict[
+        int, DetachedSnippetConditionalBoundaryPort
+    ] = {}
+    for displacement, choice in unique_choice_by_displacement.items():
+        matches = tuple(
+            port
+            for port in conditional_ports
+            if port_matches_choice(port, choice)
+        )
+        if (
+            len(matches) == 1
+            and int(matches[0].predicate_ea) in live_native_eas
+        ):
+            nested_port_by_displacement[displacement] = matches[0]
+            continue
+        if displacement not in referenced_displacements or matches:
+            continue
+        assert choice.state_carrier_store_ea is not None
+        store_offsets = frame_offsets.get(int(choice.state_carrier_store_ea), ())
+        load_eas = tuple(
+            dict.fromkeys(
+                int(load_ea)
+                for load_ea in consumer_load_eas_by_displacement.get(
+                    displacement, ()
+                )
+                if imported_owner_entry(int(load_ea)) is not None
+            )
+        )
+        true_owner = target_owner(int(choice.true_target_ea))
+        false_owner = target_owner(int(choice.false_target_ea))
+        if (
+            len(store_offsets) != 1
+            or len(load_eas) != 1
+            or choice.selector_state_var_reg is None
+            or choice.predicate_size is None
+            or int(choice.predicate_size) <= 0
+            or true_owner is None
+            or false_owner is None
+        ):
+            continue
+        generated = DetachedSnippetConditionalBoundaryPort(
+            source_block_ea=int(choice.source_block_ea),
+            predicate_ea=int(choice.source_jmp_ea),
+            old_taken_target_ea=None,
+            old_fallthrough_target_ea=None,
+            taken_target_ea=int(choice.true_target_ea),
+            fallthrough_target_ea=int(choice.false_target_ea),
+            state_register=int(choice.selector_state_var_reg),
+            taken_state=int(choice.predicate_true_state) & _MASK32,
+            fallthrough_state=int(choice.predicate_false_state) & _MASK32,
+            source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            taken_target_owner=true_owner,
+            fallthrough_target_owner=false_owner,
+            resolver_kind=(
+                "resolver_proven_static_stack_carried_router_choice"
+            ),
+            logical_source_anchor_ea=load_eas[0],
+            logical_source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            predicate_ida_stkoff=int(store_offsets[0]),
+            predicate_stack_value=(
+                int(choice.predicate_true_state) & _MASK32
+            ),
+            predicate_size=int(choice.predicate_size),
+            condition_code=choice.condition_code,
+            predicate_register=choice.predicate_register,
+            predicate_constant=choice.predicate_compare_constant,
+            predicate_true_is_taken=True,
+            logical_source_replaces_dispatcher_envelope=True,
+        )
+        generated_nested_ports.append(generated)
+        nested_port_by_displacement[displacement] = generated
+
+    dependencies: dict[int, set[int]] = {}
+    rewrites: dict[
+        int,
+        tuple[
+            int | None,
+            DetachedSnippetConditionalBoundaryPort | None,
+            int | None,
+            DetachedSnippetConditionalBoundaryPort | None,
+        ],
+    ] = {}
+    for port in conditional_ports:
+        arm_rows: list[
+            tuple[int | None, DetachedSnippetConditionalBoundaryPort | None]
+        ] = []
+        for target_ea, target_owner in (
+            (port.taken_target_ea, port.taken_target_owner),
+            (port.fallthrough_target_ea, port.fallthrough_target_owner),
+        ):
+            nested_port = None
+            displacement = None
+            if (
+                is_expansion_source(port)
+                and target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+            ):
+                consumer_entry = imported_owner_entry(int(target_ea))
+                candidates = (
+                    set()
+                    if consumer_entry is None
+                    else displacements_by_consumer_entry.get(consumer_entry, set())
+                )
+                if len(candidates) == 1:
+                    displacement = next(iter(candidates))
+                    candidate_port = nested_port_by_displacement.get(displacement)
+                    if (
+                        candidate_port is not None
+                        and int(candidate_port.predicate_ea)
+                        != int(port.predicate_ea)
+                    ):
+                        nested_port = candidate_port
+                        dependencies.setdefault(int(port.predicate_ea), set()).add(
+                            int(candidate_port.predicate_ea)
+                        )
+            arm_rows.append((displacement, nested_port))
+        rewrites[int(port.predicate_ea)] = (
+            arm_rows[0][0],
+            arm_rows[0][1],
+            arm_rows[1][0],
+            arm_rows[1][1],
+        )
+
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def has_cycle(predicate_ea: int) -> bool:
+        if predicate_ea in visiting:
+            return True
+        if predicate_ea in visited:
+            return False
+        visiting.add(predicate_ea)
+        cyclic = any(
+            has_cycle(successor)
+            for successor in dependencies.get(predicate_ea, set())
+        )
+        visiting.remove(predicate_ea)
+        visited.add(predicate_ea)
+        return cyclic
+
+    if any(has_cycle(predicate_ea) for predicate_ea in dependencies):
+        logger.info("PREOPT stack-carrier router expansion abstained: cycle")
+        return conditional_ports
+
+    result: list[DetachedSnippetConditionalBoundaryPort] = []
+    expanded_rows: list[tuple[str, str, str]] = []
+    for port in conditional_ports:
+        (
+            _taken_displacement,
+            taken_nested,
+            _fallthrough_displacement,
+            fallthrough_nested,
+        ) = rewrites[int(port.predicate_ea)]
+        rewritten = replace(
+            port,
+            taken_target_ea=(
+                int(port.taken_target_ea)
+                if taken_nested is None
+                else int(taken_nested.predicate_ea)
+            ),
+            taken_target_owner=(
+                port.taken_target_owner
+                if taken_nested is None
+                else DetachedSnippetBoundaryPortOwner.LIVE
+            ),
+            taken_target_is_boundary_source=taken_nested is not None,
+            fallthrough_target_ea=(
+                int(port.fallthrough_target_ea)
+                if fallthrough_nested is None
+                else int(fallthrough_nested.predicate_ea)
+            ),
+            fallthrough_target_owner=(
+                port.fallthrough_target_owner
+                if fallthrough_nested is None
+                else DetachedSnippetBoundaryPortOwner.LIVE
+            ),
+            fallthrough_target_is_boundary_source=(
+                fallthrough_nested is not None
+            ),
+        )
+        result.append(rewritten)
+        if taken_nested is not None:
+            expanded_rows.append(
+                (
+                    f"0x{int(port.predicate_ea):X}",
+                    "taken",
+                    f"0x{int(taken_nested.predicate_ea):X}",
+                )
+            )
+        if fallthrough_nested is not None:
+            expanded_rows.append(
+                (
+                    f"0x{int(port.predicate_ea):X}",
+                    "fallthrough",
+                    f"0x{int(fallthrough_nested.predicate_ea):X}",
+                )
+            )
+    result.extend(generated_nested_ports)
+    if expanded_rows:
+        logger.info("PREOPT stack-carrier router expansion: rows=%s", expanded_rows)
+    return tuple(result)
+
+
+def _compose_preopt_stack_carried_entry_choice_ports(
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    direct_ports: tuple[DetachedSnippetDirectBoundaryPort, ...],
+    *,
+    live_native_eas: frozenset[int],
+    imported_entry_eas: frozenset[int],
+    native_cfg: NativeCfg | None,
+    consumer_load_eas_by_displacement: Mapping[int, Sequence[int]],
+    native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]],
+    existing_conditional_ports: tuple[
+        DetachedSnippetConditionalBoundaryPort, ...
+    ] = (),
+) -> tuple[
+    tuple[DetachedSnippetDirectBoundaryPort, ...],
+    tuple[DetachedSnippetConditionalBoundaryPort, ...],
+]:
+    """Replace one proven bootstrap route with its carried two-state choice.
+
+    The original compare/CMOV may be far earlier than the live edge into a
+    detached bootstrap handler.  The static resolver already proves that the
+    CMOV stores exactly one of two dispatcher states in one native stack cell
+    and independently maps both states to handlers.  Retain the original
+    predicate EA as proof provenance, but name the later direct-port terminal
+    as the logical control-transfer anchor.  Reconstructing the stack-cell
+    condition there preserves every intervening prologue side effect before
+    branching to the two handlers.
+
+    Every identity is native-EA based.  Missing or ambiguous stores, consumers,
+    entry routes, offsets, or target owners leave the original direct port
+    untouched.
+    """
+    if native_cfg is None:
+        return direct_ports, ()
+
+    choices_by_displacement: dict[int, list[MaterializedIndirectTransfer]] = {}
+    for transfer in transfers:
+        if (
+            transfer.resolver_kind != "static_stack_carried_state_choice"
+            or transfer.state_carrier_store_ea is None
+            or transfer.state_carrier_stack_displacement is None
+            or transfer.predicate_true_state is None
+            or transfer.predicate_false_state is None
+            or transfer.true_target_ea is None
+            or transfer.false_target_ea is None
+            or transfer.selector_state_var_reg is None
+            or transfer.predicate_size is None
+            or int(transfer.predicate_size) <= 0
+        ):
+            continue
+        displacement = int(transfer.state_carrier_stack_displacement) & _MASK32
+        choices_by_displacement.setdefault(displacement, []).append(transfer)
+
+    def target_owner(target_ea: int) -> DetachedSnippetBoundaryPortOwner | None:
+        if int(target_ea) in imported_entry_eas:
+            return DetachedSnippetBoundaryPortOwner.IMPORTED
+        if int(target_ea) in live_native_eas:
+            return DetachedSnippetBoundaryPortOwner.LIVE
+        return None
+
+    candidate_rows: dict[
+        DetachedSnippetDirectBoundaryPort,
+        set[DetachedSnippetConditionalBoundaryPort],
+    ] = {}
+    for displacement, choices in sorted(choices_by_displacement.items()):
+        if len(choices) != 1:
+            continue
+        (choice,) = choices
+        choice_states = {
+            int(choice.predicate_true_state) & _MASK32,
+            int(choice.predicate_false_state) & _MASK32,
+        }
+        choice_targets = {
+            int(choice.true_target_ea),
+            int(choice.false_target_ea),
+        }
+        if any(
+            int(port.predicate_ea) == int(choice.source_jmp_ea)
+            and port.taken_state is not None
+            and port.fallthrough_state is not None
+            and {
+                int(port.taken_state) & _MASK32,
+                int(port.fallthrough_state) & _MASK32,
+            }
+            == choice_states
+            and (
+                {
+                    int(port.taken_target_ea),
+                    int(port.fallthrough_target_ea),
+                }
+                == choice_targets
+                or port.taken_target_is_boundary_source
+                or port.fallthrough_target_is_boundary_source
+            )
+            for port in existing_conditional_ports
+        ):
+            # The live prologue predicate is already the complete two-arm
+            # boundary. Do not rediscover a synthetic boundary from its later
+            # stack consumer.
+            continue
+        consumer_entries: set[int] = set()
+        consumer_ambiguous = False
+        for load_ea in consumer_load_eas_by_displacement.get(displacement, ()):
+            owners = {
+                int(entry_ea)
+                for entry_ea in imported_entry_eas
+                for block in (native_cfg.blocks_by_ea.get(int(entry_ea)),)
+                if block is not None
+                and int(block.start_ea) <= int(load_ea) < int(block.end_ea)
+            }
+            if len(owners) != 1:
+                consumer_ambiguous = True
+                break
+            consumer_entries.update(owners)
+        if consumer_ambiguous or len(consumer_entries) != 1:
+            continue
+        (consumer_entry_ea,) = consumer_entries
+        matching_direct_ports = tuple(
+            port
+            for port in direct_ports
+            if port.source_owner is DetachedSnippetBoundaryPortOwner.LIVE
+            and port.endpoint_owner is DetachedSnippetBoundaryPortOwner.LIVE
+            and port.target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+            and port.delivery_mode == "redirect_edge"
+            and int(port.target_ea) == consumer_entry_ea
+        )
+        if len(matching_direct_ports) != 1:
+            continue
+        (direct_port,) = matching_direct_ports
+        predicate_blocks = tuple(
+            block
+            for block in native_cfg.blocks_by_ea.values()
+            if int(block.start_ea)
+            <= int(choice.source_jmp_ea)
+            < int(block.end_ea)
+        )
+        if len(predicate_blocks) != 1:
+            continue
+        predicate_source_ea = int(predicate_blocks[0].start_ea)
+        assert choice.state_carrier_store_ea is not None
+        store_offsets = native_stack_frame_offsets_by_ea.get(
+            int(choice.state_carrier_store_ea),
+            (),
+        )
+        if len(store_offsets) != 1:
+            continue
+        assert choice.predicate_true_state is not None
+        assert choice.predicate_false_state is not None
+        assert choice.true_target_ea is not None
+        assert choice.false_target_ea is not None
+        true_state = int(choice.predicate_true_state) & _MASK32
+        false_state = int(choice.predicate_false_state) & _MASK32
+        true_target_ea = int(choice.true_target_ea)
+        false_target_ea = int(choice.false_target_ea)
+        true_owner = target_owner(true_target_ea)
+        false_owner = target_owner(false_target_ea)
+        if (
+            true_state == false_state
+            or true_target_ea == false_target_ea
+            or true_owner is None
+            or false_owner is None
+            or DetachedSnippetBoundaryPortOwner.IMPORTED
+            not in {true_owner, false_owner}
+        ):
+            continue
+        candidate_rows.setdefault(direct_port, set()).add(
+            DetachedSnippetConditionalBoundaryPort(
+                source_block_ea=predicate_source_ea,
+                predicate_ea=int(choice.source_jmp_ea),
+                old_taken_target_ea=None,
+                old_fallthrough_target_ea=None,
+                taken_target_ea=true_target_ea,
+                fallthrough_target_ea=false_target_ea,
+                state_register=int(choice.selector_state_var_reg),
+                taken_state=true_state,
+                fallthrough_state=false_state,
+                source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+                taken_target_owner=true_owner,
+                fallthrough_target_owner=false_owner,
+                resolver_kind=(
+                    "resolver_proven_static_stack_carried_entry_choice"
+                ),
+                logical_source_anchor_ea=int(direct_port.source_instruction_ea),
+                predicate_ida_stkoff=int(store_offsets[0]),
+                predicate_stack_value=true_state,
+                predicate_size=int(choice.predicate_size),
+                condition_code=choice.condition_code,
+                predicate_register=choice.predicate_register,
+                predicate_constant=choice.predicate_compare_constant,
+                predicate_true_is_taken=True,
+            )
+        )
+
+    selected = {
+        direct_port: next(iter(ports))
+        for direct_port, ports in candidate_rows.items()
+        if len(ports) == 1
+    }
+    if selected:
+        logger.info(
+            "PREOPT stack-carried entry choices: rows=%s",
+            [
+                (
+                    f"0x{int(direct_port.source_block_ea):X}",
+                    f"0x{int(direct_port.source_instruction_ea):X}",
+                    f"0x{int(direct_port.target_ea):X}",
+                    f"0x{int(port.predicate_ea):X}",
+                    f"0x{int(port.taken_state):X}",
+                    f"0x{int(port.taken_target_ea):X}",
+                    f"0x{int(port.fallthrough_state):X}",
+                    f"0x{int(port.fallthrough_target_ea):X}",
+                )
+                for direct_port, port in sorted(
+                    selected.items(),
+                    key=lambda row: int(row[0].source_instruction_ea),
+                )
+            ],
+        )
+    return (
+        tuple(port for port in direct_ports if port not in selected),
+        tuple(
+            port
+            for _direct, port in sorted(
+                selected.items(),
+                key=lambda row: int(row[0].source_instruction_ea),
+            )
+        ),
+    )
+
+
+def _merge_preopt_union_boundary_ports(
+    previous: DetachedSnippetBoundaryPorts,
+    current: DetachedSnippetBoundaryPorts,
+) -> DetachedSnippetBoundaryPorts:
+    """Keep resolver-proven ports monotonic across optimized-MBA refreshes.
+
+    Applying a live-to-imported boundary port can remove its source route from
+    the next CALLS MBA.  Absence in that rewritten snapshot is not evidence
+    that the earlier resolver proof became invalid, so refresh may add ports
+    but must not erase them.  A newly-proven conditional may, however,
+    explicitly replace the bootstrap direct edge at the same stable source and
+    terminal anchor.  Keeping both would mutate one source twice in the same
+    atomic batch.  The normalizer still rejects every other contradictory proof
+    for the same stable native-EA source.
+    """
+    conditional_replacements = {
+        (
+            int(port.logical_source_anchor_ea),
+            port.logical_source_owner or port.source_owner,
+        )
+        for port in current.conditional
+        if port.logical_source_anchor_ea is not None
+        and port.old_taken_target_ea is None
+        and port.old_fallthrough_target_ea is None
+    }
+    direct = tuple(
+        port
+        for port in previous.direct + current.direct
+        if (
+            int(port.source_instruction_ea),
+            port.source_owner,
+        )
+        not in conditional_replacements
+    )
+    return normalize_detached_snippet_boundary_ports(
+        direct,
+        previous.conditional + current.conditional,
+    )
+
+
+def prepare_preopt_union_closure(
+    state: ResolverSessionState,
+    *,
+    live_mba: object,
+    refresh_existing: bool = False,
+    refresh_baseline_boundary_ports: DetachedSnippetBoundaryPorts | None = None,
+) -> PreoptUnionPreparationResult:
+    """Prepare one resolver-proven native closure for PREOPT import."""
+    resolution = state.resolution
+    if not isinstance(resolution, ComputedGotoResolution):
+        return _preopt_union_abstention(0, "missing_session_resolution")
+    key = int(resolution.function_ea)
+    cached = state.preopt_union_preparation
+    if isinstance(cached, PreoptUnionPreparationResult):
+        return replace(cached, published=False)
+    if (
+        resolution.arch != "x86"
+        or not is_computed_goto_materialized(state)
+        or state.snippet_capture_active
+    ):
+        return _preopt_union_abstention(key, "profile_not_eligible")
+
+    imported_origins = dict(imported_detached_snippet_instruction_origins(live_mba))
+    transfers = tuple(
+        _canonicalize_imported_transfer_eas(transfer, imported_origins)
+        for transfer in state.materialized_transfers
+    )
+    recovered_routes = tuple(
+        transfer
+        for transfer in _recover_static_handler_entry_route_transfers(transfers)
+        if transfer not in transfers
+    )
+    if recovered_routes:
+        transfers = transfers + recovered_routes
+    transfers = _enrich_preopt_union_route_ranges(resolution, transfers)
+    live_conditional_bridges = recover_conditional_handler_bridge_transfers_from_mba(
+        transfers,
+        live_mba,
+        imported_predicate_eas=frozenset(imported_origins),
+        imported_instruction_origins=imported_origins,
+    )
+    logger.info(
+        "PREOPT live conditional bridge recovery: func=0x%X rows=%s",
+        key,
+        [
+            (
+                f"0x{int(transfer.source_block_ea):X}",
+                f"0x{int(transfer.source_jmp_ea):X}",
+                tuple(f"0x{int(ea):X}" for ea in transfer.target_eas),
+                transfer.predicate_register,
+                transfer.predicate_size,
+                transfer.predicate_compare_constant,
+                transfer.predicate_true_is_taken,
+            )
+            for transfer in live_conditional_bridges
+        ],
+    )
+    if live_conditional_bridges:
+        transfers = transfers + tuple(
+            transfer
+            for transfer in live_conditional_bridges
+            if transfer not in transfers
+        )
+    region = plan_preopt_union_region(transfers)
+    if region.abstentions:
+        return _preopt_union_abstention(
+            key,
+            *(abstention.reason.value for abstention in region.abstentions),
+        )
+    if region.primary_seed_ea is None or not region.native_ranges:
+        return _preopt_union_abstention(key, "no_union_seed")
+
+    live_native_eas = _live_mba_native_eas(
+        live_mba,
+        imported_instruction_origins=(
+            () if refresh_existing else tuple(imported_origins.items())
+        ),
+    )
+    prepatch_source = state.prepatch_preopt_union_source
+    if prepatch_source is not None and not isinstance(
+        prepatch_source, _PrepatchPreoptUnionSource
+    ):
+        return _preopt_union_abstention(key, "invalid_prepatch_source")
+    prepatch_source_matches_region = (
+        prepatch_source is not None
+        and int(prepatch_source.primary_seed_ea) == int(region.primary_seed_ea)
+        and prepatch_source.seed_eas
+        == tuple(int(seed_ea) for seed_ea in region.seed_eas)
+    )
+    if refresh_existing:
+        if not prepatch_source_matches_region:
+            return _preopt_union_abstention(key, "missing_prepatch_refresh_source")
+    else:
+        region = select_missing_preopt_union_region(region, live_native_eas)
+        if region.primary_seed_ea is None or not region.native_ranges:
+            return _preopt_union_abstention(key, "no_missing_union_seed")
+
+    function = ida_funcs.get_func(key)
+    if function is None:
+        return _preopt_union_abstention(key, "function_not_found")
+    resolver_targets_by_source = _resolver_targets_by_source(transfers)
+    residual_route_source_eas = tuple(
+        sorted(
+            {
+                int(transfer.source_block_ea)
+                for transfer in transfers
+                if transfer.resolver_kind == "residual_state_route_evidence"
+                and len(transfer.target_eas) == 1
+                and int(transfer.target_eas[0]) in region.seed_eas
+            }
+        )
+    )
+    use_prepatch_source = (
+        prepatch_source_matches_region
+        and prepatch_source is not None
+        and int(prepatch_source.primary_seed_ea) == int(region.primary_seed_ea)
+        and prepatch_source.seed_eas
+        == tuple(int(seed_ea) for seed_ea in region.seed_eas)
+    )
+    if use_prepatch_source:
+        native_cfg = prepatch_source.cfg
+        closure = prepatch_source.closure
+    else:
+        cfg_result = build_native_semantic_cfg(
+            function,
+            live_native_eas=live_native_eas,
+            seed_eas=tuple(
+                dict.fromkeys(
+                    (key, *region.seed_eas, *residual_route_source_eas)
+                )
+            ),
+            resolver_cut_eas=_preopt_resolver_cut_eas(resolution, transfers),
+            resolver_proven_unmarked_entry_eas=region.seed_eas,
+            resolver_target_eas_by_source={
+                source_ea: tuple(sorted(target_eas))
+                for source_ea, target_eas in resolver_targets_by_source.items()
+            },
+        )
+        if cfg_result.abstentions:
+            logger.info(
+                "PREOPT union native-CFG decode abstentions: func=0x%X rows=%s",
+                key,
+                [
+                    (
+                        abstention.reason.value,
+                        hex(int(abstention.entry_ea)),
+                        hex(int(abstention.cursor_ea)),
+                        (
+                            None
+                            if abstention.owner_func_ea is None
+                            else hex(int(abstention.owner_func_ea))
+                        ),
+                    )
+                    for abstention in cfg_result.abstentions
+                ],
+            )
+            return _preopt_union_abstention(
+                key,
+                *(abstention.reason.value for abstention in cfg_result.abstentions),
+            )
+        native_cfg = cfg_result.cfg
+        closure = plan_native_semantic_closure(
+            native_cfg,
+            tuple(
+                ResolverProvenHandlerEntry(
+                    entry_ea=int(seed_ea),
+                    provenance="static_handler_entry_route",
+                )
+                for seed_ea in region.seed_eas
+            ),
+            import_boundary_target_eas=live_native_eas,
+        )
+        if closure.abstentions or not closure.native_ranges:
+            if closure.abstentions:
+                logger.info(
+                    "PREOPT union semantic-closure abstentions: "
+                    "func=0x%X rows=%s",
+                    key,
+                    [
+                        (
+                            abstention.reason.value,
+                            (
+                                None
+                                if abstention.source_block_ea is None
+                                else hex(int(abstention.source_block_ea))
+                            ),
+                            (
+                                None
+                                if abstention.target_ea is None
+                                else hex(int(abstention.target_ea))
+                            ),
+                            (
+                                None
+                                if abstention.dependency_ea is None
+                                else hex(int(abstention.dependency_ea))
+                            ),
+                        )
+                        for abstention in closure.abstentions
+                    ],
+                )
+            return _preopt_union_abstention(
+                key,
+                *(abstention.reason.value for abstention in closure.abstentions),
+                *(() if closure.native_ranges else ("empty_native_closure",)),
+            )
+    effective_closure = closure
+    boundary_ports = _preopt_union_boundary_ports(
+        effective_closure,
+        live_native_eas=live_native_eas,
+        transfers=transfers,
+        live_mba=live_mba,
+        native_cfg=native_cfg,
+        imported_seed_eas=tuple(int(ea) for ea in region.seed_eas),
+        stack_carrier_consumer_load_eas_by_displacement=(
+            _static_stack_carrier_consumer_load_eas(resolution)
+        ),
+        native_stack_frame_offsets_by_ea=dict(
+            resolution.native_stack_frame_offsets
+        ),
+    )
+    if boundary_ports is None:
+        return _preopt_union_abstention(key, "incomplete_boundary_topology")
+    if refresh_existing and refresh_baseline_boundary_ports is not None:
+        try:
+            boundary_ports = _merge_preopt_union_boundary_ports(
+                refresh_baseline_boundary_ports,
+                boundary_ports,
+            )
+        except ValueError as exc:
+            logger.info(
+                "PREOPT union refresh rejected conflicting boundary proof: "
+                "func=0x%X reason=%s",
+                key,
+                exc,
+            )
+            return _preopt_union_abstention(
+                key,
+                "conflicting_refresh_boundary_ports",
+            )
+
+    normalized_ranges = (
+        prepatch_source.native_ranges
+        if use_prepatch_source
+        else tuple(
+            (int(native_range.start_ea), int(native_range.end_ea))
+            for native_range in closure.native_ranges
+        )
+    )
+    terminal_return_entry_eas = tuple(
+        int(entry_ea)
+        for entry_ea in effective_closure.included_block_eas
+        if int(entry_ea) in native_cfg.blocks_by_ea
+        and native_cfg.blocks_by_ea[int(entry_ea)].terminal
+        is NativeTerminalKind.RETURN
+    )
+    generation_ranges = tuple(
+        (int(native_range.start_ea), int(native_range.end_ea))
+        for native_range in plan_native_generation_ranges(
+            effective_closure,
+            required_entry_eas=terminal_return_entry_eas,
+        )
+    )
+    logger.info(
+        "PREOPT union semantic closure: func=0x%X seeds=%s live=%s "
+        "blocks=%s ranges=%s generation_ranges=%s boundary_edges=%s",
+        key,
+        [hex(int(seed_ea)) for seed_ea in region.seed_eas],
+        [hex(int(ea)) for ea in sorted(live_native_eas)],
+        [
+            (
+                hex(int(entry_ea)),
+                hex(int(native_cfg.blocks_by_ea[int(entry_ea)].end_ea)),
+                native_cfg.blocks_by_ea[int(entry_ea)].terminal.value,
+                [
+                    (
+                        edge.kind.value,
+                        None if edge.target_ea is None else hex(int(edge.target_ea)),
+                        edge.resolver_proven,
+                        (
+                            None
+                            if edge.source_instruction_ea is None
+                            else hex(int(edge.source_instruction_ea))
+                        ),
+                    )
+                    for edge in native_cfg.blocks_by_ea[
+                        int(entry_ea)
+                    ].outgoing_edges
+                ],
+            )
+            for entry_ea in effective_closure.included_block_eas
+            if int(entry_ea) in native_cfg.blocks_by_ea
+        ],
+        [(hex(start_ea), hex(end_ea)) for start_ea, end_ea in normalized_ranges],
+        [(hex(start_ea), hex(end_ea)) for start_ea, end_ea in generation_ranges],
+        [
+            (
+                hex(int(edge.source_ea)),
+                (
+                    None
+                    if edge.source_instruction_ea is None
+                    else hex(int(edge.source_instruction_ea))
+                ),
+                edge.kind.value,
+                hex(int(edge.target_ea)),
+            )
+            for edge in effective_closure.proven_import_boundary_edges
+        ],
+    )
+    result = PreoptUnionPreparationResult(
+        function_ea=key,
+        prepared=True,
+        published=True,
+        primary_seed_ea=int(region.primary_seed_ea),
+        seed_eas=tuple(int(seed_ea) for seed_ea in region.seed_eas),
+        native_ranges=normalized_ranges,
+        imported_block_entry_eas=tuple(effective_closure.included_block_eas),
+        boundary_ports=boundary_ports,
+    )
+
+    def generate(maturity: int):
+        ranges = ida_hexrays.mba_ranges_t()
+        for start_ea, end_ea in generation_ranges:
+            ranges.ranges.push_back(idaapi.range_t(int(start_ea), int(end_ea)))
+        failure = ida_hexrays.hexrays_failure_t()
+        generated_mba = _generate_microcode_without_d810(
+            ida_hexrays.gen_microcode,
+            ranges,
+            failure,
+            None,
+            int(ida_hexrays.DECOMP_NO_WAIT | ida_hexrays.DECOMP_ALL_BLKS),
+            int(maturity),
+        )
+        if generated_mba is None:
+            logger.info(
+                "PREOPT union generation returned no MBA: func=0x%X "
+                "maturity=%s ranges=%s failure=%s",
+                key,
+                maturity_to_string(int(maturity)),
+                [(hex(start_ea), hex(end_ea)) for start_ea, end_ea in generation_ranges],
+                failure.desc(),
+            )
+        return generated_mba
+
+    prepatch_source_bound = (
+        use_prepatch_source
+        and bind_preopt_union_snippet_boundary_ports(
+            key,
+            int(region.primary_seed_ea),
+            boundary_ports,
+        )
+    )
+    if prepatch_source_bound:
+        logger.info(
+            "PREOPT union bound prepatch source: func=0x%X primary=0x%X",
+            key,
+            int(region.primary_seed_ea),
+        )
+    elif refresh_existing and use_prepatch_source:
+        return _preopt_union_abstention(key, "prepatch_refresh_bind_failed")
+    else:
+        if not state.begin_snippet_capture(key):
+            return _preopt_union_abstention(key, "snippet_capture_active")
+        try:
+            try:
+                preopt_mba = generate(int(ida_hexrays.MMAT_PREOPTIMIZED))
+            except Exception:
+                logger.info(
+                    "PREOPT union generation failed: func=0x%X ranges=%s",
+                    key,
+                    generation_ranges,
+                    exc_info=True,
+                )
+                preopt_mba = None
+            if preopt_mba is None:
+                return _preopt_union_abstention(key, "preopt_generation_failed")
+            preopt_mba.build_graph()
+            captured = capture_preopt_union_snippet_template(
+                key,
+                int(region.primary_seed_ea),
+                preopt_mba,
+                normalized_ranges,
+                boundary_ports=boundary_ports,
+                owned_block_entry_eas=tuple(effective_closure.included_block_eas),
+                terminal_return_entry_eas=terminal_return_entry_eas,
+            )
+            if not captured:
+                return _preopt_union_abstention(
+                    key,
+                    "preopt_union_capture_failed",
+                )
+        finally:
+            state.finish_snippet_capture()
+
+    state.preopt_union_preparation = result
+    logger.info(
+        "PREOPT union prepared: func=0x%X primary=0x%X seeds=%s "
+        "ranges=%s owned_entries=%s direct_ports=%d conditional_ports=%d",
+        key,
+        int(region.primary_seed_ea),
+        [hex(int(seed_ea)) for seed_ea in region.seed_eas],
+        [(hex(start_ea), hex(end_ea)) for start_ea, end_ea in normalized_ranges],
+        [hex(int(entry_ea)) for entry_ea in closure.included_block_eas],
+        len(boundary_ports.direct),
+        len(boundary_ports.conditional),
+    )
+    return result
+
+
+def _refresh_preopt_union_from_calls_evidence(
+    state: ResolverSessionState,
+    mba: object,
+) -> bool:
+    """Rebind a pristine PREOPT template after CALLS proves new boundary ports."""
+
+    resolution = state.resolution
+    if not isinstance(resolution, ComputedGotoResolution):
+        return False
+    key = int(resolution.function_ea)
+    previous = state.preopt_union_preparation
+    state.preopt_union_preparation = None
+    if not isinstance(previous, PreoptUnionPreparationResult) or not previous.prepared:
+        if isinstance(previous, PreoptUnionPreparationResult):
+            state.preopt_union_preparation = previous
+        return False
+    refreshed = prepare_preopt_union_closure(
+        state,
+        live_mba=mba,
+        refresh_existing=True,
+        refresh_baseline_boundary_ports=previous.boundary_ports,
+    )
+    if not refreshed.prepared:
+        state.preopt_union_preparation = previous
+        return False
+    changed = refreshed.boundary_ports != previous.boundary_ports
+    if changed:
+        state.pending_preopt_reimport = True
+    return changed
+
+
 def prepare_detached_handler_snippets(
     state: ResolverSessionState,
     *,
@@ -8092,9 +11833,10 @@ def prepare_detached_handler_snippets(
 
     This entry point must be called between top-level decompilations.  It uses
     explicit native ranges to obtain isolated microcode, then stores
-    function-frame-normalized templates for the next top-level MBA.  LOCOPT is
-    the compatibility default; PREOPT may be requested by an earlier-maturity
-    importer that deliberately defers call analysis to the destination MBA.
+    function-frame-normalized templates for the next top-level MBA.  PREOPT
+    union semantic closure is the production path.  A caller-supplied
+    ``template_maturity`` is an internal probe seam only; it cannot be enabled
+    through project configuration.
     """
     import ida_hexrays  # type: ignore[import-untyped]
     import idaapi  # type: ignore[import-untyped]
@@ -8117,11 +11859,107 @@ def prepare_detached_handler_snippets(
     if not isinstance(resolution, ComputedGotoResolution) or state.snippet_capture_active:
         return 0
     key = int(resolution.function_ea)
-    primary_maturity = (
-        int(ida_hexrays.MMAT_LOCOPT)
-        if template_maturity is None
-        else int(template_maturity)
+    transfers = state.materialized_transfers
+    handler_entry_routes = tuple(
+        transfer
+        for transfer in _recover_static_handler_entry_route_transfers(transfers)
+        if transfer not in transfers
     )
+    if handler_entry_routes:
+        state.merge_materialized_transfers(handler_entry_routes)
+        transfers = state.materialized_transfers
+    if state.pending_preopt_reimport:
+        state.pending_preopt_reimport = False
+        logger.info(
+            "PREOPT union reimport scheduled: func=0x%X reason=calls_evidence_refresh",
+            key,
+        )
+        return 1
+    pending = state.pending_prepatch_materialization
+    if isinstance(pending, ComputedGotoResolution):
+        source_captured = _capture_prepatch_preopt_union_source(
+            state,
+            pending,
+            _static_prepatch_union_source_transfers(pending),
+        )
+        materialized = materialize_computed_gotos(pending, state=state)
+        if materialized <= 0:
+            logger.info(
+                "computed-goto staged delivery abstained: func=0x%X "
+                "source_captured=%s",
+                key,
+                source_captured,
+            )
+            return 0
+        state.pending_prepatch_materialization = None
+        logger.info(
+            "computed-goto staged delivery materialized: func=0x%X "
+            "sites=%d source_captured=%s",
+            key,
+            materialized,
+            source_captured,
+        )
+
+        if live_mba is not None:
+            try:
+                union_preparation = prepare_preopt_union_closure(
+                    state,
+                    live_mba=live_mba,
+                )
+            except Exception:
+                logger.warning(
+                    "PREOPT union preparation from prepatch live MBA failed "
+                    "open: func=0x%X",
+                    key,
+                    exc_info=True,
+                )
+            else:
+                if union_preparation.prepared and union_preparation.published:
+                    return 1
+
+        staged_cfunc = None
+        for attempt in range(2):
+            ida_hexrays.clear_cached_cfuncs()
+            staged_cfunc = ida_hexrays.decompile(key)
+            if staged_cfunc is not None:
+                break
+            logger.info(
+                "computed-goto staged live decompile retry: func=0x%X "
+                "attempt=%d",
+                key,
+                attempt + 1,
+            )
+        if staged_cfunc is not None:
+            union_preparation = prepare_preopt_union_closure(
+                state,
+                live_mba=staged_cfunc.mba,
+            )
+            if union_preparation.prepared and union_preparation.published:
+                return 1
+        return 1
+    if live_mba is not None:
+        try:
+            union_preparation = prepare_preopt_union_closure(
+                state,
+                live_mba=live_mba,
+            )
+        except Exception:
+            logger.warning(
+                "PREOPT union preparation failed open: func=0x%X",
+                key,
+                exc_info=True,
+            )
+        else:
+            if union_preparation.prepared and union_preparation.published:
+                return 1
+    if template_maturity is None:
+        logger.info(
+            "detached snippet preparation abstained: func=0x%X "
+            "reason=preopt_union_not_prepared",
+            key,
+        )
+        return 0
+    primary_maturity = int(template_maturity)
     primary_maturity_name = (
         "PREOPT"
         if primary_maturity == int(ida_hexrays.MMAT_PREOPTIMIZED)
@@ -8142,15 +11980,6 @@ def prepare_detached_handler_snippets(
             primary_maturity_name,
         )
         return 0
-    transfers = state.materialized_transfers
-    handler_entry_routes = tuple(
-        transfer
-        for transfer in _recover_static_handler_entry_route_transfers(transfers)
-        if transfer not in transfers
-    )
-    if handler_entry_routes:
-        state.merge_materialized_transfers(handler_entry_routes)
-        transfers = state.materialized_transfers
     live_target_eas = (
         _live_mba_native_eas(
             live_mba,
@@ -8191,7 +12020,8 @@ def prepare_detached_handler_snippets(
                     if transfer.selector_state_constant is None
                     else hex(int(transfer.selector_state_constant) & _MASK32)
                 ),
-                int(transfer.source_jmp_ea) in frozenset(
+                int(transfer.source_jmp_ea)
+                in frozenset(
                     int(ea)
                     for row in transfers
                     for ea in (int(row.source_jmp_ea), *row.materialized_anchor_eas)
@@ -8199,9 +12029,7 @@ def prepare_detached_handler_snippets(
                 (
                     None
                     if live_target_eas is None
-                    else tuple(
-                        int(ea) in live_target_eas for ea in transfer.target_eas
-                    )
+                    else tuple(int(ea) in live_target_eas for ea in transfer.target_eas)
                 ),
             )
             for transfer in transfers
@@ -8260,6 +12088,19 @@ def prepare_detached_handler_snippets(
                     int(target_ea),
                 )
                 continue
+            additional_owned_block_entry_eas = tuple(
+                sorted(
+                    {
+                        int(ea)
+                        for patch_plan in resolution.patch_plans
+                        for ea in patch_plan.new_block_eas
+                        if any(
+                            int(start) <= int(ea) < int(end)
+                            for start, end in merged_ranges
+                        )
+                    }
+                )
+            )
             current_stack_frame_offsets = native_stack_frame_offsets_for_ranges(
                 key,
                 merged_ranges,
@@ -8315,9 +12156,8 @@ def prepare_detached_handler_snippets(
                     snippet,
                     merged_ranges,
                     boundary_ports=boundary_ports,
-                    native_stack_frame_offsets_by_ea=(
-                        native_stack_frame_offsets_by_ea
-                    ),
+                    additional_owned_block_entry_eas=(additional_owned_block_entry_eas),
+                    native_stack_frame_offsets_by_ea=(native_stack_frame_offsets_by_ea),
                 ):
                     captured += 1
                     terminal_transfers = _detached_static_terminal_transfers(
@@ -8404,6 +12244,9 @@ def prepare_detached_handler_snippets(
                         replacement,
                         merged_ranges,
                         boundary_ports=boundary_ports,
+                        additional_owned_block_entry_eas=(
+                            additional_owned_block_entry_eas
+                        ),
                         native_stack_frame_offsets_by_ea=(
                             native_stack_frame_offsets_by_ea
                         ),
@@ -8608,6 +12451,7 @@ def _on_stkpnts(
             for native_ea in _capture_range_instruction_eas(mba)
         }
     else:
+        detached_call_spd_by_ea = dict(detached_preopt_call_stack_points(key))
         native_ea_by_live_ea = {
             int(imported_ea): int(native_ea)
             for imported_ea, native_ea in (
@@ -8617,7 +12461,10 @@ def _on_stkpnts(
         native_ea_by_live_ea.update(
             {
                 int(call_ea): int(call_ea)
-                for call_ea in detached_callinfo_template_eas(key)
+                for call_ea in (
+                    *detached_callinfo_template_eas(key),
+                    *detached_call_spd_by_ea,
+                )
             }
         )
         native_ea_by_live_ea.update(
@@ -8629,9 +12476,16 @@ def _on_stkpnts(
             }
         )
     projected: list[tuple[int, int, int]] = []
+    detached_call_spd_by_ea = (
+        {}
+        if capture_active
+        else dict(detached_preopt_call_stack_points(key))
+    )
     for live_ea, native_ea in sorted(native_ea_by_live_ea.items()):
         try:
-            spd = int(ida_frame.get_spd(function, int(native_ea)))
+            spd = detached_call_spd_by_ea.get(int(native_ea))
+            if spd is None:
+                spd = int(ida_frame.get_spd(function, int(native_ea)))
             _upsert_stkpnt(stack_points, int(live_ea), spd)
         except Exception:
             logger.debug(
@@ -9665,6 +13519,8 @@ def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) 
         return
     try:
         if state.materialization is not None:
+            if state.pending_prepatch_materialization is not None:
+                return
             if discover_static_native_bootstrap_routes(
                 key, state
             ) and state.request_controlled_redo():
@@ -9677,11 +13533,32 @@ def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) 
             return
         if not _has_unresolved_computed_goto(key):
             return
-        resolution = resolve_and_materialize(key, state=state)
+        resolution = _resolve_computed_goto_resolution(key)
         if resolution is None or not resolution.jmp_targets:
             return
-        discover_static_native_bootstrap_routes(key, state)
         state.begin_materialization(resolution)
+        if resolution.arch == "x86" and resolution.patch_plans:
+            state.pending_prepatch_materialization = resolution
+            logger.info(
+                "computed-goto static delivery staged: func=0x%X "
+                "sites=%d targets=%d reason=prepatch_preopt_capture",
+                key,
+                resolution.site_count,
+                resolution.target_count,
+            )
+            return
+        materialised = materialize_computed_gotos(resolution, state=state)
+        logger.info(
+            "computed-goto: func=0x%x sites=%d targets=%d materialised=%d "
+            "reachable=%d arch=%s",
+            key,
+            resolution.site_count,
+            resolution.target_count,
+            materialised,
+            len(resolution.reachable_eas),
+            resolution.arch,
+        )
+        discover_static_native_bootstrap_routes(key, state)
         if not state.request_controlled_redo():
             return
         request_hexrays_redo(
@@ -9712,12 +13589,8 @@ def _on_calls_done_preanalysis(
             imported_detached_snippet_instruction_origins,
         )
 
-        imported_predicate_eas = frozenset(
-            imported_ea
-            for imported_ea, _native_ea in (
-                imported_detached_snippet_instruction_origins(mba)
-            )
-        )
+        imported_origins = dict(imported_detached_snippet_instruction_origins(mba))
+        imported_predicate_eas = frozenset(imported_origins)
 
         def merge_calls_evidence() -> bool:
             changed = False
@@ -9729,10 +13602,13 @@ def _on_calls_done_preanalysis(
             if handler_evidence:
                 changed = state.merge_materialized_transfers(handler_evidence) or changed
                 transfers = state.materialized_transfers
+            bridge_kwargs = {
+                "imported_predicate_eas": imported_predicate_eas,
+            }
+            if imported_origins:
+                bridge_kwargs["imported_instruction_origins"] = imported_origins
             conditional_bridges = recover_conditional_handler_bridge_transfers_from_mba(
-                transfers,
-                mba,
-                imported_predicate_eas=imported_predicate_eas,
+                transfers, mba, **bridge_kwargs
             )
             if conditional_bridges:
                 changed = (
@@ -9765,7 +13641,7 @@ def _on_calls_done_preanalysis(
             state.merge_materialized_transfers(produced)
             transfers = state.materialized_transfers
 
-        merge_calls_evidence()
+        calls_evidence_changed = merge_calls_evidence()
         transfers = state.materialized_transfers
 
         # Manager preflight normally publishes this before the first MBA.  A
@@ -9781,6 +13657,21 @@ def _on_calls_done_preanalysis(
                 evidence_generation=state.evidence_generation,
             )
             return
+
+        bridge_kwargs = {"imported_predicate_eas": imported_predicate_eas}
+        if imported_origins:
+            bridge_kwargs["imported_instruction_origins"] = imported_origins
+        imported_conditional_bridges = (
+            recover_conditional_handler_bridge_transfers_from_mba(
+                transfers, mba, **bridge_kwargs
+            )
+        )
+        if imported_conditional_bridges:
+            calls_evidence_changed = (
+                state.merge_materialized_transfers(imported_conditional_bridges)
+                or calls_evidence_changed
+            )
+            transfers = state.materialized_transfers
 
         if _entry_bridge_ready(
             entry_bridge_materialized=materialization.entry_bridge_materialized,
@@ -9818,6 +13709,7 @@ def _on_calls_done_preanalysis(
                         route_evidence,
                         mba,
                         imported_predicate_eas=imported_predicate_eas,
+                        imported_instruction_origins=imported_origins,
                     )
                 )
             except Exception:
@@ -9833,11 +13725,35 @@ def _on_calls_done_preanalysis(
                 state.merge_materialized_transfers(conditional_bridges)
             materialization.state_route_rounds += 1
             materialization.rounds += 1
+            if _refresh_preopt_union_from_calls_evidence(state, mba):
+                decision["restart_from_generated"] = True
+                request_hexrays_redo(
+                    decision,
+                    "computed_goto_preopt_template_refreshed",
+                    function_ea=key,
+                    materialized_count=int(route_count),
+                    round=int(materialization.rounds),
+                )
+                return
             request_hexrays_redo(
                 decision,
                 "computed_goto_residual_state_route",
                 function_ea=key,
                 materialized_count=int(route_count),
+                round=int(materialization.rounds),
+            )
+            return
+
+        if calls_evidence_changed and _refresh_preopt_union_from_calls_evidence(
+            state, mba
+        ):
+            materialization.rounds += 1
+            decision["restart_from_generated"] = True
+            request_hexrays_redo(
+                decision,
+                "computed_goto_preopt_template_refreshed",
+                function_ea=key,
+                materialized_count=len(imported_conditional_bridges),
                 round=int(materialization.rounds),
             )
             return
@@ -9885,12 +13801,15 @@ def uninstall() -> None:
 
 __all__ = [
     "ComputedGotoResolution",
+    "PreoptUnionPreparationResult",
     "is_computed_goto_materialized",
     "resolve_computed_gotos",
     "resolve_computed_gotos_static",
     "materialize_computed_gotos",
     "resolve_and_materialize",
     "prepare_detached_handler_snippets",
+    "prepare_preopt_union_closure",
+    "get_prepared_preopt_union_closure",
     "prepare_terminal_return_carrier_templates",
     "capture_detached_route_callinfo_templates",
     "recover_conditional_handler_bridge_transfers_from_mba",

@@ -272,26 +272,22 @@ class TestUnflattenBoundedRerunGate:
         assert captured["maturity"] is IRMaturity.GLOBAL_ANALYZED
         assert captured["input_facts"] is fact_view
         assert captured["prepared_input_facts"] is fact_view
-        assert captured["analysis_seeds"] == {
+        expected_analysis_seeds = {
             "range_evidence": None,
             "materialized_indirect_transfers": (),
             "materialized_state_routes": (),
+            "materialized_state_var_reg": None,
             "materialized_computed_goto_profile": False,
             "materialized_handler_entry_eas": {},
+            "authoritative_handler_serials": frozenset(),
+            "unmapped_materialized_handler_targets": (),
+            "materialized_dispatcher_router_serials": frozenset(),
             "residual_entry_bridge_evidence": None,
             "imported_direct_boundary_evidence": (),
             "imported_conditional_boundary_evidence": (),
         }
-        assert captured["prepared_analysis_seeds"] == {
-            "range_evidence": None,
-            "materialized_indirect_transfers": (),
-            "materialized_state_routes": (),
-            "materialized_computed_goto_profile": False,
-            "materialized_handler_entry_eas": {},
-            "residual_entry_bridge_evidence": None,
-            "imported_direct_boundary_evidence": (),
-            "imported_conditional_boundary_evidence": (),
-        }
+        assert captured["analysis_seeds"] == expected_analysis_seeds
+        assert captured["prepared_analysis_seeds"] == expected_analysis_seeds
         assert captured["reset_func"] == _EA
 
     def test_config_v2_mode_executes_configured_pass_specs(self, monkeypatch) -> None:

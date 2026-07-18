@@ -154,6 +154,27 @@ def _publish(ctx: FunctionPipelineContext, name: str, value) -> None:
         ctx.facts.put_analysis(name, value)
 
 
+def _effective_state_identity(
+    recovery: DispatcherRecovery | None,
+    *,
+    materialized_computed_goto_profile: bool,
+    materialized_state_var_reg: int | None,
+) -> tuple[int | None, int | None]:
+    """Select the state cell used by lowering.
+
+    Exact resolver evidence wins only for the materialized computed-goto
+    profile.  That profile can expose a stack-carried alias to dispatcher
+    recovery even though native state writes and comparisons use one register.
+    Replacing, rather than combining, the identities keeps stack-only scanners
+    from treating the alias as the state machine cell.
+    """
+    recovered_stkoff = recovery.state_var_stkoff if recovery is not None else None
+    recovered_reg = recovery.state_var_reg if recovery is not None else None
+    if materialized_computed_goto_profile and materialized_state_var_reg is not None:
+        return (None, int(materialized_state_var_reg))
+    return (recovered_stkoff, recovered_reg)
+
+
 def _publish_observation_evidence(ctx: FunctionPipelineContext, observations) -> None:
     put_observation_evidence = getattr(ctx.facts, "put_observation_evidence", None)
     if not callable(put_observation_evidence):
@@ -562,13 +583,23 @@ class LowerStateMachine(PipelinePass):
         recovery = _analysis(context, "recover_dispatcher")
         transition_result = _analysis(context, "transition_result")
         dispatcher_entry = getattr(recovery, "dispatcher_block_serial", None)
-        state_var_stkoff = getattr(recovery, "state_var_stkoff", None)
+        materialized_computed_goto_profile = bool(
+            _analysis(context, "materialized_computed_goto_profile", False)
+        )
+        materialized_state_var_reg = _analysis(
+            context,
+            "materialized_state_var_reg",
+        )
+        state_var_stkoff, state_var_reg = _effective_state_identity(
+            recovery,
+            materialized_computed_goto_profile=materialized_computed_goto_profile,
+            materialized_state_var_reg=materialized_state_var_reg,
+        )
         # A register-resident state variable that is never stack-homed has
         # ``state_var_stkoff is None`` but a
         # recovered ``state_var_reg``. The primary emit path below opens to EITHER
         # identity; the partitioned fixpoint reads the register cell from its
         # already-computed ``out_reg_maps``.
-        state_var_reg = getattr(recovery, "state_var_reg", None)
         live_function = getattr(context.source, "live_source", None)
         range_evidence = _analysis(context, "range_evidence")
 
@@ -657,9 +688,23 @@ class LowerStateMachine(PipelinePass):
             imported_conditional_boundary_evidence = _analysis(
                 context, "imported_conditional_boundary_evidence", ()
             ) or ()
+            imported_native_eas_by_serial = _analysis(
+                context, "imported_native_eas_by_serial", {}
+            ) or {}
+            native_carrier_consumer_serials_by_load_ea = _analysis(
+                context,
+                "native_carrier_consumer_serials_by_load_ea",
+                {},
+            ) or {}
             materialized_state_routes = _analysis(
                 context, "materialized_state_routes", ()
             ) or ()
+            legacy_handler_by_state = _analysis(
+                context, "legacy_handler_by_state", {}
+            ) or {}
+            materialized_handler_by_state = _analysis(
+                context, "materialized_handler_by_state", {}
+            ) or {}
             materialized_handler_entry_eas = _analysis(
                 context, "materialized_handler_entry_eas", {}
             ) or {}
@@ -669,14 +714,44 @@ class LowerStateMachine(PipelinePass):
             materialized_computed_goto_profile = bool(
                 _analysis(context, "materialized_computed_goto_profile", False)
             )
+            authoritative_handler_serials = frozenset(
+                int(serial)
+                for serial in (
+                    _analysis(context, "authoritative_handler_serials", ()) or ()
+                )
+            )
+            missing_materialized_handler_targets = tuple(
+                (int(state), int(target_ea))
+                for state, target_ea in (
+                    _analysis(
+                        context,
+                        "unmapped_materialized_handler_targets",
+                        (),
+                    )
+                    or ()
+                )
+            )
+            materialized_dispatcher_router_serials = frozenset(
+                int(serial)
+                for serial in (
+                    _analysis(
+                        context,
+                        "materialized_dispatcher_router_serials",
+                        (),
+                    )
+                    or ()
+                )
+            )
             entry_bridge_evidence = _analysis(
                 context, "residual_entry_bridge_evidence"
             )
             logger.info(
-                "unflat computed-goto profile: active=%s transfers=%d routes=%d state_reg=%s",
+                "unflat computed-goto profile: active=%s transfers=%d routes=%d "
+                "authoritative_handlers=%d state_reg=%s",
                 materialized_computed_goto_profile,
                 len(materialized_indirect_transfers),
                 len(materialized_state_routes),
+                len(authoritative_handler_serials),
                 state_var_reg,
             )
             condition_chain_dag = (
@@ -687,9 +762,67 @@ class LowerStateMachine(PipelinePass):
                 if dmap is not None and condition_chain_dag is not None
                 else frozenset()
             )
+            carrier_vd_stkoff_candidates: dict[int, set[int]] = {}
+            if live_function is not None:
+                for transfer in materialized_indirect_transfers:
+                    if (
+                        transfer.state_carrier_store_ea is None
+                        or transfer.state_carrier_ida_stkoff is None
+                    ):
+                        continue
+                    try:
+                        vd_stkoff = int(
+                            live_function.stkoff_ida2vd(
+                                int(transfer.state_carrier_ida_stkoff)
+                            )
+                        )
+                    except (AttributeError, RuntimeError):
+                        continue
+                    carrier_vd_stkoff_candidates.setdefault(
+                        int(transfer.state_carrier_store_ea),
+                        set(),
+                    ).add(vd_stkoff)
+            state_carrier_vd_stkoffs_by_store_ea = {
+                store_ea: next(iter(offsets))
+                for store_ea, offsets in carrier_vd_stkoff_candidates.items()
+                if len(offsets) == 1
+            }
+            if materialized_computed_goto_profile:
+                logger.info(
+                    "unflat native stack-carrier evidence: transfers=%d "
+                    "bound=%d live_cells=%s consumers=%s",
+                    len(materialized_indirect_transfers),
+                    sum(
+                        1
+                        for transfer in materialized_indirect_transfers
+                        if transfer.state_carrier_consumer_load_eas
+                        and transfer.state_carrier_ida_stkoff is not None
+                    ),
+                    {
+                        f"0x{int(store_ea):X}": int(vd_stkoff)
+                        for store_ea, vd_stkoff in sorted(
+                            state_carrier_vd_stkoffs_by_store_ea.items()
+                        )
+                    },
+                    {
+                        f"0x{int(load_ea):X}": (
+                            "blk%d@0x%X"
+                            % (
+                                int(serial),
+                                int(context.graph.get_block(serial).start_ea),
+                            )
+                            if context.graph.get_block(serial) is not None
+                            else "missing"
+                        )
+                        for load_ea, serial in sorted(
+                            native_carrier_consumer_serials_by_load_ea.items()
+                        )
+                    },
+                )
             dispatcher_region_serials = frozenset(
                 int(block) for block in dmap.dispatcher_blocks
             ) if dmap is not None else frozenset()
+            dispatcher_region_serials |= materialized_dispatcher_router_serials
             if range_evidence is not None:
                 dispatcher_region_serials |= frozenset(
                     int(block) for block in range_evidence.condition_chain_blocks
@@ -730,13 +863,26 @@ class LowerStateMachine(PipelinePass):
                 imported_conditional_boundary_evidence=(
                     imported_conditional_boundary_evidence
                 ),
+                imported_native_eas_by_serial=imported_native_eas_by_serial,
+                native_carrier_consumer_serials_by_load_ea=(
+                    native_carrier_consumer_serials_by_load_ea
+                ),
                 materialized_state_routes=materialized_state_routes,
+                legacy_handler_by_state=legacy_handler_by_state,
+                materialized_handler_by_state=materialized_handler_by_state,
                 handler_entry_eas_by_serial=materialized_handler_entry_eas,
+                state_carrier_vd_stkoffs_by_store_ea=(
+                    state_carrier_vd_stkoffs_by_store_ea
+                ),
                 materialized_computed_goto_profile=(
                     materialized_computed_goto_profile
                 ),
                 condition_chain_dag=condition_chain_dag,
                 condition_chain_handlers=condition_chain_handlers,
+                authoritative_handler_serials=authoritative_handler_serials,
+                missing_materialized_handler_targets=(
+                    missing_materialized_handler_targets
+                ),
                 dispatcher_region_serials=dispatcher_region_serials,
                 entry_bridge_evidence=entry_bridge_evidence,
                 bound_bootstrap_routes=bound_bootstrap_routes,

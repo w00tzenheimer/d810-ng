@@ -26,6 +26,7 @@ class ConditionalHandlerBridgeEvidence:
 
     source_block_ea: int
     predicate_ea: int
+    condition_code: int
     predicate_register: int | None
     predicate_size: int
     predicate_compare_register: int | None
@@ -591,17 +592,20 @@ def recognize_conditional_handler_bridges(
     state_targets: Mapping[int, int],
     inherited_states_by_predicate_ea: Mapping[int, int] | None = None,
     arm_states_by_predicate_ea: Mapping[int, tuple[int, int]] | None = None,
+    preserve_live_predicate_eas: frozenset[int] = frozenset(),
 ) -> tuple[ConditionalHandlerBridgeEvidence, ...]:
     """Capture handler predicates before residual routing folds their arms.
 
-    The accepted shape is deliberately narrow and portable: a live ``jz`` or
-    ``jnz`` has a concrete non-empty left operand and a scalar register or
-    immediate right operand, the branch block has one concrete inherited
-    state, and each immediate successor either preserves that state or writes
-    one concrete replacement state.  Both states must map uniquely to distinct
-    condition-chain handler EAs.  A register identity is retained when present
-    but is not required because a still-live branch can be retargeted without
-    reconstructing its predicate.
+    The accepted shape is deliberately narrow and portable: a supported scalar
+    conditional jump has a concrete non-empty left operand and a scalar
+    register or immediate right operand, the branch block has one concrete
+    inherited state, and each immediate successor either preserves that state
+    or writes one concrete replacement state.  Both states must map uniquely to
+    distinct condition-chain handler EAs.  An opaque ``m_jcnd`` is accepted only
+    when the caller proves that its exact live predicate must be preserved; its
+    expression is never reconstructed.  A register identity is retained when
+    present but is not required because a still-live branch can be retargeted
+    without reconstructing its predicate.
     """
     try:
         blocks = tuple(mba.get_mblock(index) for index in range(int(mba.qty)))
@@ -615,10 +619,19 @@ def recognize_conditional_handler_bridges(
             continue
         instructions = _instructions(block)
         branch = instructions[-1] if instructions else None
-        if branch is None or int(branch.opcode) not in {
-            _opcode("m_jz"),
-            _opcode("m_jnz"),
-        }:
+        if branch is None:
+            continue
+        opaque_preserved_predicate = (
+            int(branch.opcode) == _opcode("m_jcnd")
+            and int(branch.ea) in preserve_live_predicate_eas
+        )
+        branch_condition_code = _state_condition_code(int(branch.opcode))
+        if branch_condition_code is None and opaque_preserved_predicate:
+            # The lowering preserves this live expression verbatim.  Code 5 is
+            # the canonical "live condition is true" polarity used by the
+            # conditional-bridge record; no scalar predicate is synthesized.
+            branch_condition_code = 5
+        if branch_condition_code is None:
             continue
         predicate_register = _register(branch.l)
         compared = _immediate(branch.r)
@@ -630,6 +643,8 @@ def recognize_conditional_handler_bridges(
         if (
             int(branch.l.t) == _opcode("mop_z")
             or (
+                not opaque_preserved_predicate
+                and
                 proven_arm_states is None
                 and
                 compared is None
@@ -665,12 +680,12 @@ def recognize_conditional_handler_bridges(
             # belong to a different predecessor path.  Exact pre-DCE arm
             # states above do not require this inherited-state fallback: the
             # earlier maturity has already proved both selected values.
+            source_values: dict[int, int] = {}
+            _apply_moves(instructions[:-1], source_values)
             inherited_state = inherited_states.get(int(branch.ea))
-            if inherited_state is None:
-                inherited_state = _last_immediate_state_write(
-                    instructions[:-1], int(state_register)
-                )
-            if inherited_state is None:
+            if inherited_state is not None:
+                source_values[int(state_register)] = int(inherited_state)
+            if int(state_register) not in source_values:
                 continue
             arm_states: dict[int, int] = {}
             valid = True
@@ -683,14 +698,13 @@ def recognize_conditional_handler_bridges(
                 if successor_block is None:
                     valid = False
                     break
-                replacement = _last_immediate_state_write(
-                    _instructions(successor_block), int(state_register)
-                )
-                arm_states[int(successor)] = (
-                    int(inherited_state)
-                    if replacement is None
-                    else int(replacement)
-                )
+                arm_values = dict(source_values)
+                _apply_moves(_instructions(successor_block), arm_values)
+                selected_state = arm_values.get(int(state_register))
+                if selected_state is None:
+                    valid = False
+                    break
+                arm_states[int(successor)] = int(selected_state)
             if not valid:
                 continue
             taken_state = arm_states[taken]
@@ -705,14 +719,24 @@ def recognize_conditional_handler_bridges(
             or int(taken_target) == int(fallthrough_target)
         ):
             continue
-        # The lowering primitive always branches on ``register != 0``.  Swap
-        # the original jz arms so true/false retain that normalized meaning.
+        # Equality predicates retain the historical nonzero normalization used
+        # by the later lowering primitive.  Ordered predicates preserve their
+        # native condition code and therefore keep the taken arm as true.
         if int(branch.opcode) == _opcode("m_jnz"):
             true_state, true_target = taken_state, int(taken_target)
             false_state, false_target = fallthrough_state, int(fallthrough_target)
-        else:
+            condition_code = 5
+            true_is_taken = True
+        elif int(branch.opcode) == _opcode("m_jz"):
             true_state, true_target = fallthrough_state, int(fallthrough_target)
             false_state, false_target = taken_state, int(taken_target)
+            condition_code = 5
+            true_is_taken = False
+        else:
+            true_state, true_target = taken_state, int(taken_target)
+            false_state, false_target = fallthrough_state, int(fallthrough_target)
+            condition_code = int(branch_condition_code)
+            true_is_taken = True
         source_block_ea = int(block.start)
         if source_block_ea <= 0:
             source_block_ea = min(
@@ -722,6 +746,7 @@ def recognize_conditional_handler_bridges(
             ConditionalHandlerBridgeEvidence(
                 source_block_ea=source_block_ea,
                 predicate_ea=int(branch.ea),
+                condition_code=condition_code,
                 predicate_register=(
                     int(predicate_register)
                     if predicate_register is not None
@@ -743,7 +768,7 @@ def recognize_conditional_handler_bridges(
                 false_state=int(false_state) & 0xFFFFFFFF,
                 true_target_ea=true_target,
                 false_target_ea=false_target,
-                true_is_taken=int(branch.opcode) == _opcode("m_jnz"),
+                true_is_taken=true_is_taken,
             )
         )
     return tuple(results)

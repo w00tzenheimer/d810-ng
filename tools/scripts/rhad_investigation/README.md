@@ -153,11 +153,16 @@ state-machine lowering handles them. This distinction preserves both the
 
 ## Cross-function transferability
 
-`probe_transfer_function.py` applies the ordinary public two-round workflow to
+`probe_transfer_function.py` applies the ordinary public preparation workflow to
 another protected function without manually marking it as an indirect
 dispatcher, setting callee types, or calling resolver internals. It can also
 decompile a binary patched by the neighboring static rewriter as a comparison
 oracle.
+
+The probe runs preparation/decompilation to a bounded fixed point (three
+decompilations by default). Set `RHAD_TRANSFER_MAX_DECOMPILE_ROUNDS` to change
+the bound. The third round is required when imported handlers first expose a
+terminal return-carrier request during the second round's CALLS analysis.
 
 ```bash
 tools/scripts/run_system_tests_docker.sh exec -- \
@@ -183,8 +188,18 @@ ends early, the probe extends it to this explicit exclusive end before the
 first decompilation.
 
 Set `RHAD_TRANSFER_RESOLUTION_OUTPUT` to persist the resolver's site-to-target
-map, patch-plan anchors, and invariant native-register context for comparison
-with the neighboring tool's linear scan.
+map, patch-plan anchors, predicate polarity, selector identity/constant, and
+invariant native-register context for comparison with the neighboring tool's
+linear scan. `RHAD_TRANSFER_TRANSFERS_OUTPUT` preserves the corresponding live
+portable evidence fields.
+
+Set `RHAD_TRANSFER_TRACE_STACK_SELECTORS=1` to print every live handler entry
+with both its current block serial and stable native EA, followed by the
+stack-selector lowerings that were accepted. Set
+`RHAD_TRANSFER_TRACE_HANDLER_ROUTES=1` and optionally
+`RHAD_TRANSFER_TRACE_HANDLER_EAS=0x...,...` to print the resolved handler paths
+and matching state-route evidence. These are investigation-only diagnostics;
+neither switch changes production behavior.
 
 Set `RHAD_TRANSFER_TRANSFERS_OUTPUT` to persist the live microcode transfer
 evidence. For the second protected function, detached static replay proves the
@@ -216,21 +231,30 @@ pure paths from the folded stack selector to that endpoint. Imported clones,
 incomplete polarity, ambiguous owners, calls, stores, and unknown effects all
 cause abstention.
 
-The current `sub_40D200` result is a semantic-coverage improvement, not a full
-parity claim. It removes the false dispatcher loop and exposes substantially
-more body code than the neighboring rewriter's function-range decompile, but
-two frontiers still render as `JUMPOUT`:
+The current `sub_40D200` result is fully unflattened: the system E2E requires
+zero dispatcher loops, zero `JUMPOUT` expressions, and zero inline indirect
+jumps. It also exposes substantially more body code than the neighboring
+rewriter's function-range decompile, whose five unresolved native frontiers
+still render as `JUMPOUT`.
 
-- native `0x40F821` is the function's real return epilogue (`mov eax`, stack
-  restore, pops, `ret 0x10`), which Hex-Rays has not reattached as a return;
-- synthetic `0xF1C00088` maps through the import-origin registry to native
-  `0x40DDC3`, a computed jump which is not yet lowered. The neighboring
-  rewriter reconstructs that site as a native comparison with direct arms to
-  `0x40F1C1` and `0x40ED9E`.
+Two generic evidence fixes closed the final d810 frontiers:
 
-Accordingly, use this probe and its E2E as a transferability/coverage gate. A
-future full-unflattening gate must eliminate or structurally justify both
-frontiers instead of treating a lower `JUMPOUT` count as semantic equivalence.
+- Native `0x40DDC3` is a stack-carried conditional selector. Its imported
+  microcode block contains an earlier, unrelated stack-to-state-register load
+  as well as the actual tail predicate. The direct tail stack operand is now
+  authoritative when it names a different cell, so both strict paths can be
+  lowered onto their resolver-proven handlers.
+- Native `0x40F821` starts with `mov eax, [esp+...]` before stack teardown,
+  pops, and `ret`. The bounded native epilogue recognizer now accepts exactly
+  one side-effect-free ABI return-register load from an `esp`/`ebp` stack
+  location before teardown. Exact static terminal delivery also outranks a
+  coarse imported equality-handler target, preventing the live epilogue from
+  being replaced by an intermediate selector self-route.
+
+These addresses are stable investigation anchors, not production guards. The
+production logic is address-agnostic and abstains on ambiguous stack cells,
+non-`eax` loads, non-stack loads, multiple terminal targets, or unproven
+predicate polarity.
 
 Set `RHAD_TRANSFER_ORIGINS_OUTPUT` to persist the current imported-instruction
 registry as `(synthetic EA, native EA)` pairs. This is the authoritative way to

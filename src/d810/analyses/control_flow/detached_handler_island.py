@@ -463,6 +463,7 @@ class DetachedSnippetDirectBoundaryPort:
     delivery_mode: str
     resolver_kind: str
     old_successor_owners: tuple[DetachedSnippetBoundaryPortOwner, ...] = ()
+    source_replaces_dispatcher_envelope: bool = False
 
 
 def make_resolver_cut_boundary_port(
@@ -493,7 +494,13 @@ def make_resolver_cut_boundary_port(
 
 @dataclass(frozen=True, slots=True)
 class DetachedSnippetConditionalBoundaryPort:
-    """One predicate with replacement arms and optional surviving old arms."""
+    """One predicate with replacement arms and optional surviving old arms.
+
+    ``predicate_ea`` names where the condition was proven.  A complete
+    ``logical_source_anchor_ea`` plus stack predicate describes a distinct,
+    later control-transfer owner: the importer must reconstruct the condition
+    there so intervening native side effects remain reachable.
+    """
 
     source_block_ea: int
     predicate_ea: int
@@ -511,9 +518,17 @@ class DetachedSnippetConditionalBoundaryPort:
     old_taken_target_owner: DetachedSnippetBoundaryPortOwner | None = None
     old_fallthrough_target_owner: DetachedSnippetBoundaryPortOwner | None = None
     logical_source_anchor_ea: int | None = None
+    logical_source_owner: DetachedSnippetBoundaryPortOwner | None = None
     predicate_ida_stkoff: int | None = None
+    predicate_stack_value: int | None = None
     predicate_size: int | None = None
     condition_code: int | None = None
+    predicate_register: int | None = None
+    predicate_constant: int | None = None
+    predicate_true_is_taken: bool | None = None
+    logical_source_replaces_dispatcher_envelope: bool = False
+    taken_target_is_boundary_source: bool = False
+    fallthrough_target_is_boundary_source: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -671,6 +686,10 @@ def plan_detached_snippet_routes(
         live_eas if live_target_eas is None else live_target_eas
     )
     condition_chain_targets: dict[int, set[int]] = {}
+    owned_ranges_by_state_target: dict[
+        tuple[int, int],
+        set[tuple[tuple[int, int], ...]],
+    ] = {}
     for transfer in transfers:
         if (
             transfer.resolver_kind == "condition_chain_handler_evidence"
@@ -680,6 +699,20 @@ def plan_detached_snippet_routes(
             state = int(transfer.selector_state_constant) & 0xFFFFFFFF
             condition_chain_targets.setdefault(state, set()).add(
                 int(transfer.target_eas[0])
+            )
+        if (
+            transfer.resolver_kind == "static_handler_entry_route"
+            and transfer.selector_state_constant is not None
+            and len(transfer.target_eas) == 1
+            and transfer.owned_native_ranges
+        ):
+            state = int(transfer.selector_state_constant) & 0xFFFFFFFF
+            target_ea = int(transfer.target_eas[0])
+            owned_ranges_by_state_target.setdefault((state, target_ea), set()).add(
+                tuple(
+                    (int(start_ea), int(end_ea))
+                    for start_ea, end_ea in transfer.owned_native_ranges
+                )
             )
     candidates: dict[
         tuple[int, int],
@@ -700,7 +733,8 @@ def plan_detached_snippet_routes(
             state = int(transfer.selector_state_constant) & 0xFFFFFFFF
             target_ea = int(transfer.target_eas[0])
         elif (
-            transfer.resolver_kind == "static_equality_fixpoint"
+            transfer.resolver_kind
+            in {"static_equality_fixpoint", "static_fixpoint"}
             and transfer.selector_compare_constant is not None
             and transfer.condition_code in (4, 5)
         ):
@@ -727,6 +761,23 @@ def plan_detached_snippet_routes(
             "residual_state_route",
         }:
             source_ea = int(transfer.source_jmp_ea)
+        owned_native_ranges = (
+            transfer.owned_native_ranges
+            if transfer.resolver_kind == "static_handler_entry_route"
+            else ()
+        )
+        if transfer.resolver_kind in {
+            "static_equality_fixpoint",
+            "static_fixpoint",
+        }:
+            owned_range_candidates = owned_ranges_by_state_target.get(
+                (state, target_ea),
+                set(),
+            )
+            if len(owned_range_candidates) > 1:
+                continue
+            if owned_range_candidates:
+                owned_native_ranges = next(iter(owned_range_candidates))
         if transfer.resolver_kind == "static_handler_entry_route":
             if live_target_eas is None:
                 continue
@@ -756,11 +807,7 @@ def plan_detached_snippet_routes(
             target_ea,
             state,
             transfer.resolver_kind,
-            (
-                transfer.owned_native_ranges
-                if transfer.resolver_kind == "static_handler_entry_route"
-                else ()
-            ),
+            owned_native_ranges,
         )
         candidates.setdefault((source_ea, state), set()).add(plan)
     return tuple(
@@ -784,8 +831,7 @@ def select_detached_snippet_capture_ranges(
     candidates = {
         tuple((int(start_ea), int(end_ea)) for start_ea, end_ea in plan.owned_native_ranges)
         for plan in plans
-        if plan.evidence_kind == "static_handler_entry_route"
-        and int(plan.target_ea) == int(target_ea)
+        if int(plan.target_ea) == int(target_ea)
         and plan.owned_native_ranges
     }
     if not candidates:

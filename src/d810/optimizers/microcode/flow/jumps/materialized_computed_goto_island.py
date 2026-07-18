@@ -1,4 +1,4 @@
-"""Profile-gated LOCOPT delivery for detached computed-goto handler islands."""
+"""PREOPT union delivery for resolver-proven computed-goto handler islands."""
 
 from __future__ import annotations
 
@@ -51,14 +51,18 @@ from d810.hexrays.mutation.detached_handler_island import (
     detached_snippet_replacement_evidence,
     detached_snippet_replacement_arm_states,
     find_unique_live_block_by_ea,
+    find_unique_live_block_by_native_ea,
+    has_instruction_backed_native_block,
     has_detached_snippet_template,
     has_detached_replacement_snippet_template,
     imported_detached_snippet_direct_boundary_evidence,
     imported_detached_snippet_target_eas,
     imported_detached_snippet_instruction_origins,
     materialize_detached_handler_island,
+    materialize_preopt_union_snippet_templates,
     materialize_detached_replacement_snippet_templates,
     materialize_detached_snippet_templates,
+    refine_transient_terminal_return_type,
     reconcile_imported_callinfo_with_live_native_calls,
     redirect_live_target_predecessors,
     restore_call_result_carriers,
@@ -86,6 +90,7 @@ from d810.optimizers.microcode.flow.handler import (
     FlowRulePriority,
 )
 from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
+    get_prepared_preopt_union_closure,
     is_computed_goto_materialized,
     recover_conditional_handler_bridge_transfers_from_mba,
 )
@@ -229,23 +234,191 @@ def _disable_calls_done_capture() -> None:
     clear_terminal_return_carrier_templates()
 
 
+def _preopt_union_import_key(function_ea: int, mba: object) -> tuple[int, int, int]:
+    return (
+        int(function_ea),
+        stable_mba_identity(mba),
+        detached_snippet_template_generation(int(function_ea)),
+    )
+
+
+def _preopt_union_generation_was_processed(
+    state: ResolverSessionState,
+    function_ea: int,
+    mba: object,
+) -> bool:
+    key = _preopt_union_import_key(function_ea, mba)
+    return (
+        key in state.preopt_union_imported_mbas
+        or key in state.preopt_union_mutated_mbas
+    )
+
+
+def _preopt_union_owns_mba(
+    state: ResolverSessionState,
+    function_ea: int,
+    mba: object,
+) -> bool:
+    """Whether this live MBA is already owned by any PREOPT union generation."""
+    ownership_key = (int(function_ea), stable_mba_identity(mba))
+    return any(
+        key[:2] == ownership_key
+        for key in (
+            *state.preopt_union_imported_mbas,
+            *state.preopt_union_mutated_mbas,
+        )
+    )
+
+
+def _record_preopt_modification(
+    decision: dict[str, object],
+    **details: object,
+) -> None:
+    current_details = decision.get("details")
+    merged_details = dict(current_details) if isinstance(current_details, dict) else {}
+    merged_details.update(details)
+    decision["microcode_modified"] = True
+    decision["details"] = merged_details
+
+
 def _restore_preopt_terminal_return_carriers(
     *,
     function_ea: int,
     mba: object,
     decision: dict[str, object],
 ) -> None:
-    """Replay proven return carriers before Hex-Rays infers call ABI/returns."""
+    """Restore carriers, then import one prepared union before LOCOPT/CALLS."""
     restored = restore_terminal_return_carriers(mba, int(function_ea))
-    if restored <= 0:
+    return_type_refined = refine_transient_terminal_return_type(
+        mba,
+        int(function_ea),
+    )
+    if restored > 0 or return_type_refined:
+        _record_preopt_modification(
+            decision,
+            terminal_return_carriers=int(restored),
+            terminal_return_type_refined=bool(return_type_refined),
+        )
+        logger.info(
+            "PREOPT restored %d terminal return carrier(s) and refined_return=%s "
+            "before local and call analysis",
+            int(restored),
+            bool(return_type_refined),
+        )
+
+    session = decision.get("session")
+    if session is None:
         return
-    decision["microcode_modified"] = True
-    decision["details"] = {
-        "terminal_return_carriers": int(restored),
-    }
+    try:
+        state = resolver_session_state(session)
+    except (TypeError, ValueError):
+        return
+
+    preparation = get_prepared_preopt_union_closure(state)
+    if (
+        preparation is None
+        or not preparation.prepared
+        or not preparation.published
+        or preparation.primary_seed_ea is None
+        or _preopt_union_generation_was_processed(state, int(function_ea), mba)
+    ):
+        return
+
+    primary_seed_ea = int(preparation.primary_seed_ea)
+    qty_before_import = int(mba.qty)
+    imported = materialize_preopt_union_snippet_templates(
+        mba,
+        int(function_ea),
+        (primary_seed_ea,),
+    )
+    qty_after_import = int(mba.qty)
+    requested_roots = {primary_seed_ea}
+    expected_boundary_ports = len(preparation.boundary_ports.direct) + len(
+        preparation.boundary_ports.conditional
+    )
+    seed_eas = preparation.seed_eas or (primary_seed_ea,)
+    missing_instruction_backed_seed_eas = tuple(
+        int(seed_ea)
+        for seed_ea in seed_eas
+        if not has_instruction_backed_native_block(mba, int(seed_ea))
+    )
+    seeds_are_instruction_backed = not missing_instruction_backed_seed_eas
     logger.info(
-        "PREOPT restored %d terminal return carrier(s) before local and call analysis",
-        int(restored),
+        "PREOPT union import result: func=0x%X roots=%s applied=%d "
+        "expected=%d abstained=%d seeds_instruction_backed=%s",
+        int(function_ea),
+        tuple(hex(int(root_ea)) for root_ea in imported),
+        len(imported.applied_boundary_ports),
+        expected_boundary_ports,
+        len(imported.abstained_boundary_ports),
+        seeds_are_instruction_backed,
+    )
+    if (
+        set(imported) != requested_roots
+        or len(imported.applied_boundary_ports) != expected_boundary_ports
+        or imported.abstained_boundary_ports
+        or not seeds_are_instruction_backed
+    ):
+        logger.info(
+            "PREOPT union import abstained: func=0x%X primary=0x%X "
+            "roots=%s applied_ports=%d expected_ports=%d "
+            "abstained_ports=%d instruction_backed_seeds=%s",
+            int(function_ea),
+            primary_seed_ea,
+            [hex(int(root_ea)) for root_ea in imported],
+            len(imported.applied_boundary_ports),
+            expected_boundary_ports,
+            len(imported.abstained_boundary_ports),
+            seeds_are_instruction_backed,
+        )
+        block_delta = qty_after_import - qty_before_import
+        if block_delta != 0:
+            state.preopt_union_mutated_mbas.add(
+                _preopt_union_import_key(int(function_ea), mba)
+            )
+            _record_preopt_modification(
+                decision,
+                preopt_union_post_mutation_abstention=True,
+                preopt_union_block_delta=int(block_delta),
+                preopt_union_imported_roots=tuple(
+                    int(root_ea) for root_ea in imported
+                ),
+                preopt_union_applied_boundary_ports=len(
+                    imported.applied_boundary_ports
+                ),
+                preopt_union_expected_boundary_ports=expected_boundary_ports,
+                preopt_union_abstained_boundary_ports=len(
+                    imported.abstained_boundary_ports
+                ),
+                preopt_union_instruction_backed_seeds=seeds_are_instruction_backed,
+                preopt_union_missing_instruction_backed_seed_eas=(
+                    missing_instruction_backed_seed_eas
+                ),
+            )
+            logger.error(
+                "PREOPT union import abstained after mutating the live MBA; "
+                "legacy fallback suppressed: func=0x%X block_delta=%d",
+                int(function_ea),
+                int(block_delta),
+            )
+        return
+
+    state.preopt_union_imported_mbas.add(
+        _preopt_union_import_key(int(function_ea), mba)
+    )
+    _record_preopt_modification(
+        decision,
+        preopt_union_root_ea=primary_seed_ea,
+        preopt_union_seed_count=len(seed_eas),
+        preopt_union_boundary_port_count=expected_boundary_ports,
+    )
+    logger.info(
+        "PREOPT union import succeeded: func=0x%X primary=0x%X "
+        "seeds=%s boundary_ports=%d",
+        int(function_ea),
+        primary_seed_ea,
+        [hex(int(seed_ea)) for seed_ea in seed_eas],
+        expected_boundary_ports,
     )
 
 
@@ -358,16 +531,18 @@ def _apply_residual_state_route_bridges(
     live_blocks_by_ea: dict[int, int] = {}
     one_way_sources: set[int] = set()
     for transfer in evidence:
-        for ea in (int(transfer.source_jmp_ea), *transfer.target_eas):
-            block = find_unique_live_block_by_ea(mba, int(ea))
-            if block is not None:
-                live_blocks_by_ea[int(ea)] = int(block.serial)
         source = find_unique_live_block_by_ea(
             mba,
             int(transfer.source_jmp_ea),
         )
-        if source is not None and int(source.nsucc()) == 1:
-            one_way_sources.add(int(source.serial))
+        if source is not None:
+            live_blocks_by_ea[int(transfer.source_jmp_ea)] = int(source.serial)
+            if int(source.nsucc()) == 1:
+                one_way_sources.add(int(source.serial))
+        for target_ea in transfer.target_eas:
+            target = find_unique_live_block_by_native_ea(mba, int(target_ea))
+            if target is not None:
+                live_blocks_by_ea[int(target_ea)] = int(target.serial)
     plans = plan_residual_state_route_bridges(
         evidence,
         live_blocks_by_ea=live_blocks_by_ea,
@@ -375,8 +550,76 @@ def _apply_residual_state_route_bridges(
     )
     if not plans:
         return 0
+    boundary_owned_routes: set[tuple[int, int, int]] = set()
+    for applied in imported_detached_snippet_direct_boundary_evidence(mba):
+        port = applied.port
+        if (
+            port.delivery_mode != "redirect_edge"
+            or port.resolver_kind != "residual_state_route_evidence"
+            or port.state_constant is None
+        ):
+            continue
+        endpoint_blocks = {
+            int(block.serial): block
+            for anchor_ea in applied.endpoint_anchor_eas
+            for block in (
+                find_unique_live_block_by_ea(
+                    mba,
+                    int(anchor_ea),
+                    exact_instruction_ea=int(anchor_ea),
+                ),
+            )
+            if block is not None
+        }
+        if len(endpoint_blocks) != 1:
+            endpoint = find_unique_live_block_by_ea(
+                mba,
+                int(port.endpoint_block_ea),
+            )
+            endpoint_blocks = (
+                {} if endpoint is None else {int(endpoint.serial): endpoint}
+            )
+        if len(endpoint_blocks) != 1:
+            continue
+        boundary_owned_routes.add(
+            (
+                next(iter(endpoint_blocks)),
+                int(port.state_constant),
+                int(port.target_ea),
+            )
+        )
+    actionable_plans = tuple(
+        plan
+        for plan in plans
+        if (
+            int(plan.source_block_serial),
+            int(plan.state_constant),
+            int(plan.target_ea),
+        )
+        not in boundary_owned_routes
+    )
+    if len(actionable_plans) != len(plans):
+        logger.info(
+            "legacy residual routes suppressed by applied PREOPT ports: rows=%s",
+            [
+                (
+                    f"blk{int(plan.source_block_serial)}@0x{int(plan.source_write_ea):X}",
+                    f"0x{int(plan.state_constant):X}",
+                    f"0x{int(plan.target_ea):X}",
+                )
+                for plan in plans
+                if (
+                    int(plan.source_block_serial),
+                    int(plan.state_constant),
+                    int(plan.target_ea),
+                )
+                in boundary_owned_routes
+            ],
+        )
+    if not actionable_plans:
+        return 0
     modifier = DeferredGraphModifier(mba)
-    for plan in plans:
+    for plan in actionable_plans:
         source = mba.get_mblock(int(plan.source_block_serial))
         if (
             source is None
@@ -614,7 +857,6 @@ def _materialize_missing_detached_snippets(
         block = mba.get_mblock(serial)
         if int(block.start) > 0:
             live_eas.add(int(block.start))
-            live_target_eas.add(int(block.start))
         instruction_eas: list[int] = []
         instruction = block.head
         while instruction is not None:
@@ -624,12 +866,15 @@ def _materialize_missing_detached_snippets(
             if instruction is block.tail:
                 break
             instruction = instruction.next
-        target_ea = select_unique_block_native_ea(
-            int(block.start),
-            tuple(instruction_eas),
-        )
-        if target_ea is not None:
-            live_target_eas.add(int(target_ea))
+        if instruction_eas:
+            if int(block.start) > 0:
+                live_target_eas.add(int(block.start))
+            target_ea = select_unique_block_native_ea(
+                int(block.start),
+                tuple(instruction_eas),
+            )
+            if target_ea is not None:
+                live_target_eas.add(int(target_ea))
     imported_targets = imported_detached_snippet_target_eas(mba)
     live_eas.update(imported_targets)
     live_target_eas.update(imported_targets)
@@ -1607,7 +1852,7 @@ def _conditional_bridge_target_topologies(
 
 
 class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
-    """Rehost resolver-proven detached handlers before LOCOPT drops them."""
+    """Import one resolver-proven PREOPT union before LOCOPT drops it."""
 
     NAME = "MaterializedComputedGotoIslandRule"
     DESCRIPTION = "Materializes a proven detached computed-goto handler island"
@@ -1617,22 +1862,15 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
     # Imported predicate/handler evidence must be connected before the generic
     # state-machine pass classifies unmatched states as terminal exits.
     PRIORITY = int(FlowRulePriority.UNFLATTEN) + 50
-
     def __init__(self) -> None:
         super().__init__()
         self.maturities = [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS]
-        self._attempted_mbas: set[tuple[int, int, int, int]] = set()
 
     def configure(self, kwargs: object) -> None:
         super().configure(kwargs)
-        register_calls_done_preanalysis_handler(
-            _CALLS_HANDLER_NAME,
-            _capture_calls_done_templates,
-        )
-        register_locopt_preanalysis_handler(
-            _LOCOPT_HANDLER_NAME,
-            _materialize_locopt_preanalysis,
-        )
+        unregister_calls_done_preanalysis_handler(_CALLS_HANDLER_NAME)
+        unregister_locopt_preanalysis_handler(_LOCOPT_HANDLER_NAME)
+        clear_detached_handler_call_templates()
         register_preopt_preanalysis_handler(
             _PREOPT_HANDLER_NAME,
             _restore_preopt_terminal_return_carriers,
@@ -1643,7 +1881,9 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
         )
 
     def reset_pass_manager_state(self) -> None:
-        self._attempted_mbas.clear()
+        state = self.current_resolver_session_state()
+        if isinstance(state, ResolverSessionState):
+            state.attempted_mbas.clear()
         clear_imported_detached_snippet_roots()
 
     def optimize(self, blk: object) -> int:
@@ -1664,9 +1904,14 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
             maturity,
             detached_snippet_template_generation(function_ea),
         )
-        if mba_identity in self._attempted_mbas:
+        if mba_identity in state.attempted_mbas:
             return 0
-        self._attempted_mbas.add(mba_identity)
+        state.attempted_mbas.add(mba_identity)
+        preopt_union_owns_mba = _preopt_union_owns_mba(
+            state,
+            function_ea,
+            mba,
+        )
 
         if maturity == int(ida_hexrays.MMAT_CALLS):
             transfers = state.materialized_transfers
@@ -1674,16 +1919,24 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 mba,
                 function_ea,
             )
-            replacement_imports = _materialize_live_handler_replacements(
-                mba,
-                transfers,
-                state=state,
+            replacement_imports = (
+                _materialize_live_handler_replacements(
+                    mba,
+                    transfers,
+                    state=state,
+                )
+                if not preopt_union_owns_mba
+                else 0
             )
-            missing_imports = _materialize_missing_detached_snippets(
-                mba,
-                transfers,
-                require_live_residual_source=True,
-                expected_template_maturity=int(ida_hexrays.MMAT_LOCOPT),
+            missing_imports = (
+                _materialize_missing_detached_snippets(
+                    mba,
+                    transfers,
+                    require_live_residual_source=True,
+                    expected_template_maturity=int(ida_hexrays.MMAT_LOCOPT),
+                )
+                if not preopt_union_owns_mba
+                else 0
             )
             reconciled_calls = reconcile_imported_callinfo_with_live_native_calls(mba)
             # Snippets imported during LOCOPT are already present when this
@@ -1696,16 +1949,26 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 transfers,
                 state=state,
             )
-            live_resolver_cuts = _apply_live_resolver_cut_counterparts(mba)
-            terminal_routes = _apply_detached_snippet_terminal_routes(
-                mba,
-                transfers,
+            live_resolver_cuts = (
+                _apply_live_resolver_cut_counterparts(mba)
+                if not preopt_union_owns_mba
+                else 0
             )
-            residual_bridges = _apply_residual_state_route_bridges(
-                mba,
-                transfers,
+            terminal_routes = (
+                _apply_detached_snippet_terminal_routes(mba, transfers)
+                if not preopt_union_owns_mba
+                else 0
             )
-            bridge_plans = _candidate_conditional_bridge_plans(state)
+            residual_bridges = (
+                _apply_residual_state_route_bridges(mba, transfers)
+                if not preopt_union_owns_mba
+                else 0
+            )
+            bridge_plans = (
+                _candidate_conditional_bridge_plans(state)
+                if not preopt_union_owns_mba
+                else ()
+            )
             try:
                 conditional_bridges = (
                     _apply_conditional_bridge_plans(
@@ -1774,6 +2037,14 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                     int(restored),
                 )
             return int(restored)
+
+        if preopt_union_owns_mba:
+            logger.info(
+                "LOCOPT detached island and bridge materialization "
+                "suppressed after PREOPT union ownership: func=0x%X",
+                function_ea,
+            )
+            return 0
 
         transfers = state.materialized_transfers
         kept_snippet_blocks = _keep_cached_detached_snippet_blocks(

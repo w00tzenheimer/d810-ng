@@ -13,7 +13,13 @@ from d810.analyses.control_flow.conditional_jump_eval import predicate_jump_take
 from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.core.typing import Mapping, Sequence
 from d810.ir.semantics import PredicateKind
-from d810.ir.flowgraph import FlowGraph, InsnKind, InsnSnapshot, MopSnapshot
+from d810.ir.flowgraph import (
+    BlockKind,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+)
 
 
 CONDITIONAL_HANDLER_BRIDGE_KINDS = frozenset(
@@ -62,10 +68,10 @@ class MaterializedIndirectTransfer:
     #: Exact singleton mreg values at ``source_block_ea`` from the resolver's
     #: static fixpoint.  Path-local concrete state still wins on merge.
     source_register_values: tuple[tuple[int, int], ...] = ()
-    #: Exact singleton mreg values on arrival at the transfer's unique target.
-    #: This is deliberately separate from ``source_register_values``: detached
-    #: handler replay may seed only evidence captured after the selected arm
-    #: has reached that target.
+    #: Exact singleton mreg values proven identical on arrival at every listed
+    #: target.  This is deliberately separate from ``source_register_values``:
+    #: detached handler replay may seed only evidence preserved across every
+    #: possible arm that can reach the selected target.
     target_register_values: tuple[tuple[int, int], ...] = ()
     #: Exact singleton mreg snapshots at every resolver block entry.  One
     #: transfer in a function may carry the shared tuple; consumers aggregate.
@@ -110,6 +116,23 @@ class MaterializedIndirectTransfer:
     #: Stable native entries of every block in the recovered dispatcher region.
     #: Boundary consumers cut only edges entering this proven set.
     dispatcher_router_eas: tuple[int, ...] = ()
+    #: Native resolver targets replaced by a final handler route.  A direct
+    #: PREOPT port may collapse this envelope only when every listed arm is
+    #: still the imported source's complete successor set.
+    dispatcher_envelope_target_eas: tuple[int, ...] = ()
+    #: A native state choice may be carried through an ESP-relative stack cell
+    #: before a detached handler reloads it.  The store EA and raw displacement
+    #: are native identities; consumers must not infer this relation from a
+    #: detached MBA's transient ``mop_S`` offset.
+    state_carrier_store_ea: int | None = None
+    state_carrier_stack_displacement: int | None = None
+    #: Native load instructions that consume the same resolver-proven carrier
+    #: cell before re-entering the dispatcher.  These stable EAs survive PREOPT
+    #: import even when the detached MBA assigns a different ``mop_S`` offset.
+    state_carrier_consumer_load_eas: tuple[int, ...] = ()
+    #: IDA-frame identity of the connected producer store.  The Hex-Rays
+    #: adapter converts it to the current top-level MBA offset at lowering time.
+    state_carrier_ida_stkoff: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +159,12 @@ class MaterializedStateRoute:
     #: conditional-arm route is branch-local and outranks generic state-write
     #: candidates that happen to share its source block.
     proof_kind: str = "state_route"
+    #: Stable native identity of the source handler when the live block was
+    #: imported with synthetic EAs.  Ordinary live blocks leave this unset.
+    source_native_ea: int | None = None
+    #: Stable native identity of a terminal endpoint omitted from the live
+    #: FlowGraph.  The route target serial then names the canonical STOP.
+    target_native_ea: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,19 +213,25 @@ def plan_terminal_return_carrier_requests(
             continue
         source = flow_graph.get_block(int(route.source_block_serial))
         target = flow_graph.get_block(int(route.target_handler_serial))
-        if (
-            source is None
-            or target is None
-            or int(source.start_ea) <= 0
-            or int(target.start_ea) <= 0
-            or int(source.start_ea) == int(target.start_ea)
-        ):
+        if source is None or target is None:
+            continue
+        source_ea = (
+            int(route.source_native_ea)
+            if route.source_native_ea is not None
+            else int(source.start_ea)
+        )
+        target_ea = (
+            int(route.target_native_ea)
+            if route.target_native_ea is not None
+            else int(target.start_ea)
+        )
+        if source_ea <= 0 or target_ea <= 0 or source_ea == target_ea:
             continue
         key = (
-            int(source.start_ea),
+            source_ea,
             int(route.state_constant) & 0xFFFFFFFF,
         )
-        candidates.setdefault(key, set()).add(int(target.start_ea))
+        candidates.setdefault(key, set()).add(target_ea)
 
     return tuple(
         TerminalReturnCarrierRequest(
@@ -228,6 +263,98 @@ class ResidualIndirectCallNeutralizationPlan:
 _NATIVE_JUMP_RESOLVER_KINDS = frozenset(
     {"static_fixpoint", "detached_static_fixpoint"}
 )
+
+_EXACT_STATE_SELECTOR_RESOLVER_KINDS = frozenset(
+    {
+        "static_equality_fixpoint",
+        "static_fixpoint",
+        "static_handler_entry_route",
+        "static_equality_route",
+        "residual_state_route_evidence",
+        "residual_state_route",
+    }
+)
+
+
+def materialized_state_register_candidates(
+    transfers: Sequence[MaterializedIndirectTransfer],
+) -> frozenset[int]:
+    """Return registers named by exact materialized state-selector evidence."""
+    registers: set[int] = set()
+    for transfer in transfers:
+        if (
+            transfer.resolver_kind not in _EXACT_STATE_SELECTOR_RESOLVER_KINDS
+            or transfer.selector_state_var_reg is None
+        ):
+            continue
+        if transfer.resolver_kind in {
+            "static_equality_fixpoint",
+            "static_fixpoint",
+        }:
+            if transfer.selector_compare_constant is None:
+                continue
+        elif transfer.selector_state_constant is None:
+            continue
+        registers.add(int(transfer.selector_state_var_reg))
+    return frozenset(registers)
+
+
+def unique_materialized_state_register(
+    transfers: Sequence[MaterializedIndirectTransfer],
+) -> int | None:
+    """Return the one register named by exact state-selector evidence.
+
+    Materialized computed-goto recovery can retain the native selector register
+    even when live dispatcher recovery mistakes a stack-carried alias for the
+    state cell.  Concrete state-bearing routes outrank navigation-only compare
+    records: an internal handler may compare a temporary alias before copying it
+    into the dispatcher register, so that compare operand is not a competing
+    state-cell identity.  Conflicts within the strongest available evidence tier
+    remain a hard abstention; no register is selected by frequency.
+    """
+    state_route_registers = frozenset(
+        int(transfer.selector_state_var_reg)
+        for transfer in transfers
+        if transfer.resolver_kind in _EXACT_STATE_SELECTOR_RESOLVER_KINDS
+        and transfer.selector_state_var_reg is not None
+        and transfer.selector_state_constant is not None
+    )
+    if state_route_registers:
+        if len(state_route_registers) != 1:
+            return None
+        return next(iter(state_route_registers))
+    registers = materialized_state_register_candidates(transfers)
+    if len(registers) != 1:
+        return None
+    return next(iter(registers))
+
+
+def unique_materialized_conditional_handler_entry_eas(
+    transfers: Sequence[MaterializedIndirectTransfer],
+    handler_targets: Mapping[int, int],
+) -> dict[int, int]:
+    """Map conditional arm states to unique native handler entry identities."""
+    candidates: dict[int, set[int]] = {}
+    for transfer in transfers:
+        if transfer.resolver_kind != "conditional_handler_bridge":
+            continue
+        for state_constant, target_ea in (
+            (transfer.predicate_true_state, transfer.true_target_ea),
+            (transfer.predicate_false_state, transfer.false_target_ea),
+        ):
+            if state_constant is None or target_ea is None:
+                continue
+            target_serial = handler_targets.get(
+                int(state_constant) & 0xFFFFFFFF
+            )
+            if target_serial is None:
+                continue
+            candidates.setdefault(int(target_serial), set()).add(int(target_ea))
+    return {
+        serial: next(iter(target_eas))
+        for serial, target_eas in sorted(candidates.items())
+        if len(target_eas) == 1
+    }
 
 
 def _operand_contains_call(operand: MopSnapshot | None) -> bool:
@@ -410,22 +537,33 @@ def unique_materialized_equality_target_eas(
     *,
     validated_candidate_target_eas: frozenset[int] = frozenset(),
 ) -> dict[int, int]:
-    """Project exact equality evidence to one handler EA per state.
+    """Project exact equality evidence to one semantic handler EA per state.
 
     Resolver-owned equality routes are authoritative when present.  The live
     condition-chain map supplies a fallback for states whose detached equality
     fragment was never materialized.  Ambiguous resolver evidence abstains and
-    is never replaced by a weaker fallback.
+    is never replaced by a weaker fallback.  A resolver landing explicitly
+    identified as part of the dispatcher is not a handler: computed-goto BSTs
+    can jump from one routing subtree into another before reaching the equality
+    leaf for the concrete state.
     """
     primary: dict[int, set[int]] = {}
     fallback: dict[int, set[int]] = {}
     expected_register = int(state_var_reg)
+    dispatcher_router_eas = frozenset(
+        int(router_ea)
+        for transfer in transfers
+        for router_ea in transfer.dispatcher_router_eas
+    )
     for transfer in transfers:
         if transfer.selector_state_var_reg != expected_register:
             continue
         state: int | None = None
         target: int | None = None
-        if transfer.resolver_kind == "static_equality_fixpoint":
+        if transfer.resolver_kind in {
+            "static_equality_fixpoint",
+            "static_fixpoint",
+        }:
             if transfer.selector_compare_constant is None:
                 continue
             state = int(transfer.selector_compare_constant) & 0xFFFFFFFF
@@ -463,7 +601,15 @@ def unique_materialized_equality_target_eas(
                 target = int(transfer.target_eas[0])
         else:
             continue
-        if state is None or target is None or int(target) not in transfer.target_eas:
+        if (
+            state is None
+            or target is None
+            or int(target) not in transfer.target_eas
+            or (
+                int(target) in dispatcher_router_eas
+                and transfer.resolver_kind != "static_handler_entry_route"
+            )
+        ):
             continue
         candidates = (
             fallback
@@ -483,6 +629,53 @@ def unique_materialized_equality_target_eas(
         if len(fallback_targets) == 1:
             result[state] = next(iter(fallback_targets))
     return result
+
+
+def materialized_dispatcher_router_native_ranges(
+    transfers: Sequence[MaterializedIndirectTransfer],
+) -> tuple[tuple[int, int], ...]:
+    """Return exact native instruction-head ranges for proven router blocks.
+
+    Hex-Rays may split one imported native router into several microblocks.  A
+    router-start lookup therefore identifies only the first child.  Resolver
+    evidence already carries both the native block start and the indirect
+    transfer instruction that terminates that block; use that closed interval
+    of instruction heads instead of maturity-local block adjacency.
+    """
+    router_eas = frozenset(
+        int(router_ea)
+        for transfer in transfers
+        for router_ea in transfer.dispatcher_router_eas
+    )
+    return tuple(
+        sorted(
+            {
+                (int(transfer.source_block_ea), int(transfer.source_jmp_ea) + 1)
+                for transfer in transfers
+                if (
+                    int(transfer.source_block_ea) in router_eas
+                    and int(transfer.source_jmp_ea)
+                    >= int(transfer.source_block_ea)
+                )
+            }
+        )
+    )
+
+
+def native_origin_blocks_in_ranges(
+    native_eas_by_serial: Mapping[int, frozenset[int]],
+    native_ranges: Sequence[tuple[int, int]],
+) -> frozenset[int]:
+    """Select imported blocks containing an instruction from a proven range."""
+    return frozenset(
+        int(serial)
+        for serial, native_eas in native_eas_by_serial.items()
+        if any(
+            int(start_ea) <= int(native_ea) < int(end_ea)
+            for native_ea in native_eas
+            for start_ea, end_ea in native_ranges
+        )
+    )
 
 
 def exact_materialized_handler_override_serial(
@@ -623,6 +816,106 @@ def override_materialized_handler_targets(
     )
 
 
+def missing_materialized_handler_targets(
+    equality_target_eas: Mapping[int, int],
+    live_handler_owners: Mapping[int, int],
+    *,
+    terminal_state_targets: Sequence[tuple[int, int]] = (),
+) -> tuple[tuple[int, int], ...]:
+    """Return resolver-proven state/EA pairs without a live handler owner.
+
+    The equality resolver describes the native handler map before Hex-Rays can
+    prune detached targets.  A live owner is admitted only when the exact
+    native target is an instruction in one unique block, the recovered state
+    map independently names that same instruction-backed block, or
+    imported-root provenance binds it to an instruction-backed synthetic
+    block.  Comparing the two maps therefore checks handler-map completeness
+    without conflating it with reachability from one particular function input.
+    """
+    mapped_states = {
+        int(state) & 0xFFFFFFFF for state in live_handler_owners
+    }
+    terminals = {
+        (int(state) & 0xFFFFFFFF, int(target_ea))
+        for state, target_ea in terminal_state_targets
+    }
+    return tuple(
+        sorted(
+            (
+                int(state) & 0xFFFFFFFF,
+                int(target_ea),
+            )
+            for state, target_ea in equality_target_eas.items()
+            if (int(state) & 0xFFFFFFFF) not in mapped_states
+            and (int(state) & 0xFFFFFFFF, int(target_ea)) not in terminals
+        )
+    )
+
+
+def instruction_backed_materialized_handler_owners(
+    equality_target_eas: Mapping[int, int],
+    handler_targets: Mapping[int, int],
+    flow_graph: FlowGraph,
+) -> dict[int, int]:
+    """Return recovered state owners backed by real microinstructions.
+
+    A recovered comparison-tree state may legitimately own a block whose
+    maturity-local EA range no longer contains the resolver's native target
+    EA.  The state agreement is the stable identity in that case.  Empty
+    external blocks are only CFG frontier placeholders and cannot establish
+    ownership.
+    """
+    owners: dict[int, int] = {}
+    for state in equality_target_eas:
+        normalized_state = int(state) & 0xFFFFFFFF
+        handler_serial = handler_targets.get(normalized_state)
+        if handler_serial is None:
+            continue
+        handler = flow_graph.get_block(int(handler_serial))
+        if (
+            handler is None
+            or handler.kind is BlockKind.EXTERNAL
+            or not handler.insn_snapshots
+        ):
+            continue
+        owners[normalized_state] = int(handler_serial)
+    return owners
+
+
+def select_materialized_handler_owner_serial(
+    *,
+    state_constant: int,
+    instruction_backed_owners: Mapping[int, int],
+    exact_target_serial: int,
+    exact_target_ea: int,
+    flow_graph: FlowGraph,
+) -> int:
+    """Prefer a live dispatcher owner only when it owns the exact target EA.
+
+    Equality evidence may recover an exact native handler EA whose PREOPT
+    translation is also present as an imported clone.  A state owner already
+    recovered from the live comparison dispatcher remains authoritative when
+    that EA is one of its microinstructions.  State agreement alone is not
+    enough: a comparison-chain leaf can name an adjacent router arm while an
+    explicit resolver route names a different bootstrap handler.
+    """
+    state = int(state_constant) & 0xFFFFFFFF
+    live_owner = instruction_backed_owners.get(state)
+    if live_owner is None:
+        return int(exact_target_serial)
+    live_block = flow_graph.get_block(int(live_owner))
+    target_ea = int(exact_target_ea)
+    if live_block is None or (
+        int(live_block.start_ea) != target_ea
+        and not any(
+            int(instruction.ea) == target_ea
+            for instruction in live_block.insn_snapshots
+        )
+    ):
+        return int(exact_target_serial)
+    return int(live_owner)
+
+
 def lookup_materialized_state_route(
     routes: tuple[MaterializedStateRoute, ...],
     *,
@@ -686,6 +979,8 @@ def find_unique_target_block(
     flow_graph: FlowGraph,
     target_ea: int,
     next_target_ea: int | None = None,
+    *,
+    excluded_serials: frozenset[int] = frozenset(),
 ) -> int | None:
     """Map one native target label to one snapshot block, or abstain.
 
@@ -695,9 +990,11 @@ def find_unique_target_block(
     next label there is no safe interval, so a non-exact target abstains.
     """
     target = int(target_ea)
+    excluded = {int(serial) for serial in excluded_serials}
     exact = [
         int(serial)
         for serial, block in flow_graph.blocks.items()
+        if int(serial) not in excluded
         if target in _block_eas(block)
     ]
     if len(exact) == 1:
@@ -710,6 +1007,8 @@ def find_unique_target_block(
     candidates: list[tuple[int, int]] = []
     interval_end = int(next_target_ea)
     for serial, block in flow_graph.blocks.items():
+        if int(serial) in excluded:
+            continue
         later = sorted(ea for ea in _block_eas(block) if target < ea < interval_end)
         if later:
             candidates.append((later[0], int(serial)))
@@ -724,6 +1023,8 @@ def find_unique_target_entry_block(
     flow_graph: FlowGraph,
     target_ea: int,
     next_target_ea: int | None = None,
+    *,
+    excluded_serials: frozenset[int] = frozenset(),
 ) -> int | None:
     """Map a control-flow label, preferring its unique exact block start.
 
@@ -733,16 +1034,23 @@ def find_unique_target_entry_block(
     its optional bounded interval remain authoritative.
     """
     target = int(target_ea)
+    excluded = {int(serial) for serial in excluded_serials}
     starts = {
         int(serial)
         for serial, block in flow_graph.blocks.items()
+        if int(serial) not in excluded
         if int(block.start_ea) == target
     }
     if len(starts) == 1:
         return next(iter(starts))
     if starts:
         return None
-    return find_unique_target_block(flow_graph, target, next_target_ea)
+    return find_unique_target_block(
+        flow_graph,
+        target,
+        next_target_ea,
+        excluded_serials=frozenset(excluded),
+    )
 
 
 def lookup_singleton_transfer_target(
@@ -967,14 +1275,19 @@ __all__ = [
     "condition_code_predicate",
     "find_unique_target_block",
     "find_unique_target_entry_block",
+    "instruction_backed_materialized_handler_owners",
     "lookup_state_keyed_transfer_target",
     "lookup_singleton_transfer_target",
+    "materialized_state_register_candidates",
     "materialized_terminal_target_eas_by_source",
     "merge_materialized_handler_maps",
+    "missing_materialized_handler_targets",
     "override_materialized_handler_targets",
     "plan_resolver_proven_indirect_call_neutralizations",
     "plan_terminal_return_carrier_requests",
     "route_materialized_transfer_chain",
     "route_transfer_target_through_condition_chain",
+    "unique_materialized_conditional_handler_entry_eas",
     "unique_materialized_equality_target_eas",
+    "unique_materialized_state_register",
 ]

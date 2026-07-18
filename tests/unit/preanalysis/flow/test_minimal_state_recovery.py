@@ -1039,6 +1039,50 @@ def test_exact_handler_owned_exit_route_repairs_one_self_loop_arm() -> None:
     assert resolved.arms[1] == transition.arms[1]
 
 
+def test_exact_handler_owned_exit_route_repairs_imported_clone_self_loop() -> None:
+    transition = HandlerTransition(
+        handler=10,
+        states=(0x10,),
+        arms=(
+            TransitionArm(
+                next_state=0x10,
+                target_handler=11,
+                is_return=False,
+                branch_block=None,
+                write_block=10,
+                exit_block=10,
+                ordered_path=(10,),
+            ),
+        ),
+    )
+    routes = (
+        MaterializedStateRoute(
+            source_block_serial=10,
+            state_constant=0x10,
+            target_handler_serial=11,
+        ),
+        MaterializedStateRoute(
+            source_block_serial=10,
+            state_constant=0x20,
+            target_handler_serial=20,
+            source_handler_serial=10,
+            handler_exit_proven=True,
+        ),
+    )
+
+    (resolved,) = resolve_materialized_handler_exit_states(
+        (transition,),
+        routes,
+        frozenset({10, 11, 20}),
+    )
+
+    (arm,) = resolved.arms
+    assert arm.next_state == 0x20
+    assert arm.target_handler == 20
+    assert arm.is_return is False
+    assert arm.source_keyed_block == 10
+
+
 def test_terminal_route_outranks_replayed_handler_self_loop_exit() -> None:
     terminal_state = 0x19A7218A
     stale_state = 0xABB95547

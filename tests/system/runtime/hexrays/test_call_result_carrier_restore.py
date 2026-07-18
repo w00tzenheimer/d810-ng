@@ -8,6 +8,37 @@ from types import SimpleNamespace
 import ida_hexrays
 import pytest
 
+from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+
+
+def test_calls_done_restarts_from_generated_only_when_explicitly_requested() -> None:
+    """A refreshed PREOPT template needs a full decompilation restart."""
+
+    def callback(_event, **kwargs) -> None:
+        decision = kwargs["decision"]
+        decision["request_redo"] = True
+        decision["restart_from_generated"] = True
+        decision["reason"] = "preopt_template_refreshed"
+
+    hook = SimpleNamespace(callback=callback)
+    mba = SimpleNamespace(entry_ea=0x40D200)
+
+    assert HexraysDecompilationHook.calls_done(hook, mba) == ida_hexrays.MERR_REDO
+
+
+def test_calls_done_retains_calls_loop_for_ordinary_redo_requests() -> None:
+    """Existing CALLS-local evidence rounds must retain their old contract."""
+
+    def callback(_event, **kwargs) -> None:
+        decision = kwargs["decision"]
+        decision["request_redo"] = True
+        decision["reason"] = "calls_local_change"
+
+    hook = SimpleNamespace(callback=callback)
+    mba = SimpleNamespace(entry_ea=0x40D200)
+
+    assert HexraysDecompilationHook.calls_done(hook, mba) == ida_hexrays.MERR_LOOP
+
 
 def _session_resolver_state(
     *,
@@ -575,6 +606,95 @@ def test_replays_exact_early_maturity_return_carrier_into_terminal_state_handler
         detached_handler_island.clear_terminal_return_carrier_templates()
 
 
+@pytest.mark.parametrize(
+    "carrier_opcode",
+    (ida_hexrays.m_mov, ida_hexrays.m_xdu, ida_hexrays.m_xds),
+)
+def test_replays_stack_terminal_carrier_through_stable_frame_identity(
+    monkeypatch,
+    carrier_opcode: int,
+) -> None:
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        TerminalReturnCarrierRequest,
+    )
+    from d810.hexrays.mutation import detached_handler_island
+
+    source_ea = 0x40CC1C
+    carrier_ea = 0x40CC30
+    state = 0x69225E4
+    source_vd_stkoff = 0x44
+    stable_ida_stkoff = 0x1010
+    return_mreg = int(ida_hexrays.reg2mreg(0))
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=source_ea,
+        terminal_target_ea=0x40CD8C,
+        state_var_reg=20,
+        state_constant=state,
+    )
+    state_write = _Instruction(
+        ida_hexrays.m_mov,
+        source_ea,
+        left=_Operand(ida_hexrays.mop_n, value=state),
+        dest=_Operand(ida_hexrays.mop_r, register=20),
+    )
+    carrier = _Instruction(
+        carrier_opcode,
+        carrier_ea,
+        left=_Operand(ida_hexrays.mop_S, stack_offset=source_vd_stkoff),
+        dest=_Operand(ida_hexrays.mop_r, register=return_mreg),
+    )
+    snippet = _MBA(
+        (
+            _Block(
+                0,
+                source_ea,
+                (state_write, carrier, _Instruction(ida_hexrays.m_jnz, 0x40CC34)),
+                (1,),
+            ),
+        )
+    )
+    lowered_write = _Instruction(
+        ida_hexrays.m_mov,
+        0xF1C0008C,
+        left=_Operand(ida_hexrays.mop_n, value=state),
+        dest=_Operand(ida_hexrays.mop_r, register=20),
+    )
+    lowered_block = _Block(0, 0x40C8B0, (lowered_write,), (1,))
+    lowered = _MBA((lowered_block,), entry_ea=0x40C8B0)
+    monkeypatch.setattr(detached_handler_island.ida_hexrays, "minsn_t", _fake_minsn)
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_native_instruction_stack_frame_offsets",
+        lambda _function_ea, instruction_ea: (
+            (stable_ida_stkoff,) if int(instruction_ea) == carrier_ea else ()
+        ),
+    )
+    detached_handler_island.clear_terminal_return_carrier_templates()
+    try:
+        assert detached_handler_island.capture_terminal_return_carrier_template(
+            0x40C8B0,
+            request,
+            snippet,
+        )
+        assert (
+            detached_handler_island.restore_terminal_return_carriers(
+                lowered,
+                0x40C8B0,
+            )
+            == 1
+        )
+
+        _state_write, restored = lowered_block.instructions()
+        assert int(restored.ea) == carrier_ea
+        assert int(restored.l.t) == int(ida_hexrays.mop_S)
+        assert int(restored.l.s.off) == int(
+            lowered.stkoff_ida2vd(stable_ida_stkoff)
+        )
+        assert int(restored.d.r) == return_mreg
+    finally:
+        detached_handler_island.clear_terminal_return_carrier_templates()
+
+
 def test_replays_unique_terminal_carrier_into_equivalent_one_way_state_writer(
     monkeypatch,
 ) -> None:
@@ -771,6 +891,157 @@ def test_terminal_return_carrier_replay_abstains_on_ambiguous_terminal_identity(
         assert block.instructions() == (imported_write,)
     finally:
         detached_handler_island.clear_terminal_return_carrier_templates()
+
+
+def test_terminal_return_carrier_replay_uses_imported_native_origin(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        TerminalReturnCarrierRequest,
+    )
+    from d810.hexrays.mutation import detached_handler_island
+
+    terminal_target_ea = 0x40C898
+    terminal_state = 0x19A7218A
+    first_request = TerminalReturnCarrierRequest(
+        source_handler_ea=0x40C7E5,
+        terminal_target_ea=terminal_target_ea,
+        state_var_reg=20,
+        state_constant=terminal_state,
+    )
+    second_request = TerminalReturnCarrierRequest(
+        source_handler_ea=0x40D120,
+        terminal_target_ea=terminal_target_ea,
+        state_var_reg=20,
+        state_constant=terminal_state,
+    )
+    imported_write_ea = 0xF10000
+    imported_write = _Instruction(
+        ida_hexrays.m_mov,
+        imported_write_ea,
+        left=_Operand(ida_hexrays.mop_n, value=terminal_state),
+        dest=_Operand(ida_hexrays.mop_r, register=20),
+    )
+    block = _Block(0, 0x40A560, (imported_write,), (1,))
+    lowered = _MBA((block,))
+    monkeypatch.setattr(detached_handler_island.ida_hexrays, "minsn_t", _fake_minsn)
+    detached_handler_island.clear_terminal_return_carrier_templates()
+    detached_handler_island.clear_imported_detached_snippet_roots()
+    try:
+        assert detached_handler_island.capture_terminal_return_carrier_template(
+            0x40A560,
+            first_request,
+            _terminal_return_carrier_snippet(),
+        )
+        assert detached_handler_island.capture_terminal_return_carrier_template(
+            0x40A560,
+            second_request,
+            _terminal_return_carrier_snippet(
+                source_ea=second_request.source_handler_ea,
+                carrier_ea=0x40D125,
+            ),
+        )
+        detached_handler_island._IMPORTED_INSTRUCTION_ORIGINS[
+            (detached_handler_island.stable_mba_identity(lowered), imported_write_ea)
+        ] = first_request.source_handler_ea
+
+        assert (
+            detached_handler_island.restore_terminal_return_carriers(
+                lowered,
+                0x40A560,
+            )
+            == 1
+        )
+        _state_write, carrier = block.instructions()
+        assert int(carrier.ea) == 0x40C7EA
+    finally:
+        detached_handler_island.clear_terminal_return_carrier_templates()
+        detached_handler_island.clear_imported_detached_snippet_roots()
+
+
+def test_refines_guessed_void_return_type_from_proven_carrier_width(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        TerminalReturnCarrierRequest,
+    )
+    from d810.hexrays.mutation import detached_handler_island
+
+    class _ReturnType:
+        def __init__(self, declaration: int) -> None:
+            self.declaration = int(declaration)
+
+        def get_size(self) -> int:
+            return 4
+
+    class _VoidType:
+        def is_void(self) -> bool:
+            return True
+
+    class _FunctionType:
+        def __init__(self) -> None:
+            self.return_type: _ReturnType | None = None
+
+        def is_func(self) -> bool:
+            return True
+
+        def get_rettype(self) -> _VoidType:
+            return _VoidType()
+
+        def set_func_rettype(self, return_type: _ReturnType) -> int:
+            self.return_type = return_type
+            return int(detached_handler_island.ida_typeinf.TERR_OK)
+
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=0x40C7E5,
+        terminal_target_ea=0x40C898,
+        state_var_reg=20,
+        state_constant=0x19A7218A,
+    )
+    function_type = _FunctionType()
+    mba = SimpleNamespace(final_type=False, idb_type=function_type)
+    monkeypatch.setattr(detached_handler_island.ida_hexrays, "minsn_t", _fake_minsn)
+    monkeypatch.setattr(
+        detached_handler_island.ida_typeinf,
+        "tinfo_t",
+        _ReturnType,
+    )
+    detached_handler_island.clear_terminal_return_carrier_templates()
+    try:
+        assert detached_handler_island.capture_terminal_return_carrier_template(
+            0x40A560,
+            request,
+            _terminal_return_carrier_snippet(),
+        )
+
+        assert detached_handler_island.refine_transient_terminal_return_type(
+            mba,
+            0x40A560,
+        )
+        assert function_type.return_type is not None
+        assert function_type.return_type.declaration == (
+            int(detached_handler_island.ida_typeinf.BT_INT32)
+            | int(detached_handler_island.ida_typeinf.BTMT_UNKSIGN)
+        )
+        assert mba.final_type is True
+    finally:
+        detached_handler_island.clear_terminal_return_carrier_templates()
+
+
+def test_does_not_refine_user_final_return_type(monkeypatch) -> None:
+    from d810.hexrays.mutation import detached_handler_island
+
+    mba = SimpleNamespace(final_type=True, idb_type=object())
+    monkeypatch.setattr(
+        detached_handler_island.ida_typeinf,
+        "tinfo_t",
+        lambda _declaration: pytest.fail("final type must not be replaced"),
+    )
+
+    assert not detached_handler_island.refine_transient_terminal_return_type(
+        mba,
+        0x40A560,
+    )
 
 
 def test_detached_target_lookup_accepts_live_block_start_anchor() -> None:
