@@ -38,6 +38,20 @@ def test_recommended_attack_refreshes_before_automatic_comparison() -> None:
     assert source.index("self.refresh()") < source.index("self._run_comparison()")
 
 
+def test_accepted_nonrefresh_direct_result_refreshes_without_comparison() -> None:
+    source = _method_source("_run_recommended_attack")
+
+    accepted_result_branch = source.split("if (", 1)[1].split("self._render_workflow()", 1)[0]
+    assert "should_accept_command_result(snapshot, result)" in accepted_result_branch
+    assert "result.refresh_requested" not in accepted_result_branch.split(
+        "self.refresh()", 1
+    )[0]
+    assert "if result.refresh_requested:" in accepted_result_branch
+    assert accepted_result_branch.index("self.refresh()") < accepted_result_branch.index(
+        "if result.refresh_requested:"
+    ) < accepted_result_branch.index("self._run_comparison()")
+
+
 def test_attack_card_renders_the_pure_workflow_projection() -> None:
     panel_source = PANEL.read_text(encoding="utf-8")
     render_source = _method_source("_render_workflow")

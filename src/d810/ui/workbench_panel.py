@@ -381,14 +381,14 @@ if IDA_AVAILABLE:
                 snapshot is not None
                 and result is not None
                 and should_accept_command_result(snapshot, result)
-                and result.refresh_requested
             ):
                 self._pending_post_run_refresh = True
                 try:
                     self.refresh()
                 finally:
                     self._pending_post_run_refresh = False
-                self._run_comparison()
+                if result.refresh_requested:
+                    self._run_comparison()
             self._render_workflow()
 
         def _run_function_override(self, checked: bool = False) -> None:
