@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import pathlib
+
 import ida_kernwin
 import idaapi
 
