@@ -147,6 +147,23 @@ def test_edit_and_duplicate_handlers_use_the_pure_policy() -> None:
     assert "_open_config_v2_editor" in _call_names(_method("_duplicate_config"))
 
 
+def test_config_v2_destination_chooser_imports_pathlib_for_runtime_paths() -> None:
+    imported_modules = {
+        alias.name
+        for node in TREE.body
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    chooser_source = ast.get_source_segment(
+        IDA_UI.read_text(encoding="utf-8"),
+        _method("_choose_config_v2_destination"),
+    )
+
+    assert chooser_source is not None
+    assert "pathlib.Path(" in chooser_source
+    assert "pathlib" in imported_modules
+
+
 def test_config_v2_editor_is_owned_and_uses_thin_command_adapter() -> None:
     calls = _call_names(_method("_open_config_v2_editor"))
 
