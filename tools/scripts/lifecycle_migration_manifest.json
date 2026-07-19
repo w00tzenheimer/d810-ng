@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "baseline_report": "tools/scripts/codemod_reports/decompilation_lifecycle_before.json",
+  "baseline_report": "tools/scripts/codemod_reports/decompilation_lifecycle_full_inventory.json",
   "retired_manual_kinds": [
     "manual-lifecycle-owner",
     "event-subscription"

@@ -1,0 +1,44 @@
+{
+  "candidates": [
+    {
+      "column": 16,
+      "detail": "reset_for_func",
+      "kind": "direct-runtime-call",
+      "line": 191,
+      "path": "src/d810/manager/decompilation_lifecycle.py",
+      "rewriteable": false
+    },
+    {
+      "column": 20,
+      "detail": "analyze_and_persist",
+      "kind": "direct-runtime-call",
+      "line": 450,
+      "path": "src/d810/manager/decompilation_lifecycle.py",
+      "rewriteable": false
+    }
+  ],
+  "root": "/Users/mahmoud/src/idapro/d810/.worktrees/decomp-session-foundation",
+  "schema_version": 1,
+  "summary": {
+    "by_kind": {
+      "direct-runtime-call": 2
+    },
+    "candidates": 2,
+    "production": {
+      "by_kind": {
+        "direct-runtime-call": 2
+      },
+      "candidates": 2,
+      "rewritable": 0,
+      "unknown": 2
+    },
+    "rewritable": 0,
+    "tools": {
+      "by_kind": {},
+      "candidates": 0,
+      "rewritable": 0,
+      "unknown": 0
+    },
+    "unknown": 2
+  }
+}
