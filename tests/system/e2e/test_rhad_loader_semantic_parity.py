@@ -55,17 +55,14 @@ def _run_worker(binary: pathlib.Path, output_path: pathlib.Path) -> None:
         headless.start()
         try:
             import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as cg
-            from d810.hexrays.preanalysis.indirect_jump_labels import (
-                mark_indirect_dispatcher,
-            )
 
             cg.install()
             try:
-                mark_indirect_dispatcher(_FUNCTION_EA)
+                assert headless.prepare_native_preanalysis(_FUNCTION_EA) > 0
                 ida_hexrays.clear_cached_cfuncs()
                 first_failure = ida_hexrays.hexrays_failure_t()
-                first_round = ida_hexrays.decompile(_FUNCTION_EA, first_failure)
-                assert first_round is not None, (
+                cfunc = ida_hexrays.decompile(_FUNCTION_EA, first_failure)
+                assert cfunc is not None, (
                     "first decompile failed: "
                     f"code={int(first_failure.code)} "
                     f"ea=0x{int(first_failure.errea):X} "
@@ -77,15 +74,6 @@ def _run_worker(binary: pathlib.Path, output_path: pathlib.Path) -> None:
                     f"ea=0x{int(first_failure.errea):X} "
                     f"description={first_failure.desc()!r}"
                 )
-                assert (
-                    cg.prepare_detached_handler_snippets(
-                        _FUNCTION_EA,
-                        live_mba=first_round.mba,
-                    )
-                    > 0
-                )
-                ida_hexrays.clear_cached_cfuncs()
-                cfunc = ida_hexrays.decompile(_FUNCTION_EA)
                 recovered = str(cfunc) if cfunc is not None else "None"
             finally:
                 cg.uninstall()

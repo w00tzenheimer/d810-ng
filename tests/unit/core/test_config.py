@@ -150,7 +150,7 @@ class TestConfiguration(unittest.TestCase):
                 "blk_rules": [],
                 "additional_configuration": {
                     "enable_pass_pipeline": False,
-                    "enable_recon_pipeline": True,
+                    "enable_analysis_pipeline": True,
                 },
             }
             with project_path.open("w") as f:
@@ -161,7 +161,7 @@ class TestConfiguration(unittest.TestCase):
                 config = ProjectConfiguration.from_file(project_path)
                 self.assertEqual(
                     config.additional_configuration,
-                    {"enable_pass_pipeline": False, "enable_recon_pipeline": True},
+                    {"enable_pass_pipeline": False, "enable_analysis_pipeline": True},
                 )
 
                 # Mutate, save, and reload to verify serialization
@@ -170,7 +170,7 @@ class TestConfiguration(unittest.TestCase):
 
                 reloaded = ProjectConfiguration.from_file(project_path)
                 self.assertTrue(reloaded.additional_configuration["enable_pass_pipeline"])
-                self.assertTrue(reloaded.additional_configuration["enable_recon_pipeline"])
+                self.assertTrue(reloaded.additional_configuration["enable_analysis_pipeline"])
             finally:
                 project_path.unlink(missing_ok=True)
 

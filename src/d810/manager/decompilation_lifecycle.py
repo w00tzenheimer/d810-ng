@@ -8,6 +8,9 @@ ports.  Adapters receive this object by injection; they never import it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativePreanalysisSessionState,
+)
 from d810.core import typing
 from d810.core.decompilation_session import DecompilationSessionEvent
 from d810.core.logging import getLogger
@@ -27,7 +30,20 @@ class DecompilationSessionContext:
     function_ea: int
     database_identity: str
     top_level_epoch: int
+    native_preanalysis: NativePreanalysisSessionState = field(
+        default_factory=NativePreanalysisSessionState
+    )
+    native_preanalysis_depth: int = 0
+    current_mba_identity_index: object | None = None
     extensions: dict[object, object] = field(default_factory=dict)
+
+    @property
+    def identity_key(self) -> str:
+        """Return the durable owner key for session-scoped live ports."""
+        return (
+            f"{self.database_identity}:0x{int(self.function_ea):X}:"
+            f"{int(self.top_level_epoch)}"
+        )
 
     @property
     def event(self) -> DecompilationSessionEvent:
@@ -36,6 +52,20 @@ class DecompilationSessionContext:
             database_identity=self.database_identity,
             top_level_epoch=self.top_level_epoch,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionActivation:
+    """One callback activation over a session that may already be nested.
+
+    A callback can resume an outer function while Hex-Rays is recursively
+    decompiling one of its children.  That resumed callback must see the
+    original session evidence, but its structural completion must not release
+    either the resumed owner or the child beneath it.
+    """
+
+    session: DecompilationSessionContext
+    owns_session: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +90,11 @@ class DecompilationLifecycleCoordinator:
     preanalysis_phase: typing.Any | None
     analysis_runtime: typing.Any | None
     rule_scope_service: typing.Any | None
-    _active_sessions: list[DecompilationSessionContext] = field(
+    event_emitter: typing.Any | None = None
+    current_mba_identity_index_builder: typing.Callable[..., object | None] | None = None
+    mba_mutation_gateway_factory: typing.Callable[..., object | None] | None = None
+    session_extension_initializer: typing.Callable[[object], object] | None = None
+    _active_sessions: list[_SessionActivation] = field(
         default_factory=list,
         init=False,
         repr=False,
@@ -71,22 +105,59 @@ class DecompilationLifecycleCoordinator:
         repr=False,
     )
 
-    def begin_hexrays_session(
+    def ensure_hexrays_session(
         self,
         *,
         function_ea: int,
         database_identity: str,
-    ) -> DecompilationSessionContext:
-        """Begin a top-level session, reusing the active MERR_REDO session."""
+        callback_entry_ea: int | None = None,
+    ) -> tuple[DecompilationSessionContext, bool]:
+        """Return the active session or start exactly one top-level session.
+
+        The boolean is true only when this call started the session.  Every
+        Hex-Rays entrypoint may use this method as a defensive lazy fallback;
+        a redo therefore retains its epoch and cannot reset evidence twice.
+        """
         function_ea = int(function_ea)
         database_identity = str(database_identity)
+        callback_entry_ea = (
+            None if callback_entry_ea is None else int(callback_entry_ea)
+        )
         if self._active_sessions:
-            current = self._active_sessions[-1]
+            current = self._active_sessions[-1].session
             if (
                 current.function_ea == function_ea
                 and current.database_identity == database_identity
             ):
-                return current
+                # A manager-owned native preflight may itself invoke Hex-Rays
+                # for detached snippets.  Its structural callback must close
+                # only that callback activation, leaving the preflight owner
+                # alive for the user-visible top-level decompile.  Internal
+                # MBA entries likewise need a borrowed frame even when their
+                # containing IDA function is the existing lifecycle owner.
+                if callback_entry_ea is not None and (
+                    current.native_preanalysis_depth > 0
+                    or callback_entry_ea != function_ea
+                ):
+                    self._active_sessions.append(
+                        _SessionActivation(session=current, owns_session=False)
+                    )
+                return current, False
+
+        # Re-entering a parent while an IDA-owned nested decompilation is
+        # active is not a new top-level decompilation and must not discard its
+        # portable resolver evidence. Keep a borrowed activation so the
+        # matching structural callback only closes this reentry frame.
+        for activation in reversed(self._active_sessions):
+            active = activation.session
+            if (
+                active.function_ea == function_ea
+                and active.database_identity == database_identity
+            ):
+                self._active_sessions.append(
+                    _SessionActivation(session=active, owns_session=False)
+                )
+                return active, False
 
         has_active_parent = bool(self._active_sessions)
         identity = (function_ea, database_identity)
@@ -97,11 +168,24 @@ class DecompilationLifecycleCoordinator:
             database_identity=database_identity,
             top_level_epoch=epoch,
         )
-        self._active_sessions.append(session)
+        self._active_sessions.append(
+            _SessionActivation(session=session, owns_session=True)
+        )
+        initializer = self.session_extension_initializer
+        if callable(initializer):
+            try:
+                initializer(session)
+            except Exception:
+                self._active_sessions.pop()
+                logger.exception(
+                    "session extension initialization failed for func=0x%x",
+                    function_ea,
+                )
+                raise
 
         runtime = self.analysis_runtime
         if runtime is None:
-            return session
+            return session, True
         try:
             did_reset = bool(
                 runtime.reset_for_func(
@@ -114,7 +198,7 @@ class DecompilationLifecycleCoordinator:
                 "analysis runtime session reset failed for func=0x%x",
                 function_ea,
             )
-            return session
+            return session, True
         if did_reset and self.rule_scope_service is not None:
             try:
                 self.rule_scope_service.clear_hint_state(function_ea)
@@ -123,18 +207,116 @@ class DecompilationLifecycleCoordinator:
                     "rule-scope hint reset failed for func=0x%x",
                     function_ea,
                 )
-        return session
+        return session, True
 
     def current_session(self, function_ea: int) -> DecompilationSessionContext | None:
         """Return the innermost active session for ``function_ea``."""
         function_ea = int(function_ea)
-        for session in reversed(self._active_sessions):
+        for activation in reversed(self._active_sessions):
+            session = activation.session
             if session.function_ea == function_ea:
                 return session
         return None
 
+    def begin_native_preanalysis(self, session: DecompilationSessionContext) -> None:
+        """Reserve a session while its manager-owned preflight uses Hex-Rays.
+
+        The caller owns the matching ``finish_native_preanalysis`` in a
+        ``finally`` block.  This is a lifecycle boundary, not a resolver
+        cache: it only protects the already-active session from callback-local
+        structural completion.
+        """
+        if not any(
+            activation.session is session for activation in self._active_sessions
+        ):
+            raise ValueError("native preanalysis requires an active session")
+        session.native_preanalysis_depth += 1
+
+    def finish_native_preanalysis(self, session: DecompilationSessionContext) -> None:
+        """Release one manager-owned native-preanalysis reservation."""
+        if session.native_preanalysis_depth <= 0:
+            raise ValueError("native preanalysis reservation is not active")
+        session.native_preanalysis_depth -= 1
+
+    def bind_current_mba_identity_index(
+        self,
+        *,
+        function_ea: int,
+        index: object,
+    ) -> object | None:
+        """Attach one MBA-free, generation-local index to its active session."""
+        session = self.current_session(int(function_ea))
+        if session is None:
+            return None
+        session.current_mba_identity_index = index
+        return index
+
+    def build_current_mba_identity_index(
+        self,
+        *,
+        function_ea: int,
+        mba: object,
+    ) -> object | None:
+        """Lift and bind the current MBA without retaining the live object."""
+        session = self.current_session(int(function_ea))
+        if session is None:
+            return None
+        builder = self.current_mba_identity_index_builder
+        if not callable(builder):
+            return None
+        try:
+            index = builder(session=session, mba=mba)
+        except Exception:
+            logger.debug(
+                "current MBA identity-index build failed for func=0x%x",
+                int(function_ea),
+                exc_info=True,
+            )
+            return None
+        return self.bind_current_mba_identity_index(
+            function_ea=int(function_ea),
+            index=index,
+        )
+
+    def new_current_mba_mutation_gateway(
+        self,
+        *,
+        function_ea: int,
+        maturity: int,
+    ) -> object | None:
+        """Create one transaction gateway over the active MBA's live index.
+
+        Structural modifiers receive this through manager-owned injection.  The
+        coordinator deliberately does not retain an MBA: the index was built
+        at the callback boundary and is invalidated together with its session.
+        """
+        session = self.current_session(int(function_ea))
+        if session is None:
+            return None
+        index = session.current_mba_identity_index
+        if index is None:
+            return None
+        factory = self.mba_mutation_gateway_factory
+        if not callable(factory):
+            return None
+        try:
+            return factory(
+                session=session,
+                identity_index=index,
+                maturity=int(maturity),
+                event_emitter=self.event_emitter,
+            )
+        except Exception:
+            logger.debug(
+                "current MBA mutation-gateway creation failed for func=0x%x",
+                int(function_ea),
+                exc_info=True,
+            )
+            return None
+
     def capture_flowgraph(self, payload: FlowgraphReadyPayload) -> None:
         """Collect and persist portable flowgraph facts in their existing order."""
+        self._publish_rebound_bootstrap_route_facts(payload)
         phase = self.preanalysis_phase
         if phase is not None:
             try:
@@ -166,6 +348,74 @@ class DecompilationLifecycleCoordinator:
                     int(payload.func_ea),
                     payload.provider_phase.friendly_provider_level,
                 )
+
+    def _publish_rebound_bootstrap_route_facts(
+        self,
+        payload: FlowgraphReadyPayload,
+    ) -> None:
+        """Attach one rebound bootstrap proof to the next real diag snapshot.
+
+        The route is session-owned portable evidence, while the snapshot is
+        created later by the live optimizer boundary.  This bridge deliberately
+        transports only anchor-based facts and has no dependency on the
+        diagnostics implementation or any current-MBA serial.
+        """
+        if payload.snapshot is None:
+            return
+        session = self.current_session(int(payload.func_ea))
+        if session is None:
+            return
+        routes = session.native_preanalysis.pending_rebound_bootstrap_routes()
+        if not routes:
+            return
+        try:
+            from d810.analyses.value_flow.observation import FactObservation
+            from d810.core.observability import emit
+            from d810.core.observability_events import FactObservationsObserved
+
+            generation = int(session.native_preanalysis.evidence_generation)
+            observations = tuple(
+                FactObservation(
+                    fact_id=(
+                        "preopt_bootstrap_route:"
+                        f"source=0x{route.source_anchor_ea:X}:"
+                        f"state=0x{route.state:X}:"
+                        f"handler=0x{route.handler_anchor_ea:X}:"
+                        f"generation={generation}"
+                    ),
+                    kind="PreoptBootstrapRouteFact",
+                    semantic_key=(
+                        "preopt_bootstrap_route:"
+                        f"source=0x{route.source_anchor_ea:X}:"
+                        f"state=0x{route.state:X}:"
+                        f"handler=0x{route.handler_anchor_ea:X}"
+                    ),
+                    maturity=str(payload.provider_phase.friendly_provider_level),
+                    phase="pre_d810",
+                    confidence=1.0,
+                    source_ea=int(route.source_anchor_ea),
+                    payload=route.diagnostic_payload(
+                        generation=generation,
+                        rebound=True,
+                    ),
+                    evidence=(route.proof_kind.value,),
+                )
+                for route in routes
+            )
+            emit(
+                FactObservationsObserved(
+                    snapshot=payload.snapshot,
+                    func_ea=int(payload.func_ea),
+                    observations=observations,
+                )
+            )
+            session.native_preanalysis.mark_rebound_bootstrap_routes_published(routes)
+        except Exception:
+            logger.debug(
+                "bootstrap-route diagnostic publication failed for func=0x%x",
+                int(payload.func_ea),
+                exc_info=True,
+            )
 
     def capture_ctree(
         self,
@@ -218,8 +468,32 @@ class DecompilationLifecycleCoordinator:
         """Finish the innermost session and return its typed observer event."""
         if not self._active_sessions:
             return None
-        session = self._active_sessions.pop()
-        parent = self._active_sessions[-1] if self._active_sessions else None
+        activation = self._active_sessions[-1]
+        if (
+            activation.owns_session
+            and activation.session.native_preanalysis_depth > 0
+        ):
+            # A defensive guard for a preflight callback that did not receive
+            # its borrowed activation. The manager releases the reservation
+            # before the public top-level decompile can finish this owner.
+            return None
+        self._active_sessions.pop()
+        if not activation.owns_session:
+            return None
+        session = activation.session
+        for attachment in tuple(session.extensions.values()):
+            release_live_bindings = getattr(attachment, "release_live_bindings", None)
+            if callable(release_live_bindings):
+                try:
+                    release_live_bindings()
+                except Exception:
+                    logger.debug(
+                        "session attachment cleanup failed for func=0x%x",
+                        int(session.function_ea),
+                        exc_info=True,
+                    )
+        session.current_mba_identity_index = None
+        parent = self._active_sessions[-1].session if self._active_sessions else None
         runtime = self.analysis_runtime
         if runtime is not None:
             try:

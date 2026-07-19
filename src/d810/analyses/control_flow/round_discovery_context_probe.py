@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from d810.analyses.control_flow.reconstruction_discovery_indexes import (
         ReconstructionDiscoveryIndexes,
     )
-    from d810.analyses.control_flow.round_discovery_context import ReconRoundDiscoveryContext
+    from d810.analyses.control_flow.round_discovery_context import PreanalysisRoundDiscoveryContext
 
 
 logger = logging.getLogger(
@@ -55,7 +55,7 @@ def _edge_key(edge) -> tuple:
 
 
 def compare_round_context_to_rebuild(
-    ctx: ReconRoundDiscoveryContext,
+    ctx: PreanalysisRoundDiscoveryContext,
     *,
     rebuild_dag: LinearizedStateDag,
     rebuild_corrected_dag: LinearizedStateDag,

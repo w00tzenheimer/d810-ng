@@ -128,7 +128,7 @@ class WorksheetResult:
     snapshot_label: str
     dag_snapshot_id: int | None
     dag_snapshot_label: str | None
-    recon_db_path: Path | None
+    analysis_db_path: Path | None
     log_path: Path | None
     rows: tuple[WorksheetRow, ...]
 
@@ -223,11 +223,11 @@ def find_latest_diag_db(
     return None
 
 
-def find_latest_recon_db(*, search_roots: Sequence[Path]) -> Path | None:
+def find_latest_analysis_db(*, search_roots: Sequence[Path]) -> Path | None:
     """Find the latest recon DB in known log roots."""
     candidates: list[Path] = []
     for root in search_roots:
-        candidate = root / "d810_recon.db"
+        candidate = root / "d810_analysis.db"
         if candidate.exists():
             candidates.append(candidate)
     ordered = _sorted_by_mtime(candidates)
@@ -617,14 +617,14 @@ def load_modifications(
     ]
 
 
-def load_transition_meta(recon_db_path: Path | None, *, func_ea: int) -> TransitionMeta | None:
+def load_transition_meta(analysis_db_path: Path | None, *, func_ea: int) -> TransitionMeta | None:
     """Load dispatcher metadata from the latest handler transition report."""
-    if recon_db_path is None or not recon_db_path.exists():
+    if analysis_db_path is None or not analysis_db_path.exists():
         return None
-    conn = _open_db(recon_db_path)
+    conn = _open_db(analysis_db_path)
     try:
         row = conn.execute(
-            "SELECT metrics_json FROM recon_results "
+            "SELECT metrics_json FROM preanalysis_results "
             "WHERE func_ea = ? AND collector_name = ? "
             "ORDER BY maturity DESC, timestamp DESC LIMIT 1",
             (func_ea, HANDLER_TRANSITIONS_COLLECTOR),
@@ -657,14 +657,14 @@ def load_transition_meta(recon_db_path: Path | None, *, func_ea: int) -> Transit
 
 
 def load_planner_ownership(
-    recon_db_path: Path | None,
+    analysis_db_path: Path | None,
     *,
     func_ea: int,
 ) -> list[PlannerOwnershipInfo]:
     """Load the latest Hodur planner provenance rows."""
-    if recon_db_path is None or not recon_db_path.exists():
+    if analysis_db_path is None or not analysis_db_path.exists():
         return []
-    conn = _open_db(recon_db_path)
+    conn = _open_db(analysis_db_path)
     try:
         row = conn.execute(
             "SELECT provenance_json FROM consumer_outcomes "
@@ -1158,7 +1158,7 @@ def build_residual_dispatcher_worksheet(
     snapshot_id: int | None = None,
     dag_snapshot_id: int | None = None,
     reachability_snapshot_id: int | None = None,
-    recon_db_path: Path | None = None,
+    analysis_db_path: Path | None = None,
     log_path: Path | None = None,
     func_ea: int | None = None,
     maturity: str | None = DEFAULT_MATURITY,
@@ -1213,8 +1213,8 @@ def build_residual_dispatcher_worksheet(
         if resolved_dag_snapshot_id is not None:
             dag_snapshot_label = str(_snapshot_metadata(diag_conn, resolved_dag_snapshot_id)["label"])
 
-    transition_meta = load_transition_meta(recon_db_path, func_ea=resolved_func_ea)
-    planner_rows = load_planner_ownership(recon_db_path, func_ea=resolved_func_ea)
+    transition_meta = load_transition_meta(analysis_db_path, func_ea=resolved_func_ea)
+    planner_rows = load_planner_ownership(analysis_db_path, func_ea=resolved_func_ea)
 
     log_events: list[ResidualLogEvent] = []
     if log_path is not None and log_path.exists():
@@ -1264,7 +1264,7 @@ def build_residual_dispatcher_worksheet(
         snapshot_label=str(snapshot_meta["label"]),
         dag_snapshot_id=resolved_dag_snapshot_id,
         dag_snapshot_label=dag_snapshot_label,
-        recon_db_path=recon_db_path,
+        analysis_db_path=analysis_db_path,
         log_path=log_path,
         rows=tuple(rows),
     )
@@ -1328,7 +1328,7 @@ def render_json(result: WorksheetResult) -> str:
         "snapshot_label": result.snapshot_label,
         "dag_snapshot_id": result.dag_snapshot_id,
         "dag_snapshot_label": result.dag_snapshot_label,
-        "recon_db": str(result.recon_db_path) if result.recon_db_path is not None else None,
+        "analysis_db": str(result.analysis_db_path) if result.analysis_db_path is not None else None,
         "log_path": str(result.log_path) if result.log_path is not None else None,
         "rows": [
             {
@@ -1346,7 +1346,7 @@ def render_json(result: WorksheetResult) -> str:
 def register_parser(sub) -> None:
     """Register the ``residual-worksheet`` subparser.
 
-    No ``common`` parent: this command uses ``--diag-db`` / ``--recon-db``
+    No ``common`` parent: this command uses ``--diag-db`` / ``--analysis-db``
     rather than the diag DB heuristic ``--db`` and owns its own
     maturity/phase defaults.
     """
@@ -1354,13 +1354,13 @@ def register_parser(sub) -> None:
         "residual-worksheet",
         help=(
             "Build a residual dispatcher worksheet from persisted diag,"
-            " recon, and log artifacts. Correlates post-pipeline microcode,"
+            " analysis, and log artifacts. Correlates post-pipeline microcode,"
             " semantic rendered-program spans, DAG/modification snapshots,"
             " transition/planner data, and residual-handoff log lines."
         ),
     )
     p.add_argument("--diag-db", type=Path, default=None, help="Diagnostic SQLite DB")
-    p.add_argument("--recon-db", type=Path, default=None, help="Recon SQLite DB")
+    p.add_argument("--analysis-db", type=Path, default=None, help="Analysis SQLite DB")
     p.add_argument("--log", type=Path, default=None, help="Optional text log/dump to parse")
     p.add_argument(
         "--log-dir", type=Path, default=None,
@@ -1416,7 +1416,7 @@ def register_parser(sub) -> None:
 def run(args: argparse.Namespace) -> int:
     """Execute ``residual-worksheet`` from parsed args; return exit code."""
     extra_paths = []
-    for candidate in (args.diag_db, args.recon_db, args.log):
+    for candidate in (args.diag_db, args.analysis_db, args.log):
         if candidate is not None:
             extra_paths.append(candidate.parent)
     search_roots = _search_roots(log_dir=args.log_dir, extra_paths=extra_paths)
@@ -1439,7 +1439,7 @@ def run(args: argparse.Namespace) -> int:
                 )
         return 0
 
-    recon_db_path = args.recon_db or find_latest_recon_db(search_roots=search_roots)
+    analysis_db_path = args.analysis_db or find_latest_analysis_db(search_roots=search_roots)
     log_path = args.log or find_latest_log_file(
         search_roots=search_roots,
         func_token=args.func_token,
@@ -1450,7 +1450,7 @@ def run(args: argparse.Namespace) -> int:
         snapshot_id=args.snapshot_id,
         dag_snapshot_id=args.dag_snapshot_id,
         reachability_snapshot_id=args.reachability_snapshot_id,
-        recon_db_path=recon_db_path,
+        analysis_db_path=analysis_db_path,
         log_path=log_path,
         func_ea=args.func_ea,
         maturity=args.maturity,

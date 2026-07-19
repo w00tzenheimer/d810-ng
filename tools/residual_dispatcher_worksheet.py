@@ -3,7 +3,7 @@
 
 Migrated to ``d810.diagnostics`` -- see ``docs/debug-tooling-migration.md``.
 This file forwards to ``python -m d810.diagnostics residual-worksheet``
-with the same argument shape (``--diag-db``, ``--recon-db``, ``--log``,
+with the same argument shape (``--diag-db``, ``--analysis-db``, ``--log``,
 ``--func-ea``, ``--snapshot-id``, ``--format``, ``--output``,
 ``--list-snapshots``, etc.). To use the new command directly:
 
@@ -11,7 +11,7 @@ with the same argument shape (``--diag-db``, ``--recon-db``, ``--log``,
     PYTHONPATH=src python -m d810.diagnostics residual-worksheet --diag-db DB ...
 
 The full correlation logic (block + rendered-program + DAG +
-modifications + recon planner + LFG DAG log parsing) now lives in
+modifications + analysis planner + LFG DAG log parsing) now lives in
 ``src/d810/diagnostics/residual_worksheet.py`` with unit tests under
 ``tests/unit/diagnostics/test_residual_worksheet.py``.
 """

@@ -42,7 +42,7 @@ import hashlib
 import re
 
 from d810.core.logging import getLogger
-from d810.core.project import register_recon_fact_collector_registration_handler
+from d810.core.project import register_preanalysis_fact_collector_registration_handler
 from d810.core.typing import Any, Iterable
 from d810.backends.hexrays.evidence.opcode_semantics import (
     microcode_semantic_label_resolver,
@@ -274,8 +274,8 @@ def _config_values(value: object) -> tuple[str, ...]:
 
 
 def _ollvm_carrier_profile_enabled(project_config: dict[str, object]) -> bool:
-    modules = set(_config_values(project_config.get("recon_fact_profile_modules")))
-    profiles = set(_config_values(project_config.get("recon_fact_profiles")))
+    modules = set(_config_values(project_config.get("preanalysis_profile_modules")))
+    profiles = set(_config_values(project_config.get("preanalysis_fact_profiles")))
     return (
         bool(project_config.get("enable_ollvm_carrier_evidence"))
         or OLLVM_CARRIER_PROFILE_MODULE in modules
@@ -301,7 +301,7 @@ def _register_ollvm_carrier_fact_collectors(
             raise
 
 
-register_recon_fact_collector_registration_handler(
+register_preanalysis_fact_collector_registration_handler(
     _OLLVM_CARRIER_REGISTRATION_HANDLER,
     _register_ollvm_carrier_fact_collectors,
 )

@@ -16,4 +16,5 @@ echo "[deprecated] inspect_hodur_dump.sh migrated to d810cli.py inspect;" >&2
 echo "             forwarding to: ./tools/d810cli.py inspect --dump ${DUMP_FILE}" >&2
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "${SCRIPT_DIR}/../d810cli.py" inspect --dump "${DUMP_FILE}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+exec "${PYTHON_BIN}" "${SCRIPT_DIR}/../d810cli.py" inspect --dump "${DUMP_FILE}"

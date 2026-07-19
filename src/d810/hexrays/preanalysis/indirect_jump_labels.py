@@ -938,82 +938,66 @@ def materialize_indirect_label_targets_from_config(
 
 _INDIRECT_MATERIALIZATION_REGISTERED = False
 _INDIRECT_MATERIALIZATION_GOTO_TABLE: dict = {}
-_INDIRECT_MATERIALIZED_FUNCTION_EAS: set[int] = set()
 _INDIRECT_MATERIALIZATION_HANDLER = "hexrays.indirect_jump_label_materialization"
-# EAs structurally confirmed (by the per-function detector) to be register-indirect
-# computed-goto dispatchers. Populated by the flowchart event subscriber; queried
-# by the unflatten unflattener as the address-agnostic ``_is_indirect`` signal.
-_INDIRECT_DISPATCHER_FUNCTION_EAS: set[int] = set()
-# Resolver-proven transfer records survive byte-patch materialization so the
-# post-materialization CFF pipeline can reconnect an otherwise unmatched state
-# transition to its live FlowGraph target.  This stays function-scoped and is
-# cleared with the ordinary materialization registry; it is evidence, not a
-# second dispatcher model.
-_MATERIALIZED_INDIRECT_TRANSFERS: dict[int, tuple[MaterializedIndirectTransfer, ...]] = {}
-_TERMINAL_RETURN_CARRIER_REQUESTS: dict[
-    int,
-    tuple[TerminalReturnCarrierRequest, ...],
-] = {}
 
 
-def record_materialized_indirect_transfers(
-    function_ea: int,
+def merge_materialized_indirect_transfers(
+    state: object,
     transfers: tuple[MaterializedIndirectTransfer, ...],
-) -> None:
-    """Accumulate immutable resolver proof across Hex-Rays redo rounds."""
-    key = int(function_ea)
-    if not transfers:
-        _MATERIALIZED_INDIRECT_TRANSFERS.pop(key, None)
-        return
-    previous = _MATERIALIZED_INDIRECT_TRANSFERS.get(key, ())
-    _MATERIALIZED_INDIRECT_TRANSFERS[key] = tuple(
-        dict.fromkeys((*previous, *transfers))
-    )
+) -> bool:
+    """Merge resolver proof through its owning lifecycle session."""
+    merge = getattr(state, "merge_materialized_transfers", None)
+    if not callable(merge):
+        raise TypeError("materialized transfers require ResolverSessionState")
+    return bool(merge(transfers))
 
 
-def get_materialized_indirect_transfers(
-    function_ea: int,
+def materialized_indirect_transfers(
+    state: object,
 ) -> tuple[MaterializedIndirectTransfer, ...]:
-    """Return the current function's materialized computed-goto evidence."""
-    return _MATERIALIZED_INDIRECT_TRANSFERS.get(int(function_ea), ())
+    """Return session-owned computed-goto proof for the active callback."""
+    transfers = getattr(state, "materialized_transfers", None)
+    if not isinstance(transfers, tuple):
+        raise TypeError("materialized transfers require ResolverSessionState")
+    return transfers
 
 
-def record_terminal_return_carrier_requests(
-    function_ea: int,
+def merge_terminal_return_carrier_requests(
+    state: object,
     requests: tuple[TerminalReturnCarrierRequest, ...],
-) -> None:
-    """Accumulate exact terminal-carrier capture requests by function."""
-    key = int(function_ea)
-    if not requests:
-        return
-    previous = _TERMINAL_RETURN_CARRIER_REQUESTS.get(key, ())
-    _TERMINAL_RETURN_CARRIER_REQUESTS[key] = tuple(
-        dict.fromkeys((*previous, *requests))
-    )
+) -> bool:
+    """Merge exact carrier requests through their lifecycle owner."""
+    merge = getattr(state, "merge_terminal_return_carrier_requests", None)
+    if not callable(merge):
+        raise TypeError("terminal carrier requests require ResolverSessionState")
+    return bool(merge(requests))
 
 
-def get_terminal_return_carrier_requests(
-    function_ea: int,
+def terminal_return_carrier_requests(
+    state: object,
 ) -> tuple[TerminalReturnCarrierRequest, ...]:
-    """Return terminal-carrier requests proven by an earlier CALLS graph."""
-    return _TERMINAL_RETURN_CARRIER_REQUESTS.get(int(function_ea), ())
-
-
-def clear_materialized_indirect_dispatcher_evidence(function_ea: int) -> None:
-    """Drop resolver-owned profile evidence for one function identity.
-
-    Function EAs are database-local.  A long-lived Python process may close one
-    IDB and open another whose unrelated function occupies the same address, so
-    resolver uninstall must not leave an address-only profile marker behind.
-    """
-    key = int(function_ea)
-    _INDIRECT_DISPATCHER_FUNCTION_EAS.discard(key)
-    _MATERIALIZED_INDIRECT_TRANSFERS.pop(key, None)
-    _TERMINAL_RETURN_CARRIER_REQUESTS.pop(key, None)
+    """Return session-owned terminal-carrier proof for the active callback."""
+    requests = getattr(state, "terminal_return_carrier_requests", None)
+    if not isinstance(requests, tuple):
+        raise TypeError("terminal carrier requests require ResolverSessionState")
+    return requests
 
 
 def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) -> None:
-    result = run_indirect_materialization_for_function(int(function_ea))
+    session = decision.get("session")
+    if session is None:
+        return
+    try:
+        from d810.analyses.control_flow.native_preanalysis_session import (
+            attached_resolver_session_state,
+        )
+
+        state = attached_resolver_session_state(session)
+    except (TypeError, ValueError):
+        return
+    if state is None:
+        return
+    result = run_indirect_materialization_for_function(int(function_ea), state=state)
     if result is None or not result.success:
         return
     from d810.hexrays.preanalysis.flowchart_preanalysis import request_hexrays_redo
@@ -1036,10 +1020,6 @@ def register_indirect_materialization(goto_table_info: Mapping[str, object]) -> 
 
     _INDIRECT_MATERIALIZATION_REGISTERED = True
     _INDIRECT_MATERIALIZATION_GOTO_TABLE = dict(goto_table_info or {})
-    _INDIRECT_MATERIALIZED_FUNCTION_EAS.clear()
-    _INDIRECT_DISPATCHER_FUNCTION_EAS.clear()
-    _MATERIALIZED_INDIRECT_TRANSFERS.clear()
-    _TERMINAL_RETURN_CARRIER_REQUESTS.clear()
     register_flowchart_preanalysis_handler(
         _INDIRECT_MATERIALIZATION_HANDLER,
         _on_flowchart_preanalysis,
@@ -1055,15 +1035,13 @@ def reset_indirect_materialization() -> None:
 
     _INDIRECT_MATERIALIZATION_REGISTERED = False
     _INDIRECT_MATERIALIZATION_GOTO_TABLE = {}
-    _INDIRECT_MATERIALIZED_FUNCTION_EAS.clear()
-    _INDIRECT_DISPATCHER_FUNCTION_EAS.clear()
-    _MATERIALIZED_INDIRECT_TRANSFERS.clear()
-    _TERMINAL_RETURN_CARRIER_REQUESTS.clear()
     unregister_flowchart_preanalysis_handler(_INDIRECT_MATERIALIZATION_HANDLER)
 
 
 def run_indirect_materialization_for_function(
     function_ea: int,
+    *,
+    state: object,
 ) -> IndirectLabelMaterializationResult | None:
     """Materialize indirect labels for *function_ea* if registered (idempotent).
 
@@ -1075,9 +1053,9 @@ def run_indirect_materialization_for_function(
     if not _INDIRECT_MATERIALIZATION_REGISTERED:
         return None
     key = int(function_ea)
-    if key in _INDIRECT_MATERIALIZED_FUNCTION_EAS:
+    if bool(getattr(state, "indirect_label_materialized", False)):
         return None
-    _INDIRECT_MATERIALIZED_FUNCTION_EAS.add(key)
+    setattr(state, "indirect_label_materialized", True)
     try:
         result = materialize_indirect_label_targets_for_function(
             key,
@@ -1091,7 +1069,7 @@ def run_indirect_materialization_for_function(
         )
         return None
     if result is not None:
-        _INDIRECT_DISPATCHER_FUNCTION_EAS.add(key)
+        setattr(state, "indirect_dispatcher_materialized", True)
         logger.info(
             "Tigress indirect flowchart materialization 0x%X: success=%s "
             "targets=%d/%d jump_xrefs=%d reason=%s",
@@ -1105,41 +1083,22 @@ def run_indirect_materialization_for_function(
     return result
 
 
-def is_materialized_indirect_dispatcher(function_ea: int) -> bool:
-    """True if *function_ea* was structurally confirmed an indirect-table
-    (register-indirect computed-goto) dispatcher by the flowchart-stage
-    materialization.
-
-    This is the address-agnostic ``_is_indirect`` signal the unflatten unflattener
-    uses to route recovery to ``MMAT_CALLS`` — no per-binary configured
-    addresses, no config profile flag. Returns ``False`` until the flowchart
-    event has run for the function, and ``False`` for every non-dispatcher.
-    """
-    return int(function_ea) in _INDIRECT_DISPATCHER_FUNCTION_EAS
+def is_materialized_indirect_dispatcher(state: object) -> bool:
+    """Return the active session's structural indirect-dispatcher marker."""
+    return bool(getattr(state, "indirect_dispatcher_materialized", False))
 
 
-def mark_indirect_dispatcher(function_ea: int) -> None:
-    """Mark *function_ea* as a materialized register-indirect computed-goto
-    dispatcher.
-
-    Used by sibling computed-goto materializers (e.g. the cmov/setcc
-    pointer-select resolver in :mod:`d810.optimizers.microcode.flow.jumps.computed_goto_resolver`)
-    that recover a register-indirect dispatcher of a non-Tigress shape. Setting
-    this flag makes :func:`is_materialized_indirect_dispatcher` true, which routes
-    the CFF unflattener's recovery to ``MMAT_CALLS`` — the maturity at which the
-    ``cmp state, const; jz handler`` equality chain is still intact (GLBOPT1
-    constant-folds it away, which is why a GLBOPT1-only recovery reads
-    ``map_rows=0``)."""
-    _INDIRECT_DISPATCHER_FUNCTION_EAS.add(int(function_ea))
+def mark_indirect_dispatcher(state: object) -> None:
+    """Mark the active lifecycle session as an indirect dispatcher profile."""
+    setattr(state, "indirect_dispatcher_materialized", True)
 
 
 __all__ = [
-    "clear_materialized_indirect_dispatcher_evidence",
     "mark_indirect_dispatcher",
-    "record_materialized_indirect_transfers",
-    "get_materialized_indirect_transfers",
-    "record_terminal_return_carrier_requests",
-    "get_terminal_return_carrier_requests",
+    "merge_materialized_indirect_transfers",
+    "materialized_indirect_transfers",
+    "merge_terminal_return_carrier_requests",
+    "terminal_return_carrier_requests",
     "create_dispatcher_target_instructions",
     "IndirectLabelMaterializationPlan",
     "is_materialized_indirect_dispatcher",

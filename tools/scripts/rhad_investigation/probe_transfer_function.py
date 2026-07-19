@@ -26,6 +26,15 @@ FUNCTION_END = (
     else None
 )
 MODE = os.environ.get("RHAD_TRANSFER_MODE", "d810").strip().lower()
+PREPARE_ONLY = os.environ.get("RHAD_TRANSFER_PREPARE_ONLY") == "1"
+TRACE_BOOTSTRAP_SOURCE = os.environ.get("RHAD_TRANSFER_TRACE_BOOTSTRAP_SOURCE")
+TRACE_BOOTSTRAP_STATE = os.environ.get("RHAD_TRANSFER_TRACE_BOOTSTRAP_STATE")
+TRACE_BOOTSTRAP_STATE_MREG = os.environ.get("RHAD_TRANSFER_TRACE_BOOTSTRAP_MREG")
+TRACE_BOOTSTRAP_HANDLER_EAS = frozenset(
+    int(item.strip(), 0)
+    for item in os.environ.get("RHAD_TRANSFER_TRACE_BOOTSTRAP_HANDLER_EAS", "").split(",")
+    if item.strip()
+)
 OUTPUT = Path(
     os.environ.get(
         "RHAD_TRANSFER_OUTPUT",
@@ -39,6 +48,7 @@ TRANSFER_OUTPUT = os.environ.get("RHAD_TRANSFER_TRANSFERS_OUTPUT") or os.environ
 )
 ORIGIN_OUTPUT = os.environ.get("RHAD_TRANSFER_ORIGINS_OUTPUT")
 TRACE_HANDLER_ROUTES = os.environ.get("RHAD_TRANSFER_TRACE_HANDLER_ROUTES") == "1"
+TRACE_SESSION_STATE = os.environ.get("RHAD_TRANSFER_TRACE_SESSION_STATE") == "1"
 TRACE_HANDLER_EAS = frozenset(
     int(item.strip(), 0)
     for item in os.environ.get("RHAD_TRANSFER_TRACE_HANDLER_EAS", "").split(",")
@@ -123,6 +133,102 @@ def _write_ctree_statement_anchors(cfunc: object, destination: Path) -> None:
     )
 
 
+def _write_transfer_inventory(state: object | None, destination: Path) -> None:
+    """Write only portable resolver evidence, without retaining live MBA state."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(
+            [
+                {
+                    "source_jmp_ea": f"0x{int(transfer.source_jmp_ea):X}",
+                    "source_block_ea": f"0x{int(transfer.source_block_ea):X}",
+                    "target_eas": [
+                        f"0x{int(target_ea):X}" for target_ea in transfer.target_eas
+                    ],
+                    "resolver_kind": transfer.resolver_kind,
+                    "selector_state_var_reg": transfer.selector_state_var_reg,
+                    "selector_state_constant": (
+                        None
+                        if transfer.selector_state_constant is None
+                        else f"0x{int(transfer.selector_state_constant):X}"
+                    ),
+                    "selector_compare_constant": (
+                        None
+                        if transfer.selector_compare_constant is None
+                        else f"0x{int(transfer.selector_compare_constant):X}"
+                    ),
+                    "condition_code": transfer.condition_code,
+                    "true_target_ea": (
+                        None
+                        if transfer.true_target_ea is None
+                        else f"0x{int(transfer.true_target_ea):X}"
+                    ),
+                    "false_target_ea": (
+                        None
+                        if transfer.false_target_ea is None
+                        else f"0x{int(transfer.false_target_ea):X}"
+                    ),
+                    "source_register_values": [
+                        [int(register), f"0x{int(value):X}"]
+                        for register, value in transfer.source_register_values
+                    ],
+                    "target_register_values": [
+                        [int(register), f"0x{int(value):X}"]
+                        for register, value in transfer.target_register_values
+                    ],
+                }
+                for transfer in getattr(state, "materialized_transfers", ())
+            ],
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _trace_static_bootstrap_route(state: object | None) -> None:
+    """Print the native dispatcher answer used by bootstrap discovery, if asked."""
+    if (
+        state is None
+        or TRACE_BOOTSTRAP_SOURCE is None
+        or TRACE_BOOTSTRAP_STATE is None
+        or TRACE_BOOTSTRAP_STATE_MREG is None
+    ):
+        return
+    from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
+        _bootstrap_native_replay_inputs,
+        _resolve_concrete_dispatch_corridor,
+    )
+
+    source_ea = int(TRACE_BOOTSTRAP_SOURCE, 0)
+    state_value = int(TRACE_BOOTSTRAP_STATE, 0)
+    state_mreg = int(TRACE_BOOTSTRAP_STATE_MREG, 0)
+    transfers = tuple(getattr(state, "materialized_transfers", ()))
+    context_mregs, register_snapshots_by_ea, dispatch_anchor_eas = (
+        _bootstrap_native_replay_inputs(transfers)
+    )
+    initial_mregs = dict(context_mregs)
+    initial_mregs[state_mreg] = state_value
+    target = _resolve_concrete_dispatch_corridor(
+        source_ea,
+        initial_mregs=initial_mregs,
+        handler_eas=TRACE_BOOTSTRAP_HANDLER_EAS,
+        register_snapshots_by_ea=register_snapshots_by_ea,
+        dispatch_anchor_eas=dispatch_anchor_eas,
+        return_first_indirect_target=not TRACE_BOOTSTRAP_HANDLER_EAS,
+    )
+    print(
+        "BOOTSTRAP_NATIVE_ROUTE",
+        f"source=0x{source_ea:X}",
+        f"state_mreg={state_mreg}",
+        f"state=0x{state_value:X}",
+        f"handler_eas={[hex(ea) for ea in sorted(TRACE_BOOTSTRAP_HANDLER_EAS)]}",
+        f"target={None if target is None else hex(int(target))}",
+        flush=True,
+    )
+
+
 if MODE not in {"d810", "native"}:
     raise SystemExit(f"unsupported RHAD_TRANSFER_MODE={MODE!r}")
 
@@ -190,13 +296,89 @@ try:
         final = first
     else:
         import d810.headless as headless
-        from d810.capabilities.detached_handler_snippets import (
-            prepare_detached_handler_snippets,
+        from d810.hexrays.preanalysis.flowchart_preanalysis import (
+            register_flowchart_preanalysis_handler,
+            unregister_flowchart_preanalysis_handler,
         )
         import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as cg
+        from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+            resolver_session_state,
+        )
 
         headless.configure(project="default_unflattening_ollvm.json")
         headless.start()
+        if TRACE_SESSION_STATE:
+            manager_lifecycle = headless._state.manager.decompilation_lifecycle
+            hook_lifecycle = headless._state.manager.hx_decompiler_hook._decompilation_lifecycle
+            print(
+                "RESOLVER_LIFECYCLE_PORTS",
+                f"manager_id={id(manager_lifecycle)}",
+                f"hook_id={id(hook_lifecycle)}",
+                f"same={manager_lifecycle is hook_lifecycle}",
+                flush=True,
+            )
+            coordinator_type = type(manager_lifecycle)
+            original_ensure_hexrays_session = coordinator_type.ensure_hexrays_session
+
+            def trace_ensure_hexrays_session(self, **kwargs):
+                session, created = original_ensure_hexrays_session(self, **kwargs)
+                print(
+                    "RESOLVER_SESSION_ENSURE",
+                    f"kwargs={kwargs}",
+                    f"session_id={id(session)}",
+                    f"created={created}",
+                    "active="
+                    + repr(
+                        [
+                            (
+                                f"0x{int(activation.session.function_ea):X}",
+                                id(activation.session),
+                                bool(activation.owns_session),
+                            )
+                            for activation in self._active_sessions
+                        ]
+                    ),
+                    flush=True,
+                )
+                return session, created
+
+            coordinator_type.ensure_hexrays_session = trace_ensure_hexrays_session
+            from d810.manager.decompilation_lifecycle import (
+                DecompilationLifecycleCoordinator,
+            )
+
+            original_finish_hexrays_session = (
+                DecompilationLifecycleCoordinator.finish_hexrays_session
+            )
+
+            def trace_finish_hexrays_session(self):
+                active = [
+                    (
+                        f"0x{int(activation.session.function_ea):X}",
+                        bool(activation.owns_session),
+                        int(activation.session.native_preanalysis_depth),
+                    )
+                    for activation in self._active_sessions
+                ]
+                print("RESOLVER_SESSION_FINISH_BEFORE", active, flush=True)
+                result = original_finish_hexrays_session(self)
+                print(
+                    "RESOLVER_SESSION_FINISH_AFTER",
+                    [
+                        (
+                            f"0x{int(activation.session.function_ea):X}",
+                            bool(activation.owns_session),
+                            int(activation.session.native_preanalysis_depth),
+                        )
+                        for activation in self._active_sessions
+                    ],
+                    flush=True,
+                )
+                return result
+
+            DecompilationLifecycleCoordinator.finish_hexrays_session = (
+                trace_finish_hexrays_session
+            )
         if TRACE_HANDLER_ROUTES:
             import d810.transforms.minimal_unflatten_emit as emit_module
 
@@ -289,23 +471,210 @@ try:
             emit_module.resolve_materialized_handler_exit_states = (
                 trace_resolve_exit_states
             )
-        cg.install()
-        try:
-            ida_hexrays.clear_cached_cfuncs()
-            first = ida_hexrays.decompile(FUNCTION_EA)
-            prepared = int(
-                prepare_detached_handler_snippets(
-                    FUNCTION_EA,
-                    live_mba=None if first is None else first.mba,
-                )
+        observed_resolver_state: list[object] = []
+        observed_session_states: set[int] = set()
+
+        if TRACE_SESSION_STATE:
+            original_prepare_detached_handler_snippets = (
+                cg.prepare_detached_handler_snippets
             )
-            if prepared:
-                ida_hexrays.clear_cached_cfuncs()
-                final = ida_hexrays.decompile(FUNCTION_EA)
+            original_discover_static_native_bootstrap_routes = (
+                cg._discover_static_native_bootstrap_routes
+            )
+            original_static_native_bootstrap_route_candidates = (
+                cg._static_native_bootstrap_route_candidates
+            )
+            original_static_native_handler_entry_eas = (
+                cg._static_native_handler_entry_eas
+            )
+
+            def trace_prepare_detached_handler_snippets(state):
+                print(
+                    "RESOLVER_PREPARE_INPUT",
+                    f"state_id={id(state)}",
+                    f"materialization={getattr(state, 'materialization', None) is not None}",
+                    f"materialized={bool(getattr(state, 'materialized', False))}",
+                    f"transfers={len(getattr(state, 'materialized_transfers', ())) }",
+                    flush=True,
+                )
+                return original_prepare_detached_handler_snippets(state)
+
+            cg.prepare_detached_handler_snippets = trace_prepare_detached_handler_snippets
+
+            def trace_static_native_handler_entry_eas(graph, dispatcher_blocks):
+                handler_eas = original_static_native_handler_entry_eas(
+                    graph,
+                    dispatcher_blocks,
+                )
+                print(
+                    "BOOTSTRAP_DISCOVERY_HANDLERS",
+                    f"dispatcher_blocks={len(dispatcher_blocks)}",
+                    f"handlers={[hex(int(ea)) for ea in sorted(handler_eas)]}",
+                    flush=True,
+                )
+                return handler_eas
+
+            def trace_static_native_bootstrap_route_candidates(
+                graph,
+                transfers,
+                *,
+                native_route_resolver=None,
+            ):
+                corridor = [
+                    (
+                        int(serial),
+                        int(graph.get_block(int(serial)).start_ea),
+                        None
+                        if graph.get_block(int(serial)).tail is None
+                        else int(graph.get_block(int(serial)).tail.ea),
+                        len(graph.get_block(int(serial)).succs),
+                    )
+                    for serial in cg._native_entry_corridor_serials(graph)
+                ]
+                print(
+                    "BOOTSTRAP_DISCOVERY_CORRIDOR",
+                    "blocks="
+                    + repr(
+                        [
+                            (
+                                serial,
+                                hex(start_ea),
+                                None if tail_ea is None else hex(tail_ea),
+                                successor_count,
+                            )
+                            for serial, start_ea, tail_ea, successor_count in corridor
+                        ]
+                    ),
+                    flush=True,
+                )
+                candidates = original_static_native_bootstrap_route_candidates(
+                    graph,
+                    transfers,
+                    native_route_resolver=native_route_resolver,
+                )
+                print(
+                    "BOOTSTRAP_DISCOVERY_CANDIDATES",
+                    f"entry_serial={int(graph.entry_serial)}",
+                    "candidates="
+                    + repr(
+                        [
+                            tuple(hex(int(item)) for item in candidate)
+                            for candidate in candidates
+                        ]
+                    ),
+                    flush=True,
+                )
+                return candidates
+
+            def trace_discover_static_native_bootstrap_routes(*, mba, decision, state):
+                print(
+                    "BOOTSTRAP_DISCOVERY_INPUT",
+                    f"entry=0x{int(getattr(mba, 'entry_ea', 0)):X}",
+                    f"transfers={len(getattr(state, 'materialized_transfers', ())) }",
+                    f"generation={int(getattr(state, 'evidence_generation', 0))}",
+                    flush=True,
+                )
+                cg._static_native_handler_entry_eas = (
+                    trace_static_native_handler_entry_eas
+                )
+                cg._static_native_bootstrap_route_candidates = (
+                    trace_static_native_bootstrap_route_candidates
+                )
+                try:
+                    discovered = original_discover_static_native_bootstrap_routes(
+                        mba=mba,
+                        decision=decision,
+                        state=state,
+                    )
+                finally:
+                    cg._static_native_handler_entry_eas = (
+                        original_static_native_handler_entry_eas
+                    )
+                    cg._static_native_bootstrap_route_candidates = (
+                        original_static_native_bootstrap_route_candidates
+                    )
+                print(
+                    "BOOTSTRAP_DISCOVERY_RESULT",
+                    f"discovered={bool(discovered)}",
+                    f"routes={len(getattr(state.native_preanalysis, 'bootstrap_routes', {}))}",
+                    flush=True,
+                )
+                return discovered
+
+            cg._discover_static_native_bootstrap_routes = (
+                trace_discover_static_native_bootstrap_routes
+            )
+
+        def observe_resolver_state(*, function_ea: int, mba: object, decision: dict) -> None:
+            if int(function_ea) != FUNCTION_EA:
+                return
+            session = decision.get("session")
+            if session is not None:
+                state = resolver_session_state(session)
+                observed_resolver_state[:] = [state]
+                if TRACE_SESSION_STATE and id(state) not in observed_session_states:
+                    observed_session_states.add(id(state))
+                    materialization = getattr(state, "materialization", None)
+                    print(
+                        "RESOLVER_SESSION_FLOWCHART",
+                        f"entry=0x{int(getattr(mba, 'entry_ea', 0)):X}",
+                        f"session_id={id(session)}",
+                        f"state_id={id(state)}",
+                        f"session={getattr(session, 'identity_key', None)}",
+                        f"extensions_before={tuple(repr(key) for key in session.extensions)}",
+                        f"materialization={materialization is not None}",
+                        f"materialized={bool(getattr(state, 'materialized', False))}",
+                        f"transfers={len(getattr(state, 'materialized_transfers', ())) }",
+                        f"evidence_generation={int(getattr(state, 'evidence_generation', 0))}",
+                        flush=True,
+                    )
+
+        cg.install()
+        register_flowchart_preanalysis_handler(
+            "rhad.transfer_function.capture_session",
+            observe_resolver_state,
+        )
+        try:
+            prepared = headless.prepare_native_preanalysis(FUNCTION_EA)
+            if TRACE_SESSION_STATE:
+                lifecycle = headless._state.manager.decompilation_lifecycle
+                active_session = lifecycle.current_session(FUNCTION_EA)
+                extension_keys = (
+                    ()
+                    if active_session is None
+                    else tuple(repr(key) for key in active_session.extensions)
+                )
+                prepared_state = (
+                    None
+                    if active_session is None
+                    else resolver_session_state(active_session)
+                )
+                print(
+                    "RESOLVER_SESSION_PREPARED",
+                    f"prepared={prepared}",
+                    f"session_id={None if active_session is None else id(active_session)}",
+                    f"state_id={None if prepared_state is None else id(prepared_state)}",
+                    f"session={None if active_session is None else getattr(active_session, 'identity_key', None)}",
+                    f"extensions_before={extension_keys}",
+                    f"materialization={prepared_state is not None and getattr(prepared_state, 'materialization', None) is not None}",
+                    f"materialized={False if prepared_state is None else bool(getattr(prepared_state, 'materialized', False))}",
+                    f"transfers={0 if prepared_state is None else len(getattr(prepared_state, 'materialized_transfers', ())) }",
+                    flush=True,
+                )
+            if PREPARE_ONLY:
+                lifecycle = headless._state.manager.decompilation_lifecycle
+                session = lifecycle.current_session(FUNCTION_EA)
+                state = (
+                    None if session is None else resolver_session_state(session)
+                )
             else:
+                ida_hexrays.clear_cached_cfuncs()
+                first = ida_hexrays.decompile(FUNCTION_EA)
                 final = first
-            materialized = cg.is_computed_goto_materialized(FUNCTION_EA)
-            resolution = cg._RESOLUTIONS_BY_EA.get(FUNCTION_EA)
+                state = observed_resolver_state[0] if observed_resolver_state else None
+            materialized = bool(getattr(state, "is_materialized", False))
+            resolution = getattr(state, "resolution", None)
+            _trace_static_bootstrap_route(state)
             if ORIGIN_OUTPUT and final is not None:
                 from d810.hexrays.mutation.detached_handler_island import (
                     imported_detached_snippet_instruction_origins,
@@ -334,42 +703,8 @@ try:
                 )
                 print("ORIGIN_JSON", destination, flush=True)
             if TRANSFER_OUTPUT:
-                from d810.hexrays.preanalysis.indirect_jump_labels import (
-                    get_materialized_indirect_transfers,
-                )
-
                 destination = Path(TRANSFER_OUTPUT).resolve()
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_text(
-                    json.dumps(
-                        [
-                            {
-                                "source_jmp_ea": f"0x{int(transfer.source_jmp_ea):X}",
-                                "source_block_ea": f"0x{int(transfer.source_block_ea):X}",
-                                "target_eas": [
-                                    f"0x{int(target_ea):X}"
-                                    for target_ea in transfer.target_eas
-                                ],
-                                "resolver_kind": transfer.resolver_kind,
-                                "source_register_values": [
-                                    [int(register), f"0x{int(value):X}"]
-                                    for register, value in transfer.source_register_values
-                                ],
-                                "target_register_values": [
-                                    [int(register), f"0x{int(value):X}"]
-                                    for register, value in transfer.target_register_values
-                                ],
-                            }
-                            for transfer in get_materialized_indirect_transfers(
-                                FUNCTION_EA
-                            )
-                        ],
-                        indent=2,
-                        sort_keys=True,
-                    )
-                    + "\n",
-                    encoding="utf-8",
-                )
+                _write_transfer_inventory(state, destination)
                 print("TRANSFER_JSON", destination, flush=True)
             if RESOLUTION_OUTPUT and resolution is not None:
                 destination = Path(RESOLUTION_OUTPUT).resolve()
@@ -409,6 +744,32 @@ try:
                                     resolution.function_context_register_values
                                 )
                             ],
+                            "conditional_state_choices": [
+                                {
+                                    "source_jmp_ea": (
+                                        f"0x{int(choice.source_jmp_ea):X}"
+                                    ),
+                                    "source_block_ea": (
+                                        f"0x{int(choice.source_block_ea):X}"
+                                    ),
+                                    "condition_code": choice.condition_code,
+                                    "selector_state_var_reg": (
+                                        choice.selector_state_var_reg
+                                    ),
+                                    "predicate_true_state": (
+                                        None
+                                        if choice.predicate_true_state is None
+                                        else f"0x{int(choice.predicate_true_state):X}"
+                                    ),
+                                    "predicate_false_state": (
+                                        None
+                                        if choice.predicate_false_state is None
+                                        else f"0x{int(choice.predicate_false_state):X}"
+                                    ),
+                                    "resolver_kind": choice.resolver_kind,
+                                }
+                                for choice in resolution.conditional_state_choices
+                            ],
                         },
                         indent=2,
                         sort_keys=True,
@@ -418,6 +779,9 @@ try:
                 )
                 print("RESOLUTION_JSON", destination, flush=True)
         finally:
+            unregister_flowchart_preanalysis_handler(
+                "rhad.transfer_function.capture_session"
+            )
             cg.uninstall()
             headless.stop()
 

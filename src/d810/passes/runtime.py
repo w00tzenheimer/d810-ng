@@ -25,7 +25,7 @@ from d810.core.observability_events import (
     FactObservationsObserved,
 )
 from d810.core.provider_phase import ProviderPhase
-from d810.passes.store import get_recon_writer
+from d810.passes.store import get_preanalysis_writer
 from d810.core.typing import TYPE_CHECKING, Any, Protocol
 
 from d810.passes.analysis import AnalysisPhase
@@ -34,10 +34,10 @@ from d810.passes.outcome import (
     ConsumerOutcomeReport,
     FlowGateOutcomeAdapter,
     PlannerOutcomeAdapter,
-    ReconOutcomeLog,
+    AnalysisOutcomeLog,
     RuleScopeOutcomeAdapter,
 )
-from d810.passes.phase import ReconPhase
+from d810.passes.phase import PreanalysisPhase
 from d810.passes.flow_hints import derive_flow_context_summary
 from d810.analyses.value_flow.model import (
     FactConflict,
@@ -49,9 +49,9 @@ from d810.analyses.value_flow.model import ValidatedFactView
 from d810.passes.fact_runtime import (
     FactCaptureSummary,
     FactCollector,
-    FactLifecycleRuntime,
+    PreanalysisFactRuntime,
 )
-from d810.passes.store import ReconStore
+from d810.passes.store import PreanalysisStore
 
 if TYPE_CHECKING:
     from d810.core.observability import SnapshotRef
@@ -126,7 +126,7 @@ class _CoreObservabilitySink:
 
 
 @dataclass(frozen=True, slots=True)
-class ReconOutcome:
+class AnalysisOutcome:
     """Records what the lifecycle produced and what the consumer did.
 
     Attributes:
@@ -143,7 +143,7 @@ class ReconOutcome:
     source: str  # "cached" | "analyzed" | "unavailable"
 
 
-class ReconAnalysisRuntime:
+class DecompilationAnalysisRuntime:
     """Thin coordinator for the generic recon-analysis-consumer lifecycle.
 
     Lifecycle: collect -> persist canonical artifacts -> analyze into
@@ -165,9 +165,9 @@ class ReconAnalysisRuntime:
 
     def __init__(
         self,
-        phase: ReconPhase,
+        phase: PreanalysisPhase,
         analysis: AnalysisPhase,
-        store: ReconStore,
+        store: PreanalysisStore,
         fact_sink: FactObservationSink | None = None,
     ) -> None:
         self._phase = phase
@@ -177,9 +177,9 @@ class ReconAnalysisRuntime:
         # the coordinator never imports a diagnostics-layer wrapper.
         self._fact_sink: FactObservationSink = fact_sink or _CoreObservabilitySink()
         self._current_func_ea: int = -1
-        self._outcome_log: ReconOutcomeLog = ReconOutcomeLog()
+        self._outcome_log: AnalysisOutcomeLog = AnalysisOutcomeLog()
         self._outcome_seen_by_func: dict[int, set[tuple[str, bool]]] = {}
-        self._fact_lifecycle = FactLifecycleRuntime(
+        self._fact_lifecycle = PreanalysisFactRuntime(
             persistence_callback=self._persist_maturity_facts,
         )
 
@@ -211,7 +211,7 @@ class ReconAnalysisRuntime:
         self._current_func_ea = func_ea
         self._phase.reset(func_ea=func_ea)
         self._fact_lifecycle.reset_for_func(func_ea)
-        get_recon_writer(self._store.db_path).submit_sync(
+        get_preanalysis_writer(self._store.db_path).submit_sync(
             lambda store: store.clear_func(func_ea=func_ea)
         )
         self._outcome_log.reset_for_func(func_ea)
@@ -262,7 +262,7 @@ class ReconAnalysisRuntime:
             _verdict = report.consumer_verdict_applied
             _detail = report.detail
             _prov = provenance
-            get_recon_writer(self._store.db_path).submit(
+            get_preanalysis_writer(self._store.db_path).submit(
                 lambda store: store.save_consumer_outcome(
                     func_ea=_func_ea,
                     consumer_name=_consumer,
@@ -286,7 +286,7 @@ class ReconAnalysisRuntime:
     # ------------------------------------------------------------------
 
     @property
-    def outcome_log(self) -> ReconOutcomeLog:
+    def outcome_log(self) -> AnalysisOutcomeLog:
         """Read-only access to the outcome log."""
         return self._outcome_log
 
@@ -322,7 +322,7 @@ class ReconAnalysisRuntime:
         Keeps the :class:`ReconOutcome` / adapter construction in the recon
         layer so that ``d810.hexrays`` hooks do not need to import recon types.
         """
-        outcome = ReconOutcome(
+        outcome = AnalysisOutcome(
             func_ea=func_ea,
             hints=hints,
             apply_result=apply_result,
@@ -389,7 +389,7 @@ class ReconAnalysisRuntime:
         if persist_hints:
             _hints = hints
             _n_collectors = len({r.collector_name for r in results})
-            writer = get_recon_writer(self._store.db_path)
+            writer = get_preanalysis_writer(self._store.db_path)
             writer.submit(lambda store: store.save_hints(_hints))
             writer.submit(lambda store: store.save_session_summary(
                 func_ea=func_ea,
@@ -519,9 +519,9 @@ class ReconAnalysisRuntime:
         Called eagerly after each collector pass. Returns None if no
         recon results are available yet.
         """
-        writer = get_recon_writer(self._store.db_path)
+        writer = get_preanalysis_writer(self._store.db_path)
         writer.flush()  # ensure collector writes are visible
-        results = self._store.load_all_recon_results(func_ea=func_ea)
+        results = self._store.load_all_preanalysis_results(func_ea=func_ea)
         if not results:
             return None
         hints = self._analysis.interpret(
@@ -615,7 +615,7 @@ class ReconAnalysisRuntime:
         provider_phase: ProviderPhase | None = None,
         *,
         persist_hints: bool = True,
-    ) -> ReconOutcome:
+    ) -> AnalysisOutcome:
         """Convenience helper: load-or-analyze hints, apply to rule scope, record outcome.
 
         .. note::
@@ -684,7 +684,7 @@ class ReconAnalysisRuntime:
                 apply_result.generation_after,
             )
 
-        return ReconOutcome(
+        return AnalysisOutcome(
             func_ea=func_ea,
             hints=hints,
             apply_result=apply_result,

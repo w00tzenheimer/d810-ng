@@ -48,6 +48,10 @@ from d810.hexrays.mutation.byte_tail_runtime_evidence import (
     ByteTailRuntimeEvidenceProvider,
     normalize_byte_tail_runtime_evidence,
 )
+from d810.hexrays.mutation.mba_mutation_events import (
+    MbaMutationGateway,
+    StructuralMutationKind,
+)
 from d810.hexrays.mutation.terminal_return_literals import (
     remember_terminal_zero_guard_literal_return_value,
     terminal_zero_guard_literal_return_values,
@@ -123,22 +127,43 @@ class LiveMbaAdapter:
         mba,
         *,
         dispatcher_artifact_planner: Any | None = None,
+        mutation_gateway: MbaMutationGateway | None = None,
     ) -> None:  # mba: ida_hexrays.mba_t
         self._mba = mba
-        self._serial_remap: dict[int, int] = {}
+        self._mutation_gateway = mutation_gateway or MbaMutationGateway(
+            session_id=f"byte-tail-{id(self):x}",
+            function_ea=int(getattr(mba, "entry_ea", 0) or 0),
+            maturity=int(getattr(mba, "maturity", 0) or 0),
+        )
         self._dispatcher_artifact_planner = dispatcher_artifact_planner
 
+    def _new_deferred_modifier(self):
+        """Create one modifier transaction over the adapter's live index."""
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+        return DeferredGraphModifier(
+            self._mba,
+            mutation_gateway=self._mutation_gateway.new_transaction(),
+        )
+
     def resolve_live_serial(self, serial: int) -> int:
-        return int(self._serial_remap.get(int(serial), int(serial)))
+        resolved = self._mutation_gateway.resolve_serial(int(serial))
+        if resolved is None:
+            raise RuntimeError(f"live serial {serial} no longer resolves")
+        return int(resolved)
 
     def _record_inserted_serial(self, insertion_serial: int, old_qty: int) -> None:
-        remap = dict(self._serial_remap)
-        for original_serial, live_serial in tuple(remap.items()):
-            if int(live_serial) >= int(insertion_serial):
-                remap[int(original_serial)] = int(live_serial) + 1
-        for serial in range(int(insertion_serial), int(old_qty)):
-            remap.setdefault(int(serial), int(serial) + 1)
-        self._serial_remap = remap
+        gateway = self._mutation_gateway.new_transaction()
+        gateway.begin_batch(
+            StructuralMutationKind.BLOCK_INSERT,
+            serial_quantity=int(old_qty),
+            description="byte emit tail isolation",
+        )
+        gateway.record_insert(
+            insertion_serial=int(insertion_serial),
+            returned_serial=int(insertion_serial),
+        )
+        gateway.commit()
 
     def find_block_by_ea(self, ea: int) -> BlockView | None:
         """Walk ``mba.blocks`` and return a pure ``BlockView`` for the
@@ -242,7 +267,7 @@ class LiveMbaAdapter:
             )
 
         expected_serial = int(mba.qty) - 1
-        modifier = DeferredGraphModifier(mba)
+        modifier = self._new_deferred_modifier()
         modifier.queue_create_and_redirect(
             int(predecessor_serial),
             int(successor_serial),
@@ -256,7 +281,7 @@ class LiveMbaAdapter:
                 "insert_trampoline_after: DGM create-and-redirect failed for "
                 f"pred={predecessor_serial}"
             )
-        return int(modifier._serial_remap.get(expected_serial, expected_serial))
+        return modifier.current_serial_for_planned(expected_serial)
 
     def successor_npred(self, successor_serial: int) -> int:
         mba = self._mba
@@ -346,6 +371,10 @@ class LiveMbaAdapter:
                 "split_block_at_tail_jcnd: mba.split_block returned "
                 f"None for block {block_serial}"
             )
+        self._record_inserted_serial(
+            int(getattr(new_blk, "serial", 0) or 0),
+            int(getattr(mba, "qty", 0) or 0) - 1,
+        )
 
         try:
             new_blk.flags |= _MBL_KEEP
@@ -353,7 +382,7 @@ class LiveMbaAdapter:
             pass
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
-        DeferredGraphModifier(mba).mark_blocks_dirty_now(blk, new_blk)
+        self._new_deferred_modifier().mark_blocks_dirty_now(blk, new_blk)
 
         return int(new_blk.serial)
 
@@ -495,7 +524,7 @@ class LiveMbaAdapter:
             )
 
         expected_serial = int(mba.qty) - 1
-        modifier = DeferredGraphModifier(mba)
+        modifier = self._new_deferred_modifier()
         modifier.queue_duplicate_block(
             source_block_serial=int(convergence_serial),
             pred_serial=int(predecessor_serial),
@@ -507,7 +536,7 @@ class LiveMbaAdapter:
                 "clone_convergence_for_byte_path: DGM duplicate failed "
                 f"for conv={convergence_serial}"
             )
-        return int(modifier._serial_remap.get(expected_serial, expected_serial))
+        return modifier.current_serial_for_planned(expected_serial)
 
 
     # ------------------------------------------------------------------
@@ -548,7 +577,7 @@ class LiveMbaAdapter:
             if int(getattr(cur, "opcode", -1)) != int(ida_hexrays.m_goto):
                 insns.append(cur)
             cur = cur.next
-        clone_serial = DeferredGraphModifier(mba).create_standalone_block(
+        clone_serial = self._new_deferred_modifier().create_standalone_block(
             ref_serial=int(template_serial),
             blk_ins=insns,
             target_serial=int(tail_goto_target),
@@ -592,7 +621,7 @@ class LiveMbaAdapter:
                 f"src={source_serial} old={old_target_serial} "
                 f"new={new_target_serial}"
             )
-        modifier = DeferredGraphModifier(mba)
+        modifier = self._new_deferred_modifier()
         if int(src.nsucc()) == 1:
             modifier.queue_goto_change(
                 int(source_serial),
@@ -639,7 +668,7 @@ class LiveMbaAdapter:
                 f"src={source_serial}"
             )
         old_qty = int(mba.qty)
-        helper_serial = DeferredGraphModifier(mba).redirect_fallthrough_edge_now(
+        helper_serial = self._new_deferred_modifier().redirect_fallthrough_edge_now(
             source_serial=int(source_serial),
             old_target_serial=int(old_target_serial),
             new_target_serial=int(new_target_serial),
@@ -658,7 +687,7 @@ class LiveMbaAdapter:
         """
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
-        DeferredGraphModifier(self._mba).clear_state_frontier_payload_now(
+        self._new_deferred_modifier().clear_state_frontier_payload_now(
             int(block_serial),
         )
 
@@ -701,7 +730,7 @@ class LiveMbaAdapter:
 
         size = int(getattr(plan, "state_size", 0) or getattr(dispatcher_dst, "size", 0) or 4)
         mask = (1 << (size * 8)) - 1
-        modifier = DeferredGraphModifier(mba)
+        modifier = self._new_deferred_modifier()
         modifier.queue_const_mov_and_nop_pair(
             block_serial=int(block_serial),
             replacement_body_index=int(plan.replacement_body_index),
@@ -970,7 +999,7 @@ class LiveMbaAdapter:
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
         expected_serial = int(mba.qty) - 1
-        modifier = DeferredGraphModifier(mba)
+        modifier = self._new_deferred_modifier()
         modifier.queue_create_and_redirect(
             int(predecessor_serial),
             int(successor_serial),
@@ -983,7 +1012,7 @@ class LiveMbaAdapter:
             raise RuntimeError(
                 "insert_byte_emit_replica_anchor: DGM create-and-redirect failed"
             )
-        return int(modifier._serial_remap.get(expected_serial, expected_serial))
+        return modifier.current_serial_for_planned(expected_serial)
 
     # ------------------------------------------------------------------
     # LiveUseAnchorAdapter (Track D byte 6 split-XOR anchor probe)
@@ -1219,7 +1248,7 @@ class LiveMbaAdapter:
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
         expected_serial = int(mba.qty) - 1
-        modifier = DeferredGraphModifier(mba)
+        modifier = self._new_deferred_modifier()
         modifier.queue_create_and_redirect(
             int(predecessor_serial),
             int(successor_serial),
@@ -1232,7 +1261,7 @@ class LiveMbaAdapter:
             raise RuntimeError(
                 "insert_anchor_block_xor_pair: DGM create-and-redirect failed"
             )
-        return int(modifier._serial_remap.get(expected_serial, expected_serial))
+        return modifier.current_serial_for_planned(expected_serial)
 
 
 def _dump_mop_tree(op, label: str, depth: int, _ih, max_depth: int = 8) -> None:
@@ -2709,7 +2738,7 @@ def _clone_terminal_return_block_for_source(
 
     from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
-    creator = DeferredGraphModifier(mba)
+    creator = adapter._new_deferred_modifier()
     clone_serial = creator.create_standalone_block(
         ref_serial=int(return_serial),
         blk_ins=insns,
@@ -2718,7 +2747,7 @@ def _clone_terminal_return_block_for_source(
     )
     if clone_serial is None:
         return None
-    redirect = DeferredGraphModifier(mba)
+    redirect = adapter._new_deferred_modifier()
     redirect.queue_conditional_target_change(
         int(source_serial),
         int(clone_serial),

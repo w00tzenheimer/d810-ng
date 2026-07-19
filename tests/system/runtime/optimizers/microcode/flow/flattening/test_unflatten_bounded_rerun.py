@@ -20,6 +20,7 @@ import pytest
 
 from d810.optimizers.microcode.flow.flattening.state_machine_cff_unflattener import (
     StateMachineCffUnflattener,
+    _resolver_native_state_register,
 )
 from d810.ir.maturity import IRMaturity
 from d810.passes.unflatten.state_machine import LOWER_STATE_MACHINE_PLAN_METADATA
@@ -33,6 +34,40 @@ _EA = 0x1800017F0
 #: (ticket llr-a93i), so a cap at one maturity must leave the other's budget intact.
 _MAT = ida_hexrays.MMAT_GLBOPT1
 _MAT2 = ida_hexrays.MMAT_CALLS
+
+
+def test_stack_homed_state_can_join_one_portable_native_selector() -> None:
+    prelim = SimpleNamespace(state_var_stkoff=0x9C, state_var_reg=None)
+    transfers = (
+        SimpleNamespace(selector_state_var_reg=28),
+        SimpleNamespace(selector_state_var_reg=28),
+        SimpleNamespace(selector_state_var_reg=None),
+    )
+
+    assert _resolver_native_state_register(
+        prelim,
+        transfers,
+        materialized_computed_goto_profile=True,
+    ) == 28
+    assert prelim.state_var_reg is None
+
+
+def test_native_selector_join_abstains_outside_profile_or_on_conflict() -> None:
+    prelim = SimpleNamespace(state_var_stkoff=0x9C, state_var_reg=None)
+
+    assert _resolver_native_state_register(
+        prelim,
+        (SimpleNamespace(selector_state_var_reg=28),),
+        materialized_computed_goto_profile=False,
+    ) is None
+    assert _resolver_native_state_register(
+        prelim,
+        (
+            SimpleNamespace(selector_state_var_reg=28),
+            SimpleNamespace(selector_state_var_reg=36),
+        ),
+        materialized_computed_goto_profile=True,
+    ) is None
 
 
 def _fresh_rule() -> StateMachineCffUnflattener:

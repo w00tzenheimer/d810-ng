@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from dataclasses import dataclass
+from enum import Enum
 
 from d810.core.maturity_labels import MaturityNumbering, mmat_label
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, OperandKind
@@ -19,6 +21,257 @@ from d810.ir.storage_identity import (
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 _SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
+_BADADDR = _MASK64
+
+
+@dataclass(frozen=True, slots=True)
+class NativeEaInterval:
+    """A native code-address interval used to identify a lifted block."""
+
+    start_ea: int
+    end_ea: int
+
+    def __post_init__(self) -> None:
+        start_ea = int(self.start_ea)
+        end_ea = int(self.end_ea)
+        if start_ea < 0 or end_ea <= start_ea:
+            raise ValueError(
+                "native EA intervals must be non-empty, non-negative half-open ranges"
+            )
+        object.__setattr__(self, "start_ea", start_ea)
+        object.__setattr__(self, "end_ea", end_ea)
+
+
+@dataclass(frozen=True, slots=True)
+class NativeEaIntervalSet:
+    """Canonical native intervals that survive MBA reconstruction."""
+
+    intervals: tuple[NativeEaInterval, ...]
+
+    def __post_init__(self) -> None:
+        canonical = self._canonicalize(self.intervals)
+        object.__setattr__(self, "intervals", canonical)
+
+    @staticmethod
+    def _canonicalize(
+        intervals: Iterable[NativeEaInterval],
+    ) -> tuple[NativeEaInterval, ...]:
+        ordered = sorted(
+            (
+                interval
+                if isinstance(interval, NativeEaInterval)
+                else NativeEaInterval(*interval)
+                for interval in intervals
+            ),
+            key=lambda interval: (interval.start_ea, interval.end_ea),
+        )
+        merged: list[NativeEaInterval] = []
+        for interval in ordered:
+            if merged and interval.start_ea <= merged[-1].end_ea:
+                previous = merged[-1]
+                merged[-1] = NativeEaInterval(
+                    previous.start_ea,
+                    max(previous.end_ea, interval.end_ea),
+                )
+            else:
+                merged.append(interval)
+        return tuple(merged)
+
+    @classmethod
+    def from_intervals(
+        cls,
+        intervals: Iterable[NativeEaInterval],
+    ) -> NativeEaIntervalSet:
+        return cls(tuple(intervals))
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.intervals
+
+    def contains(self, ea: int) -> bool:
+        """Return whether an exact native-EA anchor belongs to this identity."""
+        ea = int(ea)
+        return any(
+            interval.start_ea <= ea < interval.end_ea
+            for interval in self.intervals
+        )
+
+    def diagnostic_label(self) -> str:
+        if self.is_empty:
+            return "native-ea=[]"
+        return "native-ea=[" + ",".join(
+            f"0x{interval.start_ea:X}-0x{interval.end_ea:X}"
+            for interval in self.intervals
+        ) + "]"
+
+
+@dataclass(frozen=True, slots=True)
+class StableBlockIdentity:
+    """Serial-free cross-maturity block identity."""
+
+    native_eas: NativeEaIntervalSet
+
+    def __post_init__(self) -> None:
+        if self.native_eas.is_empty:
+            raise ValueError("stable block identity requires at least one native EA")
+
+    @classmethod
+    def from_intervals(
+        cls,
+        intervals: Iterable[NativeEaInterval],
+    ) -> StableBlockIdentity:
+        return cls(NativeEaIntervalSet.from_intervals(intervals))
+
+    def diagnostic_label(self) -> str:
+        return self.native_eas.diagnostic_label()
+
+
+def stable_block_identity_from_snapshot(
+    block: BlockSnapshot,
+) -> StableBlockIdentity | None:
+    """Derive portable identity from a lifted block's native EA anchors.
+
+    Hex-Rays uses ``BADADDR`` for inserted/synthetic microcode.  Such a block
+    intentionally has no cross-generation identity: a caller can still use a
+    generation-local handle, but it must not survive a rebuild.  Every native
+    instruction EA, plus the block start, contributes a unit interval so the
+    resulting identity is independent of the current block serial.
+    """
+    anchors = {int(block.start_ea)}
+    anchors.update(int(insn.ea) for insn in block.insn_snapshots)
+    intervals = tuple(
+        NativeEaInterval(ea, ea + 1)
+        for ea in sorted(anchors)
+        if 0 <= ea < _BADADDR
+    )
+    if not intervals:
+        return None
+    return StableBlockIdentity.from_intervals(intervals)
+
+
+class BlockHandleProvenance(Enum):
+    """Whether a generation-local block handle has native identity."""
+
+    NATIVE = "native"
+    SYNTHETIC = "synthetic"
+
+
+@dataclass(frozen=True, slots=True)
+class MbaBlockHandle:
+    """A session-local logical block handle with no serial identity.
+
+    The current serial belongs to :class:`BoundBlock`, returned only by the
+    live index.  Keeping it out of this durable handle prevents an old MBA
+    coordinate from silently crossing a maturity change or ``MERR_REDO``.
+    """
+
+    session_id: str
+    token: str
+    identity: StableBlockIdentity | None
+    provenance: BlockHandleProvenance
+
+    def __post_init__(self) -> None:
+        session_id = str(self.session_id)
+        token = str(self.token)
+        if not session_id or not token:
+            raise ValueError("MBA handle requires non-empty session and token")
+        if self.provenance is BlockHandleProvenance.NATIVE and self.identity is None:
+            raise ValueError("native MBA handle requires stable identity")
+        if self.provenance is BlockHandleProvenance.SYNTHETIC and self.identity is not None:
+            raise ValueError("synthetic MBA handle must not claim stable identity")
+        object.__setattr__(self, "session_id", session_id)
+        object.__setattr__(self, "token", token)
+
+    @classmethod
+    def native(
+        cls,
+        identity: StableBlockIdentity,
+        *,
+        session_id: str,
+        token: str,
+    ) -> MbaBlockHandle:
+        return cls(
+            session_id=session_id,
+            token=token,
+            identity=identity,
+            provenance=BlockHandleProvenance.NATIVE,
+        )
+
+    @classmethod
+    def synthetic(
+        cls,
+        *,
+        session_id: str,
+        token: str,
+    ) -> MbaBlockHandle:
+        return cls(
+            session_id=session_id,
+            token=token,
+            identity=None,
+            provenance=BlockHandleProvenance.SYNTHETIC,
+        )
+
+
+class RebindStatus(Enum):
+    """The result of rebinding stable identity into the current MBA."""
+
+    BOUND = "bound"
+    MISSING = "missing"
+    AMBIGUOUS = "ambiguous"
+    STALE_GENERATION = "stale_generation"
+
+
+@dataclass(frozen=True, slots=True)
+class BoundBlock:
+    """A current, uniquely rebound block handle."""
+
+    handle: MbaBlockHandle
+    serial: int
+    generation: int
+    anchor_ea: int | None
+
+    def __post_init__(self) -> None:
+        serial = int(self.serial)
+        generation = int(self.generation)
+        if serial < 0 or generation < 0:
+            raise ValueError("bound block serial and generation must be non-negative")
+        anchor_ea = self.anchor_ea
+        if anchor_ea is not None:
+            anchor_ea = int(anchor_ea)
+            identity = self.handle.identity
+            if identity is not None and not identity.native_eas.contains(anchor_ea):
+                raise ValueError("bound block anchor must belong to native identity")
+        object.__setattr__(self, "serial", serial)
+        object.__setattr__(self, "generation", generation)
+        object.__setattr__(self, "anchor_ea", anchor_ea)
+
+
+@dataclass(frozen=True, slots=True)
+class RebindResult:
+    """A total rebinding result; only BOUND carries a block."""
+
+    status: RebindStatus
+    block: BoundBlock | None
+
+    def __post_init__(self) -> None:
+        if (self.status is RebindStatus.BOUND) is not (self.block is not None):
+            raise ValueError("only a bound rebinding result may carry a block")
+
+    @classmethod
+    def bound(cls, block: BoundBlock) -> RebindResult:
+        return cls(status=RebindStatus.BOUND, block=block)
+
+    @classmethod
+    def missing(cls) -> RebindResult:
+        return cls(status=RebindStatus.MISSING, block=None)
+
+    @classmethod
+    def ambiguous(cls) -> RebindResult:
+        return cls(status=RebindStatus.AMBIGUOUS, block=None)
+
+    @classmethod
+    def stale_generation(cls) -> RebindResult:
+        return cls(status=RebindStatus.STALE_GENERATION, block=None)
 
 
 def hex64(value: object | None) -> str | None:
@@ -216,6 +469,14 @@ def block_origin_label(
 
 
 __all__ = [
+    "BlockHandleProvenance",
+    "BoundBlock",
+    "MbaBlockHandle",
+    "NativeEaInterval",
+    "NativeEaIntervalSet",
+    "RebindResult",
+    "RebindStatus",
+    "StableBlockIdentity",
     "block_fingerprint",
     "block_body_observation_fingerprint",
     "block_label",
@@ -225,4 +486,5 @@ __all__ = [
     "hex64",
     "instruction_fingerprint",
     "maturity_label",
+    "stable_block_identity_from_snapshot",
 ]

@@ -40,7 +40,7 @@ class CandidateFlag:
 
 
 @dataclass(frozen=True, init=False)
-class ReconResult:
+class PreanalysisResult:
     """Per-collector, per-maturity observation result.
 
     Produced by a ``ReconCollector.collect()`` call and stored in
@@ -105,7 +105,7 @@ class ReconResult:
     def __post_init__(self) -> None:
         if not (hasattr(self.metrics, '__getitem__') and not hasattr(self.metrics, '__setitem__')):
             raise TypeError(
-                f"ReconResult.metrics must be a read-only mapping, got {type(self.metrics)!r}"
+                f"PreanalysisResult.metrics must be a read-only mapping, got {type(self.metrics)!r}"
             )
 
     @property

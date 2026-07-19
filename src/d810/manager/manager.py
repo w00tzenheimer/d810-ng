@@ -14,7 +14,7 @@ from d810.core.decompilation_session import DecompilationSessionEvent
 from d810.core.logging import getLogger
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.project import (
-    emit_recon_fact_collector_registration,
+    emit_preanalysis_fact_collector_registration,
 )
 from d810.core.registry import EventEmitter
 from d810.core.rule_scope import (
@@ -53,9 +53,9 @@ from d810.passes.pass_pipeline_factory import (
     build_pass_pipeline_spec,
     pass_pipeline_spec_from_config,
 )
-from d810.passes.recon_runtime_factory import (
-    build_recon_phase,
-    build_recon_runtime_bundle,
+from d810.passes.analysis_runtime_factory import (
+    build_preanalysis_phase,
+    build_analysis_runtime_bundle,
 )
 from d810.passes.scheduler import PassScheduler
 from d810.passes.store import shutdown_all_writers
@@ -72,6 +72,53 @@ from d810.manager.rule_scope_runtime import RuleScopeRuntime
 D810_LOG_DIR_NAME = "d810_logs"
 
 logger = getLogger("D810")
+
+
+def _initialize_resolver_session_extension(session):
+    """Create the optimizer-owned attachment before lower callbacks consume it."""
+    from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+        resolver_session_state,
+    )
+
+    return resolver_session_state(session)
+
+
+def _build_current_mba_identity_index(*, session, mba):
+    """Hex-Rays-owned live-index port injected into the lifecycle coordinator."""
+    from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+    from d810.hexrays.mutation.ir_translator import lift
+    from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+        resolver_session_state,
+    )
+
+    index = MbaBlockIdentityIndex.from_flow_graph(
+        generation=0,
+        evidence_generation=session.native_preanalysis.evidence_generation,
+        flow_graph=lift(mba),
+        session_id=session.identity_key,
+    )
+    resolver_session_state(session).bind_current_mba(index)
+    return index
+
+
+def _new_current_mba_mutation_gateway(
+    *,
+    session,
+    identity_index,
+    maturity: int,
+    event_emitter,
+):
+    """Construct one Hex-Rays transaction controller over the current index."""
+    from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+
+    return MbaMutationGateway(
+        generation=int(identity_index.generation),
+        session_id=session.identity_key,
+        function_ea=int(session.function_ea),
+        maturity=int(maturity),
+        identity_index=identity_index,
+        event_emitter=event_emitter,
+    )
 
 
 def maybe_run_tail_distinct(mba: typing.Any) -> None:
@@ -142,13 +189,14 @@ class D810Manager:
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
     hx_decompiler_hook: HexraysDecompilationHook = dataclasses.field(init=False)
     _started: bool = dataclasses.field(default=False, init=False)
-    _recon_phase: typing.Any = dataclasses.field(default=None, init=False)
-    _recon_runtime: typing.Any = dataclasses.field(default=None, init=False)
-    _recon_bundle: typing.Any = dataclasses.field(default=None, init=False)
+    _preanalysis_phase: typing.Any = dataclasses.field(default=None, init=False)
+    _analysis_runtime: typing.Any = dataclasses.field(default=None, init=False)
+    _analysis_bundle: typing.Any = dataclasses.field(default=None, init=False)
     decompilation_lifecycle: DecompilationLifecycleCoordinator = dataclasses.field(
         default=None, init=False
     )
     _post_d810_runtime: typing.Any = dataclasses.field(default=None, init=False)
+    _database_identity: str = dataclasses.field(default="", init=False)
     _function_analysis_priors: dict[str, FunctionAnalysisPriors] = dataclasses.field(
         default_factory=dict, init=False
     )
@@ -176,6 +224,63 @@ class D810Manager:
     def cprofiler(self):
         return self.profiling.cprofiler
 
+    def prepare_native_preanalysis(self, function_ea: int) -> int:
+        """Establish resolver evidence before the first top-level decompile.
+
+        This is the manager-owned entry point for UI-triggered decompilations.
+        It creates the same lifecycle session that the Hex-Rays hook will
+        subsequently reuse, then resolves native computed-goto evidence before
+        the first MBA is generated.  No function-EA registry or second UI
+        preflight lifecycle is retained.
+        """
+        lifecycle = self.decompilation_lifecycle
+        if lifecycle is None:
+            return 0
+        function_ea = int(function_ea)
+        try:
+            session, created = lifecycle.ensure_hexrays_session(
+                function_ea=function_ea,
+                database_identity=self._database_identity,
+            )
+            if created:
+                self.event_emitter.emit(DecompilationEvent.SESSION_STARTED, session.event)
+
+            from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
+                _has_unresolved_computed_goto,
+                discover_static_native_bootstrap_routes,
+                prepare_detached_handler_snippets,
+                resolve_and_materialize,
+            )
+            from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+                resolver_session_state,
+            )
+
+            state = resolver_session_state(session)
+            if state.snippet_capture_active:
+                return 0
+            resolution = state.resolution
+            if resolution is None:
+                if not _has_unresolved_computed_goto(function_ea):
+                    return 0
+                resolution = resolve_and_materialize(function_ea, state=state)
+                if resolution is None or not resolution.jmp_targets:
+                    return 0
+            if state.materialization is None and not state.materialized:
+                state.begin_materialization(resolution)
+            lifecycle.begin_native_preanalysis(session)
+            try:
+                discover_static_native_bootstrap_routes(function_ea, state)
+                return prepare_detached_handler_snippets(state)
+            finally:
+                lifecycle.finish_native_preanalysis(session)
+        except Exception:
+            logger.debug(
+                "native preanalysis preflight failed for func=0x%X",
+                function_ea,
+                exc_info=True,
+            )
+            return 0
+
     @property
     def storage(self):
         return self.rule_scope_runtime.storage
@@ -185,9 +290,9 @@ class D810Manager:
         self.rule_scope_runtime.storage = value
 
     @property
-    def recon_db(self) -> pathlib.Path | None:
+    def analysis_db(self) -> pathlib.Path | None:
         """Path to the recon SQLite database, or None if recon is disabled."""
-        rt = getattr(self, "_recon_runtime", None)
+        rt = getattr(self, "_analysis_runtime", None)
         if rt is None:
             return None
         return rt._store.db_path
@@ -220,9 +325,9 @@ class D810Manager:
             dict.fromkeys(str(item).strip() for item in items if str(item).strip())
         )
 
-    def _load_recon_fact_profile_modules(self) -> None:
+    def _load_preanalysis_profile_modules(self) -> None:
         for module_name in self._coerce_module_names(
-            self.config.get("recon_fact_profile_modules")
+            self.config.get("preanalysis_profile_modules")
         ):
             try:
                 importlib.import_module(module_name)
@@ -320,7 +425,7 @@ class D810Manager:
     def _ensure_post_d810_runtime(self) -> HexRaysPostD810Runtime:
         if self._post_d810_runtime is None:
             self._post_d810_runtime = HexRaysPostD810Runtime(
-                recon_runtime=self._recon_runtime,
+                analysis_runtime=self._analysis_runtime,
                 block_optimizer=self.block_optimizer,
                 maturity_name_provider=_maturity_name,
                 handoff_detector=detect_post_d810_handoff_violations,
@@ -419,6 +524,7 @@ class D810Manager:
         )
         project_name = str(self.config.get("project_name", ""))
         idb_key = str(self.config.get("idb_key", project_name))
+        self._database_identity = idb_key
         self.instruction_optimizer.configure(
             **self.instruction_optimizer_config,
             rule_scope_service=self.rule_scope_service,
@@ -454,25 +560,29 @@ class D810Manager:
         if _pass_pipeline_spec is not None:
             _pass_pipeline = self._build_pass_pipeline(spec=_pass_pipeline_spec)
 
-        # Build ReconPhase when feature flag is enabled (default ON).
+        # Build PreanalysisPhase when feature flag is enabled (default ON).
         # Passive collection with minimal overhead; disable with
         # "enable_recon_pipeline": false in project config.
-        self._recon_bundle = None
-        self._recon_phase = None
-        self._recon_runtime = None
-        if self.config.get("enable_recon_pipeline", True):
-            self._recon_bundle = build_recon_runtime_bundle(
+        self._analysis_bundle = None
+        self._preanalysis_phase = None
+        self._analysis_runtime = None
+        if self.config.get("enable_analysis_pipeline", True):
+            self._analysis_bundle = build_analysis_runtime_bundle(
                 log_dir=self.log_dir,
                 config=dict(self.config),
             )
-            if self._recon_bundle is not None:
-                self._recon_phase = self._recon_bundle.recon_phase
-                self._recon_runtime = self._recon_bundle.recon_runtime
+            if self._analysis_bundle is not None:
+                self._preanalysis_phase = self._analysis_bundle.preanalysis_phase
+                self._analysis_runtime = self._analysis_bundle.analysis_runtime
 
         self.decompilation_lifecycle = DecompilationLifecycleCoordinator(
-            preanalysis_phase=self._recon_phase,
-            analysis_runtime=self._recon_runtime,
+            preanalysis_phase=self._preanalysis_phase,
+            analysis_runtime=self._analysis_runtime,
             rule_scope_service=self.rule_scope_service,
+            event_emitter=self.event_emitter,
+            current_mba_identity_index_builder=_build_current_mba_identity_index,
+            mba_mutation_gateway_factory=_new_current_mba_mutation_gateway,
+            session_extension_initializer=_initialize_resolver_session_extension,
         )
 
         # The lifecycle coordinator owns top-level reset, capture, analysis,
@@ -484,7 +594,7 @@ class D810Manager:
         self.block_optimizer.configure(
             decompilation_lifecycle=self.decompilation_lifecycle,
         )
-        if self._recon_runtime is not None:
+        if self._analysis_runtime is not None:
             # LS10: register the Hex-Rays live SourceLifter (import-time side
             # effect) before the induction collector runs, so a raw mba handed
             # directly to a collector can be lifted to a portable fact target.
@@ -500,13 +610,13 @@ class D810Manager:
                 ensure_hexrays_fact_lifter_registered()
             except Exception:
                 logger.exception("Hex-Rays live SourceLifter registration failed")
-            self._load_recon_fact_profile_modules()
-            emit_recon_fact_collector_registration(
-                runtime=self._recon_runtime,
+            self._load_preanalysis_profile_modules()
+            emit_preanalysis_fact_collector_registration(
+                runtime=self._analysis_runtime,
                 project_config=dict(self.config),
             )
             self.block_optimizer.configure(
-                recon_runtime=self._recon_runtime,
+                analysis_runtime=self._analysis_runtime,
             )
 
         # Wire PassPipeline into BlockOptimizerManager so it fires at
@@ -788,11 +898,11 @@ class D810Manager:
             )
 
         def _fact_view_provider(func_ea: int, maturity: int | str):
-            if self._recon_runtime is None:
+            if self._analysis_runtime is None:
                 return None
             if isinstance(maturity, int):
                 maturity = _maturity_name(maturity)
-            return self._recon_runtime.validated_fact_view(func_ea, maturity)
+            return self._analysis_runtime.validated_fact_view(func_ea, maturity)
 
         pipeline = build_hexrays_flowgraph_pipeline(
             spec,
@@ -804,9 +914,9 @@ class D810Manager:
         )
         return pipeline
 
-    def _build_recon_phase(self):
-        """Compatibility delegate for callers that still build only a phase."""
-        return build_recon_phase(self.log_dir)
+    def _build_preanalysis_phase(self):
+        """Construct only the portable preanalysis collector phase."""
+        return build_preanalysis_phase(self.log_dir)
 
     def configure_instruction_optimizer(self, rules, **kwargs):
         self.instruction_optimizer_rules = list(rules)
@@ -832,16 +942,16 @@ class D810Manager:
         self.event_emitter.clear()
         self.stop_profiling()
         self.rule_scope_runtime.close()
-        if self._recon_bundle is not None:
-            self._recon_bundle.close()
-            self._recon_bundle = None
-        elif self._recon_phase is not None:
+        if self._analysis_bundle is not None:
+            self._analysis_bundle.close()
+            self._analysis_bundle = None
+        elif self._preanalysis_phase is not None:
             try:
-                self._recon_phase._store.close()
+                self._preanalysis_phase._store.close()
             except Exception:
                 pass
-        self._recon_phase = None
-        self._recon_runtime = None
+        self._preanalysis_phase = None
+        self._analysis_runtime = None
 
 
 @contextlib.contextmanager

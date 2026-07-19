@@ -141,9 +141,6 @@ def main() -> None:
                 register_calls_done_preanalysis_handler,
                 unregister_calls_done_preanalysis_handler,
             )
-            from d810.hexrays.preanalysis.indirect_jump_labels import (
-                mark_indirect_dispatcher,
-            )
 
             callback_count = 0
 
@@ -165,17 +162,7 @@ def main() -> None:
                 trace_calls_done,
             )
             try:
-                mark_indirect_dispatcher(FUNCTION_EA)
-                ida_hexrays.clear_cached_cfuncs()
-                first = ida_hexrays.decompile(FUNCTION_EA)
-                assert first is not None
-                assert (
-                    cg.prepare_detached_handler_snippets(
-                        FUNCTION_EA,
-                        live_mba=first.mba,
-                    )
-                    > 0
-                )
+                assert headless.prepare_native_preanalysis(FUNCTION_EA) > 0
                 ida_hexrays.clear_cached_cfuncs()
                 cfunc = ida_hexrays.decompile(FUNCTION_EA)
                 assert cfunc is not None

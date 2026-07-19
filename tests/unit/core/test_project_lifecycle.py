@@ -5,8 +5,8 @@ from d810.core.project import (
     ProjectLifecyclePayload,
     clear_project_lifecycle_for_tests,
     emit_project_reloading,
-    emit_recon_fact_collector_registration,
-    register_recon_fact_collector_registration_handler,
+    emit_preanalysis_fact_collector_registration,
+    register_preanalysis_fact_collector_registration_handler,
     register_project_reload_cleanup,
     subscribe_project_lifecycle,
 )
@@ -65,11 +65,11 @@ def test_recon_fact_collector_registration_callbacks_are_keyed_and_isolated():
     def replacement_handler(*, runtime: object, project_config: dict) -> None:
         calls.append((runtime, dict(project_config)))
 
-    register_recon_fact_collector_registration_handler("failing", failing_handler)
-    register_recon_fact_collector_registration_handler("profile", first_handler)
-    register_recon_fact_collector_registration_handler("profile", replacement_handler)
+    register_preanalysis_fact_collector_registration_handler("failing", failing_handler)
+    register_preanalysis_fact_collector_registration_handler("profile", first_handler)
+    register_preanalysis_fact_collector_registration_handler("profile", replacement_handler)
 
-    emit_recon_fact_collector_registration(
+    emit_preanalysis_fact_collector_registration(
         runtime=runtime,
         project_config={"profile": "unit"},
     )

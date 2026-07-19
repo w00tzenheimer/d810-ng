@@ -31,7 +31,7 @@ class ProjectLifecyclePayload:
 
 _project_lifecycle_emitter: EventEmitter[ProjectLifecycleEvent] = EventEmitter()
 _project_reload_cleanup_handlers: dict[str, typing.Callable[[], None]] = {}
-_recon_fact_collector_registration_handlers: dict[str, typing.Callable[..., None]] = {}
+_preanalysis_fact_collector_registration_handlers: dict[str, typing.Callable[..., None]] = {}
 
 
 def subscribe_project_lifecycle(
@@ -71,7 +71,7 @@ def unregister_project_reload_cleanup(name: str) -> None:
     _project_reload_cleanup_handlers.pop(str(name), None)
 
 
-def register_recon_fact_collector_registration_handler(
+def register_preanalysis_fact_collector_registration_handler(
     name: str,
     handler: typing.Callable[..., None],
 ) -> None:
@@ -82,16 +82,16 @@ def register_recon_fact_collector_registration_handler(
     code directly.  Registrations are keyed for idempotent module reloads.
     """
 
-    _recon_fact_collector_registration_handlers[str(name)] = handler
+    _preanalysis_fact_collector_registration_handlers[str(name)] = handler
 
 
-def unregister_recon_fact_collector_registration_handler(name: str) -> None:
+def unregister_preanalysis_fact_collector_registration_handler(name: str) -> None:
     """Remove a named project-profile fact collector callback."""
 
-    _recon_fact_collector_registration_handlers.pop(str(name), None)
+    _preanalysis_fact_collector_registration_handlers.pop(str(name), None)
 
 
-def emit_recon_fact_collector_registration(
+def emit_preanalysis_fact_collector_registration(
     *,
     runtime: object,
     project_config: dict[str, typing.Any] | None = None,
@@ -99,7 +99,7 @@ def emit_recon_fact_collector_registration(
     """Emit the project-profile fact collector registration callback."""
 
     cfg = dict(project_config or {})
-    for name, handler in tuple(_recon_fact_collector_registration_handlers.items()):
+    for name, handler in tuple(_preanalysis_fact_collector_registration_handlers.items()):
         try:
             handler(runtime=runtime, project_config=cfg)
         except Exception:  # noqa: BLE001 - profile registration must not stop loading
@@ -138,7 +138,7 @@ def clear_project_lifecycle_for_tests() -> None:
     """Clear lifecycle subscriptions and cleanup hooks for unit tests."""
 
     _project_reload_cleanup_handlers.clear()
-    _recon_fact_collector_registration_handlers.clear()
+    _preanalysis_fact_collector_registration_handlers.clear()
     _project_lifecycle_emitter.clear()
 
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import idapro
 
@@ -114,10 +115,25 @@ def main() -> None:
 
         if args.bare:
             import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as cg
+            from d810.analyses.control_flow.native_preanalysis_session import (
+                NativePreanalysisSessionState,
+            )
+            from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+                resolver_session_state,
+            )
 
             resolution = cg.resolve_computed_gotos_static(FUNCTION_EA)
             assert resolution is not None
-            materialized = cg.materialize_computed_gotos(resolution)
+            resolver_state = resolver_session_state(
+                SimpleNamespace(
+                    native_preanalysis=NativePreanalysisSessionState(),
+                    extensions={},
+                )
+            )
+            materialized = cg.materialize_computed_gotos(
+                resolution,
+                state=resolver_state,
+            )
             print(
                 "BARE_MATERIALIZATION",
                 f"sites={resolution.site_count}",
@@ -156,9 +172,6 @@ def main() -> None:
             from d810.hexrays.preanalysis.callinfo_preanalysis import (
                 unregister_callinfo_preanalysis_handler,
             )
-            from d810.hexrays.preanalysis.indirect_jump_labels import (
-                mark_indirect_dispatcher,
-            )
             from d810.hexrays.preanalysis.stkpnts_preanalysis import (
                 unregister_stkpnts_preanalysis_handler,
             )
@@ -180,7 +193,7 @@ def main() -> None:
             audit = _CallArgumentAudit()
             audit.hook()
             try:
-                mark_indirect_dispatcher(FUNCTION_EA)
+                headless.prepare_native_preanalysis(FUNCTION_EA)
                 for attempt in range(1, max(1, int(args.attempts)) + 1):
                     ida_hexrays.clear_cached_cfuncs()
                     failure = ida_hexrays.hexrays_failure_t()

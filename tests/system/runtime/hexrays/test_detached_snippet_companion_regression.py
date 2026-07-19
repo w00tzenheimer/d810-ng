@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import ida_hexrays
 import pytest
 
 from d810.hexrays.mutation import detached_handler_island
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativePreanalysisSessionState,
+)
 from tests.system.runtime.hexrays.test_detached_snippet_import import (
     _Block,
     _install_runtime_fakes,
@@ -156,12 +160,11 @@ def test_companion_abstention_restores_existing_pair_atomically(
 def test_companion_preparer_is_inert_without_profile_evidence(monkeypatch) -> None:
     from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
 
-    function_ea = 0x40A560
-    monkeypatch.delitem(
-        computed_goto_resolver._RESOLUTIONS_BY_EA,
-        function_ea,
-        raising=False,
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(),
+        extensions={},
     )
+    state = computed_goto_resolver.resolver_session_state(session)
 
     def unexpected_capture(*_args: object, **_kwargs: object) -> object:
         pytest.fail("unowned function reached companion capture")
@@ -172,7 +175,7 @@ def test_companion_preparer_is_inert_without_profile_evidence(monkeypatch) -> No
         unexpected_capture,
     )
 
-    assert computed_goto_resolver.prepare_detached_handler_snippets(function_ea) == 0
+    assert computed_goto_resolver.prepare_detached_handler_snippets(state) == 0
 
 
 def test_companion_cache_clear_removes_primary_replacement_and_generation(

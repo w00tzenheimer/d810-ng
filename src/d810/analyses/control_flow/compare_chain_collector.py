@@ -24,11 +24,11 @@ from d810.analyses.control_flow.compare_chain import (
     CompareChainResolver,
 )
 from d810.analyses.control_flow.collection_context import (
-    ReconCollectionContext,
-    coerce_recon_collection_context,
+    PreanalysisCollectionContext,
+    coerce_preanalysis_collection_context,
 )
 from d810.analyses.control_flow.state_var_alias import VarRef
-from d810.analyses.control_flow.models import CandidateFlag, ReconResult
+from d810.analyses.control_flow.models import CandidateFlag, PreanalysisResult
 
 # IDA maturity constants - duplicated to avoid IDA import at module level.
 _MMAT_CALLS = 3
@@ -137,12 +137,12 @@ class CompareChainCollector:
     def collect(
         self,
         target,
-        context: ReconCollectionContext | None = None,
+        context: PreanalysisCollectionContext | None = None,
         func_ea: int | None = None,
         **legacy_fields: object,
-    ) -> ReconResult:
+    ) -> PreanalysisResult:
         """Resolve compare-chain and wrap into ``ReconResult``."""
-        context = coerce_recon_collection_context(
+        context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,
             legacy_fields=legacy_fields,
@@ -182,7 +182,7 @@ class CompareChainCollector:
             for entry in table.entries
         )
 
-        return ReconResult(
+        return PreanalysisResult(
             collector_name=self.name,
             func_ea=context.func_ea,
             provider_level=context.provider_level,

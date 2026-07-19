@@ -663,6 +663,9 @@ class LowerStateMachine(PipelinePass):
             materialized_handler_entry_eas = _analysis(
                 context, "materialized_handler_entry_eas", {}
             ) or {}
+            bound_bootstrap_routes = _analysis(
+                context, "bound_bootstrap_routes", ()
+            ) or ()
             materialized_computed_goto_profile = bool(
                 _analysis(context, "materialized_computed_goto_profile", False)
             )
@@ -736,6 +739,7 @@ class LowerStateMachine(PipelinePass):
                 condition_chain_handlers=condition_chain_handlers,
                 dispatcher_region_serials=dispatcher_region_serials,
                 entry_bridge_evidence=entry_bridge_evidence,
+                bound_bootstrap_routes=bound_bootstrap_routes,
             )
             plan_metadata = plan.metadata_dict()
             _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan_metadata)

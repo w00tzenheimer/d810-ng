@@ -11,6 +11,7 @@ from d810.core.stats import OptimizationStatistics
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.ir.maturity import IRMaturity
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
+from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.passes.scheduler import PassScheduler, RunLater
 
 
@@ -70,6 +71,11 @@ class _CrossPassRunLaterRule(_DummyRule):
         return self.patches
 
 
+class _GatewayRule(FlowOptimizationRule):
+    def optimize(self, _blk) -> int:
+        return 0
+
+
 class _FakeRuleScopeService:
     def __init__(self, rules: tuple[_DummyRule, ...]):
         self.rules = rules
@@ -87,6 +93,26 @@ class _FakeRuleScopeService:
     ) -> tuple[_DummyRule, ...]:
         self.calls.append((func_ea, maturity, project_name, idb_key))
         return self.rules
+
+
+class _MutationGatewayLifecycle:
+    def __init__(self, gateway: object) -> None:
+        self.gateway = gateway
+        self.build_calls: list[tuple[int, object]] = []
+        self.gateway_calls: list[tuple[int, int]] = []
+
+    def build_current_mba_identity_index(self, *, function_ea: int, mba: object) -> object:
+        self.build_calls.append((function_ea, mba))
+        return object()
+
+    def new_current_mba_mutation_gateway(
+        self,
+        *,
+        function_ea: int,
+        maturity: int,
+    ) -> object:
+        self.gateway_calls.append((function_ea, maturity))
+        return self.gateway
 
 
 def _make_block(func_ea: int = 0x401000, maturity=None):
@@ -115,6 +141,46 @@ def test_flow_context_records_and_drains_run_later_request():
         ),
     )
     assert context.drain_run_later_requests() == ()
+
+
+def test_block_optimizer_injects_the_session_mutation_gateway_port() -> None:
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+    rule = _DummyRule("mutation_port")
+    scope_service = _FakeRuleScopeService((rule,))
+    gateway = object()
+    lifecycle = _MutationGatewayLifecycle(gateway)
+    manager.configure(
+        rule_scope_service=scope_service,
+        rule_scope_project_name="proj",
+        rule_scope_idb_key="idb",
+        decompilation_lifecycle=lifecycle,
+    )
+
+    block = _make_block(maturity=ida_hexrays.MMAT_GLBOPT1)
+    assert manager.optimize(block) == 0
+
+    assert lifecycle.build_calls == [(0x401000, block.mba)]
+    assert rule.flow_context.new_mba_mutation_gateway() is gateway
+    assert lifecycle.gateway_calls == [(0x401000, ida_hexrays.MMAT_GLBOPT1)]
+
+
+def test_flow_rule_constructs_a_modifier_from_its_injected_gateway_port() -> None:
+    gateway = object()
+    context = FlowMaturityContext(
+        mba=SimpleNamespace(entry_ea=0x401000, qty=1),
+        func_ea=0x401000,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+    )
+    context.set_mutation_gateway_factory(lambda: gateway)
+    rule = _GatewayRule()
+    rule.set_flow_context(context)
+
+    modifier = rule.new_deferred_modifier(context.mba)
+
+    assert modifier.mutation_gateway is gateway
 
 
 def test_block_optimizer_runs_scheduled_rule_at_later_maturity():

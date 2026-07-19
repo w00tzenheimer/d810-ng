@@ -83,7 +83,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._flow_context_key: tuple[int, int] | None = None
         # Optional ReconAnalysisRuntime - set via configure(recon_runtime=...).
         # It supplies optimizer-local validated facts and outcome sinks.
-        self._recon_runtime = None  # ReconAnalysisRuntime | None
+        self._analysis_runtime = None  # ReconAnalysisRuntime | None
         # Manager-owned lifecycle port for session reset, capture, analysis,
         # and rule-scope hint delivery.
         self._decompilation_lifecycle = None
@@ -700,11 +700,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
             self._flow_context_key = key
             self._attach_hint_summary(self._flow_context)
-            if self._recon_runtime is not None:
+            if self._analysis_runtime is not None:
                 self._flow_context.set_outcome_callback(self._record_flow_outcome)
                 self._flow_context.set_fact_lifecycle_callbacks(
-                    view_provider=self._recon_runtime.validated_fact_view,
-                    consumer_callback=self._recon_runtime.record_fact_consumers,
+                    view_provider=self._analysis_runtime.validated_fact_view,
+                    consumer_callback=self._analysis_runtime.record_fact_consumers,
                 )
             # v2 (d81-fzlo): capture the pre-fold rax-family consumer DEF EAs ONCE
             # per (func, GLBOPT1), here in the create-branch where the mba is still
@@ -724,6 +724,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     optimizer_logger.debug(
                         "RCCC pre-fold capture skipped", exc_info=True
                     )
+            # A live MBA identity index is expensive to lift and valid for
+            # this flow context's current MBA generation.  Bind it when the
+            # context is born, never once per optimized block.
+            self._bind_resolver_session_state(self._flow_context, mba)
+            self._bind_mutation_gateway_port(self._flow_context, mba)
         else:
             self._flow_context.refresh_mba(mba)
         self._flow_context.set_function_priors_provider(
@@ -737,11 +742,74 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._flow_context.prime_for_rules(phase_rules)
         return self._flow_context
 
+    def _bind_mutation_gateway_port(
+        self,
+        flow_context: FlowMaturityContext,
+        mba: ida_hexrays.mbl_array_t,
+    ) -> None:
+        """Inject session-owned structural-mutation routing into flow rules."""
+        lifecycle = self._decompilation_lifecycle
+        set_factory = getattr(flow_context, "set_mutation_gateway_factory", None)
+        if lifecycle is None or not callable(set_factory):
+            return
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        maturity = int(getattr(mba, "maturity", self.current_maturity) or 0)
+        build_index = getattr(lifecycle, "build_current_mba_identity_index", None)
+        if callable(build_index):
+            try:
+                if build_index(function_ea=function_ea, mba=mba) is None:
+                    return
+            except Exception:
+                optimizer_logger.debug(
+                    "current-MBA identity index unavailable for func=0x%x",
+                    function_ea,
+                    exc_info=True,
+                )
+                return
+        new_gateway = getattr(lifecycle, "new_current_mba_mutation_gateway", None)
+        if not callable(new_gateway):
+            return
+        set_factory(
+            lambda: new_gateway(function_ea=function_ea, maturity=maturity)
+        )
+
+    def _bind_resolver_session_state(
+        self,
+        flow_context: FlowMaturityContext,
+        mba: ida_hexrays.mbl_array_t,
+    ) -> None:
+        """Inject the active lifecycle resolver attachment into flow rules."""
+        set_state = getattr(flow_context, "set_resolver_session_state", None)
+        if not callable(set_state):
+            return
+        lifecycle = self._decompilation_lifecycle
+        if lifecycle is None:
+            set_state(None)
+            return
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        try:
+            session = lifecycle.current_session(function_ea)
+            if session is None:
+                set_state(None)
+                return
+            from d810.analyses.control_flow.native_preanalysis_session import (
+                attached_resolver_session_state,
+            )
+
+            set_state(attached_resolver_session_state(session))
+        except Exception:
+            optimizer_logger.debug(
+                "resolver session state unavailable for func=0x%x",
+                function_ea,
+                exc_info=True,
+            )
+            set_state(None)
+
     def _attach_hint_summary(self, flow_context: FlowMaturityContext) -> None:
         """Derive and attach a hint summary from the recon store if available."""
-        if self._recon_runtime is None:
+        if self._analysis_runtime is None:
             return
-        summary = self._recon_runtime.load_flow_context_summary(flow_context.func_ea)
+        summary = self._analysis_runtime.load_flow_context_summary(flow_context.func_ea)
         if summary is None:
             return
         flow_context.set_hint_summary(summary)
@@ -760,17 +828,17 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self, func_ea: int, outcome_object: object, consumer_type: str,
     ) -> None:
         """Callback for flow-context rules to record outcomes."""
-        if self._recon_runtime is None:
+        if self._analysis_runtime is None:
             return
         if consumer_type == "planner":
-            self._recon_runtime.record_planner_outcome(func_ea, outcome_object)
+            self._analysis_runtime.record_planner_outcome(func_ea, outcome_object)
         else:
             if consumer_type not in self._KNOWN_GATE_TYPES:
                 optimizer_logger.warning(
                     "_record_flow_outcome: unknown consumer_type=%r for func=0x%x",
                     consumer_type, func_ea,
                 )
-            self._recon_runtime.record_flow_gate_outcome(func_ea, outcome_object, gate_name=consumer_type)
+            self._analysis_runtime.record_flow_gate_outcome(func_ea, outcome_object, gate_name=consumer_type)
 
     def _record_run_later_requests(
         self,
@@ -1070,9 +1138,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         )
 
         fact_view = None
-        if self._recon_runtime is not None:
+        if self._analysis_runtime is not None:
             try:
-                fact_view = self._recon_runtime.validated_fact_view(
+                fact_view = self._analysis_runtime.validated_fact_view(
                     func_ea,
                     current_maturity_name,
                 )
@@ -1176,7 +1244,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     def configure(self, **kwargs):
         if "project_name" in kwargs or any(key in kwargs for key in _PROJECT_CONFIG_KEYS):
             self._project_config = self._extract_project_config(kwargs)
-        self._recon_runtime = kwargs.get("recon_runtime", self._recon_runtime)
+        self._analysis_runtime = kwargs.get("analysis_runtime", self._analysis_runtime)
         self._decompilation_lifecycle = kwargs.get(
             "decompilation_lifecycle",
             self._decompilation_lifecycle,

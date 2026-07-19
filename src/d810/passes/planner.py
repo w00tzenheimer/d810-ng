@@ -1,7 +1,7 @@
 """Central planner for the shared unflattening engine.
 
-Hodur is a first-class consumer of the shared recon-analysis-consumer
-lifecycle.  The recon phase collects raw artifacts (handler transitions,
+Hodur is a first-class consumer of the shared preanalysis-consumer
+lifecycle.  The preanalysis phase collects raw artifacts (handler transitions,
 return frontier, terminal return audit); the analysis phase interprets
 them into consumer-specific summaries; and this planner consumes those
 summaries to bias fragment scoring, policy filtering, and conflict
@@ -74,16 +74,16 @@ logger = getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Hint signals: normalized recon data for scoring adjustments
+# Hint signals: normalized preanalysis data for scoring adjustments
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class PlannerHintSignals:
-    """Normalized signals derived from raw recon artifacts.
+    """Normalized signals derived from raw preanalysis artifacts.
 
     Each field is a 0.0-1.0 float indicating confidence or risk level
-    for a specific recon dimension. Used by :func:`compute_hint_adjustment`
+    for a specific preanalysis dimension. Used by :func:`compute_hint_adjustment`
     to bias fragment scoring before conflict resolution and ordering.
 
     These signals are intentionally ephemeral -- they are not persisted
@@ -100,12 +100,12 @@ class PlannerHintSignals:
 
 
 def derive_hint_signals(inputs: PlannerInputs | None) -> PlannerHintSignals:
-    """Map raw recon artifacts to normalized hint signals.
+    """Map raw preanalysis artifacts to normalized hint signals.
 
     Signals are derived from artifact content, not just artifact presence.
 
     Args:
-        inputs: Structured envelope with recon artifacts, or None.
+        inputs: Structured envelope with preanalysis artifacts, or None.
 
     Returns:
         A :class:`PlannerHintSignals` with all fields populated.

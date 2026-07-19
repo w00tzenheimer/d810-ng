@@ -41,6 +41,9 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     plan_terminal_return_carrier_requests,
     unique_materialized_equality_target_eas,
 )
+from d810.analyses.control_flow.native_preanalysis_session import (
+    BootstrapRouteBindingEvidence,
+)
 from d810.analyses.control_flow.read_state_cfg import read_dag_from
 from d810.analyses.control_flow.semantic_transition import \
     facts_from_validated_view
@@ -105,7 +108,7 @@ from d810.core.observability_models import (
     Modification as _DiagModification,
 )
 from d810.core.observability_recon import (
-    diagnostics_enabled as _recon_diagnostics_enabled,
+    diagnostics_enabled as _preanalysis_diagnostics_enabled,
     observe_dag,
     observe_dag_local_facts,
     observe_fact_observation,
@@ -126,10 +129,6 @@ from d810.hexrays.observability import (
     diagnostics_enabled as _capture_diagnostics_enabled,
     request_capture_mba_snapshot,
 )
-from d810.hexrays.preanalysis.indirect_jump_labels import (
-    get_materialized_indirect_transfers,
-    record_terminal_return_carrier_requests,
-)
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
     ComposedUnflatteningRule,
@@ -137,8 +136,12 @@ from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle impor
 from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     _build_conditional_handler_state_routes,
     _build_materialized_state_routes,
+    _condition_chain_handler_transfers_from_recovery,
     recover_conditional_handler_bridge_transfers_from_mba,
     is_computed_goto_materialized,
+)
+from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+    ResolverSessionState,
 )
 from d810.hexrays.mutation.detached_handler_island import (
     find_unique_live_block_by_ea,
@@ -167,6 +170,45 @@ from d810.transforms.minimal_unflatten_emit import (
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 
 logger = logging.getLogger("D810.unflat", logging.DEBUG)
+
+
+def _resolver_native_state_register(
+    prelim: object,
+    transfers: tuple[object, ...],
+    *,
+    materialized_computed_goto_profile: bool,
+) -> int | None:
+    """Join a stack-homed live state to one portable native selector.
+
+    ``recover_dispatcher`` owns the current MBA identity and therefore remains
+    stack-based when Hex-Rays homes the state variable.  Resolver transfers
+    describe native replay and retain the original selector register.  The two
+    identities may be joined only for the materialized computed-goto profile,
+    with a proven live stack slot and one unanimous native selector.  The live
+    recovery object is never rewritten or relabeled as register-resident.
+    """
+    live_register = getattr(prelim, "state_var_reg", None)
+    if live_register is not None:
+        return int(live_register)
+    if (
+        not materialized_computed_goto_profile
+        or getattr(prelim, "state_var_stkoff", None) is None
+    ):
+        return None
+    candidates = {
+        int(register)
+        for transfer in transfers
+        for register in (getattr(transfer, "selector_state_var_reg", None),)
+        if register is not None
+    }
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def _bound_bootstrap_route_bindings(
+    state: ResolverSessionState,
+) -> tuple[BootstrapRouteBindingEvidence, ...]:
+    """Read PREOPT's serial-free binding for the live MBA lineage."""
+    return state.bound_bootstrap_route_bindings()
 
 
 class _ReducedProductBypassFamily:
@@ -574,6 +616,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         """
         self.mba = mba
         mba = self.mba
+        resolver_state = self.current_resolver_session_state()
+        if not isinstance(resolver_state, ResolverSessionState):
+            resolver_state = None
         proceed, _is_indirect = self._should_recover(mba)
         if not proceed:
             return 0
@@ -591,7 +636,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             mba,
             source,
             materialized_computed_goto_profile=(
-                _is_indirect or is_computed_goto_materialized(func_ea)
+                _is_indirect
+                or (
+                    resolver_state is not None
+                    and is_computed_goto_materialized(resolver_state)
+                )
             ),
         )
         backend = HexRaysMutationBackend()
@@ -736,10 +785,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # is detected STRUCTURALLY (llr-trxj): the flowchart event subscriber
         # materialized this function iff it is a register-indirect computed-goto
         # dispatcher, and recorded its EA — no config key, no hardcoded addresses.
-        from d810.hexrays.preanalysis.indirect_jump_labels import (
-            is_materialized_indirect_dispatcher,
+        resolver_state = self.current_resolver_session_state()
+        is_indirect = bool(
+            isinstance(resolver_state, ResolverSessionState)
+            and resolver_state.indirect_dispatcher_materialized
         )
-        is_indirect = is_materialized_indirect_dispatcher(int(mba.entry_ea))
         # INDIRECT keeps the historical one-shot MMAT_CALLS contract (its
         # terminal-tail / folded-loop-guard lowering is tuned for a single CALLS
         # pass).  The NON-indirect profile now recovers at EVERY maturity from LOCOPT
@@ -879,16 +929,43 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # Optimizer-owned seam: resolver materialization is Hex-Rays-specific,
         # while the portable five-pass spine consumes only the immutable proof
         # tuple through AnalysisManager. This keeps d810.passes hexrays-agnostic.
-        materialized_indirect_transfers = get_materialized_indirect_transfers(
-            int(source.func_ea)
+        resolver_state = self.current_resolver_session_state()
+        materialized_indirect_transfers = (
+            resolver_state.materialized_transfers
+            if isinstance(resolver_state, ResolverSessionState)
+            else ()
         )
+        if isinstance(resolver_state, ResolverSessionState) and prelim is not None:
+            live_handler_evidence = (
+                _condition_chain_handler_transfers_from_recovery(
+                    materialized_indirect_transfers,
+                    source.flow_graph,
+                    prelim,
+                )
+            )
+            if live_handler_evidence:
+                resolver_state.merge_materialized_transfers(live_handler_evidence)
+                materialized_indirect_transfers = (
+                    resolver_state.materialized_transfers
+                )
         materialized_state_routes = ()
         materialized_handler_entry_eas: dict[int, int] = {}
+        resolver_native_state_reg = (
+            _resolver_native_state_register(
+                prelim,
+                materialized_indirect_transfers,
+                materialized_computed_goto_profile=(
+                    materialized_computed_goto_profile
+                ),
+            )
+            if prelim is not None
+            else None
+        )
         if (
             prelim is not None
             and prelim.dispatch_map is not None
             and prelim.dispatcher_block_serial is not None
-            and prelim.state_var_reg is not None
+            and resolver_native_state_reg is not None
             and materialized_indirect_transfers
         ):
             _, state_write_anchors = facts_from_validated_view(fact_view)
@@ -918,7 +995,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
             equality_target_eas = unique_materialized_equality_target_eas(
                 materialized_indirect_transfers,
-                int(prelim.state_var_reg),
+                int(resolver_native_state_reg),
                 validated_candidate_target_eas=imported_target_eas,
             )
             materialized_handler_overrides: dict[int, int] = {}
@@ -986,7 +1063,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 out_stk_maps=register_fixpoint.out_stk_maps,
                 out_reg_maps=register_fixpoint.out_reg_maps,
                 dispatcher_entry_serial=int(prelim.dispatcher_block_serial),
-                state_var_reg=int(prelim.state_var_reg),
+                state_var_reg=int(resolver_native_state_reg),
                 handler_serials=handler_serials,
                 authoritative_handler_serials=authoritative_handler_serials,
                 dispatcher_block_serials=frozenset(
@@ -1047,13 +1124,14 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             terminal_carrier_requests = plan_terminal_return_carrier_requests(
                 source.flow_graph,
                 materialized_state_routes,
-                state_var_reg=int(prelim.state_var_reg),
+                state_var_reg=int(resolver_native_state_reg),
             )
             if terminal_carrier_requests:
-                record_terminal_return_carrier_requests(
-                    int(source.func_ea),
-                    terminal_carrier_requests,
-                )
+                resolver_state = self.current_resolver_session_state()
+                if isinstance(resolver_state, ResolverSessionState):
+                    resolver_state.merge_terminal_return_carrier_requests(
+                        terminal_carrier_requests,
+                    )
                 logger.info(
                     "terminal return-carrier requests: %s",
                     [
@@ -1180,6 +1258,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
             )
             if conditional_bridges:
+                if isinstance(resolver_state, ResolverSessionState):
+                    resolver_state.merge_materialized_transfers(
+                        conditional_bridges
+                    )
                 materialized_indirect_transfers = tuple(
                     dict.fromkeys(
                         (*materialized_indirect_transfers, *conditional_bridges)
@@ -1211,6 +1293,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     for evidence in imported_conditional_boundary_evidence
                 ],
             )
+        bound_bootstrap_routes = (
+            _bound_bootstrap_route_bindings(resolver_state)
+            if materialized_computed_goto_profile
+            and isinstance(resolver_state, ResolverSessionState)
+            else ()
+        )
         analysis_seeds = {
             "range_evidence": range_evidence,
             "materialized_indirect_transfers": materialized_indirect_transfers,
@@ -1227,6 +1315,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 materialized_computed_goto_profile
             ),
         }
+        if bound_bootstrap_routes:
+            analysis_seeds["bound_bootstrap_routes"] = bound_bootstrap_routes
         facts = self._pass_manager.facts_for(
             source,
             input_facts=fact_view,
@@ -1530,7 +1620,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 logger.debug("unflat: recovery-status diagnostics failed", exc_info=True)
         if dmap is None:
             return
-        if _recon_diagnostics_enabled():
+        if _preanalysis_diagnostics_enabled():
             try:
                 observe_state_dispatcher_rows(
                     func_ea=func_ea,

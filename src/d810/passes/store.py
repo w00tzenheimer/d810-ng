@@ -22,13 +22,13 @@ from types import MappingProxyType
 from d810.core.typing import TypeVar
 
 from d810.core import logging
-from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints, ReconResult
+from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints, PreanalysisResult
 
 logger = logging.getLogger(__name__)
 
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS recon_results (
+CREATE TABLE IF NOT EXISTS preanalysis_results (
     func_ea         INTEGER NOT NULL,
     maturity        INTEGER NOT NULL,
     collector_name  TEXT    NOT NULL,
@@ -48,10 +48,10 @@ CREATE TABLE IF NOT EXISTS deobfuscation_hints (
     updated_at               REAL    NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_recon_func_ea
-    ON recon_results(func_ea);
+CREATE INDEX IF NOT EXISTS idx_preanalysis_func_ea
+    ON preanalysis_results(func_ea);
 
-CREATE TABLE IF NOT EXISTS recon_session_summary (
+CREATE TABLE IF NOT EXISTS preanalysis_session_summary (
     func_ea INTEGER NOT NULL,
     timestamp REAL NOT NULL,
     collectors_fired INTEGER NOT NULL DEFAULT 0,
@@ -181,7 +181,7 @@ def _candidate_from_dict(d: dict) -> CandidateFlag:
     )
 
 
-class ReconStore:
+class PreanalysisStore:
     """SQLite-backed store for recon results and deobfuscation hints.
 
     Example:
@@ -207,11 +207,11 @@ class ReconStore:
     # ReconResult persistence
     # ------------------------------------------------------------------
 
-    def save_recon_result(self, result: ReconResult) -> None:
+    def save_preanalysis_result(self, result: PreanalysisResult) -> None:
         """Upsert a ReconResult (primary key: func_ea, maturity, collector_name)."""
         self._conn.execute(
             """
-            INSERT OR REPLACE INTO recon_results
+            INSERT OR REPLACE INTO preanalysis_results
                 (func_ea, maturity, collector_name, timestamp, metrics_json, candidates_json)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
@@ -226,13 +226,13 @@ class ReconStore:
         )
         self._conn.commit()
 
-    def load_recon_results(
+    def load_preanalysis_results(
         self,
         *,
         func_ea: int,
         provider_level: int | None = None,
         **legacy_fields: object,
-    ) -> list[ReconResult]:
+    ) -> list[PreanalysisResult]:
         """Load all collector results for a specific func/maturity pair."""
         legacy_level = legacy_fields.pop("maturity", None)
         if legacy_fields:
@@ -245,7 +245,7 @@ class ReconStore:
         cursor = self._conn.execute(
             """
             SELECT collector_name, timestamp, metrics_json, candidates_json
-            FROM recon_results
+            FROM preanalysis_results
             WHERE func_ea = ? AND maturity = ?
             """,
             (int(func_ea), int(provider_level)),
@@ -253,12 +253,12 @@ class ReconStore:
         return [self._row_to_result(row, func_ea=func_ea, provider_level=provider_level)
                 for row in cursor.fetchall()]
 
-    def load_all_recon_results(self, *, func_ea: int) -> list[ReconResult]:
+    def load_all_preanalysis_results(self, *, func_ea: int) -> list[PreanalysisResult]:
         """Load all collector results for a function across all maturities."""
         cursor = self._conn.execute(
             """
             SELECT collector_name, maturity, timestamp, metrics_json, candidates_json
-            FROM recon_results
+            FROM preanalysis_results
             WHERE func_ea = ?
             """,
             (int(func_ea),),
@@ -273,14 +273,14 @@ class ReconStore:
             for row in rows
         ]
 
-    def load_latest_recon_result(
+    def load_latest_preanalysis_result(
         self,
         *,
         func_ea: int,
         collector_name: str,
         provider_level: int | None = None,
         **legacy_fields: object,
-    ) -> ReconResult | None:
+    ) -> PreanalysisResult | None:
         """Load the latest result for one collector.
 
         When *provider_level* is provided, constrain the query to that level.
@@ -297,7 +297,7 @@ class ReconStore:
             cursor = self._conn.execute(
                 """
                 SELECT maturity, collector_name, timestamp, metrics_json, candidates_json
-                FROM recon_results
+                FROM preanalysis_results
                 WHERE func_ea = ? AND collector_name = ?
                 ORDER BY maturity DESC, timestamp DESC
                 LIMIT 1
@@ -308,7 +308,7 @@ class ReconStore:
             cursor = self._conn.execute(
                 """
                 SELECT maturity, collector_name, timestamp, metrics_json, candidates_json
-                FROM recon_results
+                FROM preanalysis_results
                 WHERE func_ea = ? AND collector_name = ? AND maturity = ?
                 ORDER BY timestamp DESC
                 LIMIT 1
@@ -327,12 +327,12 @@ class ReconStore:
     @staticmethod
     def _row_to_result(
         row: sqlite3.Row, *, func_ea: int, provider_level: int
-    ) -> ReconResult:
+    ) -> PreanalysisResult:
         candidates = tuple(
             _candidate_from_dict(d)
             for d in json.loads(row["candidates_json"] or "[]")
         )
-        return ReconResult(
+        return PreanalysisResult(
             collector_name=str(row["collector_name"]),
             func_ea=int(func_ea),
             provider_level=int(provider_level),
@@ -413,7 +413,7 @@ class ReconStore:
     ) -> None:
         """Persist per-function session summary (upsert)."""
         self._conn.execute(
-            "INSERT OR REPLACE INTO recon_session_summary "
+            "INSERT OR REPLACE INTO preanalysis_session_summary "
             "(func_ea, timestamp, collectors_fired, classification, confidence, "
             "inferences_json, suppress_rules_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (func_ea, time.time(), collectors_fired, classification, confidence,
@@ -424,7 +424,7 @@ class ReconStore:
     def load_session_summary(self, func_ea: int) -> dict | None:
         """Load persisted session summary for a function."""
         row = self._conn.execute(
-            "SELECT * FROM recon_session_summary WHERE func_ea = ?",
+            "SELECT * FROM preanalysis_session_summary WHERE func_ea = ?",
             (func_ea,),
         ).fetchone()
         if row is None:
@@ -495,7 +495,7 @@ class ReconStore:
     def count_functions_with_session_summaries(self) -> int:
         """Count distinct functions that have session summaries."""
         row = self._conn.execute(
-            "SELECT COUNT(DISTINCT func_ea) AS cnt FROM recon_session_summary"
+            "SELECT COUNT(DISTINCT func_ea) AS cnt FROM preanalysis_session_summary"
         ).fetchone()
         return int(row["cnt"]) if row else 0
 
@@ -519,7 +519,7 @@ class ReconStore:
             """
             SELECT DISTINCT h.func_ea
             FROM deobfuscation_hints h
-            LEFT JOIN recon_session_summary s ON h.func_ea = s.func_ea
+            LEFT JOIN preanalysis_session_summary s ON h.func_ea = s.func_ea
             WHERE s.func_ea IS NULL
             ORDER BY h.func_ea
             """
@@ -529,7 +529,7 @@ class ReconStore:
     def load_all_session_summaries(self) -> list[dict]:
         """Load all session summaries across all functions."""
         rows = self._conn.execute(
-            "SELECT * FROM recon_session_summary ORDER BY func_ea"
+            "SELECT * FROM preanalysis_session_summary ORDER BY func_ea"
         ).fetchall()
         return [
             {
@@ -587,13 +587,13 @@ class ReconStore:
         classifications survive re-analysis.
         """
         self._conn.execute(
-            "DELETE FROM recon_results WHERE func_ea = ?", (int(func_ea),)
+            "DELETE FROM preanalysis_results WHERE func_ea = ?", (int(func_ea),)
         )
         self._conn.execute(
             "DELETE FROM deobfuscation_hints WHERE func_ea = ?", (int(func_ea),)
         )
         self._conn.execute(
-            "DELETE FROM recon_session_summary WHERE func_ea = ?", (int(func_ea),)
+            "DELETE FROM preanalysis_session_summary WHERE func_ea = ?", (int(func_ea),)
         )
         self._conn.execute(
             "DELETE FROM consumer_outcomes WHERE func_ea = ?", (int(func_ea),)
@@ -604,7 +604,7 @@ class ReconStore:
         """Close the database connection."""
         self._conn.close()
 
-    def __enter__(self) -> "ReconStore":
+    def __enter__(self) -> "PreanalysisStore":
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -615,7 +615,7 @@ _T = TypeVar("_T")
 _SENTINEL = object()
 
 
-def _shutdown_writer(writer: "ReconStoreWriter") -> None:
+def _shutdown_writer(writer: "PreanalysisStoreWriter") -> None:
     """Best-effort WAL flush on interpreter exit."""
     try:
         writer.shutdown()
@@ -623,7 +623,7 @@ def _shutdown_writer(writer: "ReconStoreWriter") -> None:
         pass
 
 
-class ReconStoreWriter:
+class PreanalysisStoreWriter:
     """Dedicated writer thread for serialized SQLite writes.
 
     Owns a single ``ReconStore`` connection.  Callers submit write
@@ -641,7 +641,7 @@ class ReconStoreWriter:
         atexit.register(_shutdown_writer, self)
 
     def _run(self) -> None:
-        store = ReconStore(self._db_path)
+        store = PreanalysisStore(self._db_path)
         try:
             while True:
                 item = self._queue.get()
@@ -654,7 +654,7 @@ class ReconStoreWriter:
         finally:
             store.close()
 
-    def submit(self, fn: Callable[["ReconStore"], None]) -> None:
+    def submit(self, fn: Callable[["PreanalysisStore"], None]) -> None:
         """Submit a write callable (fire-and-forget)."""
         self._queue.put(fn)
 
@@ -664,7 +664,7 @@ class ReconStoreWriter:
         exc_box: list[Exception] = []
         done = threading.Event()
 
-        def _wrapper(store: "ReconStore") -> None:
+        def _wrapper(store: "PreanalysisStore") -> None:
             try:
                 result_box.append(fn(store))
             except Exception as e:
@@ -690,11 +690,11 @@ class ReconStoreWriter:
         self._thread.join(timeout=5)
 
 
-_writers: dict[Path, ReconStoreWriter] = {}
+_writers: dict[Path, PreanalysisStoreWriter] = {}
 _writers_lock = threading.Lock()
 
 
-def get_recon_writer(db_path: Path | str) -> ReconStoreWriter:
+def get_preanalysis_writer(db_path: Path | str) -> PreanalysisStoreWriter:
     """Return the singleton writer for *db_path*, creating it lazily."""
     db_path = Path(db_path)
     writer = _writers.get(db_path)
@@ -703,7 +703,7 @@ def get_recon_writer(db_path: Path | str) -> ReconStoreWriter:
     with _writers_lock:
         writer = _writers.get(db_path)
         if writer is None:
-            writer = ReconStoreWriter(db_path)
+            writer = PreanalysisStoreWriter(db_path)
             _writers[db_path] = writer
     return writer
 

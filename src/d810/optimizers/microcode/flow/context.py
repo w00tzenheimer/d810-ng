@@ -137,6 +137,13 @@ class FlowMaturityContext:
         self._terminal_boundary_blocks: set[int] | None = None
         self._current_rule_name: str | None = None
         self._run_later_requests: list[tuple[str, RunLater]] = []
+        # Injected by BlockOptimizerManager.  This is intentionally a factory:
+        # a modifier receives its own transaction while every transaction uses
+        # the coordinator's current-MBA identity index.
+        self._mutation_gateway_factory: Callable[[], object | None] | None = None
+        # Resolver facts are callback-local.  A missing injected port means a
+        # flow rule must abstain; it must never consult an EA-keyed registry.
+        self._resolver_session_state: object | None = None
 
     @property
     def hint_summary(self) -> FlowContextHintSummary | None:
@@ -233,6 +240,26 @@ class FlowMaturityContext:
         self._dispatcher_analysis = None
         self._dispatcher_analysis_error = None
         self._terminal_boundary_blocks = None
+
+    def set_mutation_gateway_factory(
+        self,
+        factory: Callable[[], object | None] | None,
+    ) -> None:
+        """Set the manager-injected structural-mutation transaction port."""
+        self._mutation_gateway_factory = factory
+
+    def new_mba_mutation_gateway(self) -> object | None:
+        """Return one current-MBA transaction gateway, or fail closed."""
+        factory = self._mutation_gateway_factory
+        return None if factory is None else factory()
+
+    def set_resolver_session_state(self, state: object | None) -> None:
+        """Attach active lifecycle resolver state for this context only."""
+        self._resolver_session_state = state
+
+    def resolver_session_state(self) -> object | None:
+        """Return the injected resolver state, or ``None`` outside a session."""
+        return self._resolver_session_state
 
     def set_phase(
         self,

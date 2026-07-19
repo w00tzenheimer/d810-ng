@@ -6,6 +6,7 @@ from enum import Enum
 
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
+    is_conditional_handler_bridge_kind,
 )
 from d810.core.typing import Mapping
 
@@ -57,7 +58,7 @@ def plan_conditional_handler_bridges(
     ] = {}
     for transfer in transfers:
         if (
-            transfer.resolver_kind != "conditional_handler_bridge"
+            not is_conditional_handler_bridge_kind(transfer.resolver_kind)
             or transfer.condition_code not in (4, 5)
             or transfer.true_target_ea is None
             or transfer.false_target_ea is None
@@ -172,7 +173,7 @@ def conditional_bridge_route_evidence_converged(
     predicate_states = {
         int(state) & 0xFFFFFFFF
         for transfer in transfers
-        if transfer.resolver_kind == "conditional_handler_bridge"
+        if is_conditional_handler_bridge_kind(transfer.resolver_kind)
         for state in (
             transfer.predicate_true_state,
             transfer.predicate_false_state,

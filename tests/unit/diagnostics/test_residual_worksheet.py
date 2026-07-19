@@ -387,7 +387,7 @@ def test_build_worksheet_uses_dag_fallback_when_no_log_or_dispatcher(
     result = build_residual_dispatcher_worksheet(
         diag_db_path=db,
         snapshot_id=5,
-        recon_db_path=None,
+        analysis_db_path=None,
         log_path=None,
         func_ea=0x180012DF0,
     )
@@ -403,7 +403,7 @@ def test_build_worksheet_summarizes_microcode_and_corridor(
     result = build_residual_dispatcher_worksheet(
         diag_db_path=db,
         snapshot_id=5,
-        recon_db_path=None,
+        analysis_db_path=None,
         log_path=None,
         func_ea=0x180012DF0,
     )
@@ -422,7 +422,7 @@ def test_render_markdown_emits_table_for_rows(tmp_path: Path):
     result = build_residual_dispatcher_worksheet(
         diag_db_path=db,
         snapshot_id=5,
-        recon_db_path=None,
+        analysis_db_path=None,
         log_path=None,
         func_ea=0x180012DF0,
     )
@@ -436,7 +436,7 @@ def test_render_tsv_emits_tab_separated(tmp_path: Path):
     result = build_residual_dispatcher_worksheet(
         diag_db_path=db,
         snapshot_id=5,
-        recon_db_path=None,
+        analysis_db_path=None,
         log_path=None,
         func_ea=0x180012DF0,
     )
@@ -449,7 +449,7 @@ def test_render_json_round_trips(tmp_path: Path):
     result = build_residual_dispatcher_worksheet(
         diag_db_path=db,
         snapshot_id=5,
-        recon_db_path=None,
+        analysis_db_path=None,
         log_path=None,
         func_ea=0x180012DF0,
     )

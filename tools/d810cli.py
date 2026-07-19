@@ -654,8 +654,8 @@ def cmd_residual_worksheet(args: argparse.Namespace) -> int:
         "residual-worksheet",
         "--diag-db", str(diag_db),
     ]
-    if args.recon_db:
-        diag_argv += ["--recon-db", args.recon_db]
+    if args.analysis_db:
+        diag_argv += ["--analysis-db", args.analysis_db]
     if log_path is not None:
         diag_argv += ["--log", str(log_path)]
     if args.func_ea is not None:
@@ -1788,7 +1788,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicit diag SQLite DB (default: latest in worktree)",
     )
     sp.add_argument(
-        "--recon-db", default=None,
+        "--analysis-db", default=None,
         help="explicit recon SQLite DB (default: auto-detect)",
     )
     sp.add_argument(

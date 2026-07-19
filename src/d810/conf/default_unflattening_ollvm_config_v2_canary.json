@@ -3,7 +3,7 @@
   "ins_rules": [],
   "blk_rules": [],
   "additional_configuration": {
-    "recon_fact_profile_modules": [
+    "preanalysis_profile_modules": [
       "d810.backends.hexrays.evidence.ollvm_carrier"
     ],
     "pipeline_v2_mode": "config-v2",

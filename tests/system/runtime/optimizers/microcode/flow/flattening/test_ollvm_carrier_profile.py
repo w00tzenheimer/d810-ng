@@ -136,10 +136,10 @@ def test_collector_target_reuses_existing_snapshot_target() -> None:
 def test_profile_registration_requires_explicit_project_opt_in(monkeypatch) -> None:
     monkeypatch.setattr(
         project_callbacks,
-        "_recon_fact_collector_registration_handlers",
+        "_preanalysis_fact_collector_registration_handlers",
         {},
     )
-    project_callbacks.register_recon_fact_collector_registration_handler(
+    project_callbacks.register_preanalysis_fact_collector_registration_handler(
         ollvm_carrier_profile._OLLVM_CARRIER_REGISTRATION_HANDLER,
         ollvm_carrier_profile._register_ollvm_carrier_fact_collectors,
     )
@@ -152,17 +152,17 @@ def test_profile_registration_requires_explicit_project_opt_in(monkeypatch) -> N
             self.collectors.append(collector)
 
     runtime = Runtime()
-    project_callbacks.emit_recon_fact_collector_registration(
+    project_callbacks.emit_preanalysis_fact_collector_registration(
         runtime=runtime,
         project_config={},
     )
 
     assert runtime.collectors == []
 
-    project_callbacks.emit_recon_fact_collector_registration(
+    project_callbacks.emit_preanalysis_fact_collector_registration(
         runtime=runtime,
         project_config={
-            "recon_fact_profile_modules": [
+            "preanalysis_profile_modules": [
                 ollvm_carrier_profile.OLLVM_CARRIER_PROFILE_MODULE,
             ],
         },

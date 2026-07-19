@@ -1039,7 +1039,7 @@ def d810_state_all_rules():
 
 
 @pytest.fixture(scope="session")
-def recon_store_path():
+def analysis_store_path():
     """Session-scoped: path to the recon DB created during this test session.
 
     Searches for the recon DB in the standard log directory. When the full
@@ -1052,8 +1052,8 @@ def recon_store_path():
 
     # Search standard locations for the recon DB
     candidates = [
-        pathlib.Path.home() / ".idapro" / "logs" / "d810_logs" / "d810_recon.db",
-        pathlib.Path("/root/.idapro/logs/d810_logs/d810_recon.db"),  # Docker
+        pathlib.Path.home() / ".idapro" / "logs" / "d810_logs" / "d810_analysis.db",
+        pathlib.Path("/root/.idapro/logs/d810_logs/d810_analysis.db"),  # Docker
     ]
 
     # Also check D810State.manager.recon_db if D810 is loaded
@@ -1062,7 +1062,7 @@ def recon_store_path():
 
         state = D810State()
         if state.is_loaded() and hasattr(state, "manager"):
-            mgr_path = state.manager.recon_db
+            mgr_path = state.manager.analysis_db
             if mgr_path is not None:
                 candidates.insert(0, pathlib.Path(mgr_path))
     except Exception:
@@ -1077,17 +1077,17 @@ def recon_store_path():
 
 
 @pytest.fixture(scope="session")
-def recon_store_session(recon_store_path):
+def analysis_store_session(analysis_store_path):
     """Session-scoped: open ReconStore for aggregate queries.
 
     Returns None if recon is disabled.
     """
-    if recon_store_path is None:
+    if analysis_store_path is None:
         yield None
         return
-    from d810.passes.store import ReconStore
+    from d810.passes.store import PreanalysisStore
 
-    store = ReconStore(recon_store_path)
+    store = PreanalysisStore(analysis_store_path)
     yield store
     store.close()
 

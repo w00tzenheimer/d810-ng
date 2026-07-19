@@ -176,6 +176,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         # capture, analysis, and hint application; this adapter only emits
         # the callback-local FlowGraph event.
         self._decompilation_lifecycle = None
+        self._last_preopt_ready_mba_token: tuple[object, int, int] | None = None
 
         self.instruction_optimizers = []
         self._active_optimizers: list = []
@@ -397,7 +398,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 )
 
     def func(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
-        self.log_info_on_input(blk, ins)
+        if self.log_info_on_input(blk, ins):
+            # The PREOPT gateway may have structurally changed the MBA.  Do not
+            # touch this callback's instruction pointer again; returning true
+            # asks Hex-Rays to revisit optimization with fresh pointers.
+            return True
         try:
             optimization_performed = self.optimize(blk, ins)
 
@@ -437,8 +442,119 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
 
     # statistics are managed centrally via the stats object
 
-    def log_info_on_input(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t):
+    def _emit_top_level_preopt_ready(self, mba: ida_hexrays.mbl_array_t) -> bool:
+        """Emit the live PREOPT seam once the top-level MBA is populated.
+
+        ``hxe_preoptimized`` is reliable for explicit-range snippet generation
+        but is not emitted for every top-level decompile.  The instruction
+        optimizer's first PREOPT callback is the portable runtime boundary: it
+        owns a complete MBA and can inject the same identity index and mutation
+        gateway without retaining either beyond the active session.
+        """
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        emitter = self.event_emitter
+        if (
+            lifecycle is None
+            or emitter is None
+            or int(getattr(mba, "maturity", -1))
+            != int(ida_hexrays.MMAT_PREOPTIMIZED)
+        ):
+            optimizer_logger.debug(
+                "instruction PREOPT seam abstain: func=0x%x reason=missing_port "
+                "lifecycle=%s emitter=%s maturity=%s",
+                int(getattr(mba, "entry_ea", 0) or 0),
+                lifecycle is not None,
+                emitter is not None,
+                int(getattr(mba, "maturity", -1)),
+            )
+            return False
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        session = lifecycle.current_session(function_ea)
+        if session is None:
+            optimizer_logger.debug(
+                "instruction PREOPT seam abstain: func=0x%x reason=no_session",
+                function_ea,
+            )
+            return False
+        native_preanalysis_depth = int(
+            getattr(session, "native_preanalysis_depth", 0)
+        )
+        if native_preanalysis_depth > 0:
+            optimizer_logger.debug(
+                "instruction PREOPT seam abstain: func=0x%x "
+                "reason=native_preanalysis depth=%d mba_entry=0x%x",
+                function_ea,
+                native_preanalysis_depth,
+                int(getattr(mba, "entry_ea", 0) or 0),
+            )
+            return False
+        try:
+            mba_identity = int(mba.this)
+        except (AttributeError, TypeError, ValueError):
+            mba_identity = id(mba)
+        session_identity = getattr(session, "identity_key", id(session))
+        mba_token = (session_identity, mba_identity, function_ea)
+        if mba_token == getattr(self, "_last_preopt_ready_mba_token", None):
+            return False
+        self._last_preopt_ready_mba_token = mba_token
+        index = lifecycle.build_current_mba_identity_index(
+            function_ea=function_ea,
+            mba=mba,
+        )
+        if index is None:
+            optimizer_logger.debug(
+                "instruction PREOPT seam abstain: func=0x%x reason=no_index",
+                function_ea,
+            )
+            return False
+        gateway = lifecycle.new_current_mba_mutation_gateway(
+            function_ea=function_ea,
+            maturity=int(mba.maturity),
+        )
+        if gateway is None:
+            optimizer_logger.debug(
+                "instruction PREOPT seam abstain: func=0x%x reason=no_gateway",
+                function_ea,
+            )
+            return False
+        decision: dict[str, object] = {
+            "request_redo": False,
+            "session": session,
+            "identity_index": index,
+            "mutation_gateway": gateway,
+        }
+        emitter.emit(
+            DecompilationEvent.HEXRAYS_PREOPT_READY,
+            function_ea=function_ea,
+            mba=mba,
+            decision=decision,
+        )
+        optimizer_logger.debug(
+            "instruction PREOPT seam emitted: func=0x%x modified=%s "
+            "request_redo=%s listeners=%d",
+            function_ea,
+            bool(decision.get("microcode_modified")),
+            bool(decision.get("request_redo")),
+            len(getattr(emitter, "_listeners", {}).get(
+                DecompilationEvent.HEXRAYS_PREOPT_READY,
+                (),
+            )),
+        )
+        if bool(decision.get("request_redo")):
+            optimizer_logger.warning(
+                "instruction PREOPT seam cannot restart maturity for func=0x%x: %s",
+                function_ea,
+                decision.get("reason", "unspecified"),
+            )
+        return bool(decision.get("microcode_modified"))
+
+    def log_info_on_input(
+        self,
+        blk: ida_hexrays.mblock_t,
+        ins: ida_hexrays.minsn_t,
+    ) -> bool:
         mba: ida_hexrays.mbl_array_t = blk.mba
+        preopt_modified = False
 
         if (mba is not None) and (mba.maturity != self.current_maturity):
             new_maturity = mba.maturity
@@ -468,8 +584,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             mba_ea = int(getattr(mba, "entry_ea", 0) or 0)
             if self.event_emitter is not None:
                 _emit_flowgraph_ready_event(self.event_emitter, mba)
-            if self._decompilation_lifecycle is not None:
-                self._decompilation_lifecycle.analyze_current_function(
+            lifecycle = getattr(self, "_decompilation_lifecycle", None)
+            if lifecycle is not None:
+                lifecycle.analyze_current_function(
                     function_ea=mba_ea,
                     source="analyzed",
                 )
@@ -492,8 +609,16 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     mba, self.log_dir, "input_instruction_optimizer"
                 )
 
+        if (
+            mba is not None
+            and int(getattr(mba, "maturity", -1))
+            == int(ida_hexrays.MMAT_PREOPTIMIZED)
+        ):
+            preopt_modified = self._emit_top_level_preopt_ready(mba)
+
         if blk.serial != self.current_blk_serial:
             self.current_blk_serial = blk.serial
+        return preopt_modified
 
     def configure(
         self, generate_z3_code=False, dump_intermediate_microcode=False, **kwargs
