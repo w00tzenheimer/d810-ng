@@ -17,15 +17,15 @@ from d810.core.logging import getLogger
 from d810.core.typing import Any
 
 from d810.analyses.control_flow.collection_context import (
-    ReconCollectionContext,
-    coerce_recon_collection_context,
+    PreanalysisCollectionContext,
+    coerce_preanalysis_collection_context,
 )
 from d810.analyses.control_flow.return_frontier import (
     ReturnFrontierAudit,
     ReturnSite,
     ReturnSiteStatus,
 )
-from d810.analyses.control_flow.models import CandidateFlag, ReconResult
+from d810.analyses.control_flow.models import CandidateFlag, PreanalysisResult
 
 logger = getLogger(__name__)
 
@@ -63,7 +63,7 @@ class ReturnFrontierCollector:
         provider_level: int,
         timestamp: float | None = None,
         stage_results: tuple[ReturnSiteStatus, ...] | None = None,
-    ) -> ReconResult:
+    ) -> PreanalysisResult:
         """Persist the latest audit state as a recon result."""
         latest_results = stage_results
         if latest_results is None and audit._stage_results:
@@ -89,7 +89,7 @@ class ReturnFrontierCollector:
                 )
 
         report = audit.report()
-        return ReconResult(
+        return PreanalysisResult(
             collector_name=cls.name,
             func_ea=func_ea,
             provider_level=provider_level,
@@ -107,10 +107,10 @@ class ReturnFrontierCollector:
     def collect(
         self,
         target: Any,
-        context: ReconCollectionContext | None = None,
+        context: PreanalysisCollectionContext | None = None,
         func_ea: int | None = None,
         **legacy_fields: object,
-    ) -> ReconResult:
+    ) -> PreanalysisResult:
         """Collect return frontier audit data.
 
         ``target`` is expected to be a FlowGraph (or any object with
@@ -123,7 +123,7 @@ class ReturnFrontierCollector:
         :param maturity: Current maturity level.
         :return: Frozen ``ReconResult`` with return frontier metrics.
         """
-        context = coerce_recon_collection_context(
+        context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,
             legacy_fields=legacy_fields,
@@ -137,7 +137,7 @@ class ReturnFrontierCollector:
         stage_name = metadata.get("stage_name", "unknown")
 
         if not return_sites or successors is None or entry is None:
-            return ReconResult(
+            return PreanalysisResult(
                 collector_name=self.name,
                 func_ea=context.func_ea,
                 provider_level=context.provider_level,

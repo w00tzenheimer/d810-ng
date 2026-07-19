@@ -42,14 +42,11 @@ def main() -> None:
             from d810.hexrays.mutation.detached_handler_island import (
                 imported_detached_snippet_instruction_origins,
             )
-            from d810.hexrays.preanalysis.indirect_jump_labels import (
-                mark_indirect_dispatcher,
-            )
 
             cg.install()
             try:
                 for round_index in range(args.rounds):
-                    mark_indirect_dispatcher(FUNCTION_EA)
+                    prepared = headless.prepare_native_preanalysis(FUNCTION_EA)
                     ida_hexrays.clear_cached_cfuncs()
                     cfunc = ida_hexrays.decompile(FUNCTION_EA)
                     print(
@@ -106,15 +103,11 @@ def main() -> None:
                             tuple(instruction_rows),
                             flush=True,
                         )
-                    captured = cg.prepare_detached_handler_snippets(
-                        FUNCTION_EA,
-                        live_mba=cfunc.mba,
-                    )
                     print(
                         "LOCOPT_ROUND",
                         round_index,
-                        "captured",
-                        captured,
+                        "prepared",
+                        prepared,
                         flush=True,
                     )
             finally:

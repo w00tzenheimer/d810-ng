@@ -16,6 +16,19 @@ from d810.ir.semantics import PredicateKind
 from d810.ir.flowgraph import FlowGraph, InsnKind, InsnSnapshot, MopSnapshot
 
 
+CONDITIONAL_HANDLER_BRIDGE_KINDS = frozenset(
+    {
+        "conditional_handler_bridge",
+        "static_conditional_state_choice_bridge",
+    }
+)
+
+
+def is_conditional_handler_bridge_kind(resolver_kind: str) -> bool:
+    """Return whether one evidence kind carries an exact live predicate bridge."""
+    return str(resolver_kind) in CONDITIONAL_HANDLER_BRIDGE_KINDS
+
+
 @dataclass(frozen=True, slots=True)
 class MaterializedIndirectTransfer:
     """One resolver-proven native transfer retained through materialization.

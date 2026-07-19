@@ -127,6 +127,27 @@ class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):
     def set_flow_context(self, flow_context: FlowMaturityContext | None) -> None:
         self.flow_context = flow_context
 
+    def new_deferred_modifier(self, mba):
+        """Build a modifier through the manager-injected mutation port.
+
+        The fallback remains useful for isolated tools and unit fixtures, but
+        an installed flow rule always receives the lifecycle-owned gateway.
+        """
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+        gateway = None
+        flow_context = self.flow_context
+        new_gateway = getattr(flow_context, "new_mba_mutation_gateway", None)
+        if callable(new_gateway):
+            gateway = new_gateway()
+        return DeferredGraphModifier(mba, mutation_gateway=gateway)
+
+    def current_resolver_session_state(self) -> object | None:
+        """Return the lifecycle-injected resolver state for the current MBA."""
+        flow_context = self.flow_context
+        getter = getattr(flow_context, "resolver_session_state", None)
+        return None if not callable(getter) else getter()
+
     @abc.abstractmethod
     def optimize(self, blk):
         """Perform the optimization on *blk* and return the number of changes."""

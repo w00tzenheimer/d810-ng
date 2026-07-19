@@ -62,9 +62,13 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedStateRoute,
     condition_code_predicate,
     find_unique_target_entry_block,
+    is_conditional_handler_bridge_kind,
     lookup_state_keyed_transfer_target,
     plan_resolver_proven_indirect_call_neutralizations,
     unique_materialized_equality_target_eas,
+)
+from d810.analyses.control_flow.native_preanalysis_session import (
+    BootstrapRouteBindingEvidence,
 )
 from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
@@ -169,6 +173,17 @@ class ConditionalStateTransitionCandidate:
     reason: str = "conditional_state_transition"
     suppressed_redirect_sources: frozenset[int] = frozenset()
     edge_kind: str = "CONDITIONAL_TRANSITION"
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapEntryRouteProof:
+    """One exact, already-applied entry-prefix route in the current snapshot."""
+
+    source_serial: int
+    handler_serial: int
+    state: int
+    source_anchor_ea: int
+    handler_anchor_ea: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -3768,11 +3783,11 @@ def build_materialized_conditional_handler_bridges(
         ).add(int(route.target_handler_serial))
     for transfer in transfers:
         trace_exact_live = bool(
-            transfer.resolver_kind == "conditional_handler_bridge"
+            is_conditional_handler_bridge_kind(transfer.resolver_kind)
             and transfer.predicate_preserve_live
         )
         if (
-            transfer.resolver_kind != "conditional_handler_bridge"
+            not is_conditional_handler_bridge_kind(transfer.resolver_kind)
             or transfer.condition_code != 5
             or transfer.predicate_size is None
             or transfer.true_target_ea is None
@@ -4351,6 +4366,73 @@ def _prove_materialized_conditional_entry_bridge(
             )
         )
     return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def _prove_bound_bootstrap_entry_routes(
+    flow_graph,
+    evidence_rows: tuple[BootstrapRouteBindingEvidence, ...],
+    *,
+    dispatcher_entry_serial: int,
+) -> tuple[BootstrapEntryRouteProof, ...]:
+    """Rebind exact PREOPT routes and confirm their current live entry edges.
+
+    A bootstrap route is source-scoped; it is not a scalar initial state for
+    sibling prologue arms.  The proof therefore accepts only an already-applied
+    ``source -> handler`` edge reachable before crossing the dispatcher.  It can
+    satisfy the safety gate without redirecting any unresolved sibling arm.
+    """
+    if not evidence_rows:
+        return ()
+    dispatcher = int(dispatcher_entry_serial)
+    entry_prefix = _entry_prefix_blocks(flow_graph, dispatcher)
+
+    def rebind(identity) -> int | None:
+        starts = {
+            int(interval.start_ea)
+            for interval in identity.native_eas.intervals
+        }
+        matches = {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if int(block.start_ea) in starts
+        }
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    candidates_by_source: dict[int, set[BootstrapEntryRouteProof]] = {}
+    for evidence in evidence_rows:
+        source = rebind(evidence.source_identity)
+        handler = rebind(evidence.handler_identity)
+        if source is None or handler is None or handler == dispatcher:
+            continue
+        source_block = flow_graph.get_block(source)
+        if (
+            source_block is None
+            or source not in entry_prefix
+            or handler not in tuple(int(serial) for serial in source_block.succs)
+        ):
+            continue
+        proof = BootstrapEntryRouteProof(
+            source_serial=source,
+            handler_serial=handler,
+            state=int(evidence.route.state) & 0xFFFFFFFF,
+            source_anchor_ea=int(evidence.route.source_anchor_ea),
+            handler_anchor_ea=int(evidence.route.handler_anchor_ea),
+        )
+        candidates_by_source.setdefault(source, set()).add(proof)
+    return tuple(
+        sorted(
+            (
+                next(iter(candidates))
+                for candidates in candidates_by_source.values()
+                if len(candidates) == 1
+            ),
+            key=lambda proof: (
+                int(proof.source_anchor_ea),
+                int(proof.state),
+                int(proof.handler_anchor_ea),
+            ),
+        )
+    )
 
 
 def _prove_imported_conditional_entry_bridge(
@@ -5492,6 +5574,7 @@ def emit_minimal_unflatten(
     condition_chain_handlers: frozenset[int] = frozenset(),
     dispatcher_region_serials: frozenset[int] = frozenset(),
     entry_bridge_evidence: EntryBridgeEvidence | None = None,
+    bound_bootstrap_routes: tuple[BootstrapRouteBindingEvidence, ...] = (),
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 
@@ -5555,10 +5638,20 @@ def emit_minimal_unflatten(
             else frozenset()
         ),
     )
-    route_handler_serials = condition_chain_handlers
+    bootstrap_entry_routes = _prove_bound_bootstrap_entry_routes(
+        flow_graph,
+        bound_bootstrap_routes,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+    )
+    route_handler_serials = frozenset(
+        {
+            *(int(serial) for serial in condition_chain_handlers),
+            *(int(proof.handler_serial) for proof in bootstrap_entry_routes),
+        }
+    )
     if materialized_computed_goto_profile:
         route_handler_serials = frozenset(
-            set(condition_chain_handlers).union(
+            set(route_handler_serials).union(
                 int(route.target_handler_serial)
                 for route in materialized_state_routes
             )
@@ -5750,6 +5843,20 @@ def emit_minimal_unflatten(
                             flow_graph,
                             conditional_entry_bridge.true_target_serial,
                         ),
+                    )
+            if not bridged and bootstrap_entry_routes:
+                bridged = True
+                if logger.info_on:
+                    logger.info(
+                        "unflat entry bridge: EXACT_BOOTSTRAP routes=%s",
+                        [
+                            (
+                                _format_block_label(flow_graph, proof.source_serial),
+                                "0x%X" % int(proof.state),
+                                _format_block_label(flow_graph, proof.handler_serial),
+                            )
+                            for proof in bootstrap_entry_routes
+                        ],
                     )
             # d81-3rja step 1: a register-conditional prologue (the initial state is
             # carried in a scratch register while the state var holds a decoy) is

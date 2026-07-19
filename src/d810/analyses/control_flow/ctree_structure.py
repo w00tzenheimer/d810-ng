@@ -23,10 +23,10 @@ from collections import deque
 from types import MappingProxyType
 
 from d810.analyses.control_flow.collection_context import (
-    ReconCollectionContext,
-    coerce_recon_collection_context,
+    PreanalysisCollectionContext,
+    coerce_preanalysis_collection_context,
 )
-from d810.analyses.control_flow.models import CandidateFlag, ReconResult
+from d810.analyses.control_flow.models import CandidateFlag, PreanalysisResult
 
 _CMAT_FINAL = 60
 
@@ -49,16 +49,16 @@ class CtreeStructureCollector:
     def collect(
         self,
         target,
-        context: ReconCollectionContext | None = None,
+        context: PreanalysisCollectionContext | None = None,
         func_ea: int | None = None,
         **legacy_fields: object,
-    ) -> ReconResult:
+    ) -> PreanalysisResult:
         """Walk cfunc.body and collect structural counts.
 
         Accepts real ``ida_hexrays.cfunc_t`` or a stub with a ``.body``
         attribute that supports child iteration.
         """
-        context = coerce_recon_collection_context(
+        context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,
             legacy_fields=legacy_fields,
@@ -123,7 +123,7 @@ class CtreeStructureCollector:
                 detail=f"{goto_count} goto statements",
             ))
 
-        return ReconResult(
+        return PreanalysisResult(
             collector_name=self.name,
             func_ea=context.func_ea,
             provider_level=context.provider_level,
@@ -132,8 +132,8 @@ class CtreeStructureCollector:
             candidates=tuple(candidates),
         )
 
-    def _empty_result(self, context: ReconCollectionContext) -> ReconResult:
-        return ReconResult(
+    def _empty_result(self, context: PreanalysisCollectionContext) -> PreanalysisResult:
+        return PreanalysisResult(
             collector_name=self.name,
             func_ea=context.func_ea,
             provider_level=context.provider_level,

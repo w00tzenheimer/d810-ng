@@ -109,11 +109,6 @@ try:
         insert_goto_instruction,
         insert_nop_blk,
     )
-    from d810.hexrays.preanalysis.indirect_jump_labels import (
-        get_materialized_indirect_transfers,
-        get_terminal_return_carrier_requests,
-        record_materialized_indirect_transfers,
-    )
     from d810.analyses.control_flow.materialized_indirect_transfer import (
         materialized_terminal_target_eas_by_source,
         unique_materialized_equality_target_eas,
@@ -125,6 +120,9 @@ try:
     from d810.ir.block_identity import block_label
     from d810.hexrays.utils.hexrays_formatters import format_minsn_t
     from d810.optimizers.microcode.flow.jumps import computed_goto_resolver as cg
+    from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+        resolver_session_state,
+    )
     from d810.optimizers.microcode.flow.jumps import (
         materialized_computed_goto_island as island,
     )
@@ -1356,14 +1354,16 @@ try:
                 )
             return facts, ambiguous_entry_eas
 
-        resolution = cg.resolve_and_materialize(FUNC_EA)
+        lifecycle = headless._state.manager.decompilation_lifecycle
+        session, _created = lifecycle.ensure_hexrays_session(
+            function_ea=FUNC_EA,
+            database_identity=headless._state.manager._database_identity,
+        )
+        resolver_state = resolver_session_state(session)
+        resolution = cg.resolve_and_materialize(FUNC_EA, state=resolver_state)
         assert resolution is not None
-        # Direct invocation bypasses the flowchart hook that normally creates
-        # the staged CALLS session.  Recreate only that bookkeeping so this
-        # harness exercises the real multi-pass preanalysis callbacks.
-        cg._RESOLUTIONS_BY_EA[FUNC_EA] = resolution
-        cg._MATERIALIZATION_SESSIONS[FUNC_EA] = cg._MaterializationSession(resolution)
-        transfers = get_materialized_indirect_transfers(FUNC_EA)
+        resolver_state.begin_materialization(resolution)
+        transfers = resolver_state.materialized_transfers
         print(
             "RESOLVER",
             f"sites={resolution.site_count}",
@@ -1679,7 +1679,7 @@ try:
             surviving_native_eas: frozenset[int],
             preopt_live_native_eas: frozenset[int],
         ) -> int:
-            current_transfers = get_materialized_indirect_transfers(FUNC_EA)
+            current_transfers = resolver_state.materialized_transfers
             plan = plan_preopt_union_region(current_transfers)
             import_plan = select_missing_preopt_union_region(
                 plan,
@@ -1737,7 +1737,7 @@ try:
                 )
                 semantic_seed_eas = tuple(base_semantic_seed_eas)
                 if len(state_registers) == 1:
-                    terminal_requests = get_terminal_return_carrier_requests(FUNC_EA)
+                    terminal_requests = resolver_state.terminal_return_carrier_requests
                     semantic_seed_eas = extend_semantic_seed_eas_with_terminal_targets(
                         base_semantic_seed_eas,
                         terminal_requests,
@@ -2809,9 +2809,7 @@ try:
                 source_dispatcher_recovery = recover_dispatcher(
                     source_flow_graph,
                     None,
-                    materialized_indirect_transfers=(
-                        get_materialized_indirect_transfers(FUNC_EA)
-                    ),
+                    materialized_indirect_transfers=resolver_state.materialized_transfers,
                 )
                 source_dispatcher_map = source_dispatcher_recovery.dispatch_map
                 source_dispatcher_router_eas = frozenset(
@@ -2827,7 +2825,7 @@ try:
                 dispatcher_entry_eas = (
                     frozenset(
                         int(dispatcher_ea)
-                        for transfer in get_materialized_indirect_transfers(FUNC_EA)
+                        for transfer in resolver_state.materialized_transfers
                         for dispatcher_ea in transfer.dispatcher_router_eas
                     )
                     | source_dispatcher_router_eas
@@ -2989,7 +2987,7 @@ try:
                     flush=True,
                 )
                 resolver_targets_by_source_block_ea: dict[int, set[int]] = {}
-                for transfer in get_materialized_indirect_transfers(FUNC_EA):
+                for transfer in resolver_state.materialized_transfers:
                     if transfer.resolver_kind not in {
                         "static_fixpoint",
                         "detached_static_fixpoint",
@@ -3081,7 +3079,7 @@ try:
                     dispatcher_entry_eas=dispatcher_entry_eas,
                     resolver_cut_instruction_eas=frozenset(
                         int(transfer.source_jmp_ea)
-                        for transfer in get_materialized_indirect_transfers(FUNC_EA)
+                        for transfer in resolver_state.materialized_transfers
                         if transfer.resolver_kind
                         in {
                             "static_fixpoint",
@@ -3643,10 +3641,7 @@ try:
                     import_plan.seed_eas,
                 )
                 if terminal_transfers:
-                    record_materialized_indirect_transfers(
-                        FUNC_EA,
-                        current_transfers + terminal_transfers,
-                    )
+                    resolver_state.merge_materialized_transfers(terminal_transfers)
             print(
                 "UNION_CAPTURE",
                 f"captured={captured}",
@@ -3748,7 +3743,7 @@ try:
                         reachable.add(successor)
                         pending.append(successor)
 
-            current_transfers = get_materialized_indirect_transfers(FUNC_EA)
+            current_transfers = resolver_state.materialized_transfers
             for seed_ea in union_import_seed_eas[0]:
                 root = find_unique_live_block_by_ea(mba, int(seed_ea))
                 route_sources = []
@@ -5002,10 +4997,15 @@ try:
                         ida_nalt.get_op_tinfo(operand_type, call_ea, 0)
                     )
                     profile_ea, resolution = cg._callinfo_profile_resolution(
+                        resolver_state,
                         int(mba.entry_ea),
                         call_ea,
                     )
-                    transfers = get_materialized_indirect_transfers(profile_ea)
+                    transfers = (
+                        resolver_state.materialized_transfers
+                        if int(profile_ea) == FUNC_EA
+                        else ()
+                    )
                     reentry_eas = (
                         frozenset()
                         if resolution is None
@@ -5160,7 +5160,7 @@ try:
                 latest_preopt_live_native_eas[:] = [cg._live_mba_native_eas(mba)]
                 if not first_preopt_return_address_sizes:
                     first_preopt_return_address_sizes.append(int(mba.retsize))
-                current_transfers = get_materialized_indirect_transfers(FUNC_EA)
+                current_transfers = resolver_state.materialized_transfers
                 if not captured_preopt_entry_seed:
                     from d810.backends.hexrays.evidence.residual_entry_bridge import (
                         recognize_preoptimized_residual_entry_bridge,
@@ -5677,7 +5677,7 @@ try:
                     decompile_flags,
                 )
                 last_failure = decompile_failure.desc()
-                fixed_point = FUNC_EA in cg._MATERIALIZED_EAS
+                fixed_point = resolver_state.materialized
                 prepared = 0
                 # Preparation is independently idempotent from native byte
                 # materialization.  A completed decompile can publish new
@@ -5697,11 +5697,11 @@ try:
                             else cg._live_mba_native_eas(cfunc.mba),
                         )
                         prepared += cg.prepare_terminal_return_carrier_templates(
-                            FUNC_EA
+                            resolver_state
                         )
                     else:
                         prepared = cg.prepare_detached_handler_snippets(
-                            FUNC_EA,
+                            resolver_state,
                             live_mba=cfunc.mba,
                             template_maturity=ida_hexrays.MMAT_PREOPTIMIZED,
                         )

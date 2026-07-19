@@ -128,6 +128,26 @@ class _FakeLiveMba:
         return self.blocks.get(int(serial))
 
 
+def test_live_adapter_uses_fresh_transactions_over_an_injected_gateway_index():
+    from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import LiveMbaAdapter
+    from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+
+    mba = _FakeLiveMba()
+    mba.entry_ea = 0x401000
+    mba.maturity = 4
+    gateway = MbaMutationGateway(
+        session_id="sample.i64:0x401000:1",
+        function_ea=0x401000,
+        maturity=4,
+    )
+
+    adapter = LiveMbaAdapter(mba, mutation_gateway=gateway)
+    modifier = adapter._new_deferred_modifier()
+
+    assert modifier.mutation_gateway is not gateway
+    assert modifier.mutation_gateway.identity_index is gateway.identity_index
+
+
 def test_source_byte_family_key_requires_structural_identity_not_dstr():
     import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
 

@@ -47,7 +47,6 @@ from d810.hexrays.utils.table_utils import (
 )
 
 from d810.optimizers.microcode.handler import ConfigParam
-from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.cfg_verify import (
     safe_verify)
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
@@ -858,7 +857,7 @@ class IndirectBranchResolver(FlowOptimizationRule):
                 )
                 return 0
 
-            modifier = DeferredGraphModifier(mba)
+            modifier = self.new_deferred_modifier(mba)
             if fresh_blk.nsucc() == 0:
                 modifier.queue_terminal_goto_change(
                     int(block_serial),

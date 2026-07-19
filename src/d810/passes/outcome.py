@@ -221,7 +221,7 @@ class FlowGateOutcomeAdapter:
         return None
 
 
-class ReconOutcomeLog:
+class AnalysisOutcomeLog:
     """Accumulates consumer outcome reports for one decompilation pass.
 
     Provides a per-function summary of what each consumer decided.

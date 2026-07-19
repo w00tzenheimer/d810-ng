@@ -12,9 +12,9 @@ from d810.core.logging import getLogger
 from d810.core.provider_phase import ProviderPhase
 from d810.core.typing import Any, Protocol, runtime_checkable
 
-from d810.analyses.control_flow.collection_context import ReconCollectionContext
-from d810.analyses.control_flow.models import ReconResult
-from d810.passes.store import ReconStore, get_recon_writer
+from d810.analyses.control_flow.collection_context import PreanalysisCollectionContext
+from d810.analyses.control_flow.models import PreanalysisResult
+from d810.passes.store import PreanalysisStore, get_preanalysis_writer
 
 logger = getLogger("D810.passes.phase")
 
@@ -22,7 +22,7 @@ ALL_MATURITIES: frozenset[int] | None = None
 
 
 @runtime_checkable
-class ReconCollector(Protocol):
+class PreanalysisCollector(Protocol):
     """Protocol for all recon collectors.
 
     Implementations must be read-only - they observe but never modify
@@ -40,8 +40,8 @@ class ReconCollector(Protocol):
     def collect(
         self,
         target: Any,
-        context: ReconCollectionContext,
-    ) -> ReconResult:
+        context: PreanalysisCollectionContext,
+    ) -> PreanalysisResult:
         """Collect observations from ``target`` at ``context``.
 
         :param target: ``mba_t`` for microcode collectors, ``cfunc_t`` for ctree.
@@ -51,7 +51,7 @@ class ReconCollector(Protocol):
         ...
 
 
-class ReconPhase:
+class PreanalysisPhase:
     """Orchestrates ReconCollectors across microcode and ctree maturities.
 
     Maintains a per-function maturity guard so each collector fires at most
@@ -66,9 +66,9 @@ class ReconPhase:
         ... )
     """
 
-    def __init__(self, store: ReconStore) -> None:
+    def __init__(self, store: PreanalysisStore) -> None:
         self._store = store
-        self._collectors: list[ReconCollector] = []
+        self._collectors: list[PreanalysisCollector] = []
         # Per-function set of provider levels already processed.
         # Ctree collection uses a tagged key so microcode and ctree passes at
         # the same provider level do not block each other.
@@ -78,7 +78,7 @@ class ReconPhase:
     def collector_count(self) -> int:
         return len(self._collectors)
 
-    def register(self, collector: ReconCollector) -> None:
+    def register(self, collector: PreanalysisCollector) -> None:
         """Register a collector. Raises ValueError if already registered."""
         for existing in self._collectors:
             if existing.name == collector.name:
@@ -90,7 +90,7 @@ class ReconPhase:
 
     @staticmethod
     def _collector_runs_at_provider_level(
-        collector: ReconCollector,
+        collector: PreanalysisCollector,
         provider_level: int,
     ) -> bool:
         """Return True when *collector* should fire at *provider_level*."""
@@ -101,10 +101,10 @@ class ReconPhase:
 
     @staticmethod
     def _collect(
-        collector: ReconCollector,
+        collector: PreanalysisCollector,
         target: Any,
-        context: ReconCollectionContext,
-    ) -> ReconResult:
+        context: PreanalysisCollectionContext,
+    ) -> PreanalysisResult:
         try:
             return collector.collect(target, context)
         except TypeError as exc:
@@ -126,7 +126,7 @@ class ReconPhase:
         *,
         func_ea: int,
         provider_phase: ProviderPhase,
-    ) -> list[ReconResult]:
+    ) -> list[PreanalysisResult]:
         """Dispatch all microcode collectors registered for ``provider_phase``.
 
         Protected by a per-(func_ea, maturity) guard so each collector fires
@@ -142,12 +142,12 @@ class ReconPhase:
         fired_maturities = self._fired.setdefault(func_ea, set())
         if provider_level in fired_maturities:
             return []
-        context = ReconCollectionContext(
+        context = PreanalysisCollectionContext(
             func_ea=int(func_ea),
             provider_phase=provider_phase,
         )
 
-        results: list[ReconResult] = []
+        results: list[PreanalysisResult] = []
         for collector in self._collectors:
             if collector.level != "microcode":
                 continue
@@ -155,9 +155,9 @@ class ReconPhase:
                 continue
             try:
                 result = self._collect(collector, target, context)
-                writer = get_recon_writer(self._store.db_path)
+                writer = get_preanalysis_writer(self._store.db_path)
                 writer.submit(
-                    lambda store, r=result: store.save_recon_result(r)
+                    lambda store, r=result: store.save_preanalysis_result(r)
                 )
                 writer.flush()
                 results.append(result)
@@ -176,7 +176,7 @@ class ReconPhase:
         *,
         func_ea: int,
         provider_phase: ProviderPhase,
-    ) -> list[ReconResult]:
+    ) -> list[PreanalysisResult]:
         """Dispatch all ctree collectors registered for ``provider_phase``."""
         provider_level = int(provider_phase.provider_level)
         maturity_text = str(provider_phase.friendly_provider_level)
@@ -184,12 +184,12 @@ class ReconPhase:
         ctree_key = (provider_level, "ctree")
         if ctree_key in fired_maturities:
             return []
-        context = ReconCollectionContext(
+        context = PreanalysisCollectionContext(
             func_ea=int(func_ea),
             provider_phase=provider_phase,
         )
 
-        results: list[ReconResult] = []
+        results: list[PreanalysisResult] = []
         for collector in self._collectors:
             if collector.level != "ctree":
                 continue
@@ -197,8 +197,8 @@ class ReconPhase:
                 continue
             try:
                 result = self._collect(collector, target, context)
-                get_recon_writer(self._store.db_path).submit(
-                    lambda store, r=result: store.save_recon_result(r)
+                get_preanalysis_writer(self._store.db_path).submit(
+                    lambda store, r=result: store.save_preanalysis_result(r)
                 )
                 results.append(result)
             except Exception:

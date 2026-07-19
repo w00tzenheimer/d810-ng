@@ -12,7 +12,7 @@ from d810.core.typing import Any
 
 
 @dataclass(frozen=True)
-class ReconCollectionContext:
+class PreanalysisCollectionContext:
     """Provider-neutral recon collector call context."""
 
     func_ea: int
@@ -23,13 +23,13 @@ class ReconCollectionContext:
         return provider_level_id(self.provider_phase)
 
 
-def coerce_recon_collection_context(
-    context: ReconCollectionContext | None,
+def coerce_preanalysis_collection_context(
+    context: PreanalysisCollectionContext | None,
     *,
     func_ea: int | None = None,
     provider_phase: ProviderPhase | None = None,
     legacy_fields: dict[str, Any] | None = None,
-) -> ReconCollectionContext:
+) -> PreanalysisCollectionContext:
     """Return a recon context from the canonical or legacy collector API."""
 
     fields = legacy_fields if legacy_fields is not None else {}
@@ -47,13 +47,13 @@ def coerce_recon_collection_context(
                 "provider_phase is required when context is not provided"
             )
         provider_phase = provider_phase_snapshot_from_level(int(legacy_level))
-    return ReconCollectionContext(
+    return PreanalysisCollectionContext(
         func_ea=int(func_ea),
         provider_phase=provider_phase,
     )
 
 
 __all__ = [
-    "ReconCollectionContext",
-    "coerce_recon_collection_context",
+    "PreanalysisCollectionContext",
+    "coerce_preanalysis_collection_context",
 ]

@@ -22,10 +22,10 @@ from d810.analyses.control_flow.transition_report import (
     transition_report_to_dict,
 )
 from d810.analyses.control_flow.collection_context import (
-    ReconCollectionContext,
-    coerce_recon_collection_context,
+    PreanalysisCollectionContext,
+    coerce_preanalysis_collection_context,
 )
-from d810.analyses.control_flow.models import CandidateFlag, ReconResult
+from d810.analyses.control_flow.models import CandidateFlag, PreanalysisResult
 
 logger = getLogger(__name__)
 
@@ -146,7 +146,7 @@ class HandlerTransitionsCollector:
         func_ea: int,
         provider_level: int,
         timestamp: float | None = None,
-    ) -> ReconResult:
+    ) -> PreanalysisResult:
         candidates: list[CandidateFlag] = []
         for row in report.rows:
             if row.kind == TransitionKind.UNKNOWN:
@@ -159,7 +159,7 @@ class HandlerTransitionsCollector:
                     )
                 )
 
-        return ReconResult(
+        return PreanalysisResult(
             collector_name=cls.name,
             func_ea=func_ea,
             provider_level=provider_level,
@@ -182,18 +182,18 @@ class HandlerTransitionsCollector:
     def collect(
         self,
         target: Any,
-        context: ReconCollectionContext | None = None,
+        context: PreanalysisCollectionContext | None = None,
         func_ea: int | None = None,
         **legacy_fields: object,
-    ) -> ReconResult:
-        context = coerce_recon_collection_context(
+    ) -> PreanalysisResult:
+        context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,
             legacy_fields=legacy_fields,
         )
         report = self._resolve_report(target)
         if report is None:
-            return ReconResult(
+            return PreanalysisResult(
                 collector_name=self.name,
                 func_ea=context.func_ea,
                 provider_level=context.provider_level,

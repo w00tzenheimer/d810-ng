@@ -102,7 +102,7 @@ class FactCaptureSummary:
         return int(self.provider_level)
 
 
-class FactLifecycleRuntime:
+class PreanalysisFactRuntime:
     """Empty-registry maturity fact runtime."""
 
     def __init__(

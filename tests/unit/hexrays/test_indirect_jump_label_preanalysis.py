@@ -9,16 +9,31 @@ from d810.hexrays.preanalysis.indirect_jump_discovery import (
 from d810.hexrays.preanalysis.indirect_jump_labels import (
     _add_user_cref_with_fallback,
     _add_resolved_state_write_crefs,
-    get_materialized_indirect_transfers,
-    get_terminal_return_carrier_requests,
+    materialized_indirect_transfers,
+    merge_materialized_indirect_transfers,
+    merge_terminal_return_carrier_requests,
     plan_indirect_label_materialization,
-    record_materialized_indirect_transfers,
-    record_terminal_return_carrier_requests,
+    terminal_return_carrier_requests,
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     TerminalReturnCarrierRequest,
 )
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativePreanalysisSessionState,
+)
+from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+    resolver_session_state,
+)
+
+
+def _resolver_state() -> object:
+    return resolver_session_state(
+        SimpleNamespace(
+            native_preanalysis=NativePreanalysisSessionState(),
+            extensions={},
+        )
+    )
 
 
 def test_indirect_label_materialization_plan_uses_configured_bounds() -> None:
@@ -63,19 +78,24 @@ def test_indirect_label_materialization_plan_rejects_unbounded_range() -> None:
     )
 
 
-def test_materialized_transfer_registry_is_function_scoped_and_reset() -> None:
+def test_materialized_transfer_evidence_is_session_scoped() -> None:
     transfer = MaterializedIndirectTransfer(
         source_jmp_ea=0x401000,
         source_block_ea=0x400FF0,
         materialized_anchor_eas=(0x400FFC,),
         target_eas=(0x402000,),
     )
-    labels.reset_indirect_materialization()
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(),
+        extensions={},
+    )
+    state = resolver_session_state(session)
+    other_state = _resolver_state()
 
-    record_materialized_indirect_transfers(0x400000, (transfer,))
+    assert merge_materialized_indirect_transfers(state, (transfer,))
 
-    assert get_materialized_indirect_transfers(0x400000) == (transfer,)
-    assert get_materialized_indirect_transfers(0x500000) == ()
+    assert materialized_indirect_transfers(state) == (transfer,)
+    assert materialized_indirect_transfers(other_state) == ()
 
     second = MaterializedIndirectTransfer(
         source_jmp_ea=0x401010,
@@ -84,32 +104,36 @@ def test_materialized_transfer_registry_is_function_scoped_and_reset() -> None:
         target_eas=(0x402100,),
         resolver_kind="residual_state_route_evidence",
     )
-    record_materialized_indirect_transfers(0x400000, (second,))
-    assert get_materialized_indirect_transfers(0x400000) == (transfer, second)
+    assert merge_materialized_indirect_transfers(state, (second,))
+    assert materialized_indirect_transfers(state) == (transfer, second)
 
     labels.reset_indirect_materialization()
-    assert get_materialized_indirect_transfers(0x400000) == ()
+    assert materialized_indirect_transfers(state) == (transfer, second)
 
 
-def test_terminal_return_carrier_request_registry_is_function_scoped_and_reset() -> None:
+def test_terminal_return_carrier_evidence_is_session_scoped() -> None:
     request = TerminalReturnCarrierRequest(
         source_handler_ea=0x40C7E5,
         terminal_target_ea=0x40C898,
         state_var_reg=20,
         state_constant=0x19A7218A,
     )
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(),
+        extensions={},
+    )
+    state = resolver_session_state(session)
+    other_state = _resolver_state()
+
+    assert merge_terminal_return_carrier_requests(state, (request,))
+
+    assert terminal_return_carrier_requests(state) == (request,)
+    assert terminal_return_carrier_requests(other_state) == ()
     labels.reset_indirect_materialization()
-
-    record_terminal_return_carrier_requests(0x40A560, (request,))
-
-    assert get_terminal_return_carrier_requests(0x40A560) == (request,)
-    assert get_terminal_return_carrier_requests(0x500000) == ()
-    labels.reset_indirect_materialization()
-    assert get_terminal_return_carrier_requests(0x40A560) == ()
+    assert terminal_return_carrier_requests(state) == (request,)
 
 
-def test_function_scoped_clear_removes_address_only_profile_evidence() -> None:
-    function_ea = 0x401000
+def test_releasing_live_bindings_does_not_create_an_address_keyed_clear_path() -> None:
     transfer = MaterializedIndirectTransfer(
         source_jmp_ea=0x401080,
         source_block_ea=0x401070,
@@ -122,16 +146,16 @@ def test_function_scoped_clear_removes_address_only_profile_evidence() -> None:
         state_var_reg=20,
         state_constant=0x12345678,
     )
-    labels.reset_indirect_materialization()
-    labels.mark_indirect_dispatcher(function_ea)
-    record_materialized_indirect_transfers(function_ea, (transfer,))
-    record_terminal_return_carrier_requests(function_ea, (request,))
+    state = _resolver_state()
+    labels.mark_indirect_dispatcher(state)
+    merge_materialized_indirect_transfers(state, (transfer,))
+    merge_terminal_return_carrier_requests(state, (request,))
 
-    labels.clear_materialized_indirect_dispatcher_evidence(function_ea)
+    state.release_live_bindings()
 
-    assert not labels.is_materialized_indirect_dispatcher(function_ea)
-    assert get_materialized_indirect_transfers(function_ea) == ()
-    assert get_terminal_return_carrier_requests(function_ea) == ()
+    assert labels.is_materialized_indirect_dispatcher(state)
+    assert materialized_indirect_transfers(state) == (transfer,)
+    assert terminal_return_carrier_requests(state) == (request,)
 
 
 def test_indirect_label_cref_uses_fallback_kind(monkeypatch) -> None:
@@ -281,15 +305,23 @@ def test_indirect_materialization_subscribes_to_flowchart_event(
         resolved_state_xref_count=2,
     )
     calls: list[int] = []
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(),
+        extensions={},
+    )
+    state = resolver_session_state(session)
 
-    def materialize(function_ea: int):
+    def materialize(function_ea: int, *, state: object):
         calls.append(function_ea)
         return result
 
     monkeypatch.setattr(labels, "run_indirect_materialization_for_function", materialize)
 
     labels.register_indirect_materialization({})
-    decision: dict[str, object] = {"request_redo": False}
+    decision: dict[str, object] = {
+        "request_redo": False,
+        "session": session,
+    }
     flowchart_preanalysis.run_flowchart_preanalysis_handlers(
         function_ea=0x180013BD0,
         mba=object(),

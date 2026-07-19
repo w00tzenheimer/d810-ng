@@ -156,16 +156,13 @@ def main() -> None:
         headless.start()
         try:
             import d810.hexrays.mutation.detached_handler_island as detached
-            from d810.hexrays.preanalysis.indirect_jump_labels import (
-                mark_indirect_dispatcher,
-            )
 
             hook = FrontierProbe()
             hook.hook()
             cg.install()
             try:
                 for round_index in range(int(args.rounds)):
-                    mark_indirect_dispatcher(FUNCTION_EA)
+                    prepared = headless.prepare_native_preanalysis(FUNCTION_EA)
                     ida_hexrays.clear_cached_cfuncs()
                     cfunc = ida_hexrays.decompile(FUNCTION_EA)
                     print(
@@ -175,10 +172,6 @@ def main() -> None:
                         flush=True,
                     )
                     if cfunc is not None:
-                        prepared = cg.prepare_detached_handler_snippets(
-                            FUNCTION_EA,
-                            live_mba=cfunc.mba,
-                        )
                         print(
                             "FRONTIER_ROUND",
                             f"round={round_index}",

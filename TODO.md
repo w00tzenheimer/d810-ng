@@ -35,31 +35,39 @@ decompilation finishes.  It must never retain a live `mba_t` from a discarded
 generation.
 
 ```python
-@dataclass
-class DecompilationSessionContext:
-    function_ea: int
-    top_level_epoch: int
-    preopt_generation: int
-    bound_generation: int
-
-    # Durable, native-identity evidence only.
-    validated_facts: ValidatedFactView | None
-    resolver_resolution: ComputedGotoResolution | None
-    transfers: tuple[MaterializedIndirectTransfer, ...]
+@dataclass(slots=True)
+class NativePreanalysisSessionState:
+    key: NativePreanalysisKey
+    evidence_generation: int
+    bound_preopt_generation: int
+    facts: NativePreanalysisFacts | None
     imported_instruction_origins: dict[int, int]
 
-    # Reusable native/template data. Never retain a live MBA.
-    pristine_cfg: NativeCfg | None
-    semantic_closure: NativeSemanticClosure | None
-    prepared_union: PreoptUnionPreparationResult | None
+
+@dataclass(slots=True)
+class DecompilationSessionContext:
+    function_ea: int
+    database_identity: str
+    top_level_epoch: int
+    native_preanalysis: NativePreanalysisSessionState | None
 ```
+
+Portable evidence and its generation are first-class session state.  Do not
+hide them in `extensions`, retrieve them with `getattr()`, or coordinate them
+through an optimizer-owned function-EA map.  An optimizer may use a typed
+dynamic attachment for private callback-local bookkeeping only when the
+portable analysis layer cannot own that type; the attachment must not become
+the authority for evidence, generations, or redo decisions.
 
 `FactLifecycleRuntime` remains a fact producer and validator.  Do not turn it
 into a cache for native CFGs, templates, or SWIG MBA objects.
 
 ## Required lifecycle
 
-1. At real decompilation start, create or reset the session for the function.
+1. Before eager native preanalysis, idempotently ensure the session exists.
+   The `hxe_flowchart` path performs the same ensure operation for F5 or other
+   callers that bypass a d810-owned entry point, and `hxe_prolog` remains a
+   defensive fallback.  Only the first ensure emits session-start/reset work.
 2. Before resolver byte delivery, capture the pristine native CFG and semantic
    closure into the session.
 3. At PREOPT, build or bind the union template from the session's current
@@ -67,10 +75,13 @@ into a cache for native CFGs, templates, or SWIG MBA objects.
 4. At CALLS, recover new routes/predicate arms, canonicalize every imported
    fictitious EA through `(imported EA -> native EA)` provenance, and merge
    only non-duplicate evidence into the session.
-5. If the merged evidence changes the boundary-port plan, increment
-   `preopt_generation`, invalidate `prepared_union`, and return `MERR_REDO`.
+5. If the merged evidence changes the boundary-port plan, increment the
+   evidence generation, invalidate the prepared union, and record one bounded
+   restart-from-generated decision.  The flowchart callback returns
+   `MERR_REDO`; PREOPT never attempts an unsupported direct restart.
 6. On the regenerated PREOPT MBA, bind/import only when
-   `preopt_generation > bound_generation`, then set `bound_generation`.
+   `evidence_generation > bound_preopt_generation`, then update the bound
+   generation.
 7. If no evidence changes, do not request another full redo.  Retain
    `MERR_LOOP` only for genuine CALLS-local microcode mutations.
 8. At top-level decompilation finish, release the session and any imported-EA
@@ -360,7 +371,69 @@ PYTHONPATH=src lint-imports --config .importlinter
 sg scan --config sgconfig.yml --report-style short
 ```
 
-### Track A: finish the active Rhad semantic gap first
+### Track A: Rhad semantic work after the session/identity foundation
+
+#### A0. Preserve the bootstrap route through fresh PREOPT regeneration
+
+**Ticket:** `dsf-dnr9`
+
+**Problem statement:** A1 starts after the current earliest semantic loss. On
+the fresh, no-cache `sub_40D200` path, the regenerated PREOPT MBA has already
+lost the bootstrap route:
+
+```text
+0x40D348 -> state 0x699BC698 -> handler 0x40EAA7
+```
+
+Without that route, the cleanup body is unreachable. Improving the later
+conditional at `0x40E20E` cannot make an unreachable body reachable.
+
+**Design target:**
+
+> Fresh, cache-disabled `sub_40D200` fully deobfuscates through the
+> session/identity PREOPT path, with the bootstrap route preserved across redo
+> and no dependency on serialized snapshots.
+
+This is a deliberately narrow vertical slice, not permission to build a second
+session or identity model. The session-generation and stable-identity pieces
+introduced here are the final B0.2/B1 authorities. They must not use a raw MBA
+pointer, a persisted block serial, an address-keyed compatibility map, a
+serialized template, a netnode, or cache reuse.
+
+**Required sequence:**
+
+1. Run `sub_40D200` from a disposable copied loader with caches disabled and
+   diagnostic snapshots enabled. Persist a diagnostic row/report for the first
+   missing bootstrap fact before changing resolver behavior.
+2. Attach resolver evidence to the active `DecompilationSessionContext` and
+   assign monotonically increasing evidence generations. CALLS may merge new
+   native facts; a semantic no-op must not advance the generation.
+3. Add only the stable identity slice needed by this path: native instruction
+   EA intervals, current-MBA rebinding, transaction-local synthetic handles,
+   and mutation receipts. A serial is a current binding, never an evidence or
+   persistence key.
+4. Allow at most one `MERR_REDO` for an evidence generation. PREOPT must
+   rebuild the current identity index and rebind the newer generation before
+   consuming the bootstrap route.
+5. Recover and publish the bootstrap route above. Prefer static native proof;
+   CALLS discovery plus the single controlled redo is the generic fallback.
+6. Re-run the fresh target and compare it to the native oracle. Only after the
+   body is reachable may A1 reassess `0x40E20E` as the next actual semantic gap.
+7. Keep serialized snapshots, netnode persistence, and cache reuse out of A0.
+   They are later transport/persistence work and must not hide a no-cache
+   recovery failure.
+
+**Acceptance gates:**
+
+- The target E2E emits a durable bootstrap-route record with source
+  `0x40D348`, state `0x699BC698`, and handler `0x40EAA7`; the route remains
+  present after the controlled redo.
+- The same session reuses its top-level epoch across redo, advances evidence
+  generation only for changed facts, and releases live-only bindings at finish.
+- Every bootstrap/import source is rebound by native identity or explicitly
+  abstains. No diagnostic, resolver map, or persisted artifact identifies it
+  by a bare block serial.
+- The protected Docker Hodur/Sub7ffd suite remains green after every A0 commit.
 
 #### A1. Recover branch-style conditional state choices in the native resolver
 
@@ -502,12 +575,12 @@ attachment.
 
 ```python
 class DecompilationLifecycleCoordinator:
-    def begin_hexrays_session(
+    def ensure_hexrays_session(
         self,
         *,
         function_ea: int,
         database_identity: str,
-    ) -> DecompilationSessionContext: ...
+    ) -> tuple[DecompilationSessionContext, bool]: ...
 
     def capture_flowgraph(
         self,
@@ -524,10 +597,11 @@ class DecompilationLifecycleCoordinator:
 ```
 
 The coordinator owns a stack of active sessions, not one bare current EA.  A
-nested or restarted decompilation for the same function increments a top-level
-epoch; a different function receives an independent context.  `MERR_LOOP` and
-`MERR_REDO` reuse the same top-level session and therefore do not reset facts,
-template epochs, or preanalysis evidence.
+genuine nested top-level decompilation receives a new epoch; an internal
+`MERR_LOOP` or `MERR_REDO` for the same active function reuses the same session
+and therefore does not reset facts, template epochs, or preanalysis evidence.
+The boolean returned by `ensure_hexrays_session()` is true only when a new
+top-level session was created, so start/reset events are emitted exactly once.
 
 Replace the current argument-free start/finish events with typed session
 events.  There is no backward-compatibility requirement, so do not retain
@@ -544,11 +618,15 @@ class DecompilationSessionEvent:
     top_level_epoch: int
 ```
 
-`HexraysDecompilationHook.prolog()` emits `SESSION_STARTED` with function and
-database identity.  `structural()` emits `SESSION_FINISHED` for the matching
-context.  Every existing profiling, statistics, diagnostics, recon, rule-scope,
-and UI subscriber migrates to accept `DecompilationSessionEvent`; delete the
-old `STARTED` and `FINISHED` enum members and every subscription to them.
+The eager pre-decompile capability calls `ensure_hexrays_session()` before
+native analysis.  `HexraysDecompilationHook.flowchart()` calls it as the
+universal lazy fallback, and `prolog()` calls it defensively if neither path
+did.  Only the call that creates the session emits `SESSION_STARTED` with
+function and database identity.  `structural()` emits `SESSION_FINISHED` for
+the matching context.  Every existing profiling, statistics, diagnostics,
+recon, rule-scope, and UI subscriber migrates to accept
+`DecompilationSessionEvent`; delete the old `STARTED` and `FINISHED` enum
+members and every subscription to them.
 
 **Single-owner rules:**
 
@@ -558,7 +636,8 @@ old `STARTED` and `FINISHED` enum members and every subscription to them.
   delegate.  There is one path from `FLOWGRAPH_READY` to
   `ReconPhase.run_microcode_collectors()` and
   `ReconAnalysisRuntime.capture_maturity_facts()`.
-- Only `begin_hexrays_session()` calls `ReconAnalysisRuntime.reset_for_func()`
+- Only a newly-created result from `ensure_hexrays_session()` calls
+  `ReconAnalysisRuntime.reset_for_func()`
   and clears rule-scope hint state for that epoch.  Remove duplicate direct
   reset/analyze calls from instruction and block optimizer adapters after the
   coordinator path is proven.
@@ -672,6 +751,12 @@ optimizer/pass/importer layers.
   access.  Its `--apply` mode rewrites only the exact AST/import patterns that
   have a corresponding test update in the same commit; unknown patterns exit
   nonzero and remain in the report.
+- [x] Re-run the B0 review inventory across `src/`, `tests/`, `tools/`, and
+  `pyproject.toml`, including parser-declared CLI names and residual
+  `recon_*`/`Recon*` APIs.  The complete current inventory is
+  `tools/scripts/codemod_reports/decompilation_lifecycle_full_inventory.json`;
+  `lifecycle_migration_manifest.json` uses it as the no-new-manual-boundary
+  baseline until each migration batch removes its own candidates.
 - [ ] Run the codemod in report mode after every migration task.  The final
   report must contain zero references to removed `STARTED`/`FINISHED` events,
   adapter-owned `reset_for_func`/`analyze_and_persist` calls, and removed
@@ -710,13 +795,15 @@ class FlowgraphReadyPayload:
 evidence are the final architecture.  They are not migration names and must
 remain after every `Recon*` name and resolver lifecycle global is gone.
 
-Resolver-specific state remains in the optimizer layer.  A
-`ResolverSessionStateStore` obtains the current `DecompilationSessionContext`
-from the coordinator and attaches a `ResolverSessionState` through a generic
-session-extension key; the portable analysis/session layer never imports an
-optimizer type.  Its state replaces `_MATERIALIZATION_SESSIONS`,
-`_RESOLUTIONS_BY_EA`, `_PREPATCH_PREOPT_UNION_SOURCES`, and
-`_PREOPT_UNION_PREPARATIONS` without reintroducing an address-keyed registry.
+Portable native-preanalysis evidence, its generation, and its PREOPT binding
+generation are first-class fields on `DecompilationSessionContext`.  The
+portable analysis/session layer never imports an optimizer type.  If the
+resolver needs private callback-local bookkeeping that cannot cross that
+boundary, it may attach it through an explicit typed attachment API, but that
+bookkeeping is not the evidence or redo authority.  The session-owned state
+replaces `_MATERIALIZATION_SESSIONS`, `_RESOLUTIONS_BY_EA`,
+`_PREPATCH_PREOPT_UNION_SOURCES`, and `_PREOPT_UNION_PREPARATIONS` without
+reintroducing an address-keyed registry.
 
 **Temporary bridge rule:** A bridge may exist only as a private coordinator
 implementation detail.  It may delegate to `ReconPhase`,
@@ -1014,10 +1101,11 @@ class DecompilationSessionContext:
     facts: NativePreanalysisFacts | None
 ```
 
-`DecompilationSessionRegistry` must expose only explicit operations:
+The existing `DecompilationLifecycleCoordinator` must expose these explicit
+operations.  Do not add an independently subscribed session registry:
 
 ```python
-begin(key: NativePreanalysisKey) -> DecompilationSessionContext
+ensure(key: NativePreanalysisKey) -> tuple[DecompilationSessionContext, bool]
 get(key: NativePreanalysisKey) -> DecompilationSessionContext | None
 merge_facts(key: NativePreanalysisKey, facts: NativePreanalysisFacts) -> bool
 mark_preopt_bound(key: NativePreanalysisKey, evidence_epoch: int) -> None
@@ -1027,12 +1115,13 @@ finish(key: NativePreanalysisKey) -> None
 `merge_facts()` returns `True` only when normalized semantic evidence changed.
 It must reject a key mismatch and must not use a block serial as a merge key.
 
-- [ ] Write pure unit tests for `begin`, idempotent merge, changed merge,
+- [ ] Write pure unit tests for `ensure`, idempotent merge, changed merge,
   key mismatch rejection, exact-once PREOPT binding, and finish cleanup.
 - [ ] Implement these types in the analysis layer using only core/analysis
   dependencies.  Do not import IDA, Hex-Rays, UI, or optimizer modules there.
-- [ ] Attach the registry to `DecompilationLifecycleCoordinator`; do not
-  subscribe it independently to `STARTED`, `FINISHED`, or maturity events.
+- [ ] Implement these operations on `DecompilationLifecycleCoordinator`; do
+  not add an independently subscribed registry for `STARTED`, `FINISHED`, or
+  maturity events.
 - [ ] Move `_RESOLUTIONS_BY_EA`, `_MATERIALIZATION_SESSIONS`,
   `_PREOPT_UNION_PREPARATIONS`, `_PREPATCH_PREOPT_UNION_SOURCES`, and
   materialized-transfer accumulation into resolver-owned session state.  Update
@@ -1050,6 +1139,8 @@ It must reject a key mismatch and must not use a block serial as a merge key.
 - Create: `tests/unit/capabilities/test_native_preanalysis.py`
 - Modify: `src/d810/ui/actions/decompile_function.py`
 - Modify: `src/d810/ui/actions/deobfuscate_this.py`
+- Modify: `src/d810/manager/decompilation_lifecycle.py`
+- Modify: `src/d810/hexrays/hooks/hexrays_hooks.py`
 - Modify: `src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py`
 - Test: `tests/system/runtime/optimizers/microcode/flow/jumps/test_computed_goto_resolver.py`
 
@@ -1074,10 +1165,12 @@ registered.
   it during uninstall.
 - [ ] Invoke `prepare_native_preanalysis(function_ea)` immediately before the
   first `idaapi.decompile(function_ea)` in d810-owned UI actions and headless
-  entry points that have an explicit pre-decompile boundary.
+  entry points that have an explicit pre-decompile boundary.  It must first
+  call the coordinator's idempotent session ensure operation.
 - [ ] Make `_on_flowchart_preanalysis()` call the same preparer when the
-  session has no valid facts.  It must not duplicate existing evidence or
-  recursively invoke microcode generation.
+  session has no valid facts.  The hook must ensure the session before invoking
+  the preparer, must not duplicate existing evidence, and must not recursively
+  invoke microcode generation.  `hxe_prolog` remains a defensive ensure only.
 - [ ] Return `MERR_REDO` only when preflight materially changed native delivery
   that Hex-Rays must rebuild to observe.  Evidence-only preflight proceeds
   without a redo.
@@ -1244,18 +1337,42 @@ captured and validated.  A failed write leaves the previous valid entry intact.
 
 ### Delivery sequence and review boundaries
 
-1. **Commit A1+A2** only when `sub_40D200` is semantically unflattened from a
-   fresh source path.  This is the direct user-visible fix and must not depend
-   on cache work.
-2. **Commit B0+B1+B2** as the deliberately breaking lifecycle and in-memory
-   session cleanup.  It establishes one manager-owned epoch, migrates every
-   injected lifecycle consumer by codemod, and deletes the old event/global
-   APIs rather than preserving compatibility shims.
-3. **Commit B3+B4** as serialization, validation, and persistence primitives.
+The following order is normative. A later item may not use a temporary
+authority that an earlier item is supposed to remove.
+
+1. **Commit B0 review closure**: make codemod application truly atomic and
+   regenerate the full production inventory, including `tools/`, parser-declared
+   CLI names, and residual `recon_*`/`Recon*` APIs. Each migration batch owns
+   the inventory candidates it removes; unknown production candidates remain a
+   failing review item, not manual follow-up.
+2. **Commit B0 terminology and coordinator migration**: migrate all production
+   lifecycle consumers to the single coordinator and final preanalysis names.
+   Delete the old events, direct adapter runtime calls, and terminology. There
+   is no compatibility layer or import alias.
+3. **Commit B0.2 identity and mutation authority**: land portable identity,
+   live `MbaBlockIdentityIndex` rebinding, typed mutation receipts, and the sole
+   structural-mutation gateway. Delete adapter-local serial remaps and
+   cross-maturity EA-to-serial maps before the resolver relies on this path.
+4. **Commit B1 resolver session migration**: move resolver function-EA globals
+   into the coordinator-owned session, with generation-aware CALLS merges, one
+   controlled `MERR_REDO`, and PREOPT rebinding against the newer generation.
+   No live MBA or persisted serial survives the session boundary.
+5. **Commit A0** as the fresh PREOPT bootstrap proof. It consumes the final
+   B0.2/B1 authorities to preserve `0x40D348 -> 0x699BC698 -> 0x40EAA7` through
+   the controlled redo. It must pass with caches disabled and without serialized
+   snapshots, netnodes, or cache reuse.
+6. **Commit A1+A2** only after A0 makes the body reachable and establishes that
+   `0x40E20E` is the next actual semantic gap. This is the direct user-visible
+   Rhad work and must not create a second lifecycle, identity, or evidence path.
+7. **Commit B2** only where explicit preflight/fallback remains necessary after
+   the no-cache proof. It extends the established coordinator/session path; it
+   does not introduce persistence or alter the no-cache oracle.
+8. **Commit B3+B4** as serialization, validation, and persistence primitives.
    They must have standalone unit/runtime proof but need not change production
    import selection yet.
-4. **Commit B5+C1+C2** only after cache-on and cache-off output are equivalent
-   and all existing architecture gates pass.
+9. **Commit B5+C1+C2** only after cache-on and cache-off output are equivalent
+   and all existing architecture gates pass. Replay the Rhad donor only after
+   the protected Docker Rhad, Hodur/Sub7ffd, and Tigress gates are green.
 
 Every commit must preserve direct reanalysis without an existing cache.  No
 commit may introduce a profile-independent import, a sample-specific address,

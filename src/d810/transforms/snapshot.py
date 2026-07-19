@@ -34,7 +34,7 @@ from d810.transforms.planner_context import (
 if TYPE_CHECKING:
     from d810.ir.flowgraph import FlowGraph
     from d810.analyses.control_flow.round_discovery_context import (
-        ReconRoundDiscoveryContext,
+        PreanalysisRoundDiscoveryContext,
     )
 
 
@@ -126,7 +126,7 @@ class AnalysisSnapshot:
     # never leak into the engine's pure-Python import graph. Defaults to
     # ``None`` until a family adapter opts in to building it; strategies MUST
     # tolerate ``None`` during the Phase A scaffolding rollout.
-    discovery: ReconRoundDiscoveryContext | None
+    discovery: PreanalysisRoundDiscoveryContext | None
 
     # Validated maturity fact view. Most strategy uses are diagnostic, but
     # narrow consumers may use validated facts as semantic safety gates when
@@ -178,7 +178,7 @@ class AnalysisSnapshot:
         nop_state_values: dict[int, int] | None = None,
         lfg_redirected_blocks: frozenset[int] | None = None,
         state_summary: StateModelSummary | None = None,
-        discovery: ReconRoundDiscoveryContext | None = None,
+        discovery: PreanalysisRoundDiscoveryContext | None = None,
         diagnostic_fact_view: object | None = None,
         cumulative_planner_view: CumulativePlannerView | None = None,
         round_context: RoundContext | None = None,

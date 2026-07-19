@@ -48,7 +48,7 @@ def _ir_maturity_for_hexrays_maturity(maturity: int) -> Any | None:
 class HexRaysPostD810Runtime:
     """Owns post-D810 live Hex-Rays capture and probe subscribers."""
 
-    recon_runtime: Any | None
+    analysis_runtime: Any | None
     block_optimizer: Any
     settings_provider: Callable[[], Any] = get_settings
     maturity_name_provider: Callable[[int], str] = _default_maturity_name
@@ -92,7 +92,7 @@ class HexRaysPostD810Runtime:
         snapshot: Any = None,
     ) -> None:
         """Capture maturity facts on the post-D810 snapshot."""
-        if self.recon_runtime is None:
+        if self.analysis_runtime is None:
             return
         try:
             func_ea = int(getattr(mba, "entry_ea", 0) or 0)
@@ -113,7 +113,7 @@ class HexRaysPostD810Runtime:
                     func_ea,
                 )
                 return
-            self.recon_runtime.capture_maturity_facts(
+            self.analysis_runtime.capture_maturity_facts(
                 target,
                 func_ea=func_ea,
                 provider_phase=provider_phase,
@@ -121,7 +121,7 @@ class HexRaysPostD810Runtime:
                 snapshot=snapshot,
             )
         except Exception:
-            logger.exception("FactLifecycleRuntime post-D810 capture failed")
+            logger.exception("PreanalysisFactRuntime post-D810 capture failed")
 
     def resolve_linearization_context(
         self,

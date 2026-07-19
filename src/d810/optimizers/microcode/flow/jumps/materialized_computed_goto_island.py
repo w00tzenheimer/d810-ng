@@ -23,6 +23,7 @@ from d810.analyses.control_flow.detached_handler_island import (
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
+    is_conditional_handler_bridge_kind,
     materialized_terminal_target_eas_by_source,
     plan_residual_state_route_bridges,
     unique_materialized_equality_target_eas,
@@ -39,7 +40,6 @@ from d810.hexrays.mutation import (
     detached_handler_island as detached_handler_island_mutation,
 )
 from d810.hexrays.mutation.detached_handler_island import (
-    CallResultCarrier,
     capture_call_result_carriers,
     capture_detached_handler_call_templates,
     clear_detached_handler_call_templates,
@@ -81,10 +81,6 @@ from d810.hexrays.preanalysis.preopt_preanalysis import (
     register_preopt_preanalysis_handler,
     unregister_preopt_preanalysis_handler,
 )
-from d810.hexrays.preanalysis.indirect_jump_labels import (
-    get_materialized_indirect_transfers,
-    record_materialized_indirect_transfers,
-)
 from d810.optimizers.microcode.flow.handler import (
     FlowOptimizationRule,
     FlowRulePriority,
@@ -92,6 +88,10 @@ from d810.optimizers.microcode.flow.handler import (
 from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     is_computed_goto_materialized,
     recover_conditional_handler_bridge_transfers_from_mba,
+)
+from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+    ResolverSessionState,
+    resolver_session_state,
 )
 
 logger = getLogger("D810.optimizer.materialized_computed_goto_island")
@@ -249,8 +249,10 @@ def _restore_preopt_terminal_return_carriers(
     )
 
 
-def _candidate_plans(function_ea: int) -> tuple[DetachedHandlerIslandPlan, ...]:
-    transfers = get_materialized_indirect_transfers(int(function_ea))
+def _candidate_plans(
+    state: ResolverSessionState,
+) -> tuple[DetachedHandlerIslandPlan, ...]:
+    transfers = state.materialized_transfers
     state_registers = {
         int(transfer.selector_state_var_reg)
         for transfer in transfers
@@ -288,7 +290,7 @@ def _candidate_plans(function_ea: int) -> tuple[DetachedHandlerIslandPlan, ...]:
             false_target_ea=int(transfer.false_target_ea),
         )
         for transfer in transfers
-        if transfer.resolver_kind == "conditional_handler_bridge"
+        if is_conditional_handler_bridge_kind(transfer.resolver_kind)
         and transfer.condition_code is not None
         and transfer.true_target_ea is not None
         and transfer.false_target_ea is not None
@@ -313,9 +315,9 @@ def _candidate_plans(function_ea: int) -> tuple[DetachedHandlerIslandPlan, ...]:
 
 
 def _candidate_conditional_bridge_plans(
-    function_ea: int,
+    state: ResolverSessionState,
 ) -> tuple[ConditionalHandlerBridgePlan, ...]:
-    transfers = get_materialized_indirect_transfers(int(function_ea))
+    transfers = state.materialized_transfers
     if not conditional_bridge_route_evidence_converged(transfers):
         return ()
     state_registers = {
@@ -522,6 +524,80 @@ def _apply_detached_snippet_terminal_routes(
     return int(modifier.apply(defer_post_apply_maintenance=True))
 
 
+def _apply_live_resolver_cut_counterparts(mba: object) -> int:
+    """Rebind imported resolver-cut terminal ports to exact native sources.
+
+    The detached-snippet importer applies each direct boundary port to the
+    imported copy.  When the native source still survives in the regenerated
+    MBA, the same portable evidence must also close that counterpart; otherwise
+    the original zero-way ``m_ijmp`` remains reachable beside its routed copy.
+    """
+    candidates_by_source: dict[int, set[tuple[int, int, int, int]]] = {}
+    for evidence in imported_detached_snippet_direct_boundary_evidence(mba):
+        port = evidence.port
+        if str(port.delivery_mode) != "terminal_goto":
+            continue
+        source_ea = int(port.source_instruction_ea)
+        target_ea = int(port.target_ea)
+        source = find_unique_live_block_by_ea(mba, source_ea)
+        target = find_unique_live_block_by_ea(mba, target_ea)
+        tail = None if source is None else source.tail
+        if (
+            source is None
+            or target is None
+            or int(source.nsucc()) != 0
+            or tail is None
+            or int(tail.opcode) != int(ida_hexrays.m_ijmp)
+            or int(tail.ea) != source_ea
+        ):
+            continue
+        candidates_by_source.setdefault(source_ea, set()).add(
+            (
+                int(source.serial),
+                int(target.serial),
+                source_ea,
+                target_ea,
+            )
+        )
+
+    plans: list[tuple[int, int, int, int]] = []
+    claimed_source_serials: set[int] = set()
+    for source_ea, candidates in sorted(candidates_by_source.items()):
+        if len(candidates) != 1:
+            logger.warning(
+                "refusing ambiguous native resolver-cut counterpart at 0x%X: %s",
+                source_ea,
+                sorted(candidates),
+            )
+            continue
+        candidate = next(iter(candidates))
+        source_serial = int(candidate[0])
+        if source_serial in claimed_source_serials:
+            logger.warning(
+                "refusing duplicate native resolver-cut source blk%d@0x%X",
+                source_serial,
+                source_ea,
+            )
+            continue
+        claimed_source_serials.add(source_serial)
+        plans.append(candidate)
+
+    if not plans:
+        return 0
+    modifier = DeferredGraphModifier(mba)
+    for source_serial, target_serial, source_ea, target_ea in plans:
+        modifier.queue_terminal_goto_change(
+            block_serial=source_serial,
+            goto_target=target_serial,
+            description=(
+                f"native resolver-cut counterpart blk{source_serial}@0x{source_ea:X} "
+                f"-> blk{target_serial}@0x{target_ea:X}"
+            ),
+            priority=5,
+        )
+    return int(modifier.apply(transactional=True, staged_atomic=True))
+
+
 def _materialize_missing_detached_snippets(
     mba: object,
     transfers: tuple[MaterializedIndirectTransfer, ...],
@@ -637,10 +713,12 @@ def _materialize_missing_detached_snippets(
 def _materialize_live_handler_replacements(
     mba: object,
     transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    state: ResolverSessionState,
 ) -> int:
     """Restore a cached two-arm handler after LOCOPT folded its predicate."""
     function_ea = int(mba.entry_ea)
-    if not is_computed_goto_materialized(function_ea):
+    if not is_computed_goto_materialized(state):
         logger.info(
             "CALLS live-handler replacement abstained: func=0x%X "
             "reason=profile_not_materialized",
@@ -916,6 +994,8 @@ def _release_replaced_native_handler_keeps(
 def _recover_imported_conditional_bridge_transfers(
     mba: object,
     transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    state: ResolverSessionState,
 ) -> tuple[MaterializedIndirectTransfer, ...]:
     """Publish live imported predicates before terminal routing folds them."""
     origins = imported_detached_snippet_instruction_origins(mba)
@@ -1059,8 +1139,8 @@ def _recover_imported_conditional_bridge_transfers(
             candidate_rows,
         )
         return transfers
-    merged = transfers + produced
-    record_materialized_indirect_transfers(int(mba.entry_ea), merged)
+    state.merge_materialized_transfers(produced)
+    merged = state.materialized_transfers
     native_by_imported = {
         int(imported_ea): int(native_ea) for imported_ea, native_ea in origins
     }
@@ -1098,7 +1178,14 @@ def _materialize_locopt_preanalysis(
     imported templates have already completed local optimization, so they can
     join the current MBA and proceed directly into call analysis.
     """
-    transfers = get_materialized_indirect_transfers(int(function_ea))
+    session = decision.get("session")
+    if session is None:
+        return
+    try:
+        state = resolver_session_state(session)
+    except (TypeError, ValueError):
+        return
+    transfers = state.materialized_transfers
     imported = _materialize_missing_detached_snippets(
         mba,
         transfers,
@@ -1178,9 +1265,11 @@ def _keep_cached_detached_snippet_blocks(
 def _apply_conditional_bridge_plans(
     mba: object,
     plans: tuple[ConditionalHandlerBridgePlan, ...],
+    *,
+    state: ResolverSessionState,
 ) -> int:
     """Apply exact live-predicate bridges through the deferred CFG mutator."""
-    transfers = get_materialized_indirect_transfers(int(mba.entry_ea))
+    transfers = state.materialized_transfers
     target_topologies = _conditional_bridge_target_topologies(
         mba,
         plans,
@@ -1533,7 +1622,6 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
         super().__init__()
         self.maturities = [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS]
         self._attempted_mbas: set[tuple[int, int, int, int]] = set()
-        self._call_result_carriers: dict[int, tuple[CallResultCarrier, ...]] = {}
 
     def configure(self, kwargs: object) -> None:
         super().configure(kwargs)
@@ -1556,7 +1644,6 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
 
     def reset_pass_manager_state(self) -> None:
         self._attempted_mbas.clear()
-        self._call_result_carriers.clear()
         clear_imported_detached_snippet_roots()
 
     def optimize(self, blk: object) -> int:
@@ -1568,6 +1655,9 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
         ):
             return 0
         function_ea = int(mba.entry_ea)
+        state = self.current_resolver_session_state()
+        if not isinstance(state, ResolverSessionState):
+            return 0
         mba_identity = (
             function_ea,
             stable_mba_identity(mba),
@@ -1579,7 +1669,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
         self._attempted_mbas.add(mba_identity)
 
         if maturity == int(ida_hexrays.MMAT_CALLS):
-            transfers = get_materialized_indirect_transfers(function_ea)
+            transfers = state.materialized_transfers
             terminal_carriers = restore_terminal_return_carriers(
                 mba,
                 function_ea,
@@ -1587,6 +1677,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
             replacement_imports = _materialize_live_handler_replacements(
                 mba,
                 transfers,
+                state=state,
             )
             missing_imports = _materialize_missing_detached_snippets(
                 mba,
@@ -1603,7 +1694,9 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
             transfers = _recover_imported_conditional_bridge_transfers(
                 mba,
                 transfers,
+                state=state,
             )
+            live_resolver_cuts = _apply_live_resolver_cut_counterparts(mba)
             terminal_routes = _apply_detached_snippet_terminal_routes(
                 mba,
                 transfers,
@@ -1612,10 +1705,14 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 mba,
                 transfers,
             )
-            bridge_plans = _candidate_conditional_bridge_plans(function_ea)
+            bridge_plans = _candidate_conditional_bridge_plans(state)
             try:
                 conditional_bridges = (
-                    _apply_conditional_bridge_plans(mba, bridge_plans)
+                    _apply_conditional_bridge_plans(
+                        mba,
+                        bridge_plans,
+                        state=state,
+                    )
                     if bridge_plans
                     else 0
                 )
@@ -1629,7 +1726,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 conditional_bridges = 0
             restored_call_definitions = (
                 restore_detached_call_result_definitions(mba, function_ea)
-                if is_computed_goto_materialized(function_ea)
+                if is_computed_goto_materialized(state)
                 else 0
             )
             graph_changes = (
@@ -1637,6 +1734,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 + int(replacement_imports)
                 + int(missing_imports)
                 + int(reconciled_calls)
+                + int(live_resolver_cuts)
                 + int(terminal_routes)
                 + int(residual_bridges)
                 + int(conditional_bridges)
@@ -1647,7 +1745,8 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                     "CALLS restored %d terminal return carrier(s), imported %d "
                     "live-handler replacement(s) and %d "
                     "cross-maturity missing target(s), reconciled %d imported "
-                    "callinfo record(s), materialized "
+                    "callinfo record(s), rebound %d native resolver-cut "
+                    "counterpart(s), materialized "
                     "%d detached terminal route(s) and %d residual state-route "
                     "bridge(s), plus %d conditional handler bridge(s) and %d "
                     "analyzed call-result definition(s)",
@@ -1655,27 +1754,28 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                     int(replacement_imports),
                     int(missing_imports),
                     int(reconciled_calls),
+                    int(live_resolver_cuts),
                     int(terminal_routes),
                     int(residual_bridges),
                     int(conditional_bridges),
                     int(restored_call_definitions),
                 )
                 return graph_changes
-            cached_carriers = self._call_result_carriers.get(function_ea, ())
+            cached_carriers = state.call_result_carriers
             logger.info(
                 "call-result carrier restore phase: cached=%d",
                 len(cached_carriers),
             )
             restored = restore_call_result_carriers(mba, cached_carriers)
             if restored:
-                self._call_result_carriers.pop(function_ea, None)
+                state.clear_call_result_carriers()
                 logger.info(
                     "restored %d call-result carrier(s) after state lowering",
                     int(restored),
                 )
             return int(restored)
 
-        transfers = get_materialized_indirect_transfers(function_ea)
+        transfers = state.materialized_transfers
         kept_snippet_blocks = _keep_cached_detached_snippet_blocks(
             mba,
             transfers,
@@ -1701,8 +1801,8 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 int(residual_bridges),
             )
 
-        island_plans = _candidate_plans(function_ea)
-        bridge_plans = _candidate_conditional_bridge_plans(function_ea)
+        island_plans = _candidate_plans(state)
+        bridge_plans = _candidate_conditional_bridge_plans(state)
         logger.info(
             "computed-goto island planner: func=0x%X maturity=%s islands=%d bridges=%d",
             function_ea,
@@ -1739,7 +1839,11 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
             )
             try:
                 bridged = (
-                    _apply_conditional_bridge_plans(mba, remaining_bridges)
+                    _apply_conditional_bridge_plans(
+                        mba,
+                        remaining_bridges,
+                        state=state,
+                    )
                     if remaining_bridges
                     else 0
                 )
@@ -1752,7 +1856,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 )
                 bridged = 0
             if bridged:
-                self._call_result_carriers[function_ea] = captured_carriers
+                state.cache_call_result_carriers(captured_carriers)
             changed = pre_dce_changes + int(materialized) + int(bridged)
             if changed:
                 logger.info(

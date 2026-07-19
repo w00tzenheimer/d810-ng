@@ -34,10 +34,10 @@ from types import MappingProxyType
 from d810.core.typing import TYPE_CHECKING
 
 from d810.analyses.control_flow.collection_context import (
-    ReconCollectionContext,
-    coerce_recon_collection_context,
+    PreanalysisCollectionContext,
+    coerce_preanalysis_collection_context,
 )
-from d810.analyses.control_flow.models import CandidateFlag, ReconResult
+from d810.analyses.control_flow.models import CandidateFlag, PreanalysisResult
 
 if TYPE_CHECKING:
     pass
@@ -273,10 +273,10 @@ class FixPredSignalsCollector:
     def collect(
         self,
         target: object,
-        context: ReconCollectionContext | None = None,
+        context: PreanalysisCollectionContext | None = None,
         func_ea: int | None = None,
         **legacy_fields: object,
-    ) -> ReconResult:
+    ) -> PreanalysisResult:
         """Collect fixpred safety signals from a portable ``FlowGraph``.
 
         :param target: Portable ``FlowGraph`` snapshot (after E4a, the
@@ -288,7 +288,7 @@ class FixPredSignalsCollector:
         :param maturity: Current maturity level.
         :return: Frozen ``ReconResult`` with fixpred metrics.
         """
-        context = coerce_recon_collection_context(
+        context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,
             legacy_fields=legacy_fields,
@@ -298,7 +298,7 @@ class FixPredSignalsCollector:
         else:
             metrics, candidates = _live_signals(target)
 
-        return ReconResult(
+        return PreanalysisResult(
             collector_name=self.name,
             func_ea=context.func_ea,
             provider_level=context.provider_level,

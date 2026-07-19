@@ -146,7 +146,7 @@ class GateAccounting:
 
 @dataclass(frozen=True)
 class DecisionInputSummary:
-    """Summary of recon artifacts available at decision time."""
+    """Summary of preanalysis artifacts available at decision time."""
 
     handler_transitions_available: bool = False
     return_frontier_available: bool = False

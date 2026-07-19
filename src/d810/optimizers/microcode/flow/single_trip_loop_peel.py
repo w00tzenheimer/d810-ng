@@ -116,7 +116,12 @@ def plan_single_trip_peel(mba, candidate: PeelCandidate) -> PeelPlan | None:
     return PeelPlan(header=header, latch=latch, exit_succ=exits[0])
 
 
-def peel_single_trip_loop(mba, candidate: PeelCandidate) -> bool:
+def peel_single_trip_loop(
+    mba,
+    candidate: PeelCandidate,
+    *,
+    modifier_factory=DeferredGraphModifier,
+) -> bool:
     """Apply the peel for one proven candidate.  Returns True if the CFG changed.
 
     Redirects the latch's back-edge to the loop exit, breaking the cycle.
@@ -125,7 +130,7 @@ def peel_single_trip_loop(mba, candidate: PeelCandidate) -> bool:
     if plan is None:
         return False
 
-    modifier = DeferredGraphModifier(mba)
+    modifier = modifier_factory(mba)
     modifier.queue_goto_change(
         int(plan.latch),
         int(plan.exit_succ),
@@ -197,7 +202,11 @@ class SingleTripLoopPeelRule(FlowOptimizationRule):
                 candidate.verdict.reason,
             )
             return 0
-        if peel_single_trip_loop(mba, candidate):
+        if peel_single_trip_loop(
+            mba,
+            candidate,
+            modifier_factory=self.new_deferred_modifier,
+        ):
             logger.info(
                 "SingleTripLoopPeel: latch %d -> header %d peeled (%s)",
                 blk.serial,

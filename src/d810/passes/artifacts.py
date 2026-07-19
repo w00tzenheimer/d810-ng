@@ -31,8 +31,8 @@ from d810.analyses.control_flow.transition_report import (
     DispatcherTransitionReport,
     transition_report_from_dict,
 )
-from d810.analyses.control_flow.models import ReconResult
-from d810.passes.store import ReconStore, get_recon_writer
+from d810.analyses.control_flow.models import PreanalysisResult
+from d810.passes.store import PreanalysisStore, get_preanalysis_writer
 
 _HANDLER_TRANSITIONS = HandlerTransitionsCollector.name
 _RETURN_FRONTIER = ReturnFrontierCollector.name
@@ -74,11 +74,11 @@ class ReturnSiteProvider(Protocol):
         ...
 
 
-def recon_db_path(log_dir: Path | str | None) -> Path:
+def analysis_db_path(log_dir: Path | str | None) -> Path:
     """Resolve the canonical recon DB path for a worktree session."""
     if log_dir:
-        return Path(log_dir) / "d810_recon.db"
-    return Path(tempfile.gettempdir()) / "d810_recon.db"
+        return Path(log_dir) / "d810_analysis.db"
+    return Path(tempfile.gettempdir()) / "d810_analysis.db"
 
 
 def _delete_corrupt_db(db_path: Path) -> None:
@@ -100,19 +100,19 @@ def load_transition_report_from_store(
 ) -> DispatcherTransitionReport | None:
     """Load the latest stored handler transition report for a function."""
     provider_level = _coerce_provider_level(provider_level, legacy_fields)
-    db_path = recon_db_path(log_dir)
+    db_path = analysis_db_path(log_dir)
     if not db_path.exists():
         return None
 
     try:
-        with ReconStore(db_path) as store:
-            result = store.load_latest_recon_result(
+        with PreanalysisStore(db_path) as store:
+            result = store.load_latest_preanalysis_result(
                 func_ea=func_ea,
                 collector_name=_HANDLER_TRANSITIONS,
                 provider_level=provider_level,
             )
             if result is None and provider_level is not None:
-                result = store.load_latest_recon_result(
+                result = store.load_latest_preanalysis_result(
                     func_ea=func_ea,
                     collector_name=_HANDLER_TRANSITIONS,
                 )
@@ -142,14 +142,14 @@ def save_transition_report_to_store(
 ) -> None:
     """Persist a canonical transition report as a recon artifact."""
     provider_level = _require_provider_level(provider_level, legacy_fields)
-    db_path = recon_db_path(log_dir)
+    db_path = analysis_db_path(log_dir)
     result = HandlerTransitionsCollector.build_result_from_report(
         report,
         func_ea=func_ea,
         provider_level=provider_level,
     )
-    writer = get_recon_writer(db_path)
-    writer.submit(lambda store: store.save_recon_result(result))
+    writer = get_preanalysis_writer(db_path)
+    writer.submit(lambda store: store.save_preanalysis_result(result))
     writer.flush()
 
 
@@ -182,19 +182,19 @@ def load_return_frontier_audit_from_store(
 ) -> ReturnFrontierAudit | None:
     """Load the latest stored return frontier audit for a function."""
     provider_level = _coerce_provider_level(provider_level, legacy_fields)
-    db_path = recon_db_path(log_dir)
+    db_path = analysis_db_path(log_dir)
     if not db_path.exists():
         return None
 
     try:
-        with ReconStore(db_path) as store:
-            result = store.load_latest_recon_result(
+        with PreanalysisStore(db_path) as store:
+            result = store.load_latest_preanalysis_result(
                 func_ea=func_ea,
                 collector_name=_RETURN_FRONTIER,
                 provider_level=provider_level,
             )
             if result is None and provider_level is not None:
-                result = store.load_latest_recon_result(
+                result = store.load_latest_preanalysis_result(
                     func_ea=func_ea,
                     collector_name=_RETURN_FRONTIER,
                 )
@@ -221,16 +221,16 @@ def save_return_frontier_audit_to_store(
     log_dir: Path | str | None,
     provider_level: int | None = None,
     **legacy_fields: object,
-) -> ReconResult:
+) -> PreanalysisResult:
     """Persist the full return frontier audit as a recon artifact."""
     provider_level = _require_provider_level(provider_level, legacy_fields)
-    db_path = recon_db_path(log_dir)
+    db_path = analysis_db_path(log_dir)
     result = ReturnFrontierCollector.build_result_from_audit(
         audit,
         func_ea=func_ea,
         provider_level=provider_level,
     )
-    get_recon_writer(db_path).submit(lambda store: store.save_recon_result(result))
+    get_preanalysis_writer(db_path).submit(lambda store: store.save_preanalysis_result(result))
     return result
 
 
@@ -245,21 +245,21 @@ def record_return_frontier_stage(
     stage_name: str,
     provider_level: int | None = None,
     **legacy_fields: object,
-) -> ReconResult:
+) -> PreanalysisResult:
     """Load-or-create the audit, record one stage, and persist it."""
     provider_level = _require_provider_level(provider_level, legacy_fields)
-    db_path = recon_db_path(log_dir)
+    db_path = analysis_db_path(log_dir)
 
-    def _do(store: ReconStore) -> ReconResult:
+    def _do(store: PreanalysisStore) -> PreanalysisResult:
         audit = None
         if stage_name != "pre_plan":
-            raw = store.load_latest_recon_result(
+            raw = store.load_latest_preanalysis_result(
                 func_ea=func_ea,
                 collector_name=_RETURN_FRONTIER,
                 provider_level=provider_level,
             )
             if raw is None:
-                raw = store.load_latest_recon_result(
+                raw = store.load_latest_preanalysis_result(
                     func_ea=func_ea,
                     collector_name=_RETURN_FRONTIER,
                 )
@@ -270,7 +270,7 @@ def record_return_frontier_stage(
 
         if audit is None:
             if not return_sites:
-                return ReconResult(
+                return PreanalysisResult(
                     collector_name=_RETURN_FRONTIER,
                     func_ea=func_ea,
                     provider_level=provider_level,
@@ -294,10 +294,10 @@ def record_return_frontier_stage(
             provider_level=provider_level,
             stage_results=stage_results,
         )
-        store.save_recon_result(result)
+        store.save_preanalysis_result(result)
         return result
 
-    return get_recon_writer(db_path).submit_sync(_do)
+    return get_preanalysis_writer(db_path).submit_sync(_do)
 
 
 def write_return_frontier_artifact_from_store(
@@ -377,19 +377,19 @@ def load_terminal_return_audit_from_store(
 ) -> TerminalReturnAuditReport | None:
     """Load the latest stored terminal return audit for a function."""
     provider_level = _coerce_provider_level(provider_level, legacy_fields)
-    db_path = recon_db_path(log_dir)
+    db_path = analysis_db_path(log_dir)
     if not db_path.exists():
         return None
 
     try:
-        with ReconStore(db_path) as store:
-            result = store.load_latest_recon_result(
+        with PreanalysisStore(db_path) as store:
+            result = store.load_latest_preanalysis_result(
                 func_ea=func_ea,
                 collector_name=_TERMINAL_RETURN_COLLECTOR,
                 provider_level=provider_level,
             )
             if result is None and provider_level is not None:
-                result = store.load_latest_recon_result(
+                result = store.load_latest_preanalysis_result(
                     func_ea=func_ea,
                     collector_name=_TERMINAL_RETURN_COLLECTOR,
                 )
@@ -419,9 +419,9 @@ def save_terminal_return_audit_to_store(
 ) -> None:
     """Persist a terminal return audit as a recon artifact."""
     provider_level = _require_provider_level(provider_level, legacy_fields)
-    db_path = recon_db_path(log_dir)
+    db_path = analysis_db_path(log_dir)
     report_dict = _terminal_return_audit_to_dict(audit)
-    result = ReconResult(
+    result = PreanalysisResult(
         collector_name=_TERMINAL_RETURN_COLLECTOR,
         func_ea=func_ea,
         provider_level=provider_level,
@@ -433,14 +433,14 @@ def save_terminal_return_audit_to_store(
         }),
         candidates=(),
     )
-    writer = get_recon_writer(db_path)
-    writer.submit(lambda store: store.save_recon_result(result))
+    writer = get_preanalysis_writer(db_path)
+    writer.submit(lambda store: store.save_preanalysis_result(result))
     writer.flush()
 
 
 __all__ = [
     "ReturnSiteProvider",
-    "recon_db_path",
+    "analysis_db_path",
     "load_transition_report_from_store",
     "save_transition_report_to_store",
     "load_return_sites_from_store",

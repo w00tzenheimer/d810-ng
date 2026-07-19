@@ -35,6 +35,11 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
 )
+from d810.analyses.control_flow.native_preanalysis_session import (
+    BootstrapRouteBindingEvidence,
+    BootstrapRouteEvidence,
+    BootstrapRouteProofKind,
+)
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
 from d810.analyses.value_flow.state_write import (
@@ -52,6 +57,7 @@ from d810.ir.flowgraph import (
     OperandKind,
     PredicateKind,
 )
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.transforms.graph_modification import (
     ConvertToGoto,
     LowerConditionalStateTransition,
@@ -67,6 +73,7 @@ from d810.transforms.minimal_unflatten_emit import (
     _applied_direct_boundary_edge_keys,
     _exact_live_state_edge_keys,
     _recover_initial_state,
+    _prove_bound_bootstrap_entry_routes,
     build_conditional_arm_redirects,
     build_exact_terminal_state_route_redirects,
     build_loop_guard_exit_redirects,
@@ -3233,6 +3240,57 @@ def test_emit_accepts_exact_materialized_conditional_entry_without_scalar_state(
     }
     assert (10, 2, 20) in redirects
     assert (20, 2, 10) in redirects
+
+
+def test_bound_bootstrap_route_is_source_scoped_entry_proof() -> None:
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2, 3), (0,)),
+            2: _b(2, (10,), (1, 10)),
+            3: _b(3, (10,), (1,)),
+            10: _b(10, (2,), (2, 3)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    source_ea = int(flow_graph.get_block(3).start_ea)
+    handler_ea = int(flow_graph.get_block(10).start_ea)
+    route = BootstrapRouteEvidence(
+        source_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(source_ea, source_ea + 1),)
+        ),
+        source_anchor_ea=source_ea,
+        state=0x699BC698,
+        handler_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(handler_ea, handler_ea + 1),)
+        ),
+        handler_anchor_ea=handler_ea,
+        proof_kind=BootstrapRouteProofKind.STATIC_NATIVE,
+    )
+    binding = BootstrapRouteBindingEvidence(
+        route=route,
+        source_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(source_ea, source_ea + 0x20),)
+        ),
+        handler_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(handler_ea, handler_ea + 0x20),)
+        ),
+        evidence_generation=1,
+    )
+
+    proofs = _prove_bound_bootstrap_entry_routes(
+        flow_graph,
+        (binding,),
+        dispatcher_entry_serial=2,
+    )
+
+    assert len(proofs) == 1
+    assert (
+        proofs[0].source_serial,
+        proofs[0].handler_serial,
+        proofs[0].state,
+    ) == (3, 10, 0x699BC698)
 
 
 def test_materialized_computed_goto_profile_recovers_multi_entry_state_writer(

@@ -120,6 +120,19 @@ def start() -> None:
     _state.start_d810()
 
 
+def prepare_native_preanalysis(function_ea: int) -> int:
+    """Prepare one headless decompilation through the manager lifecycle.
+
+    Investigation scripts use this before their first ``decompile`` call.  It
+    deliberately returns only the preparation count: resolver state remains an
+    internal attachment of the lifecycle session, rather than becoming a new
+    headless function-EA cache.
+    """
+    if not _configured or _state is None:
+        raise RuntimeError("d810 headless API is not configured. Call configure() first.")
+    return int(_state.manager.prepare_native_preanalysis(int(function_ea)))
+
+
 def stop() -> None:
     """Remove D810 Hex-Rays hooks if they are installed."""
     if _state is None:
@@ -149,4 +162,4 @@ def status() -> dict[str, typing.Any]:
     return result
 
 
-__all__ = ["configure", "start", "status", "stop"]
+__all__ = ["configure", "prepare_native_preanalysis", "start", "status", "stop"]

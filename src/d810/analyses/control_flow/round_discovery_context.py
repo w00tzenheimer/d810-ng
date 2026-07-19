@@ -63,7 +63,7 @@ logger = logging.getLogger(
 
 __all__ = (
     "DagLocalFacts",
-    "ReconRoundDiscoveryContext",
+    "PreanalysisRoundDiscoveryContext",
     "build_round_discovery_context",
     "pass_entry_guard",
 )
@@ -88,7 +88,7 @@ class DagLocalFacts:
 
 
 @dataclass(frozen=True, slots=True)
-class ReconRoundDiscoveryContext:
+class PreanalysisRoundDiscoveryContext:
     """Canonical per-round discovery facts shared across all strategies.
 
     All fields are **read-only classification outputs**. No ``ModificationBuilder``
@@ -220,7 +220,7 @@ def build_round_discovery_context(
     prefer_local_corridors: bool = False,
     return_frontier_artifact_priors: ReturnFrontierArtifactPriors | None = None,
     **legacy_fields: object,
-) -> ReconRoundDiscoveryContext:
+) -> PreanalysisRoundDiscoveryContext:
     """Build the per-round discovery context for one unflattening pass.
 
     This wraps :func:`build_live_linearized_state_dag_from_graph` plus
@@ -334,7 +334,7 @@ def build_round_discovery_context(
             round_id,
         )
 
-    return ReconRoundDiscoveryContext(
+    return PreanalysisRoundDiscoveryContext(
         dag=dag,
         corrected_dag=corrected_dag,
         dispatcher_region=dispatcher_region,

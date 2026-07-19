@@ -83,6 +83,78 @@ def test_maturity_gate_allows_optimizer_at_correct_maturity():
 
 
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+from d810.hexrays.lifecycle import DecompilationEvent
+
+
+def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
+    session = SimpleNamespace(native_preanalysis_depth=0)
+    identity_index = object()
+    mutation_gateway = object()
+    calls: list[object] = []
+
+    class _Lifecycle:
+        def current_session(self, function_ea: int):
+            calls.append(("session", function_ea))
+            return session
+
+        def build_current_mba_identity_index(self, *, function_ea: int, mba: object):
+            calls.append(("index", function_ea, mba))
+            return identity_index
+
+        def new_current_mba_mutation_gateway(self, *, function_ea: int, maturity: int):
+            calls.append(("gateway", function_ea, maturity))
+            return mutation_gateway
+
+    class _Emitter:
+        def emit(self, event, **kwargs):
+            calls.append(("emit", event, kwargs))
+            kwargs["decision"]["microcode_modified"] = True
+
+    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager._decompilation_lifecycle = _Lifecycle()
+    manager.event_emitter = _Emitter()
+    mba = SimpleNamespace(
+        entry_ea=0x40D200,
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    assert manager._emit_top_level_preopt_ready(mba)
+    assert calls == [
+        ("session", 0x40D200),
+        ("index", 0x40D200, mba),
+        ("gateway", 0x40D200, ida_hexrays.MMAT_PREOPTIMIZED),
+        (
+            "emit",
+            DecompilationEvent.HEXRAYS_PREOPT_READY,
+            {
+                "function_ea": 0x40D200,
+                "mba": mba,
+                "decision": {
+                    "request_redo": False,
+                    "session": session,
+                    "identity_index": identity_index,
+                    "mutation_gateway": mutation_gateway,
+                    "microcode_modified": True,
+                },
+            },
+        ),
+    ]
+    assert not manager._emit_top_level_preopt_ready(mba)
+    assert calls[-1] == ("session", 0x40D200)
+    assert len(calls) == 5
+
+
+def test_instruction_adapter_emits_preopt_for_new_mba_at_same_maturity() -> None:
+    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager.current_maturity = ida_hexrays.MMAT_PREOPTIMIZED
+    manager.current_blk_serial = None
+    emitted: list[object] = []
+    manager._emit_top_level_preopt_ready = lambda mba: emitted.append(mba) or False
+
+    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED)
+    manager.log_info_on_input(SimpleNamespace(mba=mba, serial=0), _make_ins())
+
+    assert emitted == [mba]
 
 
 class _MockOptimizer:
@@ -134,8 +206,8 @@ def test_active_optimizer_list_filters_by_maturity():
     mgr.instruction_visitor = None
     mgr._last_optimizer_tried = None
     mgr.log_dir = None
-    mgr._recon_phase = None
-    mgr._recon_runtime = None
+    mgr._preanalysis_phase = None
+    mgr._analysis_runtime = None
     mgr._run_later_scheduler = None
     mgr._run_later_rule_names = frozenset()
 
@@ -173,8 +245,8 @@ def test_instruction_optimizer_abstains_during_scoped_suppression():
     mgr.instruction_visitor = None
     mgr._last_optimizer_tried = None
     mgr.log_dir = None
-    mgr._recon_phase = None
-    mgr._recon_runtime = None
+    mgr._preanalysis_phase = None
+    mgr._analysis_runtime = None
     mgr._run_later_scheduler = None
     mgr._run_later_rule_names = frozenset()
     mgr._active_optimizers = [optimizer]

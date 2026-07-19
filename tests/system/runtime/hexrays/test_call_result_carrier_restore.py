@@ -9,6 +9,46 @@ import ida_hexrays
 import pytest
 
 
+def _session_resolver_state(
+    *,
+    transfers: tuple[object, ...] = (),
+    materialized: bool = True,
+):
+    """Build the final session-owned resolver attachment used by flow rules."""
+    from d810.analyses.control_flow.native_preanalysis_session import (
+        NativePreanalysisSessionState,
+    )
+    from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+        ResolverSessionState,
+    )
+
+    state = ResolverSessionState(
+        native_preanalysis=NativePreanalysisSessionState(),
+        materialized=materialized,
+        materialized_transfers=transfers,
+    )
+    return state
+
+
+def _bind_rule_resolver_state(
+    monkeypatch,
+    rule: object,
+    *,
+    transfers: tuple[object, ...] = (),
+    materialized: bool = True,
+):
+    state = _session_resolver_state(
+        transfers=transfers,
+        materialized=materialized,
+    )
+    monkeypatch.setattr(
+        rule,
+        "current_resolver_session_state",
+        lambda: state,
+    )
+    return state
+
+
 class _Operand:
     def __init__(
         self,
@@ -934,7 +974,7 @@ def test_island_rule_retries_after_pass_manager_reset(
     monkeypatch.setattr(
         island_rule,
         "_candidate_conditional_bridge_plans",
-        lambda _function_ea: (SimpleNamespace(source_predicate_ea=0x40C404),),
+        lambda _state: (SimpleNamespace(source_predicate_ea=0x40C404),),
     )
     monkeypatch.setattr(
         island_rule,
@@ -962,12 +1002,19 @@ def test_island_rule_retries_after_pass_manager_reset(
         lambda _mba, _transfers: 0,
     )
 
-    def apply(mba: object, _plans: tuple[object, ...]) -> int:
+    def apply(
+        mba: object,
+        _plans: tuple[object, ...],
+        *,
+        state: object,
+    ) -> int:
+        assert state is resolver_state
         attempts.append(id(mba))
         return 1
 
     monkeypatch.setattr(island_rule, "_apply_conditional_bridge_plans", apply)
     rule = island_rule.MaterializedComputedGotoIslandRule()
+    resolver_state = _bind_rule_resolver_state(monkeypatch, rule)
     first_mba = SimpleNamespace(
         entry_ea=0x40A560,
         maturity=ida_hexrays.MMAT_LOCOPT,
@@ -1002,16 +1049,11 @@ def test_locopt_preservation_does_not_starve_conditional_bridge_planning(
 
     bridge_plan = SimpleNamespace(source_predicate_ea=0xF1C00248)
     bridge_attempts: list[tuple[object, ...]] = []
-    monkeypatch.setattr(
-        island_rule,
-        "get_materialized_indirect_transfers",
-        lambda _function_ea: (),
-    )
-    monkeypatch.setattr(island_rule, "_candidate_plans", lambda _function_ea: ())
+    monkeypatch.setattr(island_rule, "_candidate_plans", lambda _state: ())
     monkeypatch.setattr(
         island_rule,
         "_candidate_conditional_bridge_plans",
-        lambda _function_ea: (bridge_plan,),
+        lambda _state: (bridge_plan,),
     )
     monkeypatch.setattr(
         island_rule,
@@ -1030,12 +1072,19 @@ def test_locopt_preservation_does_not_starve_conditional_bridge_planning(
     )
     monkeypatch.setattr(island_rule, "capture_call_result_carriers", lambda _mba: ())
 
-    def apply(_mba: object, plans: tuple[object, ...]) -> int:
+    def apply(
+        _mba: object,
+        plans: tuple[object, ...],
+        *,
+        state: object,
+    ) -> int:
+        assert state is resolver_state
         bridge_attempts.append(plans)
         return 1
 
     monkeypatch.setattr(island_rule, "_apply_conditional_bridge_plans", apply)
     rule = island_rule.MaterializedComputedGotoIslandRule()
+    resolver_state = _bind_rule_resolver_state(monkeypatch, rule)
     mba = SimpleNamespace(
         entry_ea=0x40A560,
         maturity=ida_hexrays.MMAT_LOCOPT,
@@ -1057,18 +1106,13 @@ def test_calls_applies_conditional_bridge_recorded_after_locopt(
     bridge_attempts: list[tuple[object, ...]] = []
     monkeypatch.setattr(
         island_rule,
-        "get_materialized_indirect_transfers",
-        lambda _function_ea: (),
-    )
-    monkeypatch.setattr(
-        island_rule,
         "_candidate_conditional_bridge_plans",
-        lambda _function_ea: (bridge_plan,),
+        lambda _state: (bridge_plan,),
     )
     monkeypatch.setattr(
         island_rule,
         "_recover_imported_conditional_bridge_transfers",
-        lambda _mba, transfers: transfers,
+        lambda _mba, transfers, *, state: transfers,
     )
     monkeypatch.setattr(
         island_rule,
@@ -1092,16 +1136,28 @@ def test_calls_applies_conditional_bridge_recorded_after_locopt(
     )
     monkeypatch.setattr(
         island_rule,
+        "restore_detached_call_result_definitions",
+        lambda _mba, _function_ea: 0,
+    )
+    monkeypatch.setattr(
+        island_rule,
         "reconcile_imported_callinfo_with_live_native_calls",
         lambda _mba: 0,
     )
 
-    def apply(_mba: object, plans: tuple[object, ...]) -> int:
+    def apply(
+        _mba: object,
+        plans: tuple[object, ...],
+        *,
+        state: object,
+    ) -> int:
+        assert state is resolver_state
         bridge_attempts.append(plans)
         return 1
 
     monkeypatch.setattr(island_rule, "_apply_conditional_bridge_plans", apply)
     rule = island_rule.MaterializedComputedGotoIslandRule()
+    resolver_state = _bind_rule_resolver_state(monkeypatch, rule)
     mba = SimpleNamespace(
         entry_ea=0x40A560,
         maturity=ida_hexrays.MMAT_CALLS,
@@ -1123,18 +1179,13 @@ def test_calls_restores_profile_call_result_definition_before_early_return(
     restored: list[tuple[object, int]] = []
     monkeypatch.setattr(
         island_rule,
-        "get_materialized_indirect_transfers",
-        lambda _function_ea: (),
-    )
-    monkeypatch.setattr(
-        island_rule,
         "restore_terminal_return_carriers",
         lambda _mba, _function_ea: 0,
     )
     monkeypatch.setattr(
         island_rule,
         "_materialize_live_handler_replacements",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, *, state: 0,
     )
     monkeypatch.setattr(
         island_rule,
@@ -1149,7 +1200,7 @@ def test_calls_restores_profile_call_result_definition_before_early_return(
     monkeypatch.setattr(
         island_rule,
         "_recover_imported_conditional_bridge_transfers",
-        lambda _mba, transfers: transfers,
+        lambda _mba, transfers, *, state: transfers,
     )
     monkeypatch.setattr(
         island_rule,
@@ -1164,7 +1215,7 @@ def test_calls_restores_profile_call_result_definition_before_early_return(
     monkeypatch.setattr(
         island_rule,
         "_candidate_conditional_bridge_plans",
-        lambda _function_ea: (),
+        lambda _state: (),
     )
     monkeypatch.setattr(
         island_rule,
@@ -1174,7 +1225,7 @@ def test_calls_restores_profile_call_result_definition_before_early_return(
     monkeypatch.setattr(
         island_rule,
         "is_computed_goto_materialized",
-        lambda _function_ea: True,
+        lambda state: state is resolver_state,
     )
     monkeypatch.setattr(
         island_rule,
@@ -1183,6 +1234,7 @@ def test_calls_restores_profile_call_result_definition_before_early_return(
         raising=False,
     )
     rule = island_rule.MaterializedComputedGotoIslandRule()
+    resolver_state = _bind_rule_resolver_state(monkeypatch, rule)
     mba = SimpleNamespace(
         entry_ea=0x40A560,
         maturity=ida_hexrays.MMAT_CALLS,
@@ -1205,13 +1257,12 @@ def test_calls_imports_live_handler_replacement_before_terminal_routes(
     bridged_transfers = initial_transfers + (object(),)
     monkeypatch.setattr(
         island_rule,
-        "get_materialized_indirect_transfers",
-        lambda _function_ea: initial_transfers,
-    )
-    monkeypatch.setattr(
-        island_rule,
         "_materialize_live_handler_replacements",
-        lambda _mba, _transfers: events.append("replacement") or 1,
+        lambda _mba, _transfers, *, state: (
+            events.append("replacement") or 1
+            if state is resolver_state
+            else pytest.fail("replacement did not receive session state")
+        ),
         raising=False,
     )
     monkeypatch.setattr(
@@ -1227,9 +1278,9 @@ def test_calls_imports_live_handler_replacement_before_terminal_routes(
     monkeypatch.setattr(
         island_rule,
         "_recover_imported_conditional_bridge_transfers",
-        lambda _mba, transfers: (
+        lambda _mba, transfers, *, state: (
             events.append("recover") or bridged_transfers
-            if transfers is initial_transfers
+            if transfers is initial_transfers and state is resolver_state
             else pytest.fail("replacement evidence recovery got stale transfers")
         ),
         raising=False,
@@ -1251,7 +1302,7 @@ def test_calls_imports_live_handler_replacement_before_terminal_routes(
     monkeypatch.setattr(
         island_rule,
         "_candidate_conditional_bridge_plans",
-        lambda _function_ea: (),
+        lambda _state: (),
     )
     monkeypatch.setattr(
         island_rule,
@@ -1260,10 +1311,20 @@ def test_calls_imports_live_handler_replacement_before_terminal_routes(
     )
     monkeypatch.setattr(
         island_rule,
+        "restore_detached_call_result_definitions",
+        lambda _mba, _function_ea: 0,
+    )
+    monkeypatch.setattr(
+        island_rule,
         "reconcile_imported_callinfo_with_live_native_calls",
         lambda _mba: 0,
     )
     rule = island_rule.MaterializedComputedGotoIslandRule()
+    resolver_state = _bind_rule_resolver_state(
+        monkeypatch,
+        rule,
+        transfers=initial_transfers,
+    )
     mba = SimpleNamespace(
         entry_ea=0x40A560,
         maturity=ida_hexrays.MMAT_CALLS,
@@ -1293,13 +1354,12 @@ def test_calls_recovers_bridges_for_snippets_imported_before_calls(
     bridged_transfers = initial_transfers + (object(),)
     monkeypatch.setattr(
         island_rule,
-        "get_materialized_indirect_transfers",
-        lambda _function_ea: initial_transfers,
-    )
-    monkeypatch.setattr(
-        island_rule,
         "_materialize_live_handler_replacements",
-        lambda _mba, _transfers: events.append("replacement") or 0,
+        lambda _mba, _transfers, *, state: (
+            events.append("replacement") or 0
+            if state is resolver_state
+            else pytest.fail("replacement did not receive session state")
+        ),
     )
     monkeypatch.setattr(
         island_rule,
@@ -1309,9 +1369,9 @@ def test_calls_recovers_bridges_for_snippets_imported_before_calls(
     monkeypatch.setattr(
         island_rule,
         "_recover_imported_conditional_bridge_transfers",
-        lambda _mba, transfers: (
+        lambda _mba, transfers, *, state: (
             events.append("recover") or bridged_transfers
-            if transfers is initial_transfers
+            if transfers is initial_transfers and state is resolver_state
             else pytest.fail("CALLS bridge recovery got stale transfers")
         ),
     )
@@ -1332,7 +1392,7 @@ def test_calls_recovers_bridges_for_snippets_imported_before_calls(
     monkeypatch.setattr(
         island_rule,
         "_candidate_conditional_bridge_plans",
-        lambda _function_ea: (),
+        lambda _state: (),
     )
     monkeypatch.setattr(
         island_rule,
@@ -1341,10 +1401,20 @@ def test_calls_recovers_bridges_for_snippets_imported_before_calls(
     )
     monkeypatch.setattr(
         island_rule,
+        "restore_detached_call_result_definitions",
+        lambda _mba, _function_ea: 0,
+    )
+    monkeypatch.setattr(
+        island_rule,
         "reconcile_imported_callinfo_with_live_native_calls",
         lambda _mba: 0,
     )
     rule = island_rule.MaterializedComputedGotoIslandRule()
+    resolver_state = _bind_rule_resolver_state(
+        monkeypatch,
+        rule,
+        transfers=initial_transfers,
+    )
     mba = SimpleNamespace(
         entry_ea=0x40A560,
         maturity=ida_hexrays.MMAT_CALLS,
@@ -1513,11 +1583,12 @@ def test_live_handler_replacement_releases_unreachable_native_keep_roots(
         conditional_branch_ea=0x40A7C7,
         terminal_routes=((0x40A7EF, 0x40B6C0),),
     )
+    resolver_state = _session_resolver_state(transfers=(transfer,))
 
     monkeypatch.setattr(
         island_rule,
         "is_computed_goto_materialized",
-        lambda _function_ea: True,
+        lambda state: state is resolver_state,
     )
     monkeypatch.setattr(
         island_rule,
@@ -1571,6 +1642,7 @@ def test_live_handler_replacement_releases_unreachable_native_keep_roots(
         island_rule._materialize_live_handler_replacements(
             mba,
             (transfer,),
+            state=resolver_state,
         )
         == 1
     )
@@ -1589,10 +1661,14 @@ def test_locopt_preanalysis_imports_before_call_analysis_without_requesting_redo
 
     transfers = (object(),)
     mba = object()
-    monkeypatch.setattr(
-        island_rule,
-        "get_materialized_indirect_transfers",
-        lambda _function_ea: transfers,
+    resolver_state = _session_resolver_state(transfers=transfers)
+    session = SimpleNamespace(
+        native_preanalysis=resolver_state.native_preanalysis,
+        extensions={
+            "d810.optimizers.microcode.flow.jumps.resolver_session_state": (
+                resolver_state
+            )
+        },
     )
     monkeypatch.setattr(
         island_rule,
@@ -1613,7 +1689,10 @@ def test_locopt_preanalysis_imports_before_call_analysis_without_requesting_redo
             AssertionError("routes must wait until LOCOPT topology is live")
         ),
     )
-    decision: dict[str, object] = {"request_redo": False}
+    decision: dict[str, object] = {
+        "request_redo": False,
+        "session": session,
+    }
 
     island_rule._materialize_locopt_preanalysis(
         function_ea=0x40A560,
@@ -1623,6 +1702,7 @@ def test_locopt_preanalysis_imports_before_call_analysis_without_requesting_redo
 
     assert decision == {
         "request_redo": False,
+        "session": session,
         "microcode_modified": True,
         "details": {"imported_snippets": 3, "residual_bridges": 0},
     }
@@ -1674,6 +1754,114 @@ def test_preoptimized_hook_dispatches_live_mba_before_locopt() -> None:
     assert events == [DecompilationEvent.HEXRAYS_PREOPT_READY]
 
 
+def test_flowchart_hook_scopes_active_lifecycle_session_into_decision() -> None:
+    """Flowchart lazily creates and scopes one coordinator-owned session."""
+    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+    from d810.hexrays.lifecycle import DecompilationEvent
+
+    mba = SimpleNamespace(entry_ea=0x40D200)
+    session = SimpleNamespace(event=object())
+    identity_index = object()
+    ensured: list[tuple[int, str, int | None]] = []
+    queried_function_eas: list[int] = []
+
+    def current_session(function_ea: int) -> object:
+        queried_function_eas.append(function_ea)
+        return session
+
+    def ensure_hexrays_session(
+        *,
+        function_ea: int,
+        database_identity: str,
+        callback_entry_ea: int | None,
+    ) -> tuple[object, bool]:
+        ensured.append((function_ea, database_identity, callback_entry_ea))
+        return session, len(ensured) == 1
+
+    events: list[object] = []
+    def callback(event: object, *args: object, **kwargs: object) -> None:
+        events.append(event)
+        if event is DecompilationEvent.SESSION_STARTED:
+            assert args == (session.event,)
+            assert kwargs == {}
+            return
+        assert args == ()
+        assert event is DecompilationEvent.HEXRAYS_FLOWCHART_READY
+        assert kwargs["function_ea"] == 0x40D200
+        assert kwargs["mba"] is mba
+        assert kwargs["decision"] == {
+            "request_redo": False,
+            "session": session,
+        }
+
+    hook = SimpleNamespace(
+        callback=callback,
+        _decompilation_lifecycle=SimpleNamespace(
+            ensure_hexrays_session=ensure_hexrays_session,
+            current_session=current_session,
+            build_current_mba_identity_index=lambda **kwargs: (
+                identity_index
+                if kwargs == {"function_ea": 0x40D200, "mba": mba}
+                else None
+            ),
+        ),
+    )
+
+    assert HexraysDecompilationHook.flowchart(hook, object(), mba, object(), 0) == 0
+    assert HexraysDecompilationHook.flowchart(hook, object(), mba, object(), 0) == 0
+    assert ensured == [
+        (0x40D200, "", None),
+        (0x40D200, "", None),
+    ]
+    assert queried_function_eas == [0x40D200, 0x40D200]
+    assert events == [
+        DecompilationEvent.SESSION_STARTED,
+        DecompilationEvent.HEXRAYS_FLOWCHART_READY,
+        DecompilationEvent.HEXRAYS_FLOWCHART_READY,
+    ]
+
+
+def test_flowchart_hook_uses_containing_function_as_lifecycle_owner(
+    monkeypatch,
+) -> None:
+    """An internal MBA entry must not create a second function session."""
+    import d810.hexrays.hooks.hexrays_hooks as hook_module
+    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+    from d810.hexrays.lifecycle import DecompilationEvent
+
+    mba = SimpleNamespace(entry_ea=0x40D348)
+    session = SimpleNamespace(event=object())
+    ensured: list[int] = []
+    emitted_function_eas: list[int] = []
+    monkeypatch.setattr(
+        hook_module.idaapi,
+        "get_func",
+        lambda ea: SimpleNamespace(start_ea=0x40D200) if ea == 0x40D348 else None,
+    )
+
+    def callback(event: object, *args: object, **kwargs: object) -> None:
+        if event is DecompilationEvent.SESSION_STARTED:
+            return
+        emitted_function_eas.append(int(kwargs["function_ea"]))
+
+    hook = SimpleNamespace(
+        callback=callback,
+        _decompilation_lifecycle=SimpleNamespace(
+            ensure_hexrays_session=lambda *, function_ea, database_identity, callback_entry_ea: (
+                ensured.append(function_ea) or session,
+                False,
+            ),
+            current_session=lambda function_ea: (
+                session if function_ea == 0x40D200 else None
+            ),
+        ),
+    )
+
+    assert HexraysDecompilationHook.flowchart(hook, object(), mba, object(), 0) == 0
+    assert ensured == [0x40D200]
+    assert emitted_function_eas == [0x40D200]
+
+
 def test_stkpnts_hook_dispatches_transient_stack_points() -> None:
     from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
     from d810.hexrays.lifecycle import DecompilationEvent
@@ -1688,7 +1876,7 @@ def test_stkpnts_hook_dispatches_transient_stack_points() -> None:
             "function_ea": 0x40A560,
             "mba": mba,
             "stack_points": stack_points,
-            "decision": {},
+            "decision": {"request_redo": False},
         }
         events.append(event)
 
@@ -1710,21 +1898,22 @@ def test_island_rule_materializes_semantic_island_before_other_bridges(
     independent_bridge = SimpleNamespace(source_predicate_ea=0x40C404)
     island_attempts: list[int] = []
     bridge_attempts: list[tuple[object, ...]] = []
+    captured_carriers = (object(),)
 
     monkeypatch.setattr(
         island_rule,
         "_candidate_plans",
-        lambda _function_ea: (island_plan,),
+        lambda _state: (island_plan,),
     )
     monkeypatch.setattr(
         island_rule,
         "_candidate_conditional_bridge_plans",
-        lambda _function_ea: (shadowed_bridge, independent_bridge),
+        lambda _state: (shadowed_bridge, independent_bridge),
     )
     monkeypatch.setattr(
         island_rule,
         "capture_call_result_carriers",
-        lambda _mba: (),
+        lambda _mba: captured_carriers,
     )
     monkeypatch.setattr(
         island_rule,
@@ -1752,7 +1941,13 @@ def test_island_rule_materializes_semantic_island_before_other_bridges(
         island_attempts.append(id(mba))
         return True
 
-    def apply(_mba: object, plans: tuple[object, ...]) -> int:
+    def apply(
+        _mba: object,
+        plans: tuple[object, ...],
+        *,
+        state: object,
+    ) -> int:
+        assert state is resolver_state
         bridge_attempts.append(plans)
         return len(plans)
 
@@ -1764,6 +1959,7 @@ def test_island_rule_materializes_semantic_island_before_other_bridges(
     )
     monkeypatch.setattr(island_rule, "_apply_conditional_bridge_plans", apply)
     rule = island_rule.MaterializedComputedGotoIslandRule()
+    resolver_state = _bind_rule_resolver_state(monkeypatch, rule)
     mba = SimpleNamespace(
         entry_ea=0x40A560,
         maturity=ida_hexrays.MMAT_LOCOPT,
@@ -1772,6 +1968,8 @@ def test_island_rule_materializes_semantic_island_before_other_bridges(
     assert rule.optimize(SimpleNamespace(mba=mba)) == 2
     assert island_attempts == [id(mba)]
     assert bridge_attempts == [(independent_bridge,)]
+    assert resolver_state.call_result_carriers == captured_carriers
+    assert not hasattr(rule, "_call_result_carriers")
 
 
 def test_terminal_route_helper_reads_reloaded_importer_provenance(

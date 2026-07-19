@@ -7,9 +7,6 @@ from __future__ import annotations
 from d810.core import typing
 
 from d810.core.logging import getLogger
-from d810.capabilities.detached_handler_snippets import (
-    prepare_detached_handler_snippets,
-)
 from d810.ui.actions.base import D810ActionHandler
 
 logger = getLogger("D810.ui")
@@ -61,14 +58,11 @@ class DeobfuscateThisFunction(D810ActionHandler):
         logger.info("Triggering re-decompilation for function at %s", hex(func_ea))
 
         vdui = idaapi_shim.get_widget_vdui(ctx.widget)
-        captured = prepare_detached_handler_snippets(
-            int(func_ea),
-            live_mba=vdui.cfunc.mba if vdui is not None else None,
-        )
-        if captured:
+        prepared = self._state.manager.prepare_native_preanalysis(int(func_ea))
+        if prepared:
             logger.info(
                 "Prepared %d detached microcode snippet(s) for %s",
-                int(captured),
+                int(prepared),
                 hex(func_ea),
             )
 

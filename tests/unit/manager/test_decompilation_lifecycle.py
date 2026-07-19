@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from d810.analyses.control_flow.native_preanalysis_session import (
+    BootstrapRouteEvidence,
+    BootstrapRouteProofKind,
+)
 from d810.core.provider_phase import ProviderPhaseSnapshot
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.manager.decompilation_lifecycle import (
     DecompilationLifecycleCoordinator,
     FlowgraphReadyPayload,
@@ -111,6 +116,7 @@ def _coordinator(
             preanalysis_phase=_PreanalysisPhase(calls),
             analysis_runtime=runtime,
             rule_scope_service=_RuleScopeService(calls),
+            mba_mutation_gateway_factory=lambda **kwargs: kwargs,
         ),
         runtime,
     )
@@ -134,12 +140,12 @@ def _flowgraph_payload(
     )
 
 
-def test_begin_capture_analyze_and_finish_preserve_lifecycle_order() -> None:
+def test_ensure_capture_analyze_and_finish_preserve_lifecycle_order() -> None:
     calls: list[tuple[str, object]] = []
     coordinator, runtime = _coordinator(calls)
     runtime.hints = "hints"
 
-    session = coordinator.begin_hexrays_session(
+    session, created = coordinator.ensure_hexrays_session(
         function_ea=0x401000,
         database_identity="sample.i64",
     )
@@ -148,6 +154,7 @@ def test_begin_capture_analyze_and_finish_preserve_lifecycle_order() -> None:
     event = coordinator.finish_hexrays_session()
 
     assert session.function_ea == 0x401000
+    assert created is True
     assert session.top_level_epoch == 1
     assert event is not None
     assert event.function_ea == 0x401000
@@ -180,41 +187,173 @@ def test_begin_capture_analyze_and_finish_preserve_lifecycle_order() -> None:
     assert coordinator.current_session(0x401000) is None
 
 
-def test_repeated_begin_for_same_top_level_decompilation_reuses_epoch() -> None:
+def test_repeated_ensure_for_same_top_level_decompilation_reuses_epoch() -> None:
     calls: list[tuple[str, object]] = []
     coordinator, _runtime = _coordinator(calls)
 
-    first = coordinator.begin_hexrays_session(
+    first, first_created = coordinator.ensure_hexrays_session(
         function_ea=0x401000,
         database_identity="sample.i64",
     )
-    repeated = coordinator.begin_hexrays_session(
+    repeated, repeated_created = coordinator.ensure_hexrays_session(
         function_ea=0x401000,
         database_identity="sample.i64",
     )
 
     assert repeated is first
+    assert first_created is True
+    assert repeated_created is False
     assert calls == [
         ("runtime.reset", (0x401000, False)),
         ("rule-scope.clear", 0x401000),
     ]
 
 
+def test_new_session_initializes_injected_extensions_exactly_once() -> None:
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+    initialized: list[object] = []
+    coordinator.session_extension_initializer = initialized.append
+
+    session, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    repeated, repeated_created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    assert created is True
+    assert repeated_created is False
+    assert repeated is session
+    assert initialized == [session]
+
+
+def test_lifecycle_context_owns_portable_preanalysis_state_directly() -> None:
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+
+    session, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    assert session.native_preanalysis.evidence_generation == 0
+    assert created is True
+    assert session.native_preanalysis.bound_preopt_generation is None
+    assert session.extensions == {}
+
+
+def test_rebound_bootstrap_fact_is_published_once_on_a_real_snapshot(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+    session, _created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401020, 0x401021),)
+    )
+    handler = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401100, 0x401101),)
+    )
+    route = BootstrapRouteEvidence(
+        source_identity=source,
+        source_anchor_ea=0x401020,
+        state=0x12345678,
+        handler_identity=handler,
+        handler_anchor_ea=0x401100,
+        proof_kind=BootstrapRouteProofKind.STATIC_NATIVE,
+    )
+    assert session.native_preanalysis.merge_bootstrap_route(route)
+    assert session.native_preanalysis.mark_bootstrap_route_rebound(route)
+    published: list[object] = []
+    import d810.core.observability as observability
+
+    monkeypatch.setattr(observability, "emit", published.append)
+
+    coordinator.capture_flowgraph(_flowgraph_payload(snapshot="snapshot"))
+    coordinator.capture_flowgraph(_flowgraph_payload(snapshot="snapshot"))
+
+    assert len(published) == 1
+    event = published[0]
+    assert event.observations[0].kind == "PreoptBootstrapRouteFact"
+    assert event.observations[0].source_block is None
+    assert event.observations[0].payload == {
+        "source_ea": "0x401020",
+        "state": "0x12345678",
+        "handler_ea": "0x401100",
+        "generation": 1,
+        "proof_kind": "static_native",
+        "rebound": True,
+    }
+
+
+def test_lifecycle_releases_current_mba_identity_index_when_session_finishes() -> None:
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+    session, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    current_index = object()
+
+    assert created is True
+
+    coordinator.bind_current_mba_identity_index(
+        function_ea=0x401000,
+        index=current_index,
+    )
+    assert session.current_mba_identity_index is current_index
+    assert coordinator.finish_hexrays_session() is not None
+    assert session.current_mba_identity_index is None
+
+
+def test_session_gateway_reuses_the_active_current_mba_identity_index() -> None:
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+    session, _created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    index = type("_Index", (), {"generation": 3})()
+    coordinator.bind_current_mba_identity_index(
+        function_ea=0x401000,
+        index=index,
+    )
+
+    gateway = coordinator.new_current_mba_mutation_gateway(
+        function_ea=0x401000,
+        maturity=4,
+    )
+
+    assert gateway == {
+        "session": session,
+        "identity_index": index,
+        "maturity": 4,
+        "event_emitter": None,
+    }
+    assert session.current_mba_identity_index is index
+
+
 def test_nested_different_function_gets_a_new_epoch_and_restores_parent() -> None:
     calls: list[tuple[str, object]] = []
     coordinator, _runtime = _coordinator(calls)
 
-    outer = coordinator.begin_hexrays_session(
+    outer, outer_created = coordinator.ensure_hexrays_session(
         function_ea=0x401000,
         database_identity="sample.i64",
     )
-    inner = coordinator.begin_hexrays_session(
+    inner, inner_created = coordinator.ensure_hexrays_session(
         function_ea=0x402000,
         database_identity="sample.i64",
     )
 
     assert outer.top_level_epoch == 1
     assert inner.top_level_epoch == 1
+    assert outer_created is True
+    assert inner_created is True
     assert coordinator.current_session(0x401000) is outer
     assert coordinator.current_session(0x402000) is inner
 
@@ -228,6 +367,88 @@ def test_nested_different_function_gets_a_new_epoch_and_restores_parent() -> Non
         ("runtime.reset", (0x402000, True)),
         ("rule-scope.clear", 0x402000),
         ("runtime.finish", 0x401000),
+        ("runtime.finish", None),
+    ]
+
+
+def test_reentry_below_a_nested_child_reuses_parent_without_finishing_it() -> None:
+    """A parent callback resumed during a child decompile keeps its evidence."""
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+    parent, parent_created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    child, child_created = coordinator.ensure_hexrays_session(
+        function_ea=0x402000,
+        database_identity="sample.i64",
+    )
+
+    resumed_parent, resumed_created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    assert parent_created is True
+    assert child_created is True
+    assert resumed_parent is parent
+    assert resumed_created is False
+    assert coordinator.current_session(0x401000) is parent
+    assert coordinator.current_session(0x402000) is child
+
+    # The structural callback for the temporary reentry must not finish the
+    # parent session or the nested child beneath it.
+    assert coordinator.finish_hexrays_session() is None
+    assert coordinator.current_session(0x401000) is parent
+    assert coordinator.current_session(0x402000) is child
+
+    child_event = coordinator.finish_hexrays_session()
+    parent_event = coordinator.finish_hexrays_session()
+
+    assert child_event is not None
+    assert child_event.function_ea == 0x402000
+    assert parent_event is not None
+    assert parent_event.function_ea == 0x401000
+    assert calls == [
+        ("runtime.reset", (0x401000, False)),
+        ("rule-scope.clear", 0x401000),
+        ("runtime.reset", (0x402000, True)),
+        ("rule-scope.clear", 0x402000),
+        ("runtime.finish", 0x401000),
+        ("runtime.finish", None),
+    ]
+
+
+def test_native_preanalysis_reserves_the_owner_across_an_internal_callback() -> None:
+    """An internal preflight decompile cannot finish its caller's session."""
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+    session, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    assert created is True
+    coordinator.begin_native_preanalysis(session)
+    callback_session, callback_created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+        callback_entry_ea=0x401020,
+    )
+
+    assert callback_session is session
+    assert callback_created is False
+    assert coordinator.finish_hexrays_session() is None
+    assert coordinator.current_session(0x401000) is session
+
+    coordinator.finish_native_preanalysis(session)
+    event = coordinator.finish_hexrays_session()
+
+    assert event is not None
+    assert event.function_ea == 0x401000
+    assert calls == [
+        ("runtime.reset", (0x401000, False)),
+        ("rule-scope.clear", 0x401000),
         ("runtime.finish", None),
     ]
 

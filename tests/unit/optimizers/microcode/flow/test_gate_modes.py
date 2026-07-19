@@ -72,7 +72,7 @@ class TestModeSemanticsMatrix:
     """End-to-end semantics matrix from the design spec."""
 
     @pytest.mark.parametrize(
-        "mode,recon,enforcement,planner",
+        "mode,analysis,enforcement,planner",
         [
             (GateOperationMode.COLLECT_ONLY, True, False, False),
             (GateOperationMode.GATE_ONLY, True, True, False),
@@ -82,11 +82,11 @@ class TestModeSemanticsMatrix:
     def test_semantics_matrix(
         self,
         mode: GateOperationMode,
-        recon: bool,
+        analysis: bool,
         enforcement: bool,
         planner: bool,
     ) -> None:
-        # Recon collection is always True (all modes run analysis)
-        assert recon is True
+        # Preanalysis collection is always True (all modes run analysis).
+        assert analysis is True
         assert mode.enforces_gate is enforcement
         assert mode.influences_planner is planner

@@ -7,7 +7,6 @@ from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.hexrays.ir.cfg_queries import (
     is_conditional_jump)
-from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
     opcode_to_string,
@@ -440,7 +439,7 @@ class JumpFixer(FlowOptimizationRule):
                     )
                     optimizer_logger.info("  new : {0}".format(format_minsn_t(new_ins)))
                     if new_ins.opcode == ida_hexrays.m_goto:
-                        modifier = DeferredGraphModifier(blk.mba)
+                        modifier = self.new_deferred_modifier(blk.mba)
                         modifier.queue_convert_to_goto(
                             int(blk.serial),
                             int(new_ins.d.b),

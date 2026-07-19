@@ -16,10 +16,10 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING
 
-from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints, ReconResult
+from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints, PreanalysisResult
 
 if TYPE_CHECKING:
-    from d810.passes.store import ReconStore
+    from d810.passes.store import PreanalysisStore
 
 logger = getLogger("D810.passes.analysis")
 
@@ -68,8 +68,8 @@ class AnalysisPhase:
         self,
         *,
         func_ea: int,
-        results: list[ReconResult],
-        store: ReconStore | None = None,
+        results: list[PreanalysisResult],
+        store: PreanalysisStore | None = None,
     ) -> DeobfuscationHints:
         """Classify obfuscation type from a list of ReconResults.
 
@@ -206,8 +206,8 @@ class AnalysisPhase:
         )
 
     def interpret_from_store(
-        self, *, func_ea: int, store: ReconStore
+        self, *, func_ea: int, store: PreanalysisStore
     ) -> DeobfuscationHints:
         """Load all ReconResults from the store and interpret them."""
-        results = store.load_all_recon_results(func_ea=func_ea)
+        results = store.load_all_preanalysis_results(func_ea=func_ea)
         return self.interpret(func_ea=func_ea, results=results, store=store)

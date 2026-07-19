@@ -2050,7 +2050,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return _run_inspect_state_node(args)
 
-    # residual-worksheet uses --diag-db / --recon-db, opens its own
+    # residual-worksheet uses --diag-db / --analysis-db, opens its own
     # connections and may auto-discover paths; bypass the common block.
     if args.command == "residual-worksheet":
         from d810.diagnostics.residual_worksheet import run as _run_residual_worksheet

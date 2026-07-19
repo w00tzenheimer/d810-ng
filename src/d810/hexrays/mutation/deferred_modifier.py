@@ -204,6 +204,10 @@ import idaapi
 
 from d810.core import getLogger
 from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter
+from d810.hexrays.mutation.mba_mutation_events import (
+    MbaMutationGateway,
+    StructuralMutationKind,
+)
 from d810.hexrays.mutation.cfg_verify import (
     capture_failure_artifact)
 from d810.hexrays.mutation.cfg_mutations import (
@@ -539,6 +543,7 @@ class ModificationType(Enum):
     INSN_PROMOTE_OPERAND_TO_SCALAR = auto()  # Hoist a fused mop_d sub-instruction to a fresh kreg
     INSN_SCALARIZE_LOCAL_ALIAS_ACCESS = auto()  # Rewrite proven local pointer alias ldx/stx through its base local
     INSN_RETARGET_OUTPUT_STORE = auto()  # Rewrite a proven output-store address to the output pointer carrier
+    MATERIALIZE_ZERO_WAY_CONDITIONAL = auto()  # Preserve a generated m_jcnd and bind its two proven CFG arms
     LOWER_CONDITIONAL_STATE_TRANSITION = auto()  # Replace state-write-to-dispatcher with a proven 2-way edge
     NORMALIZE_NWAY_DISPATCHER_EXIT = auto()  # Downgrade degenerate NWAY dispatcher exit to 1-way
     BYPASS_DISPATCHER_TRAMPOLINE = auto()  # Redirect an edge away from a dispatcher trampoline
@@ -641,8 +646,10 @@ _STAGED_ATOMIC_CLASS_MAP: "dict[ModificationType, StagedAtomicClassification]" =
     # Lowered to copy-and-swap under staged_atomic.
     ModificationType.BLOCK_GOTO_CHANGE: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
     ModificationType.BLOCK_TARGET_CHANGE: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
+    ModificationType.BLOCK_TERMINAL_GOTO_CHANGE: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
     ModificationType.BLOCK_CONVERT_TO_GOTO: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
     ModificationType.EDGE_REMOVE: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
+    ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
     # Additive: already create new blocks and defer the tail redirect.
     # Safe to apply through the default dispatcher during commit.
     ModificationType.BLOCK_CREATE_WITH_REDIRECT: StagedAtomicClassification.ADDITIVE,
@@ -1059,20 +1066,28 @@ class DeferredGraphModifier:
     _pre_snapshot: FlowGraph | None = None
     # Optional event emitter; when None, no events are emitted (zero overhead).
     event_emitter: EventEmitter | None = None
+    # Session/manager-owned transaction gateway.  Production callers inject
+    # this port so every structural write shares the current-MBA identity
+    # index; standalone tools may omit it and still use the same gateway API.
+    mutation_gateway: MbaMutationGateway | None = None
     # Metadata injected by callers so payloads carry rich context.
     _optimizer_name: str = field(default="", init=False)
     _pass_id: int = field(default=0, init=False)
     _session_id: str = field(default="", init=False)
-    # Remap for block serials consumed by earlier mods (e.g., a
-    # BLOCK_DUPLICATE_AND_REDIRECT creates a block at the serial that
-    # a later EDGE_SPLIT_TRAMPOLINE expected to use).
-    _serial_remap: dict[int, int] = field(default_factory=dict, init=False)
+    # The receipt gateway owns current-MBA serial bindings.  This modifier
+    # retains neither an EA-to-serial cache nor a private serial-remap table.
+    _mutation_gateway: MbaMutationGateway | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        self._mutation_gateway = self.mutation_gateway
 
     def reset(self) -> None:
         """Clear all queued modifications."""
         self.modifications.clear()
         self._applied = False
-        self._serial_remap.clear()
+        if self._mutation_gateway is not None:
+            self._mutation_gateway.abort()
+        self._mutation_gateway = self.mutation_gateway
         self.last_apply_phase = None
         self.last_apply_subphase = None
         self.last_stale_serial_scan = None
@@ -1742,6 +1757,51 @@ class DeferredGraphModifier:
         )
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_materialize_zero_way_conditional(
+        self,
+        *,
+        source_serial: int,
+        predicate_ea: int,
+        taken_target_serial: int,
+        fallthrough_target_serial: int,
+        description: str = "",
+        rule_priority: int = 0,
+    ) -> None:
+        """Queue atomic binding of a generated zero-way ``m_jcnd``.
+
+        At ``MMAT_GENERATED`` Hex-Rays still represents the native conditional
+        target as ``mop_v`` and has not built either CFG successor.  The
+        mutation preserves the condition instruction verbatim, replaces only
+        its destination with the proven taken block, and creates the adjacent
+        fallthrough helper required by the MBA verifier.
+        """
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL,
+            block_serial=int(source_serial),
+            new_target=int(taken_target_serial),
+            conditional_target=int(taken_target_serial),
+            fallthrough_target=int(fallthrough_target_serial),
+            rewrite_from_ea=int(predicate_ea),
+            priority=10,
+            rule_priority=int(rule_priority),
+            description=description or (
+                f"materialize zero-way conditional {source_serial}: "
+                f"taken={taken_target_serial} fallthrough={fallthrough_target_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued materialize_zero_way_conditional: src=%d ea=%s taken=%d fallthrough=%d",
+            source_serial,
+            hex(predicate_ea),
+            taken_target_serial,
+            fallthrough_target_serial,
+        )
+        if self.event_emitter is not None:
+            self._emit(
+                DeferredEvent.DEFERRED_QUEUE_ADDED,
+                self._mod_payload(self.modifications[-1]),
+            )
 
     def queue_normalize_nway_dispatcher_exit(
         self,
@@ -3285,6 +3345,14 @@ class DeferredGraphModifier:
                     mod.host_text_sha1,
                     mod.value_size,
                 )
+            elif mod.mod_type == ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL:
+                key = (
+                    mod.mod_type,
+                    mod.block_serial,
+                    mod.rewrite_from_ea,
+                    mod.conditional_target,
+                    mod.fallthrough_target,
+                )
             elif mod.mod_type == ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION:
                 key = (
                     mod.mod_type,
@@ -4076,6 +4144,7 @@ class DeferredGraphModifier:
             + pre_rejected_trampolines
         )
         total_mod_count = len(sorted_mods) + pre_rejected
+        self._begin_mutation_batch()
 
         logger.info("Applying %d queued graph modifications", total_mod_count)
 
@@ -4284,7 +4353,7 @@ class DeferredGraphModifier:
             # Jump to the post-apply tail (skip the sequential for-loop).
             # The ``goto``-like structure is represented by an early return
             # through ``_finish``; the tail handles optimize_local/verify.
-            return self._finalize_apply(
+            result = self._finalize_apply(
                 successful=successful,
                 failed=failed,
                 rolled_back=rolled_back,
@@ -4296,6 +4365,8 @@ class DeferredGraphModifier:
                 enable_snapshot_rollback=enable_snapshot_rollback,
                 post_apply_hook=post_apply_hook,
             )
+            self._finish_mutation_batch(result)
+            return result
 
         for i, mod in enumerate(sorted_mods):
             self._set_apply_phase("backend_apply", "raw_apply")
@@ -4616,6 +4687,7 @@ class DeferredGraphModifier:
         def _finish(result_count: int) -> int:
             """Shared exit: emit APPLY_FINISHED and mark applied."""
             self._applied = True
+            self._finish_mutation_batch(result_count)
             if self.event_emitter is not None:
                 _fp = self._base_payload()
                 _fp.update({
@@ -4974,6 +5046,20 @@ class DeferredGraphModifier:
                 mod.new_target = effective_new_target
             rewire = self._stage_destructive_mod_via_copy(mod, index=i)
             if rewire is None:
+                if mod.mod_type == ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL:
+                    # This intent is only valid as copy-and-swap.  Falling back
+                    # to the sequential mutator would expose a half-built
+                    # 2-way block if helper creation or verifier wiring failed.
+                    failed += 1
+                    staged_indices.add(i)
+                    logger.warning(
+                        "staged_atomic: refusing non-atomic fallback for "
+                        "mod[%d] %s (block=%d)",
+                        i,
+                        mod.mod_type.name,
+                        mod.block_serial,
+                    )
+                    continue
                 # Staging declined — could be a refusal (e.g., entry-block
                 # guard) or a genuine failure.  Either way, don't count
                 # it as failed here: the mod is NOT in staged_indices, so
@@ -5454,11 +5540,24 @@ class DeferredGraphModifier:
             return change_2way_block_conditional_successor(
                 copy_blk, mod.new_target, verify=False,
             )
+        if mod.mod_type == ModificationType.BLOCK_TERMINAL_GOTO_CHANGE:
+            if copy_blk.nsucc() != 0:
+                return False
+            return change_0way_block_successor(
+                copy_blk, mod.new_target, verify=False,
+            )
         if mod.mod_type == ModificationType.BLOCK_CONVERT_TO_GOTO:
             if copy_blk.nsucc() != 2:
                 return False
             return make_2way_block_goto(
                 copy_blk, mod.new_target, verify=False,
+            )
+        if mod.mod_type == ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL:
+            return self._apply_materialize_zero_way_conditional(
+                copy_blk,
+                predicate_ea=mod.rewrite_from_ea,
+                taken_target_serial=mod.conditional_target,
+                fallthrough_target_serial=mod.fallthrough_target,
             )
         if mod.mod_type == ModificationType.EDGE_REMOVE:
             return remove_block_edge(
@@ -6036,27 +6135,89 @@ class DeferredGraphModifier:
         return None
 
     def _resolve_serial(self, serial: int | None) -> int | None:
-        """Resolve a block serial through the drift remap."""
+        """Resolve a planned serial through the current-MBA gateway."""
         if serial is None:
             return None
-        return self._serial_remap.get(serial, serial)
+        if self._mutation_gateway is None:
+            return int(serial)
+        return self._mutation_gateway.resolve_serial(int(serial))
+
+    def current_serial_for_planned(self, serial: int) -> int:
+        """Return the current MBA serial for a planned transaction coordinate."""
+        resolved = self._resolve_serial(int(serial))
+        if resolved is None:
+            raise RuntimeError(f"planned block serial {serial} is no longer bound")
+        return int(resolved)
+
+    def _begin_mutation_batch(self, *, serial_quantity: int | None = None) -> None:
+        """Create the sole serial-binding authority for this apply batch."""
+        if self._mutation_gateway is not None and self._mutation_gateway.active:
+            return
+        try:
+            gateway = self._mutation_gateway
+            if gateway is None:
+                function_ea = int(getattr(self.mba, "entry_ea", 0) or 0)
+                maturity = int(getattr(self.mba, "maturity", 0) or 0)
+                session_id = self._session_id or f"deferred-{id(self):x}"
+                gateway = MbaMutationGateway(
+                    session_id=session_id,
+                    function_ea=function_ea,
+                    maturity=maturity,
+                )
+                self._mutation_gateway = gateway
+            gateway.begin_batch(
+                StructuralMutationKind.BLOCK_REPLACE,
+                serial_quantity=(
+                    int(self.mba.qty)
+                    if serial_quantity is None
+                    else int(serial_quantity)
+                ),
+                description="deferred graph modifier apply",
+            )
+        except Exception:
+            logger.exception("failed to start mutation receipt batch")
+            if self._mutation_gateway is not self.mutation_gateway:
+                self._mutation_gateway = None
+
+    def _finish_mutation_batch(self, applied: int) -> None:
+        gateway = self._mutation_gateway
+        if gateway is None or not gateway.active:
+            return
+        if int(applied) > 0:
+            gateway.commit()
+        else:
+            gateway.abort()
 
     def _record_serial_insertion(
         self,
         insertion_serial: int,
         old_qty: int,
     ) -> None:
-        """Record the +1 drift caused by inserting one live MBA block."""
-        remap = dict(self._serial_remap)
-        for original_serial, live_serial in tuple(remap.items()):
-            if int(live_serial) >= int(insertion_serial):
-                remap[int(original_serial)] = int(live_serial) + 1
-        for original_serial in range(
-            int(insertion_serial),
-            int(old_qty),
-        ):
-            remap.setdefault(int(original_serial), int(original_serial) + 1)
-        self._serial_remap = remap
+        """Synchronously publish the +1 insertion shift to the gateway."""
+        if self._mutation_gateway is None or not self._mutation_gateway.active:
+            self._begin_mutation_batch(serial_quantity=int(old_qty))
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise RuntimeError("serial insertion could not start mutation gateway")
+        gateway.record_insert(
+            insertion_serial=int(insertion_serial),
+            returned_serial=int(insertion_serial),
+        )
+
+    def _record_realized_serial(
+        self,
+        expected_serial: int,
+        returned_serial: int,
+    ) -> None:
+        if self._mutation_gateway is None or not self._mutation_gateway.active:
+            self._begin_mutation_batch()
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise RuntimeError("serial realization could not start mutation gateway")
+        gateway.record_realized_serial(
+            expected_serial=int(expected_serial),
+            returned_serial=int(returned_serial),
+        )
 
     # BISECT denylist: (block_serial, new_target) pairs to skip.
     # Set via environment: D810_BISECT_SKIP="173:111,76:158"
@@ -6076,9 +6237,9 @@ class DeferredGraphModifier:
                 mod.block_serial, mod.new_target,
             )
             return True  # Pretend success to not abort batch.
-        # Resolve serials through drift remap (e.g., a prior
-        # BLOCK_DUPLICATE_AND_REDIRECT consumed the expected serial).
-        if self._serial_remap:
+        # Resolve serials through the current-MBA identity index (for example,
+        # when a prior block creation consumed a later planned serial).
+        if self._mutation_gateway is not None and self._mutation_gateway.active:
             remapped = False
             for attr in ("block_serial", "new_target", "old_target",
                          "via_pred", "src_block", "expected_serial",
@@ -6105,9 +6266,8 @@ class DeferredGraphModifier:
                         pass
             if remapped:
                 logger.info(
-                    "serial remap applied to mod %s (remap=%s)",
+                    "current-MBA serial bindings applied to mod %s",
                     mod.mod_type.name if hasattr(mod.mod_type, "name") else mod.mod_type,
-                    self._serial_remap,
                 )
         blk = self.mba.get_mblock(mod.block_serial)
         if blk is None:
@@ -6179,6 +6339,14 @@ class DeferredGraphModifier:
                 mod.base_token,
                 mod.host_text_sha1,
                 mod.value_size,
+            )
+
+        elif mod.mod_type == ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL:
+            return self._apply_materialize_zero_way_conditional(
+                blk,
+                predicate_ea=mod.rewrite_from_ea,
+                taken_target_serial=mod.conditional_target,
+                fallthrough_target_serial=mod.fallthrough_target,
             )
 
         elif mod.mod_type == ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION:
@@ -6431,8 +6599,8 @@ class DeferredGraphModifier:
         BLT_2WAY fallthrough must remain the physically-adjacent successor.
         To redirect the non-taken arm, insert a NOP block immediately after
         ``blk`` and repoint that helper to ``new_target``. Any blocks at or
-        beyond the insertion point shift by +1, so update ``_serial_remap`` to
-        keep later deferred modifications aligned with the live MBA.
+        beyond the insertion point shift by +1, so update the mutation gateway
+        before a later deferred modification reads a live MBA coordinate.
         """
         fallthrough_target = _get_fallthrough_successor_serial(blk)
         if fallthrough_target is None:
@@ -6451,11 +6619,11 @@ class DeferredGraphModifier:
             return False
 
         # ``new_target`` is already a live serial: _apply_single resolved it
-        # through ``_serial_remap`` before dispatching here.  Hold the live
+        # through the mutation gateway before dispatching here.  Hold the live
         # block object across the helper insertion so Hex-Rays can update its
         # serial if the insertion precedes it.  Resolving the live serial a
         # second time is ambiguous when that number is also an original key
-        # in ``_serial_remap`` (for example, an inserted helper shifts a live
+        # in the gateway (for example, an inserted helper shifts a live
         # target onto a serial that is also a distinct original-map key).
         new_target_blk = self.mba.get_mblock(int(new_target))
         if new_target_blk is None:
@@ -7283,6 +7451,98 @@ class DeferredGraphModifier:
                 instruction = instruction.next
         return matches[0] if len(matches) == 1 else None
 
+    def _apply_materialize_zero_way_conditional(
+        self,
+        blk: ida_hexrays.mblock_t,
+        *,
+        predicate_ea: int | None,
+        taken_target_serial: int | None,
+        fallthrough_target_serial: int | None,
+    ) -> bool:
+        """Bind both CFG arms of a generated zero-way ``m_jcnd``.
+
+        The branch instruction itself is native microcode evidence.  Keep its
+        opcode and condition operands unchanged; only replace the not-yet-bound
+        ``mop_v`` destination with a block reference and construct the verifier
+        required adjacent fallthrough helper.
+        """
+        if (
+            predicate_ea is None
+            or taken_target_serial is None
+            or fallthrough_target_serial is None
+            or blk.tail is None
+            or int(blk.nsucc()) != 0
+            or int(blk.tail.ea) != int(predicate_ea)
+            or not ida_hexrays.is_mcode_jcond(int(blk.tail.opcode))
+            or getattr(blk.tail, "d", None) is None
+            or int(blk.tail.d.t) != int(ida_hexrays.mop_v)
+        ):
+            logger.warning(
+                "materialize_zero_way_conditional: source blk[%d] no longer "
+                "matches generated predicate at %s",
+                int(blk.serial),
+                None if predicate_ea is None else hex(int(predicate_ea)),
+            )
+            return False
+
+        taken_serial = self._resolve_serial(int(taken_target_serial))
+        fallthrough_serial = self._resolve_serial(int(fallthrough_target_serial))
+        if (
+            taken_serial is None
+            or fallthrough_serial is None
+            or int(taken_serial) == int(fallthrough_serial)
+        ):
+            return False
+        taken_blk = self.mba.get_mblock(int(taken_serial))
+        fallthrough_blk = self.mba.get_mblock(int(fallthrough_serial))
+        if taken_blk is None or fallthrough_blk is None:
+            return False
+
+        helper_serial = self._build_fallthrough_goto_helper(
+            blk,
+            fallthrough_blk,
+        )
+        if helper_serial is None:
+            return False
+
+        # The helper insertion can shift both existing targets.  Hold block
+        # objects across it and consume their live serials only now.
+        live_taken_serial = int(taken_blk.serial)
+        live_fallthrough_serial = int(fallthrough_blk.serial)
+        live_helper_serial = int(helper_serial)
+        if live_taken_serial == live_helper_serial:
+            return False
+
+        blk.tail.d.make_blkref(live_taken_serial)
+        blk.flags &= ~ida_hexrays.MBL_GOTO
+        blk.type = ida_hexrays.BLT_2WAY
+        for stale in [int(value) for value in blk.succset]:
+            blk.succset._del(stale)
+            stale_blk = self.mba.get_mblock(stale)
+            if stale_blk is not None:
+                stale_blk.predset._del(int(blk.serial))
+        for successor in (live_helper_serial, live_taken_serial):
+            blk.succset.push_back(int(successor))
+            successor_blk = self.mba.get_mblock(int(successor))
+            if (
+                successor_blk is not None
+                and int(blk.serial) not in [int(pred) for pred in successor_blk.predset]
+            ):
+                successor_blk.predset.push_back(int(blk.serial))
+                successor_blk.mark_lists_dirty()
+        blk.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+        logger.info(
+            "MATERIALIZE_ZERO_WAY_CONDITIONAL: blk[%d] predicate=0x%x "
+            "taken=%d fallthrough=%d helper=%d",
+            int(blk.serial),
+            int(predicate_ea),
+            live_taken_serial,
+            live_fallthrough_serial,
+            live_helper_serial,
+        )
+        return True
+
     def _apply_lower_conditional_state_transition(
         self,
         blk: ida_hexrays.mblock_t,
@@ -8006,10 +8266,10 @@ class DeferredGraphModifier:
                 int(getattr(mba, "qty", 0) or 0),
             )
             if expected_serial is not None and new_block.serial != expected_serial:
-                self._serial_remap[int(expected_serial)] = int(new_block.serial)
+                self._record_realized_serial(expected_serial, new_block.serial)
                 logger.info(
                     "create_and_redirect: drift expected blk[%d] -> realized blk[%d] "
-                    "recorded in serial remap",
+                    "recorded in mutation gateway",
                     expected_serial,
                     new_block.serial,
                 )
@@ -8279,7 +8539,10 @@ class DeferredGraphModifier:
                 expected_conditional_serial is not None
                 and new_cond_blk.serial != expected_conditional_serial
             ):
-                self._serial_remap[int(expected_conditional_serial)] = int(new_cond_blk.serial)
+                self._record_realized_serial(
+                    expected_conditional_serial,
+                    new_cond_blk.serial,
+                )
                 logger.warning(
                     "create_conditional_redirect: created conditional blk[%d], expected blk[%d]; "
                     "continuing with actual serial and recording remap",
@@ -8290,7 +8553,10 @@ class DeferredGraphModifier:
                 expected_fallthrough_serial is not None
                 and nop_blk.serial != expected_fallthrough_serial
             ):
-                self._serial_remap[int(expected_fallthrough_serial)] = int(nop_blk.serial)
+                self._record_realized_serial(
+                    expected_fallthrough_serial,
+                    nop_blk.serial,
+                )
                 logger.warning(
                     "create_conditional_redirect: created fallthrough blk[%d], expected blk[%d]; "
                     "continuing with actual serial and recording remap",
@@ -8651,7 +8917,7 @@ class DeferredGraphModifier:
                     duplicated_blk.serial,
                     expected_serial,
                 )
-                self._serial_remap[int(expected_serial)] = int(duplicated_blk.serial)
+                self._record_realized_serial(expected_serial, duplicated_blk.serial)
             if expected_secondary_serial is not None:
                 if duplicated_default is None:
                     logger.warning(
@@ -8667,7 +8933,10 @@ class DeferredGraphModifier:
                         duplicated_default.serial,
                         expected_secondary_serial,
                     )
-                    self._serial_remap[int(expected_secondary_serial)] = int(duplicated_default.serial)
+                    self._record_realized_serial(
+                        expected_secondary_serial,
+                        duplicated_default.serial,
+                    )
 
             if pred_blk.nsucc() == 1:
                 if not change_1way_block_successor(
@@ -8851,7 +9120,7 @@ class DeferredGraphModifier:
                 verify=False,
             )
             if expected_serial is not None and replay_blk.serial != expected_serial:
-                self._serial_remap[int(expected_serial)] = int(replay_blk.serial)
+                self._record_realized_serial(expected_serial, replay_blk.serial)
                 logger.info(
                     "duplicate_replay: replay blk drift pred=%d expected=%d actual=%d",
                     pred_serial,
@@ -9017,7 +9286,7 @@ class DeferredGraphModifier:
                     cloned_blk.serial,
                     expected_serial,
                 )
-                self._serial_remap[int(expected_serial)] = int(cloned_blk.serial)
+                self._record_realized_serial(expected_serial, cloned_blk.serial)
 
             target_serial = self._resolve_serial(goto_target_serial)
             if self.mba.get_mblock(target_serial) is None:
@@ -9129,7 +9398,7 @@ class DeferredGraphModifier:
                     cloned_blk.serial,
                     expected_serial,
                 )
-                self._serial_remap[int(expected_serial)] = int(cloned_blk.serial)
+                self._record_realized_serial(expected_serial, cloned_blk.serial)
 
             target_serial = self._resolve_serial(goto_target_serial)
             if self.mba.get_mblock(target_serial) is None:
@@ -10724,7 +10993,7 @@ class DeferredGraphModifier:
                     expected_serial,
                 )
                 if expected_serial is not None:
-                    self._serial_remap[expected_serial] = new_blk.serial
+                    self._record_realized_serial(expected_serial, new_blk.serial)
             new_stop_serial = mba.qty - 1
             for pred_serial in old_stop_pred_serials:
                 pred_blk = mba.get_mblock(pred_serial)
@@ -12427,10 +12696,10 @@ class ImmediateGraphModifier:
                 verify=False,
             )
             if expected_serial is not None and new_block.serial != expected_serial:
-                self._serial_remap[int(expected_serial)] = int(new_block.serial)
+                self._record_realized_serial(expected_serial, new_block.serial)
                 logger.info(
                     "create_and_redirect: drift expected blk[%d] -> realized blk[%d] "
-                    "recorded in serial remap",
+                    "recorded in mutation gateway",
                     expected_serial,
                     new_block.serial,
                 )

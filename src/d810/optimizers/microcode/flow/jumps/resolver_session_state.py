@@ -1,0 +1,333 @@
+"""Session-owned evidence for the computed-goto resolver.
+
+This module deliberately knows only the session extension surface, portable
+identity, and live-index result.  It never imports manager code or retains an
+MBA object, keeping the resolver usable from callback-local adapters without
+reintroducing function-EA global state.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from d810.analyses.control_flow.native_preanalysis_session import (
+    BootstrapRouteBindingEvidence,
+    BootstrapRouteEvidence,
+    BootstrapRouteProofKind,
+    NativePreanalysisSessionState,
+    RESOLVER_SESSION_STATE_EXTENSION_KEY,
+)
+from d810.analyses.control_flow.materialized_indirect_transfer import (
+    MaterializedIndirectTransfer,
+    TerminalReturnCarrierRequest,
+)
+from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.ir.block_identity import BoundBlock, NativeEaInterval, StableBlockIdentity
+
+
+# The session survives callback-local module reloads, so its extension key
+# must too.  A private object() key creates a second resolver state after a
+# reload and silently loses the preflight's materialization evidence.
+@dataclass(frozen=True, slots=True)
+class ReboundBootstrapRoute:
+    """A uniquely rebound bootstrap edge for the current MBA generation."""
+
+    evidence: BootstrapRouteEvidence
+    source: BoundBlock
+    handler: BoundBlock
+    generation: int
+
+
+@dataclass(slots=True)
+class ResolverMaterializationState:
+    """One bounded computed-goto materialization run in a session."""
+
+    resolution: object
+    rounds: int = 0
+    entry_bridge_materialized: bool = False
+    state_route_rounds: int = 0
+
+
+@dataclass(slots=True)
+class ResolverSessionState:
+    """Resolver-local live bindings for one lifecycle session.
+
+    ``native_preanalysis`` is the context-owned portable authority.  This
+    attachment contains only callback-local binding data and temporary resolver
+    objects, so its lifecycle cannot silently become a second evidence store.
+    """
+
+    native_preanalysis: NativePreanalysisSessionState
+    identity_index: MbaBlockIdentityIndex | None = None
+    resolution: object | None = None
+    materialization: ResolverMaterializationState | None = None
+    materialized: bool = False
+    materialized_transfers: tuple[MaterializedIndirectTransfer, ...] = ()
+    terminal_return_carrier_requests: tuple[TerminalReturnCarrierRequest, ...] = ()
+    call_result_carriers: tuple[object, ...] = ()
+    call_abi_proofs: dict[int, object] = field(default_factory=dict)
+    indirect_label_materialized: bool = False
+    indirect_dispatcher_materialized: bool = False
+    snippet_capture_active: bool = False
+    snippet_capture_profile_ea: int | None = None
+    bootstrap_route_bindings: dict[
+        tuple[StableBlockIdentity, int], BootstrapRouteBindingEvidence
+    ] = field(default_factory=dict)
+
+    @property
+    def evidence_generation(self) -> int:
+        """Read the first-class context generation; never duplicate it here."""
+        return self.native_preanalysis.evidence_generation
+
+    def merge_bootstrap_route(self, evidence: BootstrapRouteEvidence) -> bool:
+        """Delegate portable evidence ownership to the lifecycle context."""
+        changed = self.native_preanalysis.merge_bootstrap_route(evidence)
+        if changed:
+            # The prior index may address a pre-redo MBA and is never usable
+            # for the new evidence generation.
+            self.identity_index = None
+            if evidence.key not in self.native_preanalysis.bootstrap_routes:
+                self.bootstrap_route_bindings.pop(evidence.key, None)
+        return changed
+
+    def begin_materialization(self, resolution: object) -> None:
+        """Start the one resolver materialization state for this session."""
+        if self.materialization is not None:
+            raise RuntimeError("resolver materialization is already active")
+        self.resolution = resolution
+        self.materialized = False
+        self.materialization = ResolverMaterializationState(resolution=resolution)
+
+    @property
+    def is_materialized(self) -> bool:
+        """Return whether this resolver owns the current function's profile."""
+        return self.materialization is not None or self.materialized
+
+    def merge_materialized_transfers(
+        self,
+        transfers: tuple[MaterializedIndirectTransfer, ...],
+    ) -> bool:
+        """Merge portable transfer facts and advance their evidence epoch."""
+        merged = tuple(dict.fromkeys((*self.materialized_transfers, *transfers)))
+        if merged == self.materialized_transfers:
+            return False
+        self.materialized_transfers = merged
+        self.native_preanalysis.mark_evidence_changed()
+        self.identity_index = None
+        return True
+
+    def merge_terminal_return_carrier_requests(
+        self,
+        requests: tuple[TerminalReturnCarrierRequest, ...],
+    ) -> bool:
+        """Merge exact carrier-capture evidence into this session only."""
+        merged = tuple(
+            dict.fromkeys((*self.terminal_return_carrier_requests, *requests))
+        )
+        if merged == self.terminal_return_carrier_requests:
+            return False
+        self.terminal_return_carrier_requests = merged
+        self.native_preanalysis.mark_evidence_changed()
+        self.identity_index = None
+        return True
+
+    def complete_materialization(self) -> None:
+        """Publish the fixed point without preserving a callback-local session."""
+        self.materialization = None
+        self.materialized = True
+
+    def discover_static_native_bootstrap_route(
+        self,
+        *,
+        source_anchor_ea: int,
+        state_constant: int,
+        handler_anchor_ea: int,
+    ) -> bool:
+        """Record manager-owned native evidence without consulting a live MBA.
+
+        Static preflight proves exact native instruction anchors.  Singleton EA
+        identities are therefore the portable authority at discovery time;
+        PREOPT must still rebind both identities uniquely before mutation.
+        """
+        source_anchor_ea = int(source_anchor_ea)
+        handler_anchor_ea = int(handler_anchor_ea)
+        if source_anchor_ea <= 0 or handler_anchor_ea <= 0:
+            return False
+        source_identity = StableBlockIdentity.from_intervals(
+            (NativeEaInterval(source_anchor_ea, source_anchor_ea + 1),)
+        )
+        handler_identity = StableBlockIdentity.from_intervals(
+            (NativeEaInterval(handler_anchor_ea, handler_anchor_ea + 1),)
+        )
+        return self.merge_bootstrap_route(
+            BootstrapRouteEvidence(
+                source_identity=source_identity,
+                source_anchor_ea=source_anchor_ea,
+                state=int(state_constant),
+                handler_identity=handler_identity,
+                handler_anchor_ea=handler_anchor_ea,
+                proof_kind=BootstrapRouteProofKind.STATIC_NATIVE,
+            )
+        )
+
+    def request_controlled_redo(self) -> bool:
+        """Allow exactly one generated-MBA redo for the current evidence generation."""
+        return self.native_preanalysis.request_controlled_redo()
+
+    def bind_current_mba(self, index: MbaBlockIdentityIndex) -> None:
+        """Attach current-only lookup data after regenerated MBA construction."""
+        if index.evidence_generation != self.native_preanalysis.evidence_generation:
+            raise ValueError(
+                "MBA identity index evidence generation must match resolver evidence"
+            )
+        self.identity_index = index
+
+    def begin_snippet_capture(self, function_ea: int) -> bool:
+        """Enter one callback-local detached-snippet capture section."""
+        if self.snippet_capture_active:
+            return False
+        self.snippet_capture_active = True
+        self.snippet_capture_profile_ea = int(function_ea)
+        return True
+
+    def cache_call_result_carriers(self, carriers: tuple[object, ...]) -> None:
+        """Retain serial-free LOCOPT carrier evidence for this session only."""
+        self.call_result_carriers = tuple(carriers)
+
+    def clear_call_result_carriers(self) -> None:
+        self.call_result_carriers = ()
+
+    def finish_snippet_capture(self) -> None:
+        self.snippet_capture_active = False
+        self.snippet_capture_profile_ea = None
+
+    def release_live_bindings(self) -> None:
+        """Drop every current-MBA binding when the top-level session ends."""
+        self.identity_index = None
+        self.materialization = None
+        self.call_result_carriers = ()
+        self.snippet_capture_active = False
+        self.snippet_capture_profile_ea = None
+        self.bootstrap_route_bindings.clear()
+
+    def rebind_bootstrap_route(
+        self,
+        *,
+        source_identity: StableBlockIdentity,
+        state: int,
+    ) -> ReboundBootstrapRoute | None:
+        """Return the route only when both identities bind uniquely and currently."""
+        key = source_identity, int(state)
+        evidence = self.native_preanalysis.bootstrap_routes.get(key)
+        index = self.identity_index
+        if (
+            evidence is None
+            or key in self.native_preanalysis.conflicted_bootstrap_keys
+            or index is None
+        ):
+            return None
+        source = index.rebind_identity(evidence.source_identity)
+        handler = index.rebind_identity(evidence.handler_identity)
+        if source.block is None or handler.block is None:
+            return None
+        return ReboundBootstrapRoute(
+            evidence=evidence,
+            source=source.block,
+            handler=handler.block,
+            generation=self.native_preanalysis.evidence_generation,
+        )
+
+    def bound_bootstrap_routes(self) -> tuple[BootstrapRouteEvidence, ...]:
+        """Return routes rebound in the PREOPT generation owning the live MBA."""
+        evidence = self.native_preanalysis
+        bound_generation = evidence.bound_preopt_generation
+        if bound_generation is None:
+            return ()
+        routes = {
+            route
+            for key in evidence.rebound_bootstrap_keys
+            for route in (evidence.bootstrap_routes.get(key),)
+            if route is not None
+            and key not in evidence.conflicted_bootstrap_keys
+            and evidence.rebound_bootstrap_generations.get(key)
+            == bound_generation
+        }
+        return tuple(
+            sorted(
+                routes,
+                key=lambda route: (
+                    int(route.source_anchor_ea),
+                    int(route.state),
+                    int(route.handler_anchor_ea),
+                ),
+            )
+        )
+
+    def record_bootstrap_route_binding(
+        self,
+        binding: BootstrapRouteBindingEvidence,
+    ) -> bool:
+        """Retain a serial-free PREOPT binding for the current evidence epoch."""
+        key = binding.route.key
+        evidence = self.native_preanalysis
+        if (
+            evidence.bootstrap_routes.get(key) != binding.route
+            or key in evidence.conflicted_bootstrap_keys
+            or evidence.rebound_bootstrap_generations.get(key)
+            != int(binding.evidence_generation)
+        ):
+            return False
+        self.bootstrap_route_bindings[key] = binding
+        return True
+
+    def bound_bootstrap_route_bindings(
+        self,
+    ) -> tuple[BootstrapRouteBindingEvidence, ...]:
+        """Return serial-free bindings for the PREOPT epoch owning this MBA."""
+        bound_generation = self.native_preanalysis.bound_preopt_generation
+        if bound_generation is None:
+            return ()
+        bindings = {
+            binding
+            for key, binding in self.bootstrap_route_bindings.items()
+            if binding.evidence_generation == bound_generation
+            and self.native_preanalysis.bootstrap_routes.get(key) == binding.route
+            and key not in self.native_preanalysis.conflicted_bootstrap_keys
+        }
+        return tuple(
+            sorted(
+                bindings,
+                key=lambda binding: (
+                    int(binding.route.source_anchor_ea),
+                    int(binding.route.state),
+                    int(binding.route.handler_anchor_ea),
+                ),
+            )
+        )
+
+
+def resolver_session_state(session: object) -> ResolverSessionState:
+    """Get a resolver's callback-local attachment for one lifecycle session."""
+    extensions = getattr(session, "extensions", None)
+    if not isinstance(extensions, dict):
+        raise TypeError("resolver session state requires a lifecycle extensions dict")
+    native_preanalysis = getattr(session, "native_preanalysis", None)
+    if not isinstance(native_preanalysis, NativePreanalysisSessionState):
+        raise TypeError("resolver session state requires lifecycle native evidence")
+    state = extensions.get(RESOLVER_SESSION_STATE_EXTENSION_KEY)
+    if state is None:
+        state = ResolverSessionState(native_preanalysis=native_preanalysis)
+        extensions[RESOLVER_SESSION_STATE_EXTENSION_KEY] = state
+    if not isinstance(state, ResolverSessionState):
+        raise TypeError("resolver session extension key is not ResolverSessionState")
+    if state.native_preanalysis is not native_preanalysis:
+        raise TypeError("resolver session binding belongs to another lifecycle")
+    return state
+
+
+__all__ = [
+    "BootstrapRouteBindingEvidence",
+    "BootstrapRouteEvidence",
+    "BootstrapRouteProofKind",
+    "ReboundBootstrapRoute",
+    "ResolverSessionState",
+    "resolver_session_state",
+]
