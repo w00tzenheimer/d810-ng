@@ -16,7 +16,10 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
+import re
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -25,9 +28,10 @@ import libcst as cst
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SCOPES = ("src", "tests")
-SCAN_SUFFIXES = frozenset({".py", ".json"})
+DEFAULT_SCOPES = ("src", "tests", "tools")
+SCAN_SUFFIXES = frozenset({".py", ".json", ".toml"})
 SELF_TEST_FILE = f"test_{Path(__file__).stem}.py"
+SELF_SCRIPT = Path(__file__).resolve()
 SKIP_PARTS = frozenset(
     {
         ".git",
@@ -37,6 +41,7 @@ SKIP_PARTS = frozenset(
         ".tmp",
         ".venv",
         "graphify-out",
+        "codemod_reports",
         "__pycache__",
         "build",
         "dist",
@@ -51,22 +56,63 @@ NAME_RENAMES = {
     "FactLifecycleRuntime": "PreanalysisFactRuntime",
     "ReconAnalysisRuntime": "DecompilationAnalysisRuntime",
     "ReconRuntimeBundle": "AnalysisRuntimeBundle",
+    "ReconCollectionContext": "PreanalysisCollectionContext",
+    "ReconCollector": "PreanalysisCollector",
+    "ReconOutcome": "AnalysisOutcome",
+    "ReconOutcomeLog": "AnalysisOutcomeLog",
+    "ReconResult": "PreanalysisResult",
+    "ReconRoundDiscoveryContext": "PreanalysisRoundDiscoveryContext",
+    "ReconStore": "PreanalysisStore",
+    "ReconStoreWriter": "PreanalysisStoreWriter",
+    "DEFAULT_RECON_COLLECTOR_FACTORIES": "DEFAULT_PREANALYSIS_COLLECTOR_FACTORIES",
+    "DEFAULT_RECON_COLLECTOR_NAMES": "DEFAULT_PREANALYSIS_COLLECTOR_NAMES",
+    "_create_default_recon_phase": "_create_default_preanalysis_phase",
     "build_recon_phase": "build_preanalysis_phase",
     "build_recon_runtime_bundle": "build_analysis_runtime_bundle",
+    "coerce_recon_collection_context": "coerce_preanalysis_collection_context",
+    "get_recon_writer": "get_preanalysis_writer",
+    "load_all_recon_results": "load_all_preanalysis_results",
+    "load_latest_recon_result": "load_latest_preanalysis_result",
+    "load_recon_results": "load_preanalysis_results",
     "register_default_recon_collectors": "register_default_preanalysis_collectors",
     "register_default_fact_collectors": "register_default_preanalysis_fact_collectors",
+    "save_recon_result": "save_preanalysis_result",
     "recon_phase": "preanalysis_phase",
     "_recon_phase": "_preanalysis_phase",
     "recon_runtime": "analysis_runtime",
     "_recon_runtime": "_analysis_runtime",
     "_recon_bundle": "_analysis_bundle",
     "recon_db": "analysis_db",
+    "recon_db_path": "analysis_db_path",
+    "recon_store_path": "analysis_store_path",
+    "recon_store_session": "analysis_store_session",
+    "_recon": "_preanalysis",
+    "_recon_diagnostics_enabled": "_preanalysis_diagnostics_enabled",
+    "_recon_fact_collector_registration_handlers": (
+        "_preanalysis_fact_collector_registration_handlers"
+    ),
+    "emit_recon_fact_collector_registration": (
+        "emit_preanalysis_fact_collector_registration"
+    ),
+    "find_latest_recon_db": "find_latest_analysis_db",
+    "register_recon_fact_collector_registration_handler": (
+        "register_preanalysis_fact_collector_registration_handler"
+    ),
+    "unregister_recon_fact_collector_registration_handler": (
+        "unregister_preanalysis_fact_collector_registration_handler"
+    ),
     "enable_recon_pipeline": "enable_analysis_pipeline",
+    "recon_fact_profiles": "preanalysis_fact_profiles",
     "recon_fact_profile_modules": "preanalysis_profile_modules",
     "_load_recon_fact_profile_modules": "_load_preanalysis_profile_modules",
 }
+CLI_RENAMES = {
+    "d810-recon": "d810-preanalysis",
+    "--recon-db": "--analysis-db",
+}
 LITERAL_RENAMES = {
     **NAME_RENAMES,
+    **CLI_RENAMES,
     "D810.recon.flowgraph_ready": "D810.preanalysis.flowgraph_ready",
 }
 EVENT_RENAMES = {
@@ -75,15 +121,35 @@ EVENT_RENAMES = {
 }
 RESOLVER_GLOBALS = frozenset(
     {
+        "_MATERIALIZED_EAS",
         "_MATERIALIZATION_SESSIONS",
+        "_PROVEN_CALL_ABI_BY_EA",
         "_RESOLUTIONS_BY_EA",
         "_PREPATCH_PREOPT_UNION_SOURCES",
         "_PREOPT_UNION_PREPARATIONS",
+        "_MATERIALIZED_INDIRECT_TRANSFERS",
+        "_TERMINAL_RETURN_CARRIER_REQUESTS",
+        "_INDIRECT_MATERIALIZED_FUNCTION_EAS",
+        "_INDIRECT_DISPATCHER_FUNCTION_EAS",
     }
+)
+LEGACY_RESOLVER_APIS = frozenset(
+    {
+        "get_materialized_indirect_transfers",
+        "get_terminal_return_carrier_requests",
+        "record_materialized_indirect_transfers",
+        "record_terminal_return_carrier_requests",
+        "clear_materialized_indirect_dispatcher_evidence",
+    }
+)
+ADDRESS_KEYED_RESOLVER_APIS = frozenset(
+    {"mark_indirect_dispatcher", "is_materialized_indirect_dispatcher"}
 )
 MANUAL_NAMES = frozenset({"FlowGraphReadySubscriber"})
 MANUAL_RUNTIME_METHODS = frozenset({"reset_for_func", "analyze_and_persist"})
 EVENT_SUBSCRIBER_METHODS = frozenset({"on", "subscribe", "emit"})
+CLI_DECLARATION_METHODS = frozenset({"add_argument", "add_parser"})
+_RECON_API_NAME = re.compile(r"^_?recon(?:_|$)|^Recon(?:_|[A-Z]|$)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +170,22 @@ class RewriteResult:
 
 def _node_code(node: cst.CSTNode) -> str:
     return cst.Module([]).code_for_node(node)
+
+
+def _rewrite_dotted_symbol_literal(value: str) -> str:
+    """Rewrite declared module/symbol spellings in an import or mock target."""
+    whole_module = MODULE_RENAMES.get(value)
+    if whole_module is not None:
+        return whole_module
+    if "." not in value:
+        return value
+    return ".".join(NAME_RENAMES.get(part, part) for part in value.split("."))
+
+
+def _rewrite_literal(value: str) -> str:
+    """Return the declared replacement for one string literal, if any."""
+    direct = LITERAL_RENAMES.get(value)
+    return direct if direct is not None else _rewrite_dotted_symbol_literal(value)
 
 
 class _LifecycleRenameTransformer(cst.CSTTransformer):
@@ -173,16 +255,50 @@ class _LifecycleRenameTransformer(cst.CSTTransformer):
             return updated_node
         if not isinstance(value, str):
             return updated_node
-        replacement = LITERAL_RENAMES.get(value)
-        if replacement is None:
+        replacement = _rewrite_literal(value)
+        if replacement == value:
             return updated_node
         return cst.SimpleString(json.dumps(replacement))
+
+    def leave_FormattedStringText(
+        self,
+        original_node: cst.FormattedStringText,
+        updated_node: cst.FormattedStringText,
+    ) -> cst.FormattedStringText:
+        replacement = _rewrite_literal(updated_node.value)
+        if replacement == updated_node.value:
+            return updated_node
+        return updated_node.with_changes(value=replacement)
 
 
 def rewrite_text(source: str) -> RewriteResult:
     """Return a formatting-preserving rewrite for declared safe substitutions."""
     module = cst.parse_module(source)
     rewritten = module.visit(_LifecycleRenameTransformer()).code
+    return RewriteResult(text=rewritten, changed=rewritten != source)
+
+
+def rewrite_json_text(source: str) -> RewriteResult:
+    """Rewrite declared JSON keys without reformatting the file."""
+    rewritten = source
+    for original, replacement in NAME_RENAMES.items():
+        rewritten = re.sub(
+            rf"{re.escape(json.dumps(original))}(?=\s*:)",
+            json.dumps(replacement),
+            rewritten,
+        )
+    return RewriteResult(text=rewritten, changed=rewritten != source)
+
+
+def rewrite_toml_text(source: str) -> RewriteResult:
+    """Rewrite declared project-script names without reformatting TOML."""
+    rewritten = source
+    for original, replacement in CLI_RENAMES.items():
+        rewritten = re.sub(
+            rf"(?m)^(?P<indent>\s*){re.escape(original)}(?=\s*=)",
+            rf"\g<indent>{replacement}",
+            rewritten,
+        )
     return RewriteResult(text=rewritten, changed=rewritten != source)
 
 
@@ -194,6 +310,34 @@ def _event_name(node: ast.AST) -> str | None:
     if node.value.id != "DecompilationEvent" or node.attr not in EVENT_RENAMES:
         return None
     return node.attr
+
+
+def _is_analysis_runtime_receiver(node: ast.AST) -> bool:
+    """Return whether a call receiver denotes the injected analysis runtime.
+
+    The fact-capture and outcome-log internals intentionally expose a method
+    named ``reset_for_func`` too.  Those are implementation details, not
+    adapter-owned calls into the decompilation runtime and must not block a
+    terminology-only codemod batch.
+    """
+    if isinstance(node, ast.Name):
+        return node.id in {"runtime", "analysis_runtime", "recon_runtime"}
+    return isinstance(node, ast.Attribute) and node.attr in {
+        "analysis_runtime",
+        "_analysis_runtime",
+        "recon_runtime",
+        "_recon_runtime",
+    }
+
+
+def _is_function_ea_argument(node: ast.AST) -> bool:
+    """Recognize the former function-EA facade without flagging session calls."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return True
+    return (
+        isinstance(node, ast.Name)
+        and node.id.lstrip("_").lower() in {"function_ea", "func_ea"}
+    )
 
 
 class _CandidateVisitor(ast.NodeVisitor):
@@ -256,7 +400,7 @@ class _CandidateVisitor(ast.NodeVisitor):
                 detail=node.id,
                 rewriteable=True,
             )
-        elif node.id in RESOLVER_GLOBALS:
+        elif node.id in RESOLVER_GLOBALS | LEGACY_RESOLVER_APIS:
             self._add(
                 node,
                 kind="resolver-global-access",
@@ -267,6 +411,13 @@ class _CandidateVisitor(ast.NodeVisitor):
             self._add(
                 node,
                 kind="manual-lifecycle-owner",
+                detail=node.id,
+                rewriteable=False,
+            )
+        elif _RECON_API_NAME.match(node.id):
+            self._add(
+                node,
+                kind="residual-recon-api",
                 detail=node.id,
                 rewriteable=False,
             )
@@ -287,21 +438,79 @@ class _CandidateVisitor(ast.NodeVisitor):
                 detail=node.attr,
                 rewriteable=True,
             )
-        elif node.attr in RESOLVER_GLOBALS:
+        elif node.attr in RESOLVER_GLOBALS | LEGACY_RESOLVER_APIS:
             self._add(
                 node,
                 kind="resolver-global-access",
                 detail=node.attr,
                 rewriteable=False,
             )
+        elif _RECON_API_NAME.match(node.attr):
+            self._add(
+                node,
+                kind="residual-recon-api",
+                detail=node.attr,
+                rewriteable=False,
+            )
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if node.name in NAME_RENAMES:
+            self._add(
+                node,
+                kind="legacy-symbol",
+                detail=node.name,
+                rewriteable=True,
+            )
+        elif _RECON_API_NAME.match(node.name):
+            self._add(
+                node,
+                kind="residual-recon-api",
+                detail=node.name,
+                rewriteable=False,
+            )
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.visit_FunctionDef(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        if node.name in NAME_RENAMES:
+            self._add(
+                node,
+                kind="legacy-symbol",
+                detail=node.name,
+                rewriteable=True,
+            )
+        elif _RECON_API_NAME.match(node.name):
+            self._add(
+                node,
+                kind="residual-recon-api",
+                detail=node.name,
+                rewriteable=False,
+            )
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Attribute):
-            if node.func.attr in MANUAL_RUNTIME_METHODS:
+            if (
+                node.func.attr in MANUAL_RUNTIME_METHODS
+                and _is_analysis_runtime_receiver(node.func.value)
+            ):
                 self._add(
                     node,
                     kind="direct-runtime-call",
+                    detail=node.func.attr,
+                    rewriteable=False,
+                )
+            elif (
+                node.func.attr in ADDRESS_KEYED_RESOLVER_APIS
+                and node.args
+                and _is_function_ea_argument(node.args[0])
+            ):
+                self._add(
+                    node,
+                    kind="resolver-global-access",
                     detail=node.func.attr,
                     rewriteable=False,
                 )
@@ -318,6 +527,37 @@ class _CandidateVisitor(ast.NodeVisitor):
                             ),
                             rewriteable=False,
                         )
+            if node.func.attr in CLI_DECLARATION_METHODS:
+                for argument in node.args:
+                    if not (
+                        isinstance(argument, ast.Constant)
+                        and isinstance(argument.value, str)
+                    ):
+                        continue
+                    if argument.value in CLI_RENAMES:
+                        self._add(
+                            argument,
+                            kind="legacy-cli-name",
+                            detail=argument.value,
+                            rewriteable=True,
+                        )
+                    elif argument.value.startswith("--recon"):
+                        self._add(
+                            argument,
+                            kind="legacy-cli-name",
+                            detail=argument.value,
+                            rewriteable=False,
+                        )
+                    elif (
+                        node.func.attr == "add_parser"
+                        and argument.value in CLI_RENAMES
+                    ):
+                        self._add(
+                            argument,
+                            kind="legacy-cli-name",
+                            detail=argument.value,
+                            rewriteable=True,
+                        )
         for keyword in node.keywords:
             if keyword.arg in NAME_RENAMES:
                 self._add(
@@ -329,7 +569,11 @@ class _CandidateVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Constant(self, node: ast.Constant) -> None:
-        if isinstance(node.value, str) and node.value in LITERAL_RENAMES:
+        if not isinstance(node.value, str):
+            return
+        if node.value in CLI_RENAMES:
+            return
+        if node.value in LITERAL_RENAMES:
             self._add(
                 node,
                 kind=(
@@ -337,6 +581,13 @@ class _CandidateVisitor(ast.NodeVisitor):
                     if node.value.startswith("D810.recon.")
                     else "legacy-config-key"
                 ),
+                detail=node.value,
+                rewriteable=True,
+            )
+        elif _rewrite_dotted_symbol_literal(node.value) != node.value:
+            self._add(
+                node,
+                kind="legacy-symbol",
                 detail=node.value,
                 rewriteable=True,
             )
@@ -368,12 +619,9 @@ def _scan_json_config(path: Path, *, root: Path) -> list[Candidate]:
 
     candidates: list[Candidate] = []
     for legacy_name in NAME_RENAMES:
-        token = json.dumps(legacy_name)
-        offset = 0
-        while True:
-            index = source.find(token, offset)
-            if index < 0:
-                break
+        pattern = re.compile(rf"{re.escape(json.dumps(legacy_name))}(?=\s*:)")
+        for match in pattern.finditer(source):
+            index = match.start()
             line = source.count("\n", 0, index) + 1
             column = index - source.rfind("\n", 0, index) - 1
             candidates.append(
@@ -381,12 +629,44 @@ def _scan_json_config(path: Path, *, root: Path) -> list[Candidate]:
                     path=_relative_path(path, root),
                     line=line,
                     column=column,
-                    kind="manual-config-key",
+                    kind="legacy-config-key",
                     detail=legacy_name,
-                    rewriteable=False,
+                    rewriteable=True,
                 )
             )
-            offset = index + len(token)
+    return candidates
+
+
+def _scan_toml_config(path: Path, *, root: Path) -> list[Candidate]:
+    """Inventory legacy console-script names without changing TOML parsing."""
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as error:
+        return [
+            Candidate(
+                path=_relative_path(path, root),
+                line=0,
+                column=0,
+                kind="unparseable-source",
+                detail=str(error),
+                rewriteable=False,
+            )
+        ]
+    candidates: list[Candidate] = []
+    for legacy_name in CLI_RENAMES:
+        pattern = re.compile(rf"(?m)^\s*{re.escape(legacy_name)}(?=\s*=)")
+        for match in pattern.finditer(source):
+            index = match.start() + len(match.group()) - len(legacy_name)
+            candidates.append(
+                Candidate(
+                    path=_relative_path(path, root),
+                    line=source.count("\n", 0, index) + 1,
+                    column=index - source.rfind("\n", 0, index) - 1,
+                    kind="legacy-cli-name",
+                    detail=legacy_name,
+                    rewriteable=True,
+                )
+            )
     return candidates
 
 
@@ -396,6 +676,9 @@ def scan_paths(paths: Sequence[Path], *, root: Path) -> list[Candidate]:
     for path in paths:
         if path.suffix == ".json":
             candidates.extend(_scan_json_config(path, root=root))
+            continue
+        if path.suffix == ".toml":
+            candidates.extend(_scan_toml_config(path, root=root))
             continue
         try:
             source = path.read_text(encoding="utf-8")
@@ -435,36 +718,85 @@ def _iter_scan_files(path: Path) -> Iterable[Path]:
 
 
 def discover_paths(root: Path, requested: Sequence[str]) -> list[Path]:
-    """Return a stable, de-duplicated set of Python files to inspect."""
-    roots = [root / item for item in DEFAULT_SCOPES] if not requested else [
-        Path(item).resolve() for item in requested
-    ]
+    """Return a stable, de-duplicated set of source and config files to inspect."""
+    roots = (
+        [*(root / item for item in DEFAULT_SCOPES), root / "pyproject.toml"]
+        if not requested
+        else [Path(item).resolve() for item in requested]
+    )
     discovered = {
         path.resolve()
         for item in roots
         for path in _iter_scan_files(item)
-        if path.name != SELF_TEST_FILE
+        if path.name != SELF_TEST_FILE and path.resolve() != SELF_SCRIPT
     }
     return sorted(discovered)
 
 
-def _report_payload(root: Path, candidates: Sequence[Candidate]) -> dict[str, object]:
+def _summary(candidates: Sequence[Candidate]) -> dict[str, object]:
     unknown = sum(not candidate.rewriteable for candidate in candidates)
+    by_kind: dict[str, int] = {}
+    for candidate in candidates:
+        by_kind[candidate.kind] = by_kind.get(candidate.kind, 0) + 1
+    return {
+        "candidates": len(candidates),
+        "rewritable": len(candidates) - unknown,
+        "unknown": unknown,
+        "by_kind": dict(sorted(by_kind.items())),
+    }
+
+
+def _report_payload(root: Path, candidates: Sequence[Candidate]) -> dict[str, object]:
+    production_candidates = [
+        candidate for candidate in candidates if not candidate.path.startswith("tests/")
+    ]
+    tool_candidates = [
+        candidate for candidate in candidates if candidate.path.startswith("tools/")
+    ]
     return {
         "schema_version": 1,
         "root": str(root),
         "summary": {
-            "candidates": len(candidates),
-            "rewritable": len(candidates) - unknown,
-            "unknown": unknown,
+            **_summary(candidates),
+            "production": _summary(production_candidates),
+            "tools": _summary(tool_candidates),
         },
         "candidates": [asdict(candidate) for candidate in candidates],
     }
 
 
-def _write_report(path: Path, payload: dict[str, object]) -> None:
+def _stage_text(path: Path, text: str) -> Path:
+    """Write one same-directory temporary file with the destination's mode."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    destination_mode = (
+        path.stat().st_mode & 0o7777 if path.exists() else None
+    )
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.codemod-",
+        suffix=".tmp",
+        dir=path.parent,
+        text=True,
+    )
+    temporary = Path(temporary_name)
+    try:
+        if destination_mode is not None:
+            os.chmod(temporary, destination_mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return temporary
+
+
+def _write_report(path: Path, payload: dict[str, object]) -> None:
+    temporary = _stage_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _manual_candidate_dicts(payload: dict[str, object]) -> list[dict[str, object]]:
@@ -664,18 +996,68 @@ def verify_manifest(
 def _rewrite_candidates(paths: Sequence[Path]) -> list[tuple[Path, RewriteResult]]:
     rewrites: list[tuple[Path, RewriteResult]] = []
     for path in paths:
-        if path.suffix != ".py":
+        if path.suffix not in SCAN_SUFFIXES:
             continue
         source = path.read_text(encoding="utf-8")
-        result = rewrite_text(source)
+        if path.suffix == ".py":
+            result = rewrite_text(source)
+        elif path.suffix == ".json":
+            result = rewrite_json_text(source)
+        else:
+            result = rewrite_toml_text(source)
         if result.changed:
             rewrites.append((path, result))
     return rewrites
 
 
+def apply_rewrites(rewrites: Sequence[tuple[Path, RewriteResult]]) -> None:
+    """Commit a batch atomically, restoring every prior file on failure.
+
+    All replacement and rollback files are staged before the first destination
+    changes.  A failed destination replace restores already-committed files
+    from their staged original bytes, so an ``--apply`` run cannot leave a
+    prefix of its intended edits behind.
+    """
+    staged: list[tuple[Path, Path, Path]] = []
+    try:
+        for path, result in rewrites:
+            original = path.read_text(encoding="utf-8")
+            staged.append((path, _stage_text(path, result.text), _stage_text(path, original)))
+    except Exception:
+        for _path, replacement, backup in staged:
+            replacement.unlink(missing_ok=True)
+            backup.unlink(missing_ok=True)
+        raise
+
+    committed: list[tuple[Path, Path, Path]] = []
+    try:
+        for row in staged:
+            path, replacement, _backup = row
+            os.replace(replacement, path)
+            committed.append(row)
+    except Exception:
+        rollback_error: Exception | None = None
+        for path, _replacement, backup in reversed(committed):
+            try:
+                os.replace(backup, path)
+            except Exception as error:  # pragma: no cover - filesystem catastrophe
+                rollback_error = error
+        if rollback_error is not None:
+            raise RuntimeError("codemod rollback failed") from rollback_error
+        raise
+    finally:
+        for _path, replacement, backup in staged:
+            replacement.unlink(missing_ok=True)
+            backup.unlink(missing_ok=True)
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("paths", nargs="*", help="Python files or directories to inspect")
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        help="Python, JSON, or TOML paths to inspect",
+    )
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     parser.add_argument("--report", type=Path, help="Write JSON inventory to this path")
     parser.add_argument(
@@ -758,8 +1140,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     rewrites = _rewrite_candidates(paths)
     if args.apply:
-        for path, result in rewrites:
-            path.write_text(result.text, encoding="utf-8")
+        apply_rewrites(rewrites)
+        for path, _result in rewrites:
             print(f"rewrote {_relative_path(path, root)}")
         print(f"apply: rewritten={len(rewrites)} candidates={len(candidates)}")
         return 0
