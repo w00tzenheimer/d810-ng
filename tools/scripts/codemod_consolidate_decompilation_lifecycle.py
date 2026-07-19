@@ -149,6 +149,7 @@ MANUAL_NAMES = frozenset({"FlowGraphReadySubscriber"})
 MANUAL_RUNTIME_METHODS = frozenset({"reset_for_func", "analyze_and_persist"})
 EVENT_SUBSCRIBER_METHODS = frozenset({"on", "subscribe", "emit"})
 CLI_DECLARATION_METHODS = frozenset({"add_argument", "add_parser"})
+TEMPORARY_INTERNAL_PORTS = frozenset({"template_maturity"})
 _RECON_API_NAME = re.compile(r"^_?recon(?:_|$)|^Recon(?:_|[A-Z]|$)")
 
 
@@ -469,6 +470,18 @@ class _CandidateVisitor(ast.NodeVisitor):
                 detail=node.name,
                 rewriteable=False,
             )
+        for argument in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ):
+            if argument.arg in TEMPORARY_INTERNAL_PORTS:
+                self._add(
+                    argument,
+                    kind="temporary-internal-port",
+                    detail=argument.arg,
+                    rewriteable=False,
+                )
         self.generic_visit(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
@@ -565,6 +578,13 @@ class _CandidateVisitor(ast.NodeVisitor):
                     kind="constructor-injection",
                     detail=keyword.arg,
                     rewriteable=True,
+                )
+            elif keyword.arg in TEMPORARY_INTERNAL_PORTS:
+                self._add(
+                    keyword.value,
+                    kind="temporary-internal-port",
+                    detail=keyword.arg,
+                    rewriteable=False,
                 )
         self.generic_visit(node)
 
@@ -875,12 +895,14 @@ def verify_manifest(
     current_non_runtime = [
         candidate
         for candidate in current_manual
-        if str(candidate.get("kind", "")) != "direct-runtime-call"
+        if str(candidate.get("kind", ""))
+        not in {"direct-runtime-call", "temporary-internal-port"}
     ]
     baseline_non_runtime = [
         candidate
         for candidate in baseline_manual
-        if str(candidate.get("kind", "")) != "direct-runtime-call"
+        if str(candidate.get("kind", ""))
+        not in {"direct-runtime-call", "temporary-internal-port"}
     ]
     current_counts = _counter_for_candidates(current_non_runtime)
     baseline_counts = _counter_for_candidates(baseline_non_runtime)
@@ -959,6 +981,110 @@ def verify_manifest(
             errors.append(
                 "production direct-runtime-call is not manifest-allowlisted: "
                 f"{path} {detail} ({count}>{maximum})"
+            )
+
+    temporary_candidates = [
+        candidate
+        for candidate in current_manual
+        if str(candidate.get("kind", "")) == "temporary-internal-port"
+    ]
+    temporary_ports = manifest.get("temporary_internal_ports", [])
+    if not isinstance(temporary_ports, list):
+        errors.append("manifest temporary_internal_ports must be a list")
+        temporary_ports = []
+    allowed_temporary: dict[tuple[str, str], tuple[str, int]] = {}
+    declared_ports: list[tuple[str, list[dict[str, object]]]] = []
+    for port in temporary_ports:
+        if not isinstance(port, dict):
+            errors.append("temporary_internal_ports entries must be objects")
+            continue
+        detail = port.get("detail")
+        locations = port.get("locations")
+        removal_condition = port.get("removal_condition")
+        if (
+            not isinstance(detail, str)
+            or not isinstance(locations, list)
+            or not isinstance(removal_condition, str)
+            or not removal_condition.strip()
+        ):
+            errors.append(
+                "temporary internal port requires detail, locations, and "
+                "removal_condition"
+            )
+            continue
+        valid_locations: list[dict[str, object]] = []
+        for location in locations:
+            if not isinstance(location, dict):
+                errors.append("temporary internal port locations must be objects")
+                continue
+            path = location.get("path")
+            role = location.get("role")
+            maximum = location.get("maximum")
+            if (
+                not isinstance(path, str)
+                or role not in {"definition", "consumer"}
+                or not isinstance(maximum, int)
+                or maximum < 1
+            ):
+                errors.append(
+                    "temporary internal port location requires path, "
+                    "definition/consumer role, and positive maximum"
+                )
+                continue
+            key = (path, detail)
+            if key in allowed_temporary:
+                errors.append(
+                    f"duplicate temporary internal port location: {path} {detail}"
+                )
+                continue
+            allowed_temporary[key] = (str(role), maximum)
+            valid_locations.append(location)
+        declared_ports.append((detail, valid_locations))
+
+    temporary_counts: dict[tuple[str, str], int] = {}
+    for candidate in temporary_candidates:
+        key = (str(candidate.get("path", "")), str(candidate.get("detail", "")))
+        temporary_counts[key] = temporary_counts.get(key, 0) + 1
+        allowance = allowed_temporary.get(key)
+        if allowance is None:
+            errors.append(
+                "temporary internal port is not manifest-allowlisted: "
+                f"{key[0]} {key[1]}"
+            )
+            continue
+        _role, maximum = allowance
+        if temporary_counts[key] > maximum:
+            errors.append(
+                "temporary internal port count exceeds manifest maximum: "
+                f"{key[0]} {key[1]} "
+                f"({temporary_counts[key]}>{maximum})"
+            )
+
+    for detail, locations in declared_ports:
+        definition_count = sum(
+            temporary_counts.get((str(location["path"]), detail), 0)
+            for location in locations
+            if location.get("role") == "definition"
+        )
+        consumer_count = sum(
+            temporary_counts.get((str(location["path"]), detail), 0)
+            for location in locations
+            if location.get("role") == "consumer"
+        )
+        if consumer_count and definition_count != 1:
+            errors.append(
+                "temporary internal port consumers require exactly one definition: "
+                f"{detail} definitions={definition_count} consumers={consumer_count}"
+            )
+        if definition_count and consumer_count == 0:
+            errors.append(
+                "temporary internal port has no remaining consumers and must be "
+                f"removed: {detail}"
+            )
+        if definition_count == 0 and consumer_count == 0:
+            errors.append(
+                "temporary internal port manifest entry has retired and must be "
+                f"removed: {detail}"
             )
 
     bridges = manifest.get("bridges", [])
