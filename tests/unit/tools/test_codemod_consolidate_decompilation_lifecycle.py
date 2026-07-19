@@ -587,3 +587,103 @@ def test_manifest_gate_rejects_adapter_direct_calls_and_forgotten_bridge(
     forgotten_bridge = {"candidates": []}
     errors = mod.verify_manifest(forgotten_bridge, manifest, root=tmp_path)
     assert any("must be removed" in error for error in errors)
+
+
+def test_inventory_reports_temporary_internal_port_definition_and_consumer(
+    tmp_path: Path,
+) -> None:
+    mod = _load_module()
+    definition = tmp_path / "src" / "resolver.py"
+    consumer = tmp_path / "tools" / "probe.py"
+    definition.parent.mkdir()
+    consumer.parent.mkdir()
+    definition.write_text(
+        "def prepare(*, template_maturity=None):\n    return template_maturity\n",
+        encoding="utf-8",
+    )
+    consumer.write_text(
+        "prepare(template_maturity=1)\n",
+        encoding="utf-8",
+    )
+
+    candidates = mod.scan_paths([definition, consumer], root=tmp_path)
+
+    assert [
+        (candidate.path, candidate.kind, candidate.detail)
+        for candidate in candidates
+    ] == [
+        ("src/resolver.py", "temporary-internal-port", "template_maturity"),
+        ("tools/probe.py", "temporary-internal-port", "template_maturity"),
+    ]
+
+
+def test_manifest_bounds_and_self_retires_temporary_internal_port(
+    tmp_path: Path,
+) -> None:
+    mod = _load_module()
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text('{"candidates": []}', encoding="utf-8")
+    manifest = {
+        "schema_version": 1,
+        "baseline_report": "baseline.json",
+        "retired_manual_kinds": [],
+        "direct_runtime": {
+            "checkpoint_count": 0,
+            "allowed_production": [],
+        },
+        "temporary_internal_ports": [
+            {
+                "detail": "template_maturity",
+                "locations": [
+                    {
+                        "path": "src/resolver.py",
+                        "role": "definition",
+                        "maximum": 1,
+                    },
+                    {
+                        "path": "tools/probe.py",
+                        "role": "consumer",
+                        "maximum": 1,
+                    },
+                ],
+                "removal_condition": "Remove after the PREOPT proof.",
+            }
+        ],
+        "bridges": [],
+    }
+    definition = {
+        "path": "src/resolver.py",
+        "line": 1,
+        "column": 0,
+        "kind": "temporary-internal-port",
+        "detail": "template_maturity",
+        "rewriteable": False,
+    }
+    consumer = {
+        "path": "tools/probe.py",
+        "line": 1,
+        "column": 0,
+        "kind": "temporary-internal-port",
+        "detail": "template_maturity",
+        "rewriteable": False,
+    }
+
+    assert mod.verify_manifest(
+        {"candidates": [definition, consumer]},
+        manifest,
+        root=tmp_path,
+    ) == []
+
+    errors = mod.verify_manifest(
+        {"candidates": [definition]},
+        manifest,
+        root=tmp_path,
+    )
+    assert any("no remaining consumers" in error for error in errors)
+
+    errors = mod.verify_manifest(
+        {"candidates": []},
+        manifest,
+        root=tmp_path,
+    )
+    assert any("manifest entry has retired" in error for error in errors)

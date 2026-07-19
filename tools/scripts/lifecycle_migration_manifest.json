@@ -26,6 +26,24 @@
       }
     ]
   },
+  "temporary_internal_ports": [
+    {
+      "detail": "template_maturity",
+      "locations": [
+        {
+          "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
+          "role": "definition",
+          "maximum": 1
+        },
+        {
+          "path": "tools/scripts/rhad_investigation/probe_preopt_snippet_import.py",
+          "role": "consumer",
+          "maximum": 1
+        }
+      ],
+      "removal_condition": "Remove with the probe-only fallback after fresh cache-disabled sub_40D200 succeeds through the PREOPT union path."
+    }
+  ],
   "bridges": [
     {
       "path": "src/d810/manager/decompilation_lifecycle.py",

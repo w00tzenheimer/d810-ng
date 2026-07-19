@@ -422,6 +422,13 @@ serialized template, a netnode, or cache reuse.
 7. Keep serialized snapshots, netnode persistence, and cache reuse out of A0.
    They are later transport/persistence work and must not hide a no-cache
    recovery failure.
+8. Retire the probe-only `prepare_detached_handler_snippets(...,
+   template_maturity=...)` port when the fresh cache-disabled target succeeds
+   through the PREOPT-union path. Until then, its single definition and single
+   investigation-tool consumer are bounded by
+   `tools/scripts/lifecycle_migration_manifest.json`; the gate must fail if the
+   port spreads, loses its consumer without being deleted, or outlives its
+   manifest entry.
 
 **Acceptance gates:**
 
