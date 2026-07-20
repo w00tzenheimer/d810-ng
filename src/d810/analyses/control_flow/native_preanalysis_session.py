@@ -11,6 +11,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from d810.analyses.control_flow.detached_handler_island import (
+    DetachedSnippetBoundaryPorts,
+    normalize_detached_snippet_boundary_ports,
+)
+from d810.analyses.control_flow.materialized_indirect_transfer import (
+    MaterializedIndirectTransfer,
+)
+from d810.analyses.control_flow.native_semantic_closure import (
+    NativeCfg,
+    NativeSemanticClosure,
+)
+from d810.core.native_preanalysis_key import (
+    NativePreanalysisKey,
+    NativePreanalysisKeyMismatch,
+)
 from d810.core.typing import Final
 from d810.ir.block_identity import StableBlockIdentity
 
@@ -21,6 +36,62 @@ from d810.ir.block_identity import StableBlockIdentity
 RESOLVER_SESSION_STATE_EXTENSION_KEY: Final = (
     "d810.optimizers.microcode.flow.jumps.resolver_session_state"
 )
+
+
+@dataclass(frozen=True, slots=True)
+class NativePreanalysisFacts:
+    """Normalized portable evidence for one exact native-analysis identity."""
+
+    key: NativePreanalysisKey
+    native_cfg: NativeCfg
+    semantic_closure: NativeSemanticClosure | None
+    transfers: tuple[MaterializedIndirectTransfer, ...]
+    boundary_ports: DetachedSnippetBoundaryPorts
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, NativePreanalysisKey):
+            raise TypeError("native preanalysis facts require a native key")
+        if not isinstance(self.native_cfg, NativeCfg):
+            raise TypeError("native preanalysis facts require a native CFG")
+        if self.semantic_closure is not None and not isinstance(
+            self.semantic_closure,
+            NativeSemanticClosure,
+        ):
+            raise TypeError("semantic closure must be portable native evidence")
+        if not all(
+            isinstance(transfer, MaterializedIndirectTransfer)
+            for transfer in self.transfers
+        ):
+            raise TypeError("native preanalysis transfers must be portable facts")
+        normalized_transfers = tuple(
+            sorted(
+                set(self.transfers),
+                key=lambda transfer: (
+                    int(transfer.source_jmp_ea),
+                    int(transfer.source_block_ea),
+                    tuple(int(ea) for ea in transfer.materialized_anchor_eas),
+                    tuple(int(ea) for ea in transfer.target_eas),
+                    str(transfer.resolver_kind),
+                    repr(transfer),
+                ),
+            )
+        )
+        normalized_ports = normalize_detached_snippet_boundary_ports(
+            tuple(self.boundary_ports.direct),
+            tuple(self.boundary_ports.conditional),
+        )
+        object.__setattr__(self, "transfers", normalized_transfers)
+        object.__setattr__(self, "boundary_ports", normalized_ports)
+
+    def require_key(self, expected: NativePreanalysisKey) -> None:
+        """Reject evidence captured for another input/function/profile/SDK."""
+        if self.key == expected:
+            return
+        raise NativePreanalysisKeyMismatch(
+            expected,
+            self.key,
+            expected.mismatch_fields(self.key),
+        )
 
 
 def attached_resolver_session_state(session: object) -> object | None:
@@ -107,6 +178,7 @@ class NativePreanalysisSessionState:
 
     evidence_generation: int = 0
     bound_preopt_generation: int | None = None
+    facts: NativePreanalysisFacts | None = None
     bootstrap_routes: dict[tuple[StableBlockIdentity, int], BootstrapRouteEvidence] = (
         field(default_factory=dict)
     )
@@ -260,6 +332,7 @@ __all__ = [
     "BootstrapRouteBindingEvidence",
     "BootstrapRouteEvidence",
     "BootstrapRouteProofKind",
+    "NativePreanalysisFacts",
     "NativePreanalysisSessionState",
     "RESOLVER_SESSION_STATE_EXTENSION_KEY",
     "attached_resolver_session_state",

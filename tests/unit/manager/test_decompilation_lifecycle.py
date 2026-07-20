@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import pytest
+
 from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteEvidence,
     BootstrapRouteProofKind,
+    NativePreanalysisFacts,
 )
+from d810.analyses.control_flow.detached_handler_island import (
+    DetachedSnippetBoundaryPorts,
+)
+from d810.analyses.control_flow.native_semantic_closure import NativeBlock, NativeCfg
+from d810.core.native_preanalysis_key import NativePreanalysisKeyMismatch
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.manager.decompilation_lifecycle import (
@@ -145,6 +153,119 @@ def _flowgraph_payload(
         ),
         snapshot=snapshot,
     )
+
+
+def _native_facts(*, key=NATIVE_KEY, blocks=()) -> NativePreanalysisFacts:
+    return NativePreanalysisFacts(
+        key=key,
+        native_cfg=NativeCfg({block.start_ea: block for block in blocks}),
+        semantic_closure=None,
+        transfers=(),
+        boundary_ports=DetachedSnippetBoundaryPorts((), ()),
+    )
+
+
+def test_native_fact_session_api_is_idempotent_and_generation_aware() -> None:
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+
+    session, created = coordinator.ensure(
+        NATIVE_KEY,
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    same, created_again = coordinator.ensure(
+        NATIVE_KEY,
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    assert created is True
+    assert created_again is False
+    assert same is session
+    assert coordinator.get(NATIVE_KEY) is session
+
+    empty = _native_facts()
+    assert coordinator.merge_facts(NATIVE_KEY, empty) is True
+    assert coordinator.merge_facts(NATIVE_KEY, _native_facts()) is False
+    assert session.native_preanalysis.evidence_generation == 1
+    assert coordinator.mark_preopt_bound(NATIVE_KEY, 1) is True
+    assert coordinator.mark_preopt_bound(NATIVE_KEY, 1) is False
+
+    changed = _native_facts(blocks=(NativeBlock(0x401000, 0x401010),))
+    assert coordinator.merge_facts(NATIVE_KEY, changed) is True
+    assert session.native_preanalysis.evidence_generation == 2
+
+
+def test_native_fact_session_api_rejects_key_mismatch() -> None:
+    coordinator, _runtime = _coordinator([])
+    coordinator.ensure(
+        NATIVE_KEY,
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    other = make_native_key(profile_fingerprint="sha256:test-profile-b")
+
+    with pytest.raises(NativePreanalysisKeyMismatch):
+        coordinator.merge_facts(NATIVE_KEY, _native_facts(key=other))
+
+
+def test_native_fact_finish_releases_live_indexes_and_attachments() -> None:
+    coordinator, _runtime = _coordinator([])
+    session, _created = coordinator.ensure(
+        NATIVE_KEY,
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    released: list[bool] = []
+    session.current_mba_identity_index = object()
+    session.extensions["resolver"] = type(
+        "Attachment",
+        (),
+        {"release_live_bindings": lambda self: released.append(True)},
+    )()
+
+    coordinator.finish(NATIVE_KEY)
+
+    assert coordinator.get(NATIVE_KEY) is None
+    assert session.current_mba_identity_index is None
+    assert session.extensions == {}
+    assert released == [True]
+
+
+def test_native_fact_session_api_preserves_nested_owners() -> None:
+    parent_key = NATIVE_KEY
+    child_key = make_native_key(
+        function_rva=0x2000,
+        function_fingerprint="sha256:test-function-b",
+    )
+    keys = {0x401000: parent_key, 0x402000: child_key}
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=None,
+        analysis_runtime=None,
+        rule_scope_service=None,
+        native_preanalysis_key_provider=keys.__getitem__,
+    )
+
+    parent, _created = coordinator.ensure(
+        parent_key,
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    child, _created = coordinator.ensure(
+        child_key,
+        function_ea=0x402000,
+        database_identity="sample.i64",
+    )
+
+    with pytest.raises(RuntimeError, match="beneath another active owner"):
+        coordinator.finish(parent_key)
+    coordinator.finish(child_key)
+    assert coordinator.get(child_key) is None
+    assert coordinator.get(parent_key) is parent
+    coordinator.finish(parent_key)
+    assert coordinator.get(parent_key) is None
+    assert child is not parent
 
 
 def test_ensure_capture_analyze_and_finish_preserve_lifecycle_order() -> None:
