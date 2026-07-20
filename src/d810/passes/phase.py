@@ -1,11 +1,4 @@
-"""ReconPhase orchestrator.
-
-Manages a registry of ``ReconCollector`` instances and dispatches them to
-the appropriate maturities. Results are persisted via ``ReconStore``.
-
-No IDA imports at module level - collectors that need IDA guard their own
-imports. This module is fully unit-testable.
-"""
+"PreanalysisPhase orchestrator.\n\nManages a registry of ``PreanalysisCollector`` instances and dispatches them to\nthe appropriate maturities. Results are persisted via ``PreanalysisStore``.\n\nNo IDA imports at module level - collectors that need IDA guard their own\nimports. This module is fully unit-testable.\n"
 from __future__ import annotations
 
 from d810.core.logging import getLogger
@@ -23,16 +16,7 @@ ALL_MATURITIES: frozenset[int] | None = None
 
 @runtime_checkable
 class PreanalysisCollector(Protocol):
-    """Protocol for all recon collectors.
-
-    Implementations must be read-only - they observe but never modify
-    the microcode (``mba_t``) or ctree (``cfunc_t``).
-
-    Attributes:
-        name: Unique collector identifier, used as primary key in the store.
-        maturities: Set of maturity levels at which this collector fires.
-        level: ``"microcode"`` or ``"ctree"``.
-    """
+    "Protocol for all preanalysis collectors.\n\n    Implementations must be read-only - they observe but never modify\n    the microcode (``mba_t``) or ctree (``cfunc_t``).\n\n    Attributes:\n        name: Unique collector identifier, used as primary key in the store.\n        maturities: Set of maturity levels at which this collector fires.\n        level: ``\"microcode\"`` or ``\"ctree\"``.\n    "
     name: str
     maturities: frozenset[int] | None
     level: str
@@ -42,29 +26,12 @@ class PreanalysisCollector(Protocol):
         target: Any,
         context: PreanalysisCollectionContext,
     ) -> PreanalysisResult:
-        """Collect observations from ``target`` at ``context``.
-
-        :param target: ``mba_t`` for microcode collectors, ``cfunc_t`` for ctree.
-        :param context: Current provider-neutral collection context.
-        :return: Immutable ``ReconResult`` with metrics and candidate flags.
-        """
+        "Collect observations from ``target`` at ``context``.\n\n        :param target: ``mba_t`` for microcode collectors, ``cfunc_t`` for ctree.\n        :param context: Current provider-neutral collection context.\n        :return: Immutable ``PreanalysisResult`` with metrics and candidate flags.\n        "
         ...
 
 
 class PreanalysisPhase:
-    """Orchestrates ReconCollectors across microcode and ctree maturities.
-
-    Maintains a per-function maturity guard so each collector fires at most
-    once per (func_ea, maturity) pair per decompilation.
-
-    Example:
-        >>> store = ReconStore("/tmp/recon.db")
-        >>> phase = ReconPhase(store=store)
-        >>> phase.register(CFGShapeCollector())
-        >>> phase.run_microcode_collectors(
-        ...     mba, func_ea=0x401000, provider_phase=provider_phase,
-        ... )
-    """
+    "Orchestrates PreanalysisCollectors across microcode and ctree maturities.\n\n    Maintains a per-function maturity guard so each collector fires at most\n    once per (func_ea, maturity) pair per decompilation.\n\n    Example:\n        >>> store = PreanalysisStore(\"/tmp/preanalysis.db\")\n        >>> phase = PreanalysisPhase(store=store)\n        >>> phase.register(CFGShapeCollector())\n        >>> phase.run_microcode_collectors(\n        ...     mba, func_ea=0x401000, provider_phase=provider_phase,\n        ... )\n    "
 
     def __init__(self, store: PreanalysisStore) -> None:
         self._store = store
@@ -83,10 +50,10 @@ class PreanalysisPhase:
         for existing in self._collectors:
             if existing.name == collector.name:
                 raise ValueError(
-                    f"ReconCollector '{collector.name}' already registered"
+                    f"PreanalysisCollector '{collector.name}' already registered"
                 )
         self._collectors.append(collector)
-        logger.debug("Registered recon collector: %s", collector.name)
+        logger.debug("Registered preanalysis collector: %s", collector.name)
 
     @staticmethod
     def _collector_runs_at_provider_level(
@@ -127,16 +94,7 @@ class PreanalysisPhase:
         func_ea: int,
         provider_phase: ProviderPhase,
     ) -> list[PreanalysisResult]:
-        """Dispatch all microcode collectors registered for ``provider_phase``.
-
-        Protected by a per-(func_ea, maturity) guard so each collector fires
-        at most once per decompilation pass.
-
-        :param target: Live ``mba_t`` (passed through to collectors).
-        :param func_ea: Function EA.
-        :param provider_phase: Current provider phase supplied by the adapter.
-        :return: List of ``ReconResult`` produced this call (may be empty).
-        """
+        "Dispatch all microcode collectors registered for ``provider_phase``.\n\n        Protected by a per-(func_ea, maturity) guard so each collector fires\n        at most once per decompilation pass.\n\n        :param target: Live ``mba_t`` (passed through to collectors).\n        :param func_ea: Function EA.\n        :param provider_phase: Current provider phase supplied by the adapter.\n        :return: List of ``PreanalysisResult`` produced this call (may be empty).\n        "
         provider_level = int(provider_phase.provider_level)
         maturity_text = str(provider_phase.friendly_provider_level)
         fired_maturities = self._fired.setdefault(func_ea, set())
@@ -163,7 +121,7 @@ class PreanalysisPhase:
                 results.append(result)
             except Exception:
                 logger.exception(
-                    "ReconCollector '%s' failed at func=0x%x maturity=%s",
+                    "PreanalysisCollector '%s' failed at func=0x%x maturity=%s",
                     collector.name, func_ea, maturity_text,
                 )
 
@@ -203,7 +161,7 @@ class PreanalysisPhase:
                 results.append(result)
             except Exception:
                 logger.exception(
-                    "ReconCollector '%s' (ctree) failed at func=0x%x maturity=%s",
+                    "PreanalysisCollector '%s' (ctree) failed at func=0x%x maturity=%s",
                     collector.name, func_ea, maturity_text,
                 )
 

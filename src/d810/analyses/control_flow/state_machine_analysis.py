@@ -1,4 +1,4 @@
-"""State-machine path analysis helpers shared across recon and Hodur."""
+"State-machine path analysis helpers shared across preanalysis and Hodur."
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 # Registry-backed seam: the Hex-Rays constant-folding evaluator is supplied by
-# the composition root via ``d810.capabilities.providers`` so recon stays
+# the composition root via ``d810.capabilities.providers`` so preanalysis stays
 # backend-free (ticket d81-1w16).  Kept as a module-level name so call sites are
 # unchanged.
 def _forward_eval_insn(*args, **kwargs):
@@ -590,11 +590,11 @@ class StateWriteSite:
 # Back-compat alias preserving the legacy name at its original
 # location.  The canonical definition lives at
 # ``d810.ir.results.ConstantFixpointResult`` (slice 9, see
-# docs/plans/recon-and-cfg-restructuring-phase0-inventory.md); the
+# docs/plans/preanalysis-and-cfg-restructuring-phase0-inventory.md); the
 # alias keeps the 5 prod + 1 test consumer files
 # (``round_discovery_context.py``, ``path_horizon.py``,
 # ``reconstruction_discovery.py``, ``reconstruction_candidate_builder.py``,
-# this module, ``tests/unit/recon/flow/test_reconstruction_candidate_builder.py``)
+# this module, ``tests/unit/preanalysis/flow/test_reconstruction_candidate_builder.py``)
 # working without migration.  New code should import
 # ``ConstantFixpointResult`` from ``d810.ir.results`` directly.
 SnapshotConstantFixpointResult = ConstantFixpointResult

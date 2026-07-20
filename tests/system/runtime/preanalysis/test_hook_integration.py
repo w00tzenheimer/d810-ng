@@ -70,15 +70,7 @@ class TestInstructionOptimizerManagerUsesLifecyclePort:
         )
 
     def test_log_info_emits_flowgraph_ready(self):
-        """E4a contract: microcode recon collection is driven by the
-        lifecycle coordinator on ``D810``.  Each manager
-        maturity gate must invoke ``_emit_flowgraph_ready_event``;
-        the direct ``run_microcode_collectors(mba, ...)`` call is
-        gone.
-
-        Architectural pin: catches drift that either removes the
-        emit (recon stops firing for this manager) or re-introduces
-        a direct ``run_microcode_collectors`` call (double-collect)."""
+        "E4a contract: microcode preanalysis collection is driven by the\n        lifecycle coordinator on ``D810``.  Each manager\n        maturity gate must invoke ``_emit_flowgraph_ready_event``;\n        the direct ``run_microcode_collectors(mba, ...)`` call is\n        gone.\n\n        Architectural pin: catches drift that either removes the\n        emit (preanalysis stops firing for this manager) or re-introduces\n        a direct ``run_microcode_collectors`` call (double-collect)."
         filepath = _OPTINSN_ADAPTER
         cls_src = _get_class_source(filepath, "InstructionOptimizerManager")
         assert "_emit_flowgraph_ready_event(" in cls_src, (

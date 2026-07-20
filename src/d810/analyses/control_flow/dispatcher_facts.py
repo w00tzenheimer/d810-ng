@@ -1,24 +1,4 @@
-"""Pure-data dispatcher analysis facts.
-
-Holds the pure data classes used by dispatcher analysis -- no
-``ida_hexrays`` types in any field annotation, no live IDA calls in
-any method body.  Consumed by the pure analyzer at
-``d810.analyses.control_flow.dispatcher_analysis`` and the live adapter at
-``d810.backends.hexrays.evidence.dispatcher.dispatcher_history``.
-
-Companion modules:
-
-* ``d810.capabilities.dispatcher`` -- ``RouterKind`` enum.
-* ``d810.analyses.control_flow.dispatcher_analysis`` -- pure
-  ``analyze_dispatcher(flow_graph)`` + ``DispatcherAnalysis`` result.
-* ``d810.backends.hexrays.evidence.dispatcher.dispatcher_history`` --
-  live adapter (``analyze_dispatcher_live``: mba lift + explicit
-  cross-maturity history store).
-
-This module imports only portable ``d810.ir`` data; all dependencies flow upward
-(recon-flow facts -> recon-flow analyzer -> optimizers live adapter), never the
-reverse.
-"""
+"Pure-data dispatcher analysis facts.\n\nHolds the pure data classes used by dispatcher analysis -- no\n``ida_hexrays`` types in any field annotation, no live IDA calls in\nany method body.  Consumed by the pure analyzer at\n``d810.analyses.control_flow.dispatcher_analysis`` and the live adapter at\n``d810.backends.hexrays.evidence.dispatcher.dispatcher_history``.\n\nCompanion modules:\n\n* ``d810.capabilities.dispatcher`` -- ``RouterKind`` enum.\n* ``d810.analyses.control_flow.dispatcher_analysis`` -- pure\n  ``analyze_dispatcher(flow_graph)`` + ``DispatcherAnalysis`` result.\n* ``d810.backends.hexrays.evidence.dispatcher.dispatcher_history`` --\n  live adapter (``analyze_dispatcher_live``: mba lift + explicit\n  cross-maturity history store).\n\nThis module imports only portable ``d810.ir`` data; all dependencies flow upward\n(preanalysis-flow facts -> preanalysis-flow analyzer -> optimizers live adapter), never the\nreverse.\n"
 
 from __future__ import annotations
 

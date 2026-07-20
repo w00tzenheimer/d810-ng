@@ -1,4 +1,4 @@
-"""Hodur adapter for generic recon-store artifact helpers."""
+"Hodur adapter for generic preanalysis-store artifact helpers."
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,7 +29,7 @@ def load_return_sites_from_store(
     provider_level: int | None = None,
     **legacy_fields: object,
 ) -> tuple[ReturnSite, ...]:
-    """Load transition-report-derived Hodur return sites from the recon store."""
+    "Load transition-report-derived Hodur return sites from the preanalysis store."
     site_provider = provider or HodurReturnSiteProvider()
     return _load_return_sites_from_store(
         func_ea=func_ea,

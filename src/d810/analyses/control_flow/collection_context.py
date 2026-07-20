@@ -13,7 +13,7 @@ from d810.core.typing import Any
 
 @dataclass(frozen=True)
 class PreanalysisCollectionContext:
-    """Provider-neutral recon collector call context."""
+    "Provider-neutral preanalysis collector call context."
 
     func_ea: int
     provider_phase: ProviderPhase
@@ -30,13 +30,13 @@ def coerce_preanalysis_collection_context(
     provider_phase: ProviderPhase | None = None,
     legacy_fields: dict[str, Any] | None = None,
 ) -> PreanalysisCollectionContext:
-    """Return a recon context from the canonical or legacy collector API."""
+    "Return a preanalysis context from the canonical or legacy collector API."
 
     fields = legacy_fields if legacy_fields is not None else {}
     legacy_level = fields.pop("maturity", None)
     if fields:
         names = ", ".join(sorted(fields))
-        raise TypeError(f"Unexpected recon collection field(s): {names}")
+        raise TypeError(f"Unexpected preanalysis collection field(s): {names}")
     if context is not None:
         return context
     if func_ea is None:

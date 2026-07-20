@@ -88,7 +88,7 @@ _SHORT_JUMP_PREDICATES = {
 
 
 class PredicateOwnershipKind(str, Enum):
-    """Recon-level predicate ownership outcome."""
+    "Preanalysis-level predicate ownership outcome."
 
     PATH_CONSTANT = "PATH_CONSTANT"
     REAL_DATA_DEPENDENT = "REAL_DATA_DEPENDENT"

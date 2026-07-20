@@ -23,7 +23,7 @@ from d810.diagnostics.alternate_selection import (
 def _make_db() -> sqlite3.Connection:
     db = make_bound_diag_db()
     Snapshot.insert(
-        id=1, label="recon_dag", func_ea_hex="0x180012df0",
+        id=1, label="preanalysis_dag", func_ea_hex="0x180012df0",
         func_ea_i64=0x180012df0, maturity="MMAT_GLBOPT1", phase="pre_d810",
         block_count=0, timestamp=0.0,
     ).execute()

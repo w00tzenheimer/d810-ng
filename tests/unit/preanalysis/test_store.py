@@ -1,4 +1,4 @@
-"""Unit tests for ReconStore provenance persistence tables."""
+"Unit tests for PreanalysisStore provenance persistence tables."
 from __future__ import annotations
 
 import sqlite3
@@ -318,7 +318,7 @@ def test_load_all_session_summaries() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Schema migration (backward compatibility with pre-recon-lifecycle DBs)
+# Schema migration (backward compatibility with pre-preanalysis-lifecycle DBs)
 # ---------------------------------------------------------------------------
 
 
@@ -360,7 +360,7 @@ def test_migration_adds_recommended_inferences_column() -> None:
     assert "recommended_inferences_json" not in cols
     conn.close()
 
-    # Opening ReconStore should migrate
+    # Opening PreanalysisStore should migrate
     store = PreanalysisStore(tmp.name)
     try:
         # Verify column now exists
@@ -417,7 +417,7 @@ def test_migration_idempotent_on_fresh_db() -> None:
 
 
 def test_opening_corrupt_generated_db_recreates_store(tmp_path: Path) -> None:
-    """Malformed generated recon DB state is discarded before opening."""
+    "Malformed generated preanalysis DB state is discarded before opening."
     db_path = tmp_path / "d810_analysis.db"
     db_path.write_bytes(b"not a sqlite database")
     for suffix in ("-wal", "-shm"):

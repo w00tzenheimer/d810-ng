@@ -1904,7 +1904,7 @@ def _detect_state_var_stkoff(
 
 
 @algorithm_metadata(
-    algorithm_id="recon.analyze_condition_chain_dispatcher",
+    algorithm_id="preanalysis.analyze_condition_chain_dispatcher",
     family="compare_chain_interval_dispatch_reconstruction",
     summary="Analyzes condition-chain state dispatchers to recover handler states and transitions.",
     use_cases=(
@@ -2504,14 +2504,7 @@ def _block_successors(block: object) -> tuple[int, ...]:
 
 
 def build_condition_chain_walker_provider() -> ConditionChainWalkerProvider:
-    """Bundle this backend's condition-chain evidence seams for the provider registry.
-
-    Single source of truth for which Hex-Rays evidence callables satisfy each
-    portable seam.  Called by the composition root (``D810State.start_d810``)
-    and by unit-test fixtures, so production and tests inject identical walkers
-    into ``d810.capabilities.providers`` (recon reads them via
-    ``get_condition_chain_walkers()`` without importing this backend; ticket d81-1w16).
-    """
+    "Bundle this backend's condition-chain evidence seams for the provider registry.\n\n    Single source of truth for which Hex-Rays evidence callables satisfy each\n    portable seam.  Called by the composition root (``D810State.start_d810``)\n    and by unit-test fixtures, so production and tests inject identical walkers\n    into ``d810.capabilities.providers`` (preanalysis reads them via\n    ``get_condition_chain_walkers()`` without importing this backend; ticket d81-1w16).\n    "
     return ConditionChainWalkerProvider(
         detect_state_var_stkoff=_detect_state_var_stkoff,
         dump_dispatcher_node=_dump_dispatcher_node,

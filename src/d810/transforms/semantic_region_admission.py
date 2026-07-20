@@ -20,13 +20,7 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class RawRegionInfo:
-    """Best-effort observation about one raw semantic region.
-
-    The concrete DAG node and composed-candidate types intentionally remain
-    structural: ``cfg`` owns the admission decision, while concrete semantic
-    DAG dataclasses live in ``recon`` and concrete materialization candidates
-    are produced by strategy/backend code.
-    """
+    "Best-effort observation about one raw semantic region.\n\n    The concrete DAG node and composed-candidate types intentionally remain\n    structural: ``cfg`` owns the admission decision, while concrete semantic\n    DAG dataclasses live in ``preanalysis`` and concrete materialization candidates\n    are produced by strategy/backend code.\n    "
 
     region_nodes: tuple[object, ...]
     head_node: object

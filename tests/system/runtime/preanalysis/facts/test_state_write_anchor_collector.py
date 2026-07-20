@@ -17,7 +17,7 @@ from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
 from d810.analyses.value_flow.state_write_anchor import StateWriteAnchorFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
-from tests.system.runtime.recon.facts._diag_meta_builder import flat_meta
+from tests.system.runtime.preanalysis.facts._diag_meta_builder import flat_meta
 
 _OPCODE_ALIASES = {
     "m_mov": "move",

@@ -1,20 +1,4 @@
-"""Diagnostic observation event dataclasses.
-
-Event types live here under :mod:`d810.core` so the SQLite sink in
-:mod:`d810.core.diag.event_handlers` can subscribe without importing
-from upper layers (:mod:`d810.recon`, :mod:`d810.cfg`,
-:mod:`d810.hexrays`) -- which the layered-architecture import-linter
-contract forbids.
-
-Domain observability modules (:mod:`d810.core.observability_recon`,
-:mod:`d810.core.observability_cfg`, :mod:`d810.hexrays.observability`)
-re-export the events relevant to their domain and own the
-``observe_*`` emit helpers. Subscribers consume the dataclasses
-directly from this module.
-
-Zero imports from :mod:`d810.core.diag` -- the sink subscribes to
-these types but does not own them.
-"""
+"Diagnostic observation event dataclasses.\n\nEvent types live here under :mod:`d810.core` so the SQLite sink in\n:mod:`d810.core.diag.event_handlers` can subscribe without importing\nfrom upper layers (:mod:`d810.preanalysis`, :mod:`d810.cfg`,\n:mod:`d810.hexrays`) -- which the layered-architecture import-linter\ncontract forbids.\n\nDomain observability modules (:mod:`d810.core.observability_recon`,\n:mod:`d810.core.observability_cfg`, :mod:`d810.hexrays.observability`)\nre-export the events relevant to their domain and own the\n``observe_*`` emit helpers. Subscribers consume the dataclasses\ndirectly from this module.\n\nZero imports from :mod:`d810.core.diag` -- the sink subscribes to\nthese types but does not own them.\n"
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -49,13 +33,13 @@ class CaptureMbaSnapshotRequested:
 
 
 # ---------------------------------------------------------------------------
-# Recon domain
+# Preanalysis domain
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class DagObserved:
-    """Recon observed a DAG (state-graph) snapshot."""
+    "Preanalysis observed a DAG (state-graph) snapshot."
 
     snapshot: SnapshotRef
     nodes: tuple[DagNode, ...]
@@ -64,7 +48,7 @@ class DagObserved:
 
 @dataclass(frozen=True)
 class DagFrontierClosureDiagnosticsObserved:
-    """Recon observed DAG-frontier closure verifier diagnostics."""
+    "Preanalysis observed DAG-frontier closure verifier diagnostics."
 
     snapshot: SnapshotRef
     rows: tuple[Any, ...]
@@ -72,11 +56,7 @@ class DagFrontierClosureDiagnosticsObserved:
 
 @dataclass(frozen=True)
 class ConditionChainIntervalDispatcherObserved:
-    """Recon observed recovered condition-chain interval-dispatcher rows.
-
-    The producer may not have a fresh SnapshotRef at the emission site, so the
-    diag sink attaches these rows to the latest snapshot for ``func_ea``.
-    """
+    "Preanalysis observed recovered condition-chain interval-dispatcher rows.\n\n    The producer may not have a fresh SnapshotRef at the emission site, so the\n    diag sink attaches these rows to the latest snapshot for ``func_ea``.\n    "
 
     func_ea: int
     maturity: str
@@ -86,7 +66,7 @@ class ConditionChainIntervalDispatcherObserved:
 
 @dataclass(frozen=True)
 class StateDispatcherRowsObserved:
-    """Recon observed exact state-dispatcher rows."""
+    "Preanalysis observed exact state-dispatcher rows."
 
     func_ea: int
     maturity: str
@@ -97,7 +77,7 @@ class StateDispatcherRowsObserved:
 
 @dataclass(frozen=True)
 class StateTransitionDispatchResolutionsObserved:
-    """Recon observed transition resolutions through exact dispatcher rows."""
+    "Preanalysis observed transition resolutions through exact dispatcher rows."
 
     snapshot: SnapshotRef
     rows: tuple[Any, ...]
@@ -105,7 +85,7 @@ class StateTransitionDispatchResolutionsObserved:
 
 @dataclass(frozen=True)
 class SwitchCaseTransitionFactsObserved:
-    """Recon observed switch-table case transition facts."""
+    "Preanalysis observed switch-table case transition facts."
 
     snapshot: SnapshotRef
     rows: tuple[Any, ...]
@@ -113,7 +93,7 @@ class SwitchCaseTransitionFactsObserved:
 
 @dataclass(frozen=True)
 class BranchOwnershipProofsObserved:
-    """Recon observed conditional branch ownership proof rows."""
+    "Preanalysis observed conditional branch ownership proof rows."
 
     snapshot: SnapshotRef
     rows: tuple[Any, ...]
@@ -121,7 +101,7 @@ class BranchOwnershipProofsObserved:
 
 @dataclass(frozen=True)
 class BranchWitnessDecisionsObserved:
-    """Recon observed branch-witness projection decisions."""
+    "Preanalysis observed branch-witness projection decisions."
 
     func_ea: int
     rows: tuple[Any, ...]
@@ -129,7 +109,7 @@ class BranchWitnessDecisionsObserved:
 
 @dataclass(frozen=True)
 class ExitPathShortcutDecisionsObserved:
-    """Recon observed exit-path shortcut/liveness decisions."""
+    "Preanalysis observed exit-path shortcut/liveness decisions."
 
     func_ea: int
     rows: tuple[Any, ...]
@@ -137,11 +117,7 @@ class ExitPathShortcutDecisionsObserved:
 
 @dataclass(frozen=True)
 class DagLocalFactsObserved:
-    """Recon observed node-local DAG facts for a LinearizedStateDag.
-
-    ``dag`` is duck-typed: it must expose the attributes consumed by
-    :func:`d810.core.diag.snapshot.snapshot_dag_local_facts`.
-    """
+    "Preanalysis observed node-local DAG facts for a LinearizedStateDag.\n\n    ``dag`` is duck-typed: it must expose the attributes consumed by\n    :func:`d810.core.diag.snapshot.snapshot_dag_local_facts`.\n    "
 
     snapshot: SnapshotRef
     dag: Any
@@ -149,7 +125,7 @@ class DagLocalFactsObserved:
 
 @dataclass(frozen=True)
 class FactObservationsObserved:
-    """Recon observed a batch of fact observations for a function/snapshot."""
+    "Preanalysis observed a batch of fact observations for a function/snapshot."
 
     snapshot: SnapshotRef
     func_ea: int
@@ -158,7 +134,7 @@ class FactObservationsObserved:
 
 @dataclass(frozen=True)
 class FactMappingsObserved:
-    """Recon observed a batch of fact mappings."""
+    "Preanalysis observed a batch of fact mappings."
 
     snapshot: SnapshotRef
     func_ea: int
@@ -167,7 +143,7 @@ class FactMappingsObserved:
 
 @dataclass(frozen=True)
 class FactConsumersObserved:
-    """Recon observed a batch of fact-consumer records."""
+    "Preanalysis observed a batch of fact-consumer records."
 
     snapshot: SnapshotRef
     func_ea: int
@@ -176,14 +152,7 @@ class FactConsumersObserved:
 
 @dataclass(frozen=True)
 class FactConsumersForLatestSnapshot:
-    """Recon observed fact-consumer records to attach to the latest snapshot.
-
-    Late-binding variant for post-hoc fact-consumer logging where the
-    rows do not correspond to a specific just-emitted capture but to
-    after-the-fact audit of strategy decisions. The subscriber finds
-    the latest ``snapshots`` row for ``func_ea`` and writes the rows
-    there, deduplicating against existing ``fact_consumers`` rows.
-    """
+    "Preanalysis observed fact-consumer records to attach to the latest snapshot.\n\n    Late-binding variant for post-hoc fact-consumer logging where the\n    rows do not correspond to a specific just-emitted capture but to\n    after-the-fact audit of strategy decisions. The subscriber finds\n    the latest ``snapshots`` row for ``func_ea`` and writes the rows\n    there, deduplicating against existing ``fact_consumers`` rows.\n    "
 
     func_ea: int
     consumers: tuple[Any, ...]
@@ -191,7 +160,7 @@ class FactConsumersForLatestSnapshot:
 
 @dataclass(frozen=True)
 class FactConflictsObserved:
-    """Recon observed a batch of fact conflicts."""
+    "Preanalysis observed a batch of fact conflicts."
 
     snapshot: SnapshotRef
     func_ea: int
@@ -200,7 +169,7 @@ class FactConflictsObserved:
 
 @dataclass(frozen=True)
 class ModificationsObserved:
-    """Recon observed a batch of reconstruction modifications."""
+    "Preanalysis observed a batch of reconstruction modifications."
 
     snapshot: SnapshotRef
     modifications: tuple[Modification, ...]
@@ -208,11 +177,7 @@ class ModificationsObserved:
 
 @dataclass(frozen=True)
 class RenderedProgramObserved:
-    """Recon observed a rendered linearized program.
-
-    ``program`` is duck-typed: subscribers introspect the attributes
-    consumed by :func:`d810.core.diag.snapshot.snapshot_rendered_program`.
-    """
+    "Preanalysis observed a rendered linearized program.\n\n    ``program`` is duck-typed: subscribers introspect the attributes\n    consumed by :func:`d810.core.diag.snapshot.snapshot_rendered_program`.\n    "
 
     snapshot: SnapshotRef
     program: Any
@@ -220,7 +185,7 @@ class RenderedProgramObserved:
 
 @dataclass(frozen=True)
 class ReachabilityObserved:
-    """Recon observed block reachability/classification for a snapshot."""
+    "Preanalysis observed block reachability/classification for a snapshot."
 
     snapshot: SnapshotRef
     all_serials: frozenset[int]
@@ -261,16 +226,7 @@ class CfgProvenanceObserved:
 
 @dataclass(frozen=True)
 class CfgProvenanceForLatestSnapshot:
-    """CFG provenance that should attach to the latest function snapshot.
-
-    Most CFG mutation provenance is naturally tied to the next MBA
-    capture, so :class:`CfgProvenanceObserved` buffers until that
-    capture occurs. Recon and planning diagnostics can be late-bound:
-    they may explain why a rewrite was *not* selected, so there may be
-    no subsequent snapshot to flush against. This event lets those
-    diagnostics use the same ``cfg_provenance`` table while explicitly
-    requesting "latest snapshot for this function" attribution.
-    """
+    "CFG provenance that should attach to the latest function snapshot.\n\n    Most CFG mutation provenance is naturally tied to the next MBA\n    capture, so :class:`CfgProvenanceObserved` buffers until that\n    capture occurs. Preanalysis and planning diagnostics can be late-bound:\n    they may explain why a rewrite was *not* selected, so there may be\n    no subsequent snapshot to flush against. This event lets those\n    diagnostics use the same ``cfg_provenance`` table while explicitly\n    requesting \"latest snapshot for this function\" attribution.\n    "
 
     func_ea: int
     events: tuple[CfgProvenanceObserved, ...]
@@ -315,7 +271,7 @@ class BlockLineageDrainRequested:
 __all__ = [
     # Hex-Rays
     "CaptureMbaSnapshotRequested",
-    # Recon
+    # Preanalysis
     "BranchOwnershipProofsObserved",
     "BranchWitnessDecisionsObserved",
     "ConditionChainIntervalDispatcherObserved",

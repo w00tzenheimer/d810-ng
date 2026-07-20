@@ -26,7 +26,7 @@ def _preanalysis(
     metrics: dict,
     candidates: tuple[CandidateFlag, ...] = (),
 ) -> PreanalysisResult:
-    """Build a minimal ReconResult for testing."""
+    "Build a minimal PreanalysisResult for testing."
     return PreanalysisResult(
         collector_name=collector_name,
         func_ea=0x401000,

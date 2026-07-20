@@ -1,16 +1,4 @@
-"""Focused unit cover for ``_is_exit_path_control_flow_insn`` (E2d/exit-path effect).
-
-Pins the *exact* corridor control-flow set {m_goto, m_jnz, m_ijmp, m_jtbl}
-expressed in portable kinds, so the parity is protected without distorting
-the generic ``InsnKind`` / ``PredicateKind`` helpers:
-
-* ``m_jnz`` (EQUALITY_JUMP + NOT_EQUAL) is control flow -> accepted.
-* ``m_jz``  (EQUALITY_JUMP + EQUAL) is NOT in the original set -> rejected.
-* ``m_ijmp`` (INDIRECT_JUMP) and ``m_jtbl`` (TABLE_JUMP) -> accepted.
-* Everything else (CALL, MOV, COND_JUMP, ...) counts as a carrier -> rejected.
-
-Pure recon -- no IDA / Hex-Rays imports.
-"""
+"Focused unit cover for ``_is_exit_path_control_flow_insn`` (E2d/exit-path effect).\n\nPins the *exact* corridor control-flow set {m_goto, m_jnz, m_ijmp, m_jtbl}\nexpressed in portable kinds, so the parity is protected without distorting\nthe generic ``InsnKind`` / ``PredicateKind`` helpers:\n\n* ``m_jnz`` (EQUALITY_JUMP + NOT_EQUAL) is control flow -> accepted.\n* ``m_jz``  (EQUALITY_JUMP + EQUAL) is NOT in the original set -> rejected.\n* ``m_ijmp`` (INDIRECT_JUMP) and ``m_jtbl`` (TABLE_JUMP) -> accepted.\n* Everything else (CALL, MOV, COND_JUMP, ...) counts as a carrier -> rejected.\n\nPure preanalysis -- no IDA / Hex-Rays imports.\n"
 from __future__ import annotations
 
 import pytest

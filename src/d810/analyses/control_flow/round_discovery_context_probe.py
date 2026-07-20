@@ -1,17 +1,4 @@
-"""Env-gated equivalence probe for the ReconRoundDiscoveryContext rollout.
-
-Runs a fresh rebuild of the DAG / indexes alongside the canonical
-``ReconRoundDiscoveryContext`` and emits a single INFO log line per pass
-comparing them. Dormant unless ``D810_RECON_ROUND_CTX_PROBE=1``.
-
-The probe is strictly observational — it reads both sides and logs. It never
-mutates the context or the rebuild. Use during Phase B strategy opt-in to
-validate the canonical context matches the per-strategy setup recipes the
-rollout is replacing.
-
-Layer: ``d810.analyses.control_flow`` (read-only classification). No ``ModificationBuilder``
-calls, no ``modifications`` lists.
-"""
+"Env-gated equivalence probe for the PreanalysisRoundDiscoveryContext rollout.\n\nRuns a fresh rebuild of the DAG / indexes alongside the canonical\n``PreanalysisRoundDiscoveryContext`` and emits a single INFO log line per pass\ncomparing them. Dormant unless ``D810_RECON_ROUND_CTX_PROBE=1``.\n\nThe probe is strictly observational \u2014 it reads both sides and logs. It never\nmutates the context or the rebuild. Use during Phase B strategy opt-in to\nvalidate the canonical context matches the per-strategy setup recipes the\nrollout is replacing.\n\nLayer: ``d810.analyses.control_flow`` (read-only classification). No ``ModificationBuilder``\ncalls, no ``modifications`` lists.\n"
 from __future__ import annotations
 
 import os

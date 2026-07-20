@@ -48,7 +48,7 @@ from d810.diagnostics.selected_alternate_edge_override import (
 _TEST_SNAP = SnapshotRef(
     key="bridge-test",
     func_ea=0x180012DF0,
-    label="recon_dag",
+    label="preanalysis_dag",
     maturity="MMAT_GLBOPT1",
     phase="pre_d810",
 )
@@ -151,7 +151,7 @@ def _seed_byte5_diag(conn: sqlite3.Connection) -> None:
     cascade pass produces the same byte5 selection we observed live.
     """
     Snapshot.insert_many([
-        {"id": 1, "label": "recon_dag", "func_ea_hex": "0x180012df0",
+        {"id": 1, "label": "preanalysis_dag", "func_ea_hex": "0x180012df0",
          "func_ea_i64": 0x180012df0, "maturity": "MMAT_GLBOPT1",
          "phase": "pre_d810", "block_count": 0, "timestamp": 0.0},
         {"id": 2, "label": "locopt_pre", "func_ea_hex": "0x180012df0",
@@ -389,7 +389,7 @@ def test_no_op_when_no_selected_rows() -> None:
     """Empty diag DB -> cascade produces no selections -> no override."""
     conn = make_bound_diag_db().connection()
     Snapshot.insert(
-        id=1, label="recon_dag", func_ea_hex="0x180012df0",
+        id=1, label="preanalysis_dag", func_ea_hex="0x180012df0",
         func_ea_i64=0x180012df0, maturity="MMAT_GLBOPT1", phase="pre_d810",
         block_count=0, timestamp=0.0,
     ).execute()

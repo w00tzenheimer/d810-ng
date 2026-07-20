@@ -1,20 +1,4 @@
-"""Recon-domain diagnostic capture facade and event API.
-
-Runtime recon code constructs ``*Observed`` events (frozen dataclasses)
-and calls ``observe_*`` helpers that publish them on the
-:mod:`d810.core.observability` bus. A backend subscriber listens via
-the abstract observability interface; recon never imports the backend.
-
-Event names follow the past-tense ``<thing>Observed`` convention.
-Emit helpers follow the ``observe_<thing>`` convention.
-
-Read-side queries that drive runtime behaviour should consume
-in-memory fact views or runtime evidence directly, not diagnostic
-subscribers or SQLite sinks.
-
-See:
-    docs/diag-observability-boundary.md
-"""
+"Preanalysis-domain diagnostic capture facade and event API.\n\nRuntime preanalysis code constructs ``*Observed`` events (frozen dataclasses)\nand calls ``observe_*`` helpers that publish them on the\n:mod:`d810.core.observability` bus. A backend subscriber listens via\nthe abstract observability interface; preanalysis never imports the backend.\n\nEvent names follow the past-tense ``<thing>Observed`` convention.\nEmit helpers follow the ``observe_<thing>`` convention.\n\nRead-side queries that drive runtime behaviour should consume\nin-memory fact views or runtime evidence directly, not diagnostic\nsubscribers or SQLite sinks.\n\nSee:\n    docs/diag-observability-boundary.md\n"
 from __future__ import annotations
 
 from d810.core.observability import (
@@ -24,8 +8,8 @@ from d810.core.observability import (
 )
 # Event dataclasses live under d810.core.observability_events so a
 # backend subscriber can listen without an upward import
-# (layered-architecture forbids d810.core importing from d810.recon).
-# The recon facade re-exports the recon-relevant types so call sites
+# (layered-architecture forbids d810.core importing from d810.preanalysis).
+# The preanalysis facade re-exports the preanalysis-relevant types so call sites
 # don't have to know where they live.
 from d810.core.observability_events import (
     BranchOwnershipProofsObserved as BranchOwnershipProofsObserved,
@@ -279,13 +263,7 @@ def observe_reachability(
 
 
 def diagnostics_enabled() -> bool:
-    """Cheap predicate: is any recon-event subscriber installed?
-
-    Useful for callers that want to skip expensive payload construction
-    when no diag subscriber is present. The bus catches subscriber
-    exceptions either way, so calling :func:`observe_*` without a
-    subscriber is a no-op, just slightly wasteful.
-    """
+    "Cheap predicate: is any preanalysis-event subscriber installed?\n\n    Useful for callers that want to skip expensive payload construction\n    when no diag subscriber is present. The bus catches subscriber\n    exceptions either way, so calling :func:`observe_*` without a\n    subscriber is a no-op, just slightly wasteful.\n    "
     return any(
         _has_subscribers(t)
         for t in (

@@ -80,7 +80,7 @@ class UnreachableRegionCleanupPlan:
 def plan_dispatcher_residue_cleanup(
     facts: DispatcherResidueCleanupFactsLike,
 ) -> DispatcherResidueCleanupPlan:
-    """Build a backend-neutral dispatcher-residue plan from recon facts."""
+    "Build a backend-neutral dispatcher-residue plan from preanalysis facts."
 
     conversions = tuple(
         DispatcherResidueTwoWayConversion(
@@ -105,7 +105,7 @@ def plan_dispatcher_residue_cleanup(
 def plan_unreachable_region_cleanup(
     facts: UnreachableRegionCleanupFactsLike,
 ) -> UnreachableRegionCleanupPlan:
-    """Build a backend-neutral unreachable-region plan from recon facts."""
+    "Build a backend-neutral unreachable-region plan from preanalysis facts."
 
     return UnreachableRegionCleanupPlan(
         stop_serial=int(facts.stop_serial),

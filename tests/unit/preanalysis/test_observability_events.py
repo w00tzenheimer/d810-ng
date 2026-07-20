@@ -1,4 +1,4 @@
-"""Tests for the recon observability event API (Phase 2)."""
+"Tests for the preanalysis observability event API (Phase 2)."
 from __future__ import annotations
 
 import pytest
@@ -9,7 +9,7 @@ from d810.core.observability import (
     subscribe,
 )
 from d810.core.observability_models import DagEdge, DagNode, Modification
-from d810.core.observability_recon import (
+from d810.core.observability_preanalysis import (
     BranchOwnershipProofsObserved,
     DagLocalFactsObserved,
     DagObserved,

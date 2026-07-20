@@ -171,7 +171,7 @@ class TestFlowProfileClassifierCollector:
         assert set(result.metrics.keys()) == expected_keys
 
     def test_result_is_frozen(self):
-        """ReconResult metrics should be read-only."""
+        "PreanalysisResult metrics should be read-only."
         blocks = {
             0: _make_block(0, (1,), block_type=4),
             1: _make_block(1, (), block_type=0),

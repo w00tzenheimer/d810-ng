@@ -51,16 +51,7 @@ def transition_report_return_sites(
     *,
     site_id_prefix: str = "return",
 ) -> tuple[ReturnSite, ...]:
-    """Build one ReturnSite per EXIT handler in a transition report.
-
-    The derivation is intentionally strict: a row must be classified EXIT and
-    its path must confirm exit-block reachability.  Sites are keyed by handler
-    origin and state identity, not by the shared physical return block.
-
-    ``site_id_prefix`` names the consuming strategy family.  The generic recon
-    helper defaults to a neutral prefix; family adapters can pass a stable
-    family-specific prefix when compatibility matters.
-    """
+    "Build one ReturnSite per EXIT handler in a transition report.\n\n    The derivation is intentionally strict: a row must be classified EXIT and\n    its path must confirm exit-block reachability.  Sites are keyed by handler\n    origin and state identity, not by the shared physical return block.\n\n    ``site_id_prefix`` names the consuming strategy family.  The generic preanalysis\n    helper defaults to a neutral prefix; family adapters can pass a stable\n    family-specific prefix when compatibility matters.\n    "
     prefix = _normalise_site_id_prefix(site_id_prefix)
     sites: list[ReturnSite] = []
     seen_ids: set[str] = set()

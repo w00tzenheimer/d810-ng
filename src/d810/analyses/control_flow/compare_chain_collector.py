@@ -1,19 +1,4 @@
-"""CompareChainCollector - reconstruct compare-chain dispatch mappings.
-
-Thin adapter wrapping ``CompareChainResolver`` (cfg.flow.compare_chain) into
-the ``ReconCollector`` protocol so dispatch-table signals are persisted per
-function/maturity.
-
-Metrics:
-    - ``compare_chain_length``: number of block comparisons fed to the resolver
-    - ``dispatch_table_size``: entries in the resolved dispatch table
-    - ``unique_constants``: distinct constant -> target mappings
-    - ``conflicting_count``: constants mapping to multiple targets
-    - ``default_serial``: fallthrough block serial (-1 when absent)
-
-Candidates:
-    - ``"compare_chain_entry"`` per resolved dispatch entry
-"""
+"CompareChainCollector - reconstruct compare-chain dispatch mappings.\n\nThin adapter wrapping ``CompareChainResolver`` (cfg.flow.compare_chain) into\nthe ``PreanalysisCollector`` protocol so dispatch-table signals are persisted per\nfunction/maturity.\n\nMetrics:\n    - ``compare_chain_length``: number of block comparisons fed to the resolver\n    - ``dispatch_table_size``: entries in the resolved dispatch table\n    - ``unique_constants``: distinct constant -> target mappings\n    - ``conflicting_count``: constants mapping to multiple targets\n    - ``default_serial``: fallthrough block serial (-1 when absent)\n\nCandidates:\n    - ``\"compare_chain_entry\"`` per resolved dispatch entry\n"
 from __future__ import annotations
 
 import time
@@ -123,12 +108,7 @@ def _varref_from_metadata(var_data: dict | None) -> VarRef:
 
 
 class CompareChainCollector:
-    """Collect compare-chain derived dispatch table metrics.
-
-    Wraps ``CompareChainResolver.resolve()`` into the ``ReconCollector``
-    protocol.  Accepts portable ``FlowGraph`` targets from the
-    ``FLOWGRAPH_READY`` recon path.
-    """
+    "Collect compare-chain derived dispatch table metrics.\n\n    Wraps ``CompareChainResolver.resolve()`` into the ``PreanalysisCollector``\n    protocol.  Accepts portable ``FlowGraph`` targets from the\n    ``FLOWGRAPH_READY`` preanalysis path.\n    "
 
     name: str = "compare_chain"
     maturities: frozenset[int] = frozenset({_MMAT_CALLS, _MMAT_GLBOPT1})
@@ -141,7 +121,7 @@ class CompareChainCollector:
         func_ea: int | None = None,
         **legacy_fields: object,
     ) -> PreanalysisResult:
-        """Resolve compare-chain and wrap into ``ReconResult``."""
+        "Resolve compare-chain and wrap into ``PreanalysisResult``."
         context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,

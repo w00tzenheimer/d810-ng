@@ -34,7 +34,7 @@ SUBMODULE_RENAMES: dict[str, str] = {
 
 EXCLUDED_PATH_MARKERS = (
     "/hodur/strategies/",
-    "recon_artifacts",
+    "preanalysis_artifacts",
     "return_sites",
     "linearized_flow_graph",
     "exact_node_frontier_bypass",

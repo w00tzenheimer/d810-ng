@@ -1,31 +1,4 @@
-"""FixPredSignalsCollector - recon signals for predecessor rewrite safety.
-
-Produces deterministic metrics used by AnalysisPhase to decide the dedicated
-``fixpred_gate`` contract independently from unflattening.
-
-Fires at MMAT_CALLS (3) and MMAT_GLBOPT1 (14).
-
-Metrics produced:
-    - ``dispatcher_count``: number of detected dispatcher blocks
-    - ``strong_dispatcher_count``: dispatchers with >=3 predecessors and >=2 successors
-    - ``conditional_dispatcher_count``: BLT_2WAY dispatchers
-    - ``switch_dispatcher_count``: BLT_NWAY dispatchers
-    - ``unknown_dispatcher_count``: dispatchers of unrecognized type
-    - ``max_dispatcher_predecessors``: maximum predecessor count among dispatchers
-    - ``mean_dispatcher_predecessors``: mean predecessor count across dispatchers
-    - ``ambiguous_dispatcher_count``: dispatchers with unexpected successor counts
-    - ``ambiguous_dispatcher_ratio``: ratio of ambiguous to total dispatchers
-    - ``predecessor_sample_count``: total predecessor blocks sampled
-    - ``predecessor_1way_ratio``: fraction of sampled predecessors that are BLT_1WAY
-    - ``predecessor_2way_ratio``: fraction of sampled predecessors that are BLT_2WAY
-    - ``predecessor_nway_ratio``: fraction of sampled predecessors that are BLT_NWAY
-    - ``state_variable_present``: 1 if a state variable was detected, else 0
-    - ``dispatcher_state_constant_total``: unique state constants observed
-    - ``router_kind``: canonical router kind string
-
-Candidates:
-    - ``"fixpred_high_fanin_dispatcher"`` for each dispatcher when max fan-in >= 3
-"""
+"FixPredSignalsCollector - preanalysis signals for predecessor rewrite safety.\n\nProduces deterministic metrics used by AnalysisPhase to decide the dedicated\n``fixpred_gate`` contract independently from unflattening.\n\nFires at MMAT_CALLS (3) and MMAT_GLBOPT1 (14).\n\nMetrics produced:\n    - ``dispatcher_count``: number of detected dispatcher blocks\n    - ``strong_dispatcher_count``: dispatchers with >=3 predecessors and >=2 successors\n    - ``conditional_dispatcher_count``: BLT_2WAY dispatchers\n    - ``switch_dispatcher_count``: BLT_NWAY dispatchers\n    - ``unknown_dispatcher_count``: dispatchers of unrecognized type\n    - ``max_dispatcher_predecessors``: maximum predecessor count among dispatchers\n    - ``mean_dispatcher_predecessors``: mean predecessor count across dispatchers\n    - ``ambiguous_dispatcher_count``: dispatchers with unexpected successor counts\n    - ``ambiguous_dispatcher_ratio``: ratio of ambiguous to total dispatchers\n    - ``predecessor_sample_count``: total predecessor blocks sampled\n    - ``predecessor_1way_ratio``: fraction of sampled predecessors that are BLT_1WAY\n    - ``predecessor_2way_ratio``: fraction of sampled predecessors that are BLT_2WAY\n    - ``predecessor_nway_ratio``: fraction of sampled predecessors that are BLT_NWAY\n    - ``state_variable_present``: 1 if a state variable was detected, else 0\n    - ``dispatcher_state_constant_total``: unique state constants observed\n    - ``router_kind``: canonical router kind string\n\nCandidates:\n    - ``\"fixpred_high_fanin_dispatcher\"`` for each dispatcher when max fan-in >= 3\n"
 from __future__ import annotations
 
 import time
@@ -230,13 +203,13 @@ def _portable_signals(
 
 
 # E3-rewire A: ``_live_signals`` was the live-``mba_t`` fallback
-# path for this collector.  After E4a, the manager-side recon
+# path for this collector.  After E4a, the manager-side preanalysis
 # subscriber always invokes ``collect(target=flow_graph, ...)``,
 # so the live path is dead code in production.  Re-routing it to
 # ``d810.backends.hexrays.evidence.dispatcher.dispatcher_history.analyze_dispatcher_live`` would
 # silently put a Hex-Rays import inside the ``d810.analyses`` collectors
-# -- breaking ``recon-core-no-hexrays`` for any future test or
-# adapter that pulls collectors from the recon package.  The path
+# -- breaking ``preanalysis-core-no-hexrays`` for any future test or
+# adapter that pulls collectors from the preanalysis package.  The path
 # is therefore removed entirely; ``collect()`` now requires a
 # ``FlowGraph``-shaped ``target``.
 def _live_signals(
@@ -277,17 +250,7 @@ class FixPredSignalsCollector:
         func_ea: int | None = None,
         **legacy_fields: object,
     ) -> PreanalysisResult:
-        """Collect fixpred safety signals from a portable ``FlowGraph``.
-
-        :param target: Portable ``FlowGraph`` snapshot (after E4a, the
-            ``FLOWGRAPH_READY`` subscriber on ``D810`` is the only
-            invoker, and it always passes a ``FlowGraph``).  Passing a
-            live ``mba_t`` will raise via the architectural-pin
-            ``_live_signals`` stub.
-        :param func_ea: Function effective address.
-        :param maturity: Current maturity level.
-        :return: Frozen ``ReconResult`` with fixpred metrics.
-        """
+        "Collect fixpred safety signals from a portable ``FlowGraph``.\n\n        :param target: Portable ``FlowGraph`` snapshot (after E4a, the\n            ``FLOWGRAPH_READY`` subscriber on ``D810`` is the only\n            invoker, and it always passes a ``FlowGraph``).  Passing a\n            live ``mba_t`` will raise via the architectural-pin\n            ``_live_signals`` stub.\n        :param func_ea: Function effective address.\n        :param maturity: Current maturity level.\n        :return: Frozen ``PreanalysisResult`` with fixpred metrics.\n        "
         context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,

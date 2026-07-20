@@ -246,7 +246,7 @@ class TestHodurBaselines:
                 "the six-byte exit path still returns a folded foreign constant"
             )
             # The unflatten back-edge unflatten does not build the legacy StateDag /
-            # region-DAG recon, so the region-oracle guardrail is N/A. Guard
+            # region-DAG preanalysis, so the region-oracle guardrail is N/A. Guard
             # instead on obfuscation-work preservation: every 0x180000000 work
             # call must survive (the corrected sample has 9, incl. the recovered
             # 0x4D handler that the legacy path dropped).  IDA may render that

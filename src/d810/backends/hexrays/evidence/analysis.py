@@ -121,20 +121,7 @@ __all__ = [
 def _live_mop_matches_snapshot_key(
     mop: "ida_hexrays.mop_t", key: str | None
 ) -> bool:
-    """Return ``True`` if ``mop`` produces the given snapshot key.
-
-    Mirrors ``d810.ir.mop_identity.mop_snapshot_key`` on the live
-    side so the dispatcher-cache's portable state-variable identity
-    (held as a ``MopSnapshot``) can be matched against the live
-    operands in hodur's local ``state_check_blocks`` without holding
-    a live ``mop_t`` reference inside ``StateVariableCandidate``.
-
-    Inlined rather than imported from a shared helper because the
-    only equivalent on the live side lives in
-    ``recon/flow/dispatcher_detection._build_state_var_snapshot``
-    (private) and the matching logic itself is one ``if``/``elif``
-    cascade -- not worth a cross-module dependency.
-    """
+    "Return ``True`` if ``mop`` produces the given snapshot key.\n\n    Mirrors ``d810.ir.mop_identity.mop_snapshot_key`` on the live\n    side so the dispatcher-cache's portable state-variable identity\n    (held as a ``MopSnapshot``) can be matched against the live\n    operands in hodur's local ``state_check_blocks`` without holding\n    a live ``mop_t`` reference inside ``StateVariableCandidate``.\n\n    Inlined rather than imported from a shared helper because the\n    only equivalent on the live side lives in\n    ``preanalysis/flow/dispatcher_detection._build_state_var_snapshot``\n    (private) and the matching logic itself is one ``if``/``elif``\n    cascade -- not worth a cross-module dependency.\n    "
     if key is None or mop is None:
         return False
     t = mop.t

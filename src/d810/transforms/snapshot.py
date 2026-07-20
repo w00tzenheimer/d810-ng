@@ -1,21 +1,4 @@
-"""Immutable analysis snapshot types for the shared unflattening engine.
-
-Types are narrowed via :pep:`563` postponed annotations (``from __future__ import
-annotations``) plus :data:`d810.core.typing.TYPE_CHECKING` — runtime imports
-stay engine-local so recon types never leak into this module's runtime graph,
-while callers still get proper narrow types (``ReconRoundDiscoveryContext``,
-``FlowGraph``, …) for static analysis.
-
-``ReachabilityInfo`` captures reachability from the function entry block.
-``AnalysisSnapshot`` is the read-only context passed to every strategy's
-``plan()`` method, with Hodur as the current primary producer. The optional
-``discovery`` field carries the canonical per-round classification bundle —
-live DAG, corrected DAG, dispatcher region, shared-suffix blocks, structured
-regions, the reconstruction-discovery-indexes bundle, and the rendered
-linearized program — built once per ``(func_ea, maturity, pass)`` and shared
-by every strategy. **Consumers MUST NOT mutate ``discovery`` or any of its
-fields.**
-"""
+"Immutable analysis snapshot types for the shared unflattening engine.\n\nTypes are narrowed via :pep:`563` postponed annotations (``from __future__ import\nannotations``) plus :data:`d810.core.typing.TYPE_CHECKING` \u2014 runtime imports\nstay engine-local so preanalysis types never leak into this module's runtime graph,\nwhile callers still get proper narrow types (``PreanalysisRoundDiscoveryContext``,\n``FlowGraph``, \u2026) for static analysis.\n\n``ReachabilityInfo`` captures reachability from the function entry block.\n``AnalysisSnapshot`` is the read-only context passed to every strategy's\n``plan()`` method, with Hodur as the current primary producer. The optional\n``discovery`` field carries the canonical per-round classification bundle \u2014\nlive DAG, corrected DAG, dispatcher region, shared-suffix blocks, structured\nregions, the reconstruction-discovery-indexes bundle, and the rendered\nlinearized program \u2014 built once per ``(func_ea, maturity, pass)`` and shared\nby every strategy. **Consumers MUST NOT mutate ``discovery`` or any of its\nfields.**\n"
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -122,7 +105,7 @@ class AnalysisSnapshot:
     lfg_redirected_blocks: frozenset[int]
     state_summary: StateModelSummary | None
     # Canonical per-round classification bundle. Types are narrowed via
-    # ``TYPE_CHECKING``; runtime imports remain engine-only so recon types
+    # ``TYPE_CHECKING``; runtime imports remain engine-only so preanalysis types
     # never leak into the engine's pure-Python import graph. Defaults to
     # ``None`` until a family adapter opts in to building it; strategies MUST
     # tolerate ``None`` during the Phase A scaffolding rollout.

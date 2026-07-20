@@ -264,6 +264,20 @@ forbidden_modules =
     d810.hexrays.mutation
     d810.backends.hexrays.mutation
 
+[importlinter:contract:mutation-no-preanalysis-persistence]
+# Mutation may consume portable validated-fact models, but it must not own raw
+# preanalysis capture or write the preanalysis database. Those responsibilities
+# terminate at the manager-owned PreanalysisRuntime boundary.
+name = Mutation must not write preanalysis persistence
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    d810.hexrays.mutation
+    d810.backends.hexrays.mutation
+forbidden_modules =
+    d810.passes.preanalysis_runtime
+    d810.passes.store
+
 [importlinter:contract:backends-only-vendor-coupling]
 # Non-vendor packages must not import third-party disassembler /
 # analysis backends (angr, pyvex, claripy, ailment, ghidra). IDA

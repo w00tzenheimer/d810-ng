@@ -83,7 +83,7 @@ def test_maturity_gate_allows_optimizer_at_correct_maturity():
 
 
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
-from d810.hexrays.lifecycle import DecompilationEvent
+from d810.core.decompilation_session import DecompilationEvent
 
 
 def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:

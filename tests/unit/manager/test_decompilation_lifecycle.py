@@ -14,23 +14,30 @@ from d810.manager.decompilation_lifecycle import (
 )
 
 
-class _PreanalysisPhase:
+class _PreanalysisRuntime:
     def __init__(self, calls: list[tuple[str, object]]) -> None:
         self._calls = calls
 
-    def reset(self, *, func_ea: int) -> None:
-        self._calls.append(("phase.reset", func_ea))
+    def begin_session(self, event: object) -> None:
+        self._calls.append(("preanalysis.reset", event.function_ea))
 
-    def run_microcode_collectors(
+    def capture_flowgraph(
         self,
         flow_graph: object,
         *,
         func_ea: int,
         provider_phase: ProviderPhaseSnapshot,
+        snapshot: object | None,
     ) -> None:
         self._calls.append(("phase.flowgraph", (flow_graph, func_ea, provider_phase)))
+        self._calls.append(
+            (
+                "preanalysis.capture",
+                (flow_graph, func_ea, provider_phase, "pre_d810", snapshot),
+            )
+        )
 
-    def run_ctree_collectors(
+    def capture_ctree(
         self,
         cfunc: object,
         *,
@@ -39,6 +46,9 @@ class _PreanalysisPhase:
     ) -> None:
         self._calls.append(("phase.ctree", (cfunc, func_ea, provider_phase)))
 
+    def finish_session(self, event: object) -> None:
+        self._calls.append(("preanalysis.finish", event.function_ea))
+
 
 class _AnalysisRuntime:
     def __init__(self, calls: list[tuple[str, object]]) -> None:
@@ -46,32 +56,18 @@ class _AnalysisRuntime:
         self.reset_result = True
         self.hints: object | None = None
 
-    def reset_for_func(
+    def begin_session(
         self,
-        func_ea: int,
+        event: object,
         *,
         preserve_active_session: bool = False,
     ) -> bool:
-        self._calls.append(("runtime.reset", (func_ea, preserve_active_session)))
+        self._calls.append(
+            ("runtime.reset", (event.function_ea, preserve_active_session))
+        )
         return self.reset_result
 
-    def capture_maturity_facts(
-        self,
-        flow_graph: object,
-        *,
-        func_ea: int,
-        provider_phase: ProviderPhaseSnapshot,
-        phase: str,
-        snapshot: object | None,
-    ) -> None:
-        self._calls.append(
-            (
-                "runtime.capture",
-                (flow_graph, func_ea, provider_phase, phase, snapshot),
-            )
-        )
-
-    def analyze_and_persist(self, func_ea: int) -> object | None:
+    def analyze(self, func_ea: int) -> object | None:
         self._calls.append(("runtime.analyze", func_ea))
         return self.hints
 
@@ -87,12 +83,19 @@ class _AnalysisRuntime:
             ("runtime.rule-scope-outcome", (func_ea, hints, apply_result, source))
         )
 
-    def mark_decompilation_finished(
+    def finish_session(
         self,
+        event: object,
         *,
-        resume_func_ea: int | None = None,
+        resume_event: object | None = None,
     ) -> None:
-        self._calls.append(("runtime.finish", resume_func_ea))
+        del event
+        self._calls.append(
+            (
+                "runtime.finish",
+                None if resume_event is None else resume_event.function_ea,
+            )
+        )
 
 
 class _RuleScopeService:
@@ -113,7 +116,7 @@ def _coordinator(
     runtime = _AnalysisRuntime(calls)
     return (
         DecompilationLifecycleCoordinator(
-            preanalysis_phase=_PreanalysisPhase(calls),
+            preanalysis_runtime=_PreanalysisRuntime(calls),
             analysis_runtime=runtime,
             rule_scope_service=_RuleScopeService(calls),
             mba_mutation_gateway_factory=lambda **kwargs: kwargs,
@@ -151,15 +154,15 @@ def test_ensure_capture_analyze_and_finish_preserve_lifecycle_order() -> None:
     )
     coordinator.capture_flowgraph(_flowgraph_payload(snapshot="snapshot"))
     coordinator.analyze_current_function(function_ea=0x401000, source="instruction")
-    event = coordinator.finish_hexrays_session()
+    result = coordinator.finish_hexrays_session()
 
     assert session.function_ea == 0x401000
     assert created is True
     assert session.top_level_epoch == 1
-    assert event is not None
-    assert event.function_ea == 0x401000
-    assert event.top_level_epoch == 1
+    assert result is None
+    assert coordinator.current_session(0x401000) is None
     assert calls == [
+        ("preanalysis.reset", 0x401000),
         ("runtime.reset", (0x401000, False)),
         ("rule-scope.clear", 0x401000),
         (
@@ -167,7 +170,7 @@ def test_ensure_capture_analyze_and_finish_preserve_lifecycle_order() -> None:
             ("flow-graph", 0x401000, _flowgraph_payload().provider_phase),
         ),
         (
-            "runtime.capture",
+            "preanalysis.capture",
             (
                 "flow-graph",
                 0x401000,
@@ -182,6 +185,7 @@ def test_ensure_capture_analyze_and_finish_preserve_lifecycle_order() -> None:
             "runtime.rule-scope-outcome",
             (0x401000, "hints", "applied", "instruction"),
         ),
+        ("preanalysis.finish", 0x401000),
         ("runtime.finish", None),
     ]
     assert coordinator.current_session(0x401000) is None
@@ -204,6 +208,7 @@ def test_repeated_ensure_for_same_top_level_decompilation_reuses_epoch() -> None
     assert first_created is True
     assert repeated_created is False
     assert calls == [
+        ("preanalysis.reset", 0x401000),
         ("runtime.reset", (0x401000, False)),
         ("rule-scope.clear", 0x401000),
     ]
@@ -245,16 +250,16 @@ def test_lifecycle_context_owns_portable_preanalysis_state_directly() -> None:
     assert session.extensions == {}
 
 
-def test_rebound_bootstrap_fact_is_published_once_on_a_real_snapshot(monkeypatch) -> None:
+def test_rebound_bootstrap_fact_is_published_once_on_a_real_snapshot(
+    monkeypatch,
+) -> None:
     calls: list[tuple[str, object]] = []
     coordinator, _runtime = _coordinator(calls)
     session, _created = coordinator.ensure_hexrays_session(
         function_ea=0x401000,
         database_identity="sample.i64",
     )
-    source = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401020, 0x401021),)
-    )
+    source = StableBlockIdentity.from_intervals((NativeEaInterval(0x401020, 0x401021),))
     handler = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x401100, 0x401101),)
     )
@@ -306,7 +311,7 @@ def test_lifecycle_releases_current_mba_identity_index_when_session_finishes() -
         index=current_index,
     )
     assert session.current_mba_identity_index is current_index
-    assert coordinator.finish_hexrays_session() is not None
+    assert coordinator.finish_hexrays_session() is None
     assert session.current_mba_identity_index is None
 
 
@@ -357,16 +362,20 @@ def test_nested_different_function_gets_a_new_epoch_and_restores_parent() -> Non
     assert coordinator.current_session(0x401000) is outer
     assert coordinator.current_session(0x402000) is inner
 
-    assert coordinator.finish_hexrays_session() is not None
+    assert coordinator.finish_hexrays_session() is None
     assert coordinator.current_session(0x401000) is outer
-    assert coordinator.finish_hexrays_session() is not None
+    assert coordinator.finish_hexrays_session() is None
     assert coordinator.current_session(0x401000) is None
     assert calls == [
+        ("preanalysis.reset", 0x401000),
         ("runtime.reset", (0x401000, False)),
         ("rule-scope.clear", 0x401000),
+        ("preanalysis.reset", 0x402000),
         ("runtime.reset", (0x402000, True)),
         ("rule-scope.clear", 0x402000),
+        ("preanalysis.finish", 0x402000),
         ("runtime.finish", 0x401000),
+        ("preanalysis.finish", 0x401000),
         ("runtime.finish", None),
     ]
 
@@ -402,19 +411,21 @@ def test_reentry_below_a_nested_child_reuses_parent_without_finishing_it() -> No
     assert coordinator.current_session(0x401000) is parent
     assert coordinator.current_session(0x402000) is child
 
-    child_event = coordinator.finish_hexrays_session()
-    parent_event = coordinator.finish_hexrays_session()
-
-    assert child_event is not None
-    assert child_event.function_ea == 0x402000
-    assert parent_event is not None
-    assert parent_event.function_ea == 0x401000
+    assert coordinator.finish_hexrays_session() is None
+    assert coordinator.current_session(0x402000) is None
+    assert coordinator.current_session(0x401000) is parent
+    assert coordinator.finish_hexrays_session() is None
+    assert coordinator.current_session(0x401000) is None
     assert calls == [
+        ("preanalysis.reset", 0x401000),
         ("runtime.reset", (0x401000, False)),
         ("rule-scope.clear", 0x401000),
+        ("preanalysis.reset", 0x402000),
         ("runtime.reset", (0x402000, True)),
         ("rule-scope.clear", 0x402000),
+        ("preanalysis.finish", 0x402000),
         ("runtime.finish", 0x401000),
+        ("preanalysis.finish", 0x401000),
         ("runtime.finish", None),
     ]
 
@@ -442,13 +453,13 @@ def test_native_preanalysis_reserves_the_owner_across_an_internal_callback() -> 
     assert coordinator.current_session(0x401000) is session
 
     coordinator.finish_native_preanalysis(session)
-    event = coordinator.finish_hexrays_session()
-
-    assert event is not None
-    assert event.function_ea == 0x401000
+    assert coordinator.finish_hexrays_session() is None
+    assert coordinator.current_session(0x401000) is None
     assert calls == [
+        ("preanalysis.reset", 0x401000),
         ("runtime.reset", (0x401000, False)),
         ("rule-scope.clear", 0x401000),
+        ("preanalysis.finish", 0x401000),
         ("runtime.finish", None),
     ]
 

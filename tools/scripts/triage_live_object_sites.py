@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""Triage llr-zeyu live-object-access sites by migration shape.
-
-Read-only.  For every portable-core file that the gate flags, classify HOW the
-live access can be removed, so the burn-down can be ordered safest-first:
-
-  DUAL_PATH   - has an ``if hasattr(target,"blocks")`` (or ``_from_flowgraph``
-                / ``_from_mba``) fork: the live branch is dead in production
-                (collectors get a FlowGraph via FLOWGRAPH_READY).  Safe delete.
-  COLLECTOR   - defines ``def collect(self, target, ...)`` and is registered as
-                a ReconCollector: receives a FlowGraph at runtime, so live
-                calls are convertible to BlockSnapshot fields.
-  HELPER      - a free function / method taking ``mba`` from a HIGH caller;
-                needs caller-contract analysis before converting.
-
-Run from anywhere (absolute paths dodge the cwd-reset hook):
-    python3 tools/scripts/triage_live_object_sites.py [--root <worktree>]
-"""
+"Triage llr-zeyu live-object-access sites by migration shape.\n\nRead-only.  For every portable-core file that the gate flags, classify HOW the\nlive access can be removed, so the burn-down can be ordered safest-first:\n\n  DUAL_PATH   - has an ``if hasattr(target,\"blocks\")`` (or ``_from_flowgraph``\n                / ``_from_mba``) fork: the live branch is dead in production\n                (collectors get a FlowGraph via FLOWGRAPH_READY).  Safe delete.\n  COLLECTOR   - defines ``def collect(self, target, ...)`` and is registered as\n                a PreanalysisCollector: receives a FlowGraph at runtime, so live\n                calls are convertible to BlockSnapshot fields.\n  HELPER      - a free function / method taking ``mba`` from a HIGH caller;\n                needs caller-contract analysis before converting.\n\nRun from anywhere (absolute paths dodge the cwd-reset hook):\n    python3 tools/scripts/triage_live_object_sites.py [--root <worktree>]\n"
 from __future__ import annotations
 
 import argparse

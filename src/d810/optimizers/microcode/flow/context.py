@@ -151,17 +151,7 @@ class FlowMaturityContext:
         return self._hint_summary
 
     def set_hint_summary(self, summary: FlowContextHintSummary) -> None:
-        """Attach an analyzed hint summary from the recon lifecycle.
-
-        The summary is used as an *additional* signal in gate evaluation
-        methods. It does not replace existing dispatcher-analysis logic.
-
-        In the live path, ``BlockOptimizerManager._attach_hint_summary``
-        calls this automatically when a new ``FlowMaturityContext`` is
-        created (including after invalidation). The summary is derived
-        from persisted ``DeobfuscationHints`` via
-        :func:`derive_flow_context_summary`.
-        """
+        "Attach an analyzed hint summary from the preanalysis lifecycle.\n\n        The summary is used as an *additional* signal in gate evaluation\n        methods. It does not replace existing dispatcher-analysis logic.\n\n        In the live path, ``BlockOptimizerManager._attach_hint_summary``\n        calls this automatically when a new ``FlowMaturityContext`` is\n        created (including after invalidation). The summary is derived\n        from persisted ``DeobfuscationHints`` via\n        :func:`derive_flow_context_summary`.\n        "
         self._hint_summary = summary
 
     def set_outcome_callback(
@@ -459,15 +449,7 @@ class FlowMaturityContext:
         return FlowGateDecision(False, "unknown dispatcher without strong signals")
 
     def evaluate_unflattening_gate(self) -> FlowGateDecision:
-        """Evaluate whether unflattening should proceed.
-
-        Gate operation mode
-        -------------------
-        - ``COLLECT_ONLY``: analysis still runs (for recon), but the gate
-          always returns ``allowed=True``.
-        - ``GATE_ONLY`` / ``GATE_SELECT``: analysis runs and the result
-          is enforced (fail-closed).
-        """
+        "Evaluate whether unflattening should proceed.\n\n        Gate operation mode\n        -------------------\n        - ``COLLECT_ONLY``: analysis still runs (for preanalysis), but the gate\n          always returns ``allowed=True``.\n        - ``GATE_ONLY`` / ``GATE_SELECT``: analysis runs and the result\n          is enforced (fail-closed).\n        "
         decision = self._evaluate_unflattening_gate_inner()
         if not decision.allowed and not self.gate_mode.enforces_gate:
             return FlowGateDecision(
@@ -517,7 +499,7 @@ class FlowMaturityContext:
                         f"(scc={profile.dispatch_scc_n}, score={profile.flattening_score:.2f})"
                     ),
                 )
-            # Hint-rescue: if recon hints confirm flattening, allow despite
+            # Hint-rescue: if preanalysis hints confirm flattening, allow despite
             # weak profile.  This is additive — it never overrides a
             # positive decision above.
             if self._hint_summary is not None:
@@ -528,7 +510,7 @@ class FlowMaturityContext:
                     return FlowGateDecision(
                         True,
                         (
-                            "unknown dispatcher rescued by recon hints "
+                            "unknown dispatcher rescued by preanalysis hints "
                             f"(confidence={self._hint_summary.confidence:.2f})"
                         ),
                     )
@@ -542,15 +524,7 @@ class FlowMaturityContext:
         return FlowGateDecision(False, f"router_kind={analysis.router_kind.name}")
 
     def evaluate_fix_predecessor_gate(self) -> FlowGateDecision:
-        """Evaluate whether fix-predecessor optimization should proceed.
-
-        Gate operation mode
-        -------------------
-        - ``COLLECT_ONLY``: analysis still runs (for recon), but the gate
-          always returns ``allowed=True``.
-        - ``GATE_ONLY`` / ``GATE_SELECT``: analysis runs and the result
-          is enforced (fail-closed).
-        """
+        "Evaluate whether fix-predecessor optimization should proceed.\n\n        Gate operation mode\n        -------------------\n        - ``COLLECT_ONLY``: analysis still runs (for preanalysis), but the gate\n          always returns ``allowed=True``.\n        - ``GATE_ONLY`` / ``GATE_SELECT``: analysis runs and the result\n          is enforced (fail-closed).\n        "
         decision = self._evaluate_fix_predecessor_gate_inner()
         if not decision.allowed and not self.gate_mode.enforces_gate:
             return FlowGateDecision(

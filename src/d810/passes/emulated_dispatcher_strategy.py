@@ -69,7 +69,7 @@ class EmulatedDispatcherCandidateRecord:
 
 @dataclass(frozen=True)
 class EmulatedDispatcherPhaseArtifact:
-    """Typed summary of the richer recon artifact for one dispatcher family."""
+    "Typed summary of the richer preanalysis artifact for one dispatcher family."
 
     dispatcher_entry_serial: int
     state_var_stkoff: int | None = None
@@ -90,7 +90,7 @@ class EmulatedDispatcherPhaseArtifact:
 
 @dataclass(frozen=True)
 class EmulatedDispatcherPhaseContext:
-    """Raw recon objects backing the summarized phase artifact."""
+    "Raw preanalysis objects backing the summarized phase artifact."
 
     range_evidence: object
     transition_result: object

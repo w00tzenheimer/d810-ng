@@ -1,11 +1,4 @@
-"""Structured decision provenance for the shared unflattening engine.
-
-This module contains the outcome layer for planner participation in the
-shared recon-analysis-consumer lifecycle. Every considered ``PlanFragment``
-gets a ``DecisionRecord`` tracking its lifecycle phase, reason code,
-benefit/risk scores, and input context. The aggregate ``PipelineProvenance``
-records what the planner decided and why.
-"""
+"Structured decision provenance for the shared unflattening engine.\n\nThis module contains the outcome layer for planner participation in the\nshared preanalysis-analysis-consumer lifecycle. Every considered ``PlanFragment``\ngets a ``DecisionRecord`` tracking its lifecycle phase, reason code,\nbenefit/risk scores, and input context. The aggregate ``PipelineProvenance``\nrecords what the planner decided and why.\n"
 from __future__ import annotations
 
 import enum

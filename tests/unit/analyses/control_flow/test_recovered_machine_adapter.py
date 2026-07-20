@@ -28,7 +28,7 @@ from d810.ir.flowgraph import (
 )
 
 
-# --- FlowGraph builders (mirror tests/unit/recon/flow/test_dispatcher_resolver.py) ----
+# --- FlowGraph builders (mirror tests/unit/preanalysis/flow/test_dispatcher_resolver.py) ----
 
 
 def _mop(

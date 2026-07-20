@@ -1,10 +1,4 @@
-"""Tests for the SQLite event handlers (Phase 3).
-
-Verify that with handlers installed on the bus and a connected diag DB,
-the observation events from recon/cfg/hexrays emit rows in the expected
-tables. The mapping ``SnapshotRef.key -> snapshots.id`` is driven by
-the :class:`CaptureMbaSnapshotRequested` handler.
-"""
+"Tests for the SQLite event handlers (Phase 3).\n\nVerify that with handlers installed on the bus and a connected diag DB,\nthe observation events from preanalysis/cfg/hexrays emit rows in the expected\ntables. The mapping ``SnapshotRef.key -> snapshots.id`` is driven by\nthe :class:`CaptureMbaSnapshotRequested` handler.\n"
 from __future__ import annotations
 from d810.core.diag import create_diag_database
 
@@ -41,7 +35,7 @@ from d810.core.observability_models import (
     DagNode,
     Modification,
 )
-from d810.core.observability_recon import (
+from d810.core.observability_preanalysis import (
     observe_branch_witness_decisions,
     observe_branch_ownership_proofs,
     observe_exit_path_shortcut_decisions,

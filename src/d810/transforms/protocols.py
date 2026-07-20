@@ -1,41 +1,4 @@
-"""Portable transform-layer Protocols.
-
-Canonical home for the ``OptimizationRule`` Protocol per the
-llvm-lisa-restructure plan (``docs/plans/recon-and-cfg-restructuring.md``)
-and Phase 0 inventory
-(``docs/plans/recon-and-cfg-restructuring-phase0-inventory.md``).
-
-Moved here from ``d810.optimizers.core`` (commit landing this slice)
-once slice 7 removed the live ``ida_hexrays`` coupling from
-``OptimizationContext``.  No back-compat re-export is left at the old
-location -- the canonical import path is::
-
-    from d810.transforms.protocols import OptimizationRule
-
-``OptimizationRule`` is the abstract, backend-neutral contract for
-*any* optimization rule (Hex-Rays microcode, future angr / Ghidra /
-LLVM lifts).  Concrete rule hierarchies under ``d810.optimizers`` (the
-``FlowOptimizationRule`` / ``InstructionOptimizationRule`` / ``CtreeOptimizationRule``
-classes) satisfy this Protocol structurally; they do not subclass it.
-
-The ``context`` and ``element`` parameters are typed as ``Any``: the
-Protocol describes the structural contract only, and structural
-typing of Protocol method parameters is contravariant.  Using
-``object`` would force every conforming implementation to accept
-*any* object (because narrowing a parameter is a contract violation);
-``Any`` opts out of that check so concrete callers can declare
-narrower parameter types such as
-``d810.optimizers.core.OptimizationContext`` for the Hex-Rays
-integration path (or any future backend-specific context dataclass).
-This keeps ``d810.transforms`` free of any ``d810.optimizers`` import
-edge and preserves the portable-core layer order:
-``support < ir < capabilities < analyses < transforms < passes < families < backends``.
-
-When the IR slice introduces a lower-layer ``TransformContext``
-Protocol with shared structural fields, tighten ``context: Any``
-here to ``context: TransformContext`` -- but only AFTER that
-contract lands; do NOT widen back to ``object``.
-"""
+"Portable transform-layer Protocols.\n\nCanonical home for the ``OptimizationRule`` Protocol per the\nllvm-lisa-restructure plan (``docs/plans/preanalysis-and-cfg-restructuring.md``)\nand Phase 0 inventory\n(``docs/plans/preanalysis-and-cfg-restructuring-phase0-inventory.md``).\n\nMoved here from ``d810.optimizers.core`` (commit landing this slice)\nonce slice 7 removed the live ``ida_hexrays`` coupling from\n``OptimizationContext``.  No back-compat re-export is left at the old\nlocation -- the canonical import path is::\n\n    from d810.transforms.protocols import OptimizationRule\n\n``OptimizationRule`` is the abstract, backend-neutral contract for\n*any* optimization rule (Hex-Rays microcode, future angr / Ghidra /\nLLVM lifts).  Concrete rule hierarchies under ``d810.optimizers`` (the\n``FlowOptimizationRule`` / ``InstructionOptimizationRule`` / ``CtreeOptimizationRule``\nclasses) satisfy this Protocol structurally; they do not subclass it.\n\nThe ``context`` and ``element`` parameters are typed as ``Any``: the\nProtocol describes the structural contract only, and structural\ntyping of Protocol method parameters is contravariant.  Using\n``object`` would force every conforming implementation to accept\n*any* object (because narrowing a parameter is a contract violation);\n``Any`` opts out of that check so concrete callers can declare\nnarrower parameter types such as\n``d810.optimizers.core.OptimizationContext`` for the Hex-Rays\nintegration path (or any future backend-specific context dataclass).\nThis keeps ``d810.transforms`` free of any ``d810.optimizers`` import\nedge and preserves the portable-core layer order:\n``support < ir < capabilities < analyses < transforms < passes < families < backends``.\n\nWhen the IR slice introduces a lower-layer ``TransformContext``\nProtocol with shared structural fields, tighten ``context: Any``\nhere to ``context: TransformContext`` -- but only AFTER that\ncontract lands; do NOT widen back to ``object``.\n"
 
 from __future__ import annotations
 

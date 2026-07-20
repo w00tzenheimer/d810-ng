@@ -6,12 +6,12 @@ import ida_hexrays
 import idaapi
 
 from d810.core import getLogger, typing
+from d810.core.decompilation_session import DecompilationEvent
 from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
 from d810.hexrays.hooks.glbopt_diagnostics import (
     apply_return_const_corruption_cleanup,
     prune_unreachable_condition_chain,
 )
-from d810.hexrays.lifecycle import DecompilationEvent
 
 main_logger = getLogger("D810")
 
@@ -123,9 +123,9 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         """Lazily create one coordinator-owned session for any Hex-Rays hook.
 
         ``prolog`` normally creates the session.  This fallback covers hook
-        ordering differences and rebuild paths, while the coordinator's
-        ``created`` bit ensures that a ``MERR_REDO`` neither resets state nor
-        emits a duplicate ``SESSION_STARTED`` event.
+        ordering differences and rebuild paths, while the coordinator ensures
+        that a ``MERR_REDO`` neither resets state nor emits duplicate lifecycle
+        events.
         """
         lifecycle = getattr(self, "_decompilation_lifecycle", None)
         ensure_session = getattr(lifecycle, "ensure_hexrays_session", None)
@@ -138,13 +138,11 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             else None
         )
         try:
-            session, created = ensure_session(
+            session, _created = ensure_session(
                 function_ea=function_ea,
                 database_identity=str(getattr(self, "_database_identity", "")),
                 callback_entry_ea=callback_entry_ea,
             )
-            if created:
-                self.callback(DecompilationEvent.SESSION_STARTED, session.event)
             return session
         except Exception:
             main_logger.debug(
@@ -406,9 +404,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             pass  # diagnostic, never gates decompilation
         lifecycle = self._decompilation_lifecycle
         if lifecycle is not None:
-            event = lifecycle.finish_hexrays_session()
-            if event is not None:
-                self.callback(DecompilationEvent.SESSION_FINISHED, event)
+            lifecycle.finish_hexrays_session()
         return 0
 
     def func_printed(self, cfunc: ida_hexrays.cfunc_t) -> int:

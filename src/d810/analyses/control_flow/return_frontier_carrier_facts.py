@@ -121,29 +121,7 @@ def _is_lvar_storage(view: object | None) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class ReturnFrontierCarrierFact:
-    """Immutable record of a return-frontier writer's carrier identity.
-
-    Attributes:
-        ret_block: Serial of the return/stop block.
-        writer_block: Serial of the block writing the return slot.
-        walk_path: Block serials from writer_block ... ret_block (inclusive
-            on both ends).  Length >= 1 (at minimum the writer is also the
-            ret block).
-        carrier_lvar_idx: lvar index of the writer's lvar source, or
-            ``None`` if the source is not an lvar.
-        carrier_stkoff: Canonical STACK storage offset of the writer's stack
-            source, or ``None`` if the source is not a stkvar.
-        writer_path_blocks: Frozenset of block serials whose preservation
-            is required for the carrier identity to survive end-to-end
-            (writer + immediate predecessors that reference the carrier
-            by lvar / stack identity).  HCC uses this set to reject mods that
-            would inject foreign predecessors or rewrite edges inside.
-        classification: Recon carrier classification. The protected
-            non-carrier class means the writer is not a recoverable return
-            carrier, but topology rewrites must preserve it unless a later
-            proof supplies a precise lowering.
-        artifact_kind: Optional protected non-carrier writer shape.
-    """
+    "Immutable record of a return-frontier writer's carrier identity.\n\n    Attributes:\n        ret_block: Serial of the return/stop block.\n        writer_block: Serial of the block writing the return slot.\n        walk_path: Block serials from writer_block ... ret_block (inclusive\n            on both ends).  Length >= 1 (at minimum the writer is also the\n            ret block).\n        carrier_lvar_idx: lvar index of the writer's lvar source, or\n            ``None`` if the source is not an lvar.\n        carrier_stkoff: Canonical STACK storage offset of the writer's stack\n            source, or ``None`` if the source is not a stkvar.\n        writer_path_blocks: Frozenset of block serials whose preservation\n            is required for the carrier identity to survive end-to-end\n            (writer + immediate predecessors that reference the carrier\n            by lvar / stack identity).  HCC uses this set to reject mods that\n            would inject foreign predecessors or rewrite edges inside.\n        classification: Preanalysis carrier classification. The protected\n            non-carrier class means the writer is not a recoverable return\n            carrier, but topology rewrites must preserve it unless a later\n            proof supplies a precise lowering.\n        artifact_kind: Optional protected non-carrier writer shape.\n    "
 
     ret_block: int
     writer_block: int

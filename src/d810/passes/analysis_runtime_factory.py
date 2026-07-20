@@ -1,8 +1,8 @@
-"""Factory for the default portable recon/fact runtime bundle.
+"""Factory for the portable preanalysis and consumer-analysis runtimes.
 
-The manager decides when the recon pipeline is enabled and when project
+The manager decides when the analysis pipeline is enabled and when project
 profiles may extend it. This module owns the portable default collector
-inventory and the ``ReconPhase`` / ``ReconAnalysisRuntime`` construction.
+inventory and constructs the two responsibility-specific runtimes.
 """
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ from d810.core.logging import getLogger
 from d810.passes.analysis import AnalysisPhase
 from d810.passes.artifacts import analysis_db_path
 from d810.passes.phase import PreanalysisPhase
+from d810.passes.preanalysis_runtime import PreanalysisRuntime
 from d810.passes.runtime import DecompilationAnalysisRuntime
 from d810.passes.store import PreanalysisStore
 
@@ -79,9 +80,9 @@ DEFAULT_FACT_COLLECTOR_NAMES = tuple(
 
 @dataclass(slots=True)
 class AnalysisRuntimeBundle:
-    """Default recon runtime objects and their owned store lifetime."""
+    """Default analysis runtime objects and their owned store lifetime."""
 
-    preanalysis_phase: PreanalysisPhase
+    preanalysis_runtime: PreanalysisRuntime
     analysis_runtime: DecompilationAnalysisRuntime
     db_path: Path
     default_fact_collector_count: int
@@ -91,17 +92,17 @@ class AnalysisRuntimeBundle:
         try:
             self._store.close()
         except Exception:
-            logger.exception("Failed to close recon store")
+            logger.exception("Failed to close preanalysis store")
 
 
 def register_default_preanalysis_collectors(phase: PreanalysisPhase) -> int:
-    """Register the default portable recon collector inventory."""
+    """Register the default portable preanalysis collector inventory."""
     for factory in DEFAULT_PREANALYSIS_COLLECTOR_FACTORIES:
         phase.register(factory())
     return len(DEFAULT_PREANALYSIS_COLLECTOR_FACTORIES)
 
 
-def register_default_preanalysis_fact_collectors(runtime: DecompilationAnalysisRuntime) -> int:
+def register_default_preanalysis_fact_collectors(runtime: PreanalysisRuntime) -> int:
     """Register the default portable maturity fact collector inventory."""
     for factory in DEFAULT_FACT_COLLECTOR_FACTORIES:
         runtime.register_fact_collector(factory())
@@ -119,17 +120,17 @@ def _create_default_preanalysis_phase(
 
 
 def build_preanalysis_phase(log_dir: Path | str | None) -> PreanalysisPhase | None:
-    """Construct a ``ReconPhase`` with the default collector inventory."""
+    """Construct a ``PreanalysisPhase`` with the default collector inventory."""
     try:
         phase, _store, db_path = _create_default_preanalysis_phase(log_dir)
         logger.info(
-            "ReconPhase enabled: %d collectors, db=%s",
+            "PreanalysisPhase enabled: %d collectors, db=%s",
             phase.collector_count,
             db_path,
         )
         return phase
     except Exception as exc:
-        logger.warning("Failed to build recon pipeline: %s", exc)
+        logger.warning("Failed to build preanalysis phase: %s", exc)
         return None
 
 
@@ -139,7 +140,7 @@ def build_analysis_runtime_bundle(
     config: dict | None = None,
     analysis_phase: AnalysisPhase | None = None,
 ) -> AnalysisRuntimeBundle | None:
-    """Build the default recon phase and fact runtime bundle.
+    """Build the default preanalysis and consumer-analysis runtime bundle.
 
     ``config`` is accepted for the manager-facing API shape; project-specific
     profile registration remains in the manager so profiles can extend the
@@ -148,28 +149,36 @@ def build_analysis_runtime_bundle(
     del config
     try:
         phase, store, db_path = _create_default_preanalysis_phase(log_dir)
-        runtime = DecompilationAnalysisRuntime(
-            phase,
+        preanalysis_runtime = PreanalysisRuntime(
+            phase=phase,
+            store=store,
+        )
+        analysis_runtime = DecompilationAnalysisRuntime(
             analysis_phase or AnalysisPhase(),
             store,
+            validated_fact_view_provider=(
+                preanalysis_runtime._validated_fact_view
+            ),
         )
-        fact_count = register_default_preanalysis_fact_collectors(runtime)
+        fact_count = register_default_preanalysis_fact_collectors(
+            preanalysis_runtime
+        )
         logger.info(
-            "ReconPhase enabled: %d collectors, db=%s",
+            "PreanalysisRuntime enabled: %d graph collectors, db=%s",
             phase.collector_count,
             db_path,
         )
         logger.info(
-            "ReconAnalysisRuntime enabled: %d fact collectors",
+            "PreanalysisRuntime enabled: %d fact collectors",
             fact_count,
         )
         return AnalysisRuntimeBundle(
-            preanalysis_phase=phase,
-            analysis_runtime=runtime,
+            preanalysis_runtime=preanalysis_runtime,
+            analysis_runtime=analysis_runtime,
             db_path=db_path,
             default_fact_collector_count=fact_count,
             _store=store,
         )
     except Exception as exc:
-        logger.warning("Failed to build recon runtime bundle: %s", exc)
+        logger.warning("Failed to build analysis runtime bundle: %s", exc)
         return None

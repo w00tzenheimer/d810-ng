@@ -1,13 +1,4 @@
-"""Composition-oriented unflattening rule lifecycle.
-
-This module owns the reusable optimizer lifecycle shared by strategy-family
-unflatteners: maturity gating, pass accounting, and lightweight flow-context
-gates.
-
-It intentionally does not own dispatcher discovery, value solving, CFG planning,
-or live Hex-Rays materialization policy.  Families compose those capabilities
-through their profile, recon/evaluator inputs, planner, and executor.
-"""
+"Composition-oriented unflattening rule lifecycle.\n\nThis module owns the reusable optimizer lifecycle shared by strategy-family\nunflatteners: maturity gating, pass accounting, and lightweight flow-context\ngates.\n\nIt intentionally does not own dispatcher discovery, value solving, CFG planning,\nor live Hex-Rays materialization policy.  Families compose those capabilities\nthrough their profile, preanalysis/evaluator inputs, planner, and executor.\n"
 from __future__ import annotations
 
 import abc

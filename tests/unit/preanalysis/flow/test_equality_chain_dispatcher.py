@@ -20,7 +20,7 @@ def _mop_n(value: int):
 # surface the canonical projection reads (``kind`` / ``size`` / scalar identity
 # + the ``sub_l`` / ``sub_r`` / ``args`` nested-operand fields the projection's
 # address walk touches) and RAISE on any raw Hex-Rays accessor.  They prove the
-# ported recon path reaches operand identity through ``operand_storages`` /
+# ported preanalysis path reaches operand identity through ``operand_storages`` /
 # ``project_instruction`` only, never the backend-shaped ``.nnn`` / ``.s`` /
 # ``.l`` / ``.t`` operand fields.
 class _CanonicalConstWithoutRawNnn:
@@ -104,13 +104,7 @@ def _mov(src, dst):
 
 
 def _eq_tail(*, predicate: PredicateKind, state_mop, const: int, jump_target: int):
-    """A real equality/inequality-jump ``InsnSnapshot`` tail.
-
-    ``kind=EQUALITY_JUMP`` + ``predicate_kind`` makes the canonical projection
-    populate ``control.predicate`` and ``control.target`` (from the ``d`` BLOCK
-    operand) the recon extractor reads; the compared operands are the ``l``
-    state operand and the ``r`` numeric constant.
-    """
+    "A real equality/inequality-jump ``InsnSnapshot`` tail.\n\n    ``kind=EQUALITY_JUMP`` + ``predicate_kind`` makes the canonical projection\n    populate ``control.predicate`` and ``control.target`` (from the ``d`` BLOCK\n    operand) the preanalysis extractor reads; the compared operands are the ``l``\n    state operand and the ``r`` numeric constant.\n    "
     return InsnSnapshot(
         opcode=-1,
         ea=0,
@@ -239,10 +233,10 @@ def test_extracts_snapshot_constants_from_canonical_value() -> None:
     assert dispatch_map.state_to_handler() == {0x44: 7}
 
 
-def test_backend_specific_numeric_names_belong_in_adapter_not_recon() -> None:
-    # Recon consumes a normalized ``InsnSnapshot`` whose semantic predicate is
+def test_backend_specific_numeric_names_belong_in_adapter_not_preanalysis() -> None:
+    # Preanalysis consumes a normalized ``InsnSnapshot`` whose semantic predicate is
     # produced by the live adapter, never raw Hex-Rays opcode/mop-type numbers.
-    # A tail carrying no portable predicate yields no rows -- recon does not
+    # A tail carrying no portable predicate yields no rows -- preanalysis does not
     # re-derive an equality compare from a raw opcode integer (``opcode=444``).
     tail = InsnSnapshot(
         opcode=444,
@@ -271,7 +265,7 @@ def test_backend_specific_numeric_names_belong_in_adapter_not_recon() -> None:
 
 
 def test_hexrays_numeric_constants_require_adapter_normalization() -> None:
-    # A raw Hex-Rays numeric constant (``nnn_value``) is meaningless to recon
+    # A raw Hex-Rays numeric constant (``nnn_value``) is meaningless to preanalysis
     # until the adapter normalizes it onto a portable ``MopSnapshot`` and the
     # tail's portable predicate.  Absent that predicate, no row is extracted.
     tail = InsnSnapshot(

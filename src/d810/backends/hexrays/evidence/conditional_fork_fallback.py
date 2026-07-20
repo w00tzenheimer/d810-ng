@@ -1,4 +1,4 @@
-"""ConditionalForkFallbackStrategy — conditional redirect wrapper over recon."""
+"ConditionalForkFallbackStrategy \u2014 conditional redirect wrapper over preanalysis."
 from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING
@@ -37,7 +37,7 @@ __all__ = ["ConditionalForkFallbackStrategy"]
     summary="Lowers resolved conditional state forks into explicit two-way CFG redirects.",
     use_cases=(
         "Replace dispatcher-mediated conditional state updates with one owned conditional redirect block.",
-        "Emit both arms of a resolved conditional handoff once recon has concrete arm targets.",
+        "Emit both arms of a resolved conditional handoff once preanalysis has concrete arm targets.",
     ),
     examples=(
         "Lower a handler that can transition to either state A or state B depending on a predicate.",
@@ -46,7 +46,7 @@ __all__ = ["ConditionalForkFallbackStrategy"]
     tags=("hodur", "conditional", "fallback", "redirect", "state-machine"),
     related_paths=(
         "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/conditional_fork_fallback.py",
-        "src/d810/optimizers/microcode/flow/flattening/hodur/recon/conditional_chain_resolution.py",
+        "src/d810/optimizers/microcode/flow/flattening/hodur/preanalysis/conditional_chain_resolution.py",
     ),
 )
 class ConditionalForkFallbackStrategy:

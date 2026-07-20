@@ -1,10 +1,4 @@
-"""Backend-neutral residual dispatcher frontier target resolution.
-
-The routines here classify residual dispatcher feeders and choose semantic
-frontier targets from DAG/CFG evidence.  They intentionally accept callback
-resolvers from the caller instead of importing recon or backend modules; Hodur
-keeps strategy ordering, live state-write extraction, and modification emission.
-"""
+"Backend-neutral residual dispatcher frontier target resolution.\n\nThe routines here classify residual dispatcher feeders and choose semantic\nfrontier targets from DAG/CFG evidence.  They intentionally accept callback\nresolvers from the caller instead of importing preanalysis or backend modules; Hodur\nkeeps strategy ordering, live state-write extraction, and modification emission.\n"
 from __future__ import annotations
 
 from dataclasses import dataclass

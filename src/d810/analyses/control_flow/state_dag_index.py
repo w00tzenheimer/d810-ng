@@ -1,10 +1,4 @@
-"""Query helpers for semantic state-DAG edges.
-
-The index is intentionally DAG-native: callers ask for proven semantic edges by
-node key, entry anchor, or source anchor.  The proof producer may be a dispatcher
-map, range row, legacy emulation, or another recon source, but lowering code does
-not consume producer-specific candidate types.
-"""
+"Query helpers for semantic state-DAG edges.\n\nThe index is intentionally DAG-native: callers ask for proven semantic edges by\nnode key, entry anchor, or source anchor.  The proof producer may be a dispatcher\nmap, range row, legacy emulation, or another preanalysis source, but lowering code does\nnot consume producer-specific candidate types.\n"
 
 from __future__ import annotations
 

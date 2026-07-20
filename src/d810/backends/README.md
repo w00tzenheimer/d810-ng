@@ -32,7 +32,7 @@ src/d810/backends/
     └── z3.py           # Z3 prover over pure SymbolicExpression
 ```
 
-Planned (per ``docs/plans/recon-and-cfg-restructuring.md``):
+Planned (per ``docs/plans/preanalysis-and-cfg-restructuring.md``):
 
 - ``backends/hexrays/{lifter,capabilities,mutation,evidence}.py`` --
   the central Hex-Rays integration; ``lifter.py`` produces portable

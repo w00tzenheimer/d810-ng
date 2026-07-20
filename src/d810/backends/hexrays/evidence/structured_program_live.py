@@ -103,8 +103,8 @@ def structure_recovered_program_live(
             conditional-transition chain. Preferred over the shallow unflatten stash.
     """
     # Resolve the dispatcher state variable's stack offset. Prefer the value the
-    # caller hands in (recon's Hodur detector); when absent, SELF-DETECT on this
-    # mba at its own maturity via the same ``_detect_state_var_stkoff`` the recon
+    # caller hands in (preanalysis's Hodur detector); when absent, SELF-DETECT on this
+    # mba at its own maturity via the same ``_detect_state_var_stkoff`` the preanalysis
     # path uses. Detection is authoritative -- never fall back to a hardcoded slot
     # (a prior diagnostic env override silently fed the WRONG variable, e.g. 0x64
     # instead of the real 0x3C, producing a graph keyed on a non-state slot).

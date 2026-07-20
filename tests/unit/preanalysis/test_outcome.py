@@ -295,7 +295,7 @@ class TestAdapterDetail:
 
 
 # ---------------------------------------------------------------------------
-# Different gate names coexist in ReconOutcomeLog
+# Different gate names coexist in AnalysisOutcomeLog
 # ---------------------------------------------------------------------------
 
 
@@ -341,7 +341,7 @@ class TestGateNameCoexistence:
 
 
 # ---------------------------------------------------------------------------
-# ReconOutcomeLog
+# AnalysisOutcomeLog
 # ---------------------------------------------------------------------------
 
 

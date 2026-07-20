@@ -1,25 +1,4 @@
-"""Hex-Rays live-source lifter (Landing Sequence LS10 C3).
-
-Registers a :class:`~d810.capabilities.source_lifter.SourceLifter` that lifts a
-live Hex-Rays ``mba_t`` into the portable fact target the recon induction
-collector iterates.  Both importing this module AND calling
-``ensure_hexrays_lifter_registered()`` register the lifter -- the single lawful
-``register_live_lifter()`` call site (the
-``register-live-lifter-only-in-backends`` ast-grep rule ignores ``backends/**``).
-
-IDA-bound: ``d810.hexrays.fact_target`` imports ``ida_hexrays``, so this module
-is not importable without IDA.  The composition root calls
-``ensure_hexrays_lifter_registered()`` (imported lazily inside ``Manager.start``,
-C4) to keep ``d810.manager`` collectable in unit tests AND to re-register after a
-``reset_live_lifters_for_tests()`` -- a ``sys.modules``-cached module would make
-a bare re-import a no-op, silently leaving the registry empty.
-
-Currently dormant in the live pipeline: both capture paths already hand the
-collectors a portable target (a ``FlowGraph`` snapshot pre-D810, the
-``mba_to_fact_target`` result post-D810), so ``matches`` returns False and the
-recon default iteration runs unchanged.  The lifter activates only when a raw
-``mba`` reaches a fact collector directly.
-"""
+"Hex-Rays live-source lifter (Landing Sequence LS10 C3).\n\nRegisters a :class:`~d810.capabilities.source_lifter.SourceLifter` that lifts a\nlive Hex-Rays ``mba_t`` into the portable fact target the preanalysis induction\ncollector iterates.  Both importing this module AND calling\n``ensure_hexrays_lifter_registered()`` register the lifter -- the single lawful\n``register_live_lifter()`` call site (the\n``register-live-lifter-only-in-backends`` ast-grep rule ignores ``backends/**``).\n\nIDA-bound: ``d810.hexrays.fact_target`` imports ``ida_hexrays``, so this module\nis not importable without IDA.  The composition root calls\n``ensure_hexrays_lifter_registered()`` (imported lazily inside ``Manager.start``,\nC4) to keep ``d810.manager`` collectable in unit tests AND to re-register after a\n``reset_live_lifters_for_tests()`` -- a ``sys.modules``-cached module would make\na bare re-import a no-op, silently leaving the registry empty.\n\nCurrently dormant in the live pipeline: both capture paths already hand the\ncollectors a portable target (a ``FlowGraph`` snapshot pre-D810, the\n``mba_to_fact_target`` result post-D810), so ``matches`` returns False and the\npreanalysis default iteration runs unchanged.  The lifter activates only when a raw\n``mba`` reaches a fact collector directly.\n"
 from __future__ import annotations
 
 from d810.capabilities.source_lifter import register_live_lifter
@@ -33,9 +12,7 @@ class HexRaysMicrocodeLifter:
     """Lift a live Hex-Rays ``mba_t`` into a portable fact target."""
 
     def matches(self, source: Any) -> bool:
-        """True iff ``source`` is a live ``mba_t`` (duck-typed via ``get_mblock``
-        + ``qty``); portable ``FlowGraph`` snapshots / fact targets do not match,
-        so the recon default iteration handles them."""
+        "True iff ``source`` is a live ``mba_t`` (duck-typed via ``get_mblock``\n        + ``qty``); portable ``FlowGraph`` snapshots / fact targets do not match,\n        so the preanalysis default iteration handles them."
         return hasattr(source, "get_mblock") and hasattr(source, "qty")
 
     def lift(self, source: Any) -> Any:

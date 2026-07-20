@@ -1,4 +1,4 @@
-"""Unit tests for ReconAnalysisRuntime coordinator."""
+"""Unit tests for the split preanalysis and consumer-analysis runtimes."""
 
 from __future__ import annotations
 
@@ -10,12 +10,14 @@ from unittest.mock import MagicMock, call, create_autospec, patch
 import pytest
 
 from d810.core import ProviderPhaseSnapshot
+from d810.core.decompilation_session import DecompilationSessionEvent
 from d810.core.diag.models import FactConsumer, Snapshot
 from d810.core.settings import configure_settings, reset_settings
 from d810.passes.analysis import AnalysisPhase
 from d810.analyses.value_flow.facts import FactConsumerRecord, FactObservation
 from d810.analyses.control_flow.models import DeobfuscationHints, PreanalysisResult
 from d810.passes.phase import PreanalysisPhase
+from d810.passes.preanalysis_runtime import PreanalysisRuntime
 from d810.passes.runtime import DecompilationAnalysisRuntime
 from d810.passes.store import PreanalysisStore
 from tests.unit.core.diag._orm_bind import make_bound_diag_db
@@ -37,7 +39,15 @@ def _phase(level: int = _MATURITY, friendly: str | None = None) -> ProviderPhase
     )
 
 
-def _make_recon_result(
+def _event(func_ea: int = _FUNC_EA, epoch: int = 1) -> DecompilationSessionEvent:
+    return DecompilationSessionEvent(
+        function_ea=func_ea,
+        database_identity="test.i64",
+        top_level_epoch=epoch,
+    )
+
+
+def _make_preanalysis_result(
     collector_name: str = "CFGShapeCollector",
     func_ea: int = _FUNC_EA,
     maturity: int = _MATURITY,
@@ -67,16 +77,15 @@ def _make_hints(
     )
 
 
-def _make_runtime() -> tuple[DecompilationAnalysisRuntime, MagicMock, MagicMock, MagicMock]:
-    """Build a runtime with mocked dependencies.
-
-    Returns (runtime, mock_phase, mock_analysis, mock_store).
-    Patches ``get_recon_writer`` so writes execute synchronously on mock_store.
-    """
+def _make_runtime(
+    *,
+    validated_fact_view_provider=None,
+) -> tuple[DecompilationAnalysisRuntime, MagicMock, MagicMock, MagicMock]:
+    "Build a runtime with mocked dependencies.\n\n    Returns (runtime, mock_phase, mock_analysis, mock_store).\n    Patches ``get_preanalysis_writer`` so writes execute synchronously on mock_store.\n    "
     mock_phase = create_autospec(PreanalysisPhase, instance=True)
     mock_analysis = create_autospec(AnalysisPhase, instance=True)
     mock_store = create_autospec(PreanalysisStore, instance=True)
-    mock_store.db_path = Path("/tmp/test_recon.db")
+    mock_store.db_path = Path("/tmp/test_preanalysis.db")
 
     writer = _make_sync_writer(mock_store)
     p1 = patch("d810.passes.runtime.get_preanalysis_writer", return_value=writer)
@@ -85,8 +94,36 @@ def _make_runtime() -> tuple[DecompilationAnalysisRuntime, MagicMock, MagicMock,
     p2.start()
     _active_patchers.extend([p1, p2])
 
-    rt = DecompilationAnalysisRuntime(mock_phase, mock_analysis, mock_store)
+    rt = DecompilationAnalysisRuntime(
+        mock_analysis,
+        mock_store,
+        validated_fact_view_provider=validated_fact_view_provider,
+    )
     return rt, mock_phase, mock_analysis, mock_store
+
+
+def _make_preanalysis_runtime() -> tuple[
+    PreanalysisRuntime, MagicMock, MagicMock
+]:
+    mock_phase = create_autospec(PreanalysisPhase, instance=True)
+    mock_store = create_autospec(PreanalysisStore, instance=True)
+    mock_store.db_path = Path("/tmp/test_preanalysis.db")
+    writer = _make_sync_writer(mock_store)
+    patches = (
+        patch(
+            "d810.passes.preanalysis_runtime.get_preanalysis_writer",
+            return_value=writer,
+        ),
+        patch("d810.passes.phase.get_preanalysis_writer", return_value=writer),
+    )
+    for active in patches:
+        active.start()
+        _active_patchers.append(active)
+    return (
+        PreanalysisRuntime(phase=mock_phase, store=mock_store),
+        mock_phase,
+        mock_store,
+    )
 
 
 def _make_sync_writer(mock_store: MagicMock) -> MagicMock:
@@ -116,24 +153,21 @@ def _cleanup_writer_patchers():
 # ---------------------------------------------------------------------------
 
 
-def test_collect_and_analyze_persists_hints() -> None:
-    """collect_and_analyze with persist_hints=True saves hints to store."""
-    rt, mock_phase, mock_analysis, mock_store = _make_runtime()
-
-    results = [_make_recon_result()]
+def test_preanalysis_capture_and_consumer_analysis_are_separate() -> None:
+    preanalysis, mock_phase, _mock_store = _make_preanalysis_runtime()
+    analysis, _unused_phase, mock_analysis, analysis_store = _make_runtime()
+    results = [_make_preanalysis_result()]
     hints = _make_hints()
-
-    mock_phase.run_microcode_collectors.return_value = results
+    analysis_store.load_all_preanalysis_results.return_value = results
     mock_analysis.interpret.return_value = hints
 
-    returned = rt.collect_and_analyze(
-        _FUNC_EA,
+    preanalysis.capture_flowgraph(
         _SENTINEL_TARGET,
-        _phase(),
-        persist_hints=True,
+        func_ea=_FUNC_EA,
+        provider_phase=_phase(),
     )
+    returned = analysis.analyze(_FUNC_EA)
 
-    assert returned is hints
     mock_phase.run_microcode_collectors.assert_called_once_with(
         _SENTINEL_TARGET,
         func_ea=_FUNC_EA,
@@ -142,30 +176,20 @@ def test_collect_and_analyze_persists_hints() -> None:
     mock_analysis.interpret.assert_called_once_with(
         func_ea=_FUNC_EA,
         results=results,
-        store=mock_store,
+        store=analysis_store,
     )
-    mock_store.save_hints.assert_called_once_with(hints)
-
-
-def test_collect_and_analyze_no_persist() -> None:
-    """collect_and_analyze with persist_hints=False does NOT save hints."""
-    rt, mock_phase, mock_analysis, mock_store = _make_runtime()
-
-    results = [_make_recon_result()]
-    hints = _make_hints()
-
-    mock_phase.run_microcode_collectors.return_value = results
-    mock_analysis.interpret.return_value = hints
-
-    returned = rt.collect_and_analyze(
-        _FUNC_EA,
-        _SENTINEL_TARGET,
-        _phase(),
-        persist_hints=False,
-    )
-
+    analysis_store.save_hints.assert_called_once_with(hints)
     assert returned is hints
-    mock_store.save_hints.assert_not_called()
+
+
+def test_analysis_runtime_has_no_raw_collection_compatibility_api() -> None:
+    runtime, _phase, _analysis, _store = _make_runtime()
+
+    assert not hasattr(runtime, "collect_and_analyze")
+    assert not hasattr(runtime, "capture_maturity_facts")
+    assert not hasattr(runtime, "register_fact_collector")
+    assert hasattr(runtime, "validated_fact_view")
+    assert not hasattr(runtime, "load_or_analyze")
 
 
 def test_load_hints_delegates_to_store() -> None:
@@ -195,9 +219,9 @@ def test_load_hints_returns_none_when_absent() -> None:
 
 def test_fact_lifecycle_capture_can_be_disabled() -> None:
     configure_settings(fact_lifecycle=False)
-    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+    rt, _mock_phase, _mock_store = _make_preanalysis_runtime()
 
-    summary = rt.capture_maturity_facts(
+    summary = rt.capture_facts(
         object(),
         func_ea=_FUNC_EA,
         provider_phase=_phase(1),
@@ -211,15 +235,15 @@ def test_fact_lifecycle_capture_can_be_disabled() -> None:
 
 def test_fact_lifecycle_capture_invokes_empty_registry_once() -> None:
     configure_settings(fact_lifecycle=True)
-    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+    rt, _mock_phase, _mock_store = _make_preanalysis_runtime()
 
-    first = rt.capture_maturity_facts(
+    first = rt.capture_facts(
         object(),
         func_ea=_FUNC_EA,
         provider_phase=_phase(1),
         phase="pre_d810",
     )
-    second = rt.capture_maturity_facts(
+    second = rt.capture_facts(
         object(),
         func_ea=_FUNC_EA,
         provider_phase=_phase(1),
@@ -253,8 +277,8 @@ def test_fact_lifecycle_capture_persists_to_diag_snapshot() -> None:
             )
 
     configure_settings(fact_lifecycle=True)
-    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
-    rt._fact_lifecycle.register(_Collector())  # targeted substrate test
+    rt, _mock_phase, _mock_store = _make_preanalysis_runtime()
+    rt.register_fact_collector(_Collector())
 
     db = make_bound_diag_db()
     conn = db.connection()
@@ -287,7 +311,7 @@ def test_fact_lifecycle_capture_persists_to_diag_snapshot() -> None:
             "d810.core.diag.event_handlers.get_diag_conn",
             return_value=conn,
         ):
-            summary = rt.capture_maturity_facts(
+            summary = rt.capture_facts(
                 object(),
                 func_ea=_FUNC_EA,
                 provider_phase=_phase(),
@@ -327,18 +351,22 @@ def test_validated_fact_view_is_exposed_from_runtime() -> None:
             )
 
     configure_settings(fact_lifecycle=True)
-    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
-    rt.register_fact_collector(_Collector())
+    preanalysis, _mock_phase, _mock_store = _make_preanalysis_runtime()
+    preanalysis.register_fact_collector(_Collector())
+    analysis, _unused_phase, _unused_analysis, _unused_store = _make_runtime(
+        validated_fact_view_provider=preanalysis._validated_fact_view,
+    )
 
-    rt.capture_maturity_facts(
+    preanalysis.capture_facts(
         object(),
         func_ea=_FUNC_EA,
         provider_phase=_phase(),
         phase="pre_d810",
     )
 
-    view = rt.validated_fact_view(_FUNC_EA, _MATURITY)
+    view = analysis.validated_fact_view(_FUNC_EA, _MATURITY)
 
+    assert not hasattr(preanalysis, "validated_fact_view")
     assert len(view.observations) == 1
     assert len(view.active_observations) == 1
     assert view.observations[0].fact_id == "induction:runtime"
@@ -408,80 +436,28 @@ def test_record_fact_consumers_persists_to_latest_diag_snapshot() -> None:
         uninstall_diag_event_handlers()
 
 
-def test_load_or_analyze_cache_hit() -> None:
-    """load_or_analyze returns cached hints without running collectors."""
-    rt, mock_phase, mock_analysis, mock_store = _make_runtime()
+def test_begin_session_clears_fired_and_store() -> None:
+    """Preanalysis begin resets collector state and stored raw evidence."""
+    rt, mock_phase, mock_store = _make_preanalysis_runtime()
 
-    cached_hints = _make_hints()
-    mock_store.load_hints.return_value = cached_hints
+    result = rt.begin_session(_event())
 
-    returned = rt.load_or_analyze(
-        _FUNC_EA,
-        _SENTINEL_TARGET,
-        _phase(),
-    )
-
-    assert returned is cached_hints
-    mock_store.load_hints.assert_called_once_with(func_ea=_FUNC_EA)
-    mock_phase.run_microcode_collectors.assert_not_called()
-    mock_analysis.interpret.assert_not_called()
-
-
-def test_load_or_analyze_cache_miss() -> None:
-    """load_or_analyze falls back to collect_and_analyze on cache miss."""
-    rt, mock_phase, mock_analysis, mock_store = _make_runtime()
-
-    results = [_make_recon_result()]
-    fresh_hints = _make_hints(confidence=0.70)
-
-    mock_store.load_hints.return_value = None
-    mock_phase.run_microcode_collectors.return_value = results
-    mock_analysis.interpret.return_value = fresh_hints
-
-    returned = rt.load_or_analyze(
-        _FUNC_EA,
-        _SENTINEL_TARGET,
-        _phase(),
-        persist_hints=True,
-    )
-
-    assert returned is fresh_hints
-    mock_store.load_hints.assert_called_once_with(func_ea=_FUNC_EA)
-    mock_phase.run_microcode_collectors.assert_called_once_with(
-        _SENTINEL_TARGET,
-        func_ea=_FUNC_EA,
-        provider_phase=_phase(),
-    )
-    mock_analysis.interpret.assert_called_once_with(
-        func_ea=_FUNC_EA,
-        results=results,
-        store=mock_store,
-    )
-    mock_store.save_hints.assert_called_once_with(fresh_hints)
-
-
-def test_reset_for_func_clears_fired_and_store() -> None:
-    """reset_for_func delegates to phase.reset and store.clear_func."""
-    rt, mock_phase, _mock_analysis, mock_store = _make_runtime()
-
-    result = rt.reset_for_func(_FUNC_EA)
-
-    assert result is True
+    assert result is None
     mock_phase.reset.assert_called_once_with(func_ea=_FUNC_EA)
     mock_store.clear_func.assert_called_once_with(func_ea=_FUNC_EA)
 
 
-def test_analyze_and_persist_with_results() -> None:
-    """analyze_and_persist runs analysis and saves hints when results exist."""
+def test_analyze_with_results() -> None:
+    """analyze runs analysis and saves hints when results exist."""
     rt, _mock_phase, mock_analysis, mock_store = _make_runtime()
 
-    results = [_make_recon_result()]
+    results = [_make_preanalysis_result()]
     hints = _make_hints()
 
     mock_store.load_all_preanalysis_results.return_value = results
     mock_analysis.interpret.return_value = hints
 
-    returned = rt.analyze_and_persist(_FUNC_EA)
+    returned = rt.analyze(_FUNC_EA)
 
     assert returned is hints
     mock_store.load_all_preanalysis_results.assert_called_once_with(func_ea=_FUNC_EA)
@@ -493,13 +469,13 @@ def test_analyze_and_persist_with_results() -> None:
     mock_store.save_hints.assert_called_once_with(hints)
 
 
-def test_analyze_and_persist_no_results() -> None:
-    """analyze_and_persist returns None when store has no recon results."""
+def test_analyze_no_results() -> None:
+    "analyze returns None when store has no preanalysis results."
     rt, _mock_phase, mock_analysis, mock_store = _make_runtime()
 
     mock_store.load_all_preanalysis_results.return_value = []
 
-    returned = rt.analyze_and_persist(_FUNC_EA)
+    returned = rt.analyze(_FUNC_EA)
 
     assert returned is None
     mock_store.load_all_preanalysis_results.assert_called_once_with(func_ea=_FUNC_EA)
@@ -507,24 +483,24 @@ def test_analyze_and_persist_no_results() -> None:
     mock_store.save_hints.assert_not_called()
 
 
-def test_analyze_and_persist_overwrites_previous_hints() -> None:
-    """analyze_and_persist overwrites hints on re-analysis."""
+def test_analyze_overwrites_previous_hints() -> None:
+    """analyze overwrites hints on re-analysis."""
     rt, _mock_phase, mock_analysis, mock_store = _make_runtime()
 
-    results_v1 = [_make_recon_result()]
+    results_v1 = [_make_preanalysis_result()]
     hints_v1 = _make_hints(confidence=0.60)
-    results_v2 = [_make_recon_result(), _make_recon_result("DispatchPatternCollector")]
+    results_v2 = [_make_preanalysis_result(), _make_preanalysis_result("DispatchPatternCollector")]
     hints_v2 = _make_hints(confidence=0.95)
 
     # First call
     mock_store.load_all_preanalysis_results.return_value = results_v1
     mock_analysis.interpret.return_value = hints_v1
-    ret1 = rt.analyze_and_persist(_FUNC_EA)
+    ret1 = rt.analyze(_FUNC_EA)
 
     # Second call with more results
     mock_store.load_all_preanalysis_results.return_value = results_v2
     mock_analysis.interpret.return_value = hints_v2
-    ret2 = rt.analyze_and_persist(_FUNC_EA)
+    ret2 = rt.analyze(_FUNC_EA)
 
     assert ret1 is hints_v1
     assert ret2 is hints_v2
@@ -533,37 +509,19 @@ def test_analyze_and_persist_overwrites_previous_hints() -> None:
     mock_store.save_hints.assert_any_call(hints_v2)
 
 
-def test_collect_and_analyze_saves_recon_results() -> None:
-    """Verify run_microcode_collectors is invoked (it saves results internally)."""
-    rt, mock_phase, mock_analysis, mock_store = _make_runtime()
+def test_preanalysis_capture_delegates_portable_graph_to_phase() -> None:
+    rt, mock_phase, _mock_store = _make_preanalysis_runtime()
 
-    r1 = _make_recon_result("CFGShapeCollector")
-    r2 = _make_recon_result("DispatchPatternCollector")
-    results = [r1, r2]
-    hints = _make_hints()
-
-    mock_phase.run_microcode_collectors.return_value = results
-    mock_analysis.interpret.return_value = hints
-
-    returned = rt.collect_and_analyze(
-        _FUNC_EA,
-        _SENTINEL_TARGET,
-        _phase(),
-    )
-
-    assert returned is hints
-    # The runtime delegates to phase which internally saves each ReconResult.
-    # Verify the phase was called with the right arguments.
-    mock_phase.run_microcode_collectors.assert_called_once_with(
+    rt.capture_flowgraph(
         _SENTINEL_TARGET,
         func_ea=_FUNC_EA,
         provider_phase=_phase(),
     )
-    # Both results are forwarded to the analysis phase.
-    mock_analysis.interpret.assert_called_once_with(
+
+    mock_phase.run_microcode_collectors.assert_called_once_with(
+        _SENTINEL_TARGET,
         func_ea=_FUNC_EA,
-        results=results,
-        store=mock_store,
+        provider_phase=_phase(),
     )
 
 
@@ -573,52 +531,28 @@ def test_collect_and_analyze_saves_recon_results() -> None:
 
 
 def test_reset_deduplicates_across_calls() -> None:
-    """Calling reset_for_func(X) twice only fires phase.reset/store.clear once.
+    """Analysis outcome reset is idempotent for one active function."""
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
-    This simulates two managers (instruction + block) both calling
-    reset_for_func with the same func_ea during a single decompilation.
-    The runtime's internal guard deduplicates: only the first call fires.
-    """
-    rt, mock_phase, _mock_analysis, mock_store = _make_runtime()
+    assert rt.begin_session(_event()) is True
 
-    # First call fires
-    assert rt.reset_for_func(_FUNC_EA) is True
-    assert mock_phase.reset.call_count == 1
-    assert mock_store.clear_func.call_count == 1
-
-    # Second call with same func_ea is a no-op
-    assert rt.reset_for_func(_FUNC_EA) is False
-    assert mock_phase.reset.call_count == 1  # still 1
-    assert mock_store.clear_func.call_count == 1  # still 1
+    assert rt.begin_session(_event()) is False
 
 
-def test_mark_decompilation_finished_allows_re_reset() -> None:
-    """After mark_decompilation_finished, same func_ea triggers reset again.
+def test_finish_session_allows_analysis_outcome_reset() -> None:
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
-    Simulates the lifecycle: decompile func X -> FINISHED event ->
-    re-decompile func X. The FINISHED event calls mark_decompilation_finished
-    which resets the guard so the next decompilation fires reset.
-    """
-    rt, mock_phase, _mock_analysis, mock_store = _make_runtime()
+    assert rt.begin_session(_event()) is True
 
-    # 1st decompilation
-    assert rt.reset_for_func(_FUNC_EA) is True
-    assert mock_phase.reset.call_count == 1
+    rt.finish_session(_event())
 
-    # Decompilation finishes
-    rt.mark_decompilation_finished()
-
-    # 2nd decompilation of SAME function: fires again
-    assert rt.reset_for_func(_FUNC_EA) is True
-    assert mock_phase.reset.call_count == 2
-    assert mock_store.clear_func.call_count == 2
-    mock_phase.reset.assert_has_calls([call(func_ea=_FUNC_EA), call(func_ea=_FUNC_EA)])
+    assert rt.begin_session(_event(epoch=2)) is True
 
 
-def test_reset_for_func_flushes_previous_outcomes() -> None:
+def test_begin_session_flushes_previous_outcomes() -> None:
     """Switching to func B flushes persisted outcomes for func A.
 
-    When reset_for_func(B) is called while func A is active, the runtime
+    When begin_session(B) is called while func A is active, the runtime
     should persist session summary and consumer outcomes for A *before*
     clearing state for B.  This closes the gap where outcomes are lost if
     mark_decompilation_finished is never called (e.g. IDA decompiles A
@@ -630,12 +564,12 @@ def test_reset_for_func_flushes_previous_outcomes() -> None:
     func_b = 0x402000
 
     # Activate func A
-    rt.reset_for_func(func_a)
+    rt.begin_session(_event(func_a))
 
     # Set up store responses for func A's persist path
     hints_a = _make_hints(func_ea=func_a)
     mock_store.load_hints.return_value = hints_a
-    results_a = [_make_recon_result(func_ea=func_a)]
+    results_a = [_make_preanalysis_result(func_ea=func_a)]
     mock_store.load_all_preanalysis_results.return_value = results_a
 
     # Record an outcome for func A
@@ -647,9 +581,9 @@ def test_reset_for_func_flushes_previous_outcomes() -> None:
     )
 
     # Now switch to func B -- should flush func A outcomes first
-    rt.reset_for_func(func_b)
+    rt.begin_session(_event(func_b))
 
-    # Session summaries are persisted eagerly by analyze_and_persist,
+    # Session summaries are persisted eagerly by analyze,
     # not by _persist_outcomes, so no save_session_summary call here.
     mock_store.save_session_summary.assert_not_called()
     # Consumer outcome for func A was persisted
@@ -665,19 +599,18 @@ def test_nested_session_reset_restores_parent_without_mark_finished() -> None:
     The coordinator distinguishes this from an abandoned sequential function
     switch and sets ``preserve_active_session`` for the inner start.
     """
-    rt, mock_phase, _mock_analysis, _mock_store = _make_runtime()
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
     outer_ea = _FUNC_EA
     inner_ea = 0x402000
 
-    assert rt.reset_for_func(outer_ea) is True
-    assert rt.reset_for_func(inner_ea, preserve_active_session=True) is True
-    rt.mark_decompilation_finished(resume_func_ea=outer_ea)
+    assert rt.begin_session(_event(outer_ea)) is True
+    assert rt.begin_session(
+        _event(inner_ea),
+        preserve_active_session=True,
+    ) is True
+    rt.finish_session(_event(inner_ea), resume_event=_event(outer_ea))
 
     assert rt._current_func_ea == outer_ea
-    assert mock_phase.reset.call_count == 2
-    mock_phase.reset.assert_has_calls(
-        [call(func_ea=outer_ea), call(func_ea=inner_ea)]
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -708,7 +641,7 @@ def test_runtime_record_outcome() -> None:
 
 
 def test_reset_clears_outcome_log() -> None:
-    """reset_for_func clears outcome entries for the function."""
+    """begin_session clears outcome entries for the function."""
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
     from d810.passes.outcome import RuleScopeOutcomeAdapter
@@ -724,8 +657,8 @@ def test_reset_clears_outcome_log() -> None:
     rt.record_outcome(adapter)
     assert len(rt.outcome_log.get_func_reports(_FUNC_EA)) == 1
 
-    # reset_for_func should also clear outcome log
-    rt.reset_for_func(_FUNC_EA)
+    # begin_session should also clear outcome log
+    rt.begin_session(_event())
     assert rt.outcome_log.get_func_reports(_FUNC_EA) == []
 
 
@@ -794,12 +727,12 @@ def test_record_flow_gate_outcome_with_gate_name() -> None:
     assert reports[0].consumer_name == "unflattening_gate"
 
 
-def test_mark_decompilation_finished_logs_summary() -> None:
-    """mark_decompilation_finished logs outcome summary when func was active."""
+def test_finish_session_logs_summary() -> None:
+    """finish_session logs the outcome summary for the finished owner."""
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
     # Set active function
-    rt.reset_for_func(_FUNC_EA)
+    rt.begin_session(_event())
 
     # Record an outcome
     rt.record_rule_scope_outcome(
@@ -808,18 +741,18 @@ def test_mark_decompilation_finished_logs_summary() -> None:
         apply_result=None,
         source="analyzed",
     )
-    rt.mark_decompilation_finished()
+    rt.finish_session(_event())
     summary = rt.get_outcome_summary(_FUNC_EA)
     assert len(summary["consumers"]) != 0
 
 
-def test_mark_decompilation_finished_no_log_when_no_outcomes() -> None:
-    """mark_decompilation_finished does not log when no outcomes recorded."""
+def test_finish_session_no_log_when_no_outcomes() -> None:
+    """finish_session does not log when no outcomes were recorded."""
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
-    rt.reset_for_func(_FUNC_EA)
+    rt.begin_session(_event())
 
-    rt.mark_decompilation_finished()
+    rt.finish_session(_event())
     summary = rt.get_outcome_summary(_FUNC_EA)
     assert len(summary["consumers"]) == 0
 
@@ -846,17 +779,17 @@ def test_get_outcome_summary() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mark_decompilation_finished_persists_outcomes() -> None:
-    """mark_decompilation_finished calls _persist_outcomes which saves to store."""
+def test_finish_session_persists_outcomes() -> None:
+    """finish_session persists consumer outcomes to the store."""
     rt, _mock_phase, _mock_analysis, mock_store = _make_runtime()
 
     # Set up active function with hints and an outcome
-    rt.reset_for_func(_FUNC_EA)
+    rt.begin_session(_event())
 
     hints = _make_hints()
     mock_store.load_hints.return_value = hints
 
-    results = [_make_recon_result()]
+    results = [_make_preanalysis_result()]
     mock_store.load_all_preanalysis_results.return_value = results
 
     # Record a consumer outcome
@@ -867,9 +800,9 @@ def test_mark_decompilation_finished_persists_outcomes() -> None:
         source="analyzed",
     )
 
-    rt.mark_decompilation_finished()
+    rt.finish_session(_event())
 
-    # Session summaries are persisted eagerly by analyze_and_persist,
+    # Session summaries are persisted eagerly by analyze,
     # not by _persist_outcomes, so no save_session_summary call here.
     mock_store.save_session_summary.assert_not_called()
     # Consumer outcome was persisted
@@ -882,11 +815,11 @@ def test_mark_decompilation_finished_persists_outcomes() -> None:
     assert outcome_call.kwargs["verdict_applied"] is False
 
 
-def test_mark_decompilation_finished_no_hints_still_persists_outcomes() -> None:
+def test_finish_session_no_hints_still_persists_outcomes() -> None:
     """Even without hints, consumer outcomes are persisted by _persist_outcomes."""
     rt, _mock_phase, _mock_analysis, mock_store = _make_runtime()
 
-    rt.reset_for_func(_FUNC_EA)
+    rt.begin_session(_event())
 
     # Record a consumer outcome
     rt.record_rule_scope_outcome(
@@ -896,7 +829,7 @@ def test_mark_decompilation_finished_no_hints_still_persists_outcomes() -> None:
         source="unavailable",
     )
 
-    rt.mark_decompilation_finished()
+    rt.finish_session(_event())
 
     # Session summaries are handled eagerly, not here
     mock_store.save_session_summary.assert_not_called()

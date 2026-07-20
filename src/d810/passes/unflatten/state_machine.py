@@ -64,7 +64,7 @@ from d810.capabilities.use_def_safety import UseDefSafetyCapability
 from d810.capabilities.machine_engines import MachineRecoveryEnginesCapability
 from d810.analyses.data_flow.concolic import EmulationCapability
 from d810.core import logging
-from d810.core.observability_recon import observe_state_dispatcher_rows
+from d810.core.observability_preanalysis import observe_state_dispatcher_rows
 
 logger = logging.getLogger("D810.passes.unflatten.state_machine")
 

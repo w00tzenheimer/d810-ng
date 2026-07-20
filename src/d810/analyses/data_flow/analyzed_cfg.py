@@ -36,14 +36,7 @@ class FixpointResult(Generic[StateT]):
 
 @dataclass(frozen=True)
 class AnalyzedCFG(Generic[StateT]):
-    """A graph paired with the fixpoint result computed over it.
-
-    ``graph`` is intentionally typed ``Any`` for now.  The portable graph
-    type (``d810.ir.flowgraph.FlowGraph`` today) is not yet pinned at
-    this layer -- mirroring the Slice 9 narrowing decision recorded in
-    ``docs/plans/recon-and-cfg-restructuring.md``.  Pinning it is deferred
-    until the graph-type narrowing lands.
-    """
+    "A graph paired with the fixpoint result computed over it.\n\n    ``graph`` is intentionally typed ``Any`` for now.  The portable graph\n    type (``d810.ir.flowgraph.FlowGraph`` today) is not yet pinned at\n    this layer -- mirroring the Slice 9 narrowing decision recorded in\n    ``docs/plans/preanalysis-and-cfg-restructuring.md``.  Pinning it is deferred\n    until the graph-type narrowing lands.\n    "
 
     graph: Any
     result: FixpointResult[StateT]

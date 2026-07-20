@@ -1,9 +1,4 @@
-"""Manager-owned ordering for decompilation lifecycle work.
-
-The coordinator is the only production caller of the legacy analysis runtime's
-session methods while the runtime is being split into preanalysis and analysis
-ports.  Adapters receive this object by injection; they never import it.
-"""
+"""Manager-owned ordering for decompilation lifecycle work."""
 
 from __future__ import annotations
 
@@ -12,7 +7,10 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
 from d810.core import typing
-from d810.core.decompilation_session import DecompilationSessionEvent
+from d810.core.decompilation_session import (
+    DecompilationEvent,
+    DecompilationSessionEvent,
+)
 from d810.core.logging import getLogger
 from d810.core.provider_phase import ProviderPhaseSnapshot
 
@@ -82,12 +80,11 @@ class FlowgraphReadyPayload:
 class DecompilationLifecycleCoordinator:
     """Own session boundaries and ordered preanalysis/analysis hand-off.
 
-    ``preanalysis_phase`` and ``analysis_runtime`` are temporary private
-    delegation targets.  They must only be supplied by ``D810Manager`` and
-    must not be imported or invoked directly by adapters.
+    Adapters receive this object by injection and never own collection,
+    persistence, or session ordering.
     """
 
-    preanalysis_phase: typing.Any | None
+    preanalysis_runtime: typing.Any | None
     analysis_runtime: typing.Any | None
     rule_scope_service: typing.Any | None
     event_emitter: typing.Any | None = None
@@ -183,23 +180,30 @@ class DecompilationLifecycleCoordinator:
                 )
                 raise
 
-        runtime = self.analysis_runtime
-        if runtime is None:
-            return session, True
-        try:
-            did_reset = bool(
-                runtime.reset_for_func(
+        self._emit_session_event(DecompilationEvent.SESSION_STARTED, session.event)
+
+        preanalysis_runtime = self.preanalysis_runtime
+        if preanalysis_runtime is not None:
+            try:
+                preanalysis_runtime.begin_session(session.event)
+            except Exception:
+                logger.exception(
+                    "preanalysis runtime session reset failed for func=0x%x",
                     function_ea,
+                )
+        analysis_runtime = self.analysis_runtime
+        if analysis_runtime is not None:
+            try:
+                analysis_runtime.begin_session(
+                    session.event,
                     preserve_active_session=has_active_parent,
                 )
-            )
-        except Exception:
-            logger.exception(
-                "analysis runtime session reset failed for func=0x%x",
-                function_ea,
-            )
-            return session, True
-        if did_reset and self.rule_scope_service is not None:
+            except Exception:
+                logger.exception(
+                    "analysis runtime session reset failed for func=0x%x",
+                    function_ea,
+                )
+        if self.rule_scope_service is not None:
             try:
                 self.rule_scope_service.clear_hint_state(function_ea)
             except Exception:
@@ -317,29 +321,13 @@ class DecompilationLifecycleCoordinator:
     def capture_flowgraph(self, payload: FlowgraphReadyPayload) -> None:
         """Collect and persist portable flowgraph facts in their existing order."""
         self._publish_rebound_bootstrap_route_facts(payload)
-        phase = self.preanalysis_phase
-        if phase is not None:
-            try:
-                phase.run_microcode_collectors(
-                    payload.flow_graph,
-                    func_ea=int(payload.func_ea),
-                    provider_phase=payload.provider_phase,
-                )
-            except Exception:
-                logger.exception(
-                    "preanalysis flowgraph collection failed for func=0x%x maturity=%s",
-                    int(payload.func_ea),
-                    payload.provider_phase.friendly_provider_level,
-                )
-
-        runtime = self.analysis_runtime
+        runtime = self.preanalysis_runtime
         if runtime is not None:
             try:
-                runtime.capture_maturity_facts(
+                runtime.capture_flowgraph(
                     payload.flow_graph,
                     func_ea=int(payload.func_ea),
                     provider_phase=payload.provider_phase,
-                    phase="pre_d810",
                     snapshot=payload.snapshot,
                 )
             except Exception:
@@ -425,11 +413,11 @@ class DecompilationLifecycleCoordinator:
         provider_phase: ProviderPhaseSnapshot,
     ) -> None:
         """Collect ctree evidence without making the hook own a phase object."""
-        phase = self.preanalysis_phase
-        if phase is None:
+        runtime = self.preanalysis_runtime
+        if runtime is None:
             return
         try:
-            phase.run_ctree_collectors(
+            runtime.capture_ctree(
                 cfunc,
                 func_ea=int(func_ea),
                 provider_phase=provider_phase,
@@ -443,11 +431,11 @@ class DecompilationLifecycleCoordinator:
 
     def analyze_current_function(self, *, function_ea: int, source: str) -> None:
         """Derive hints and apply them through the manager-owned rule scope."""
-        if self.preanalysis_phase is None or self.analysis_runtime is None:
+        if self.analysis_runtime is None:
             return
         function_ea = int(function_ea)
         try:
-            hints = self.analysis_runtime.analyze_and_persist(function_ea)
+            hints = self.analysis_runtime.analyze(function_ea)
         except Exception:
             logger.exception("analysis failed for func=0x%x", function_ea)
             return
@@ -464,8 +452,8 @@ class DecompilationLifecycleCoordinator:
         except Exception:
             logger.exception("rule-scope hint application failed for func=0x%x", function_ea)
 
-    def finish_hexrays_session(self) -> DecompilationSessionEvent | None:
-        """Finish the innermost session and return its typed observer event."""
+    def finish_hexrays_session(self) -> None:
+        """Finish the innermost session and publish its typed observer event."""
         if not self._active_sessions:
             return None
         activation = self._active_sessions[-1]
@@ -494,17 +482,44 @@ class DecompilationLifecycleCoordinator:
                     )
         session.current_mba_identity_index = None
         parent = self._active_sessions[-1].session if self._active_sessions else None
-        runtime = self.analysis_runtime
-        if runtime is not None:
+        preanalysis_runtime = self.preanalysis_runtime
+        if preanalysis_runtime is not None:
             try:
-                runtime.mark_decompilation_finished(
-                    resume_func_ea=(
-                        parent.function_ea if parent is not None else None
-                    ),
+                preanalysis_runtime.finish_session(session.event)
+            except Exception:
+                logger.exception(
+                    "preanalysis runtime session finish failed for func=0x%x",
+                    session.function_ea,
+                )
+        analysis_runtime = self.analysis_runtime
+        if analysis_runtime is not None:
+            try:
+                analysis_runtime.finish_session(
+                    session.event,
+                    resume_event=(parent.event if parent is not None else None),
                 )
             except Exception:
                 logger.exception(
                     "analysis runtime session finish failed for func=0x%x",
                     session.function_ea,
                 )
-        return session.event
+        self._emit_session_event(DecompilationEvent.SESSION_FINISHED, session.event)
+        return None
+
+    def _emit_session_event(
+        self,
+        event: DecompilationEvent,
+        payload: DecompilationSessionEvent,
+    ) -> None:
+        """Publish typed lifecycle events from their sole owning boundary."""
+        emitter = self.event_emitter
+        if emitter is None:
+            return
+        try:
+            emitter.emit(event, payload)
+        except Exception:
+            logger.exception(
+                "session event emission failed for event=%s func=0x%x",
+                event.value,
+                int(payload.function_ea),
+            )

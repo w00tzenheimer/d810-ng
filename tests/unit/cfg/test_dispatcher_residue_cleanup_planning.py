@@ -8,7 +8,7 @@ from d810.transforms.dispatcher_residue_cleanup_planning import (
 )
 
 
-def test_plan_dispatcher_residue_cleanup_uses_structural_recon_facts() -> None:
+def test_plan_dispatcher_residue_cleanup_uses_structural_preanalysis_facts() -> None:
     facts = SimpleNamespace(
         dispatcher_serial=2,
         one_way_predecessors=(10,),
@@ -31,7 +31,7 @@ def test_plan_dispatcher_residue_cleanup_uses_structural_recon_facts() -> None:
     assert plan.expected_handler_edge_changes == 2
 
 
-def test_plan_unreachable_region_cleanup_uses_structural_recon_facts() -> None:
+def test_plan_unreachable_region_cleanup_uses_structural_preanalysis_facts() -> None:
     facts = SimpleNamespace(
         stop_serial=9,
         cleanup_candidates=frozenset({4, 5}),

@@ -51,7 +51,7 @@ def test_project_reload_emits_payload_after_cleanups():
     assert payload.new_project_name == "new"
 
 
-def test_recon_fact_collector_registration_callbacks_are_keyed_and_isolated():
+def test_preanalysis_fact_collector_registration_callbacks_are_keyed_and_isolated():
     calls: list[object] = []
     runtime = object()
 

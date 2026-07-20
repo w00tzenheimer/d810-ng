@@ -48,7 +48,7 @@ def _ir_maturity_for_hexrays_maturity(maturity: int) -> Any | None:
 class HexRaysPostD810Runtime:
     """Owns post-D810 live Hex-Rays capture and probe subscribers."""
 
-    analysis_runtime: Any | None
+    preanalysis_runtime: Any | None
     block_optimizer: Any
     settings_provider: Callable[[], Any] = get_settings
     maturity_name_provider: Callable[[int], str] = _default_maturity_name
@@ -92,7 +92,7 @@ class HexRaysPostD810Runtime:
         snapshot: Any = None,
     ) -> None:
         """Capture maturity facts on the post-D810 snapshot."""
-        if self.analysis_runtime is None:
+        if self.preanalysis_runtime is None:
             return
         try:
             func_ea = int(getattr(mba, "entry_ea", 0) or 0)
@@ -113,7 +113,7 @@ class HexRaysPostD810Runtime:
                     func_ea,
                 )
                 return
-            self.analysis_runtime.capture_maturity_facts(
+            self.preanalysis_runtime.capture_facts(
                 target,
                 func_ea=func_ea,
                 provider_phase=provider_phase,
@@ -210,7 +210,7 @@ class HexRaysPostD810Runtime:
                 build_live_linearized_program,
                 resolve_dispatcher_context_for_linearized_program,
             )
-            from d810.core.observability_recon import observe_rendered_program
+            from d810.core.observability_preanalysis import observe_rendered_program
 
             dispatcher_serial, state_var_stkoff = self.resolve_linearization_context(
                 mba,

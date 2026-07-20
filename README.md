@@ -58,7 +58,7 @@ D-810 operates on IDA Hex-Rays microcode at multiple maturity levels. Instructio
 
 ### Control-Flow Unflatteners
 
-Flow optimizers restore natural control flow from flattened dispatchers. The current unflattening path is engine-profile based: recon produces dispatcher/value-flow evidence, cfg plans typed graph modifications, and Hex-Rays materializes the plan.
+Flow optimizers restore natural control flow from flattened dispatchers. The current unflattening path is engine-profile based: preanalysis produces dispatcher/value-flow evidence, cfg plans typed graph modifications, and Hex-Rays materializes the plan.
 
 | Engine rule | Target | Description |
 |-------------|--------|-------------|
@@ -169,7 +169,7 @@ D-810 ng implements a strictly isolated, uni-directional 7-stage architectural w
 
 ```mermaid
 graph LR
-    Recon["1. Recon (d810.analyses + d810.passes)"]
+    Preanalysis["1. Preanalysis (d810.analyses + d810.passes)"]
     Persist["2. Persist (d810.passes.store)"]
     Analyze["3. Analyze (d810.analyses.control_flow)"]
     Plan["4. CFG Plan (d810.transforms.plan)"]
@@ -177,7 +177,7 @@ graph LR
     Lower["6. Lower (d810.transforms)"]
     Mutate["7. Mutate (d810.hexrays.mutation)"]
 
-    Recon --> Persist
+    Preanalysis --> Persist
     Persist --> Analyze
     Analyze --> Plan
     Plan --> Project
@@ -185,9 +185,9 @@ graph LR
     Lower --> Mutate
 ```
 
-> Package note: the read-only/planning/lowering layers below were restructured into the LLVM/LiSA-style portable taxonomy (`recon`/`cfg` were dissolved into `analyses`/`transforms`/`passes`/`ir`); the 7-stage *flow* is unchanged, only the package homes moved.
+> Package note: the read-only/planning/lowering layers below were restructured into the LLVM/LiSA-style portable taxonomy (`preanalysis`/`cfg` were dissolved into `analyses`/`transforms`/`passes`/`ir`); the 7-stage *flow* is unchanged, only the package homes moved.
 
-1. **Recon Facts (`d810.analyses` collectors + `d810.passes` orchestration)**:
+1. **Preanalysis Facts (`d810.analyses` collectors + `d810.passes` orchestration)**:
    A read-only, backend-agnostic pre-analysis layer. It extracts topological facts, conditional control flow shapes, entry/return frontiers, and value-flow evidence from the raw microcode using `Collector` classes (`d810.analyses.value_flow` / `d810.analyses.control_flow`), orchestrated by `d810.passes`. Live IDA/Hex-Rays decompilation dependencies are strictly isolated.
 2. **Persist Facts (`d810.passes.store`)**:
    All collected facts, recommended inferences, and lifecycle metrics are written to an offline SQLite database. A dedicated background thread performs the writes asynchronously to eliminate decompiler latency.
@@ -277,7 +277,7 @@ Verdict: identity grouping **keeps** `mop_snapshot_key`; `ConditionalBranch` car
 D-810 enforces strict boundaries to keep code clean and testable:
 
 #### `d810.analyses`
-* **Role**: **Read-only pre-analysis** (the dissolved `d810.recon` discovery/fact layer now lives here as `d810.analyses.control_flow` / `d810.analyses.value_flow`).
+* **Role**: **Read-only pre-analysis** (the dissolved `d810.preanalysis` discovery/fact layer now lives here as `d810.analyses.control_flow` / `d810.analyses.value_flow`).
 * **Allowed**: Collecting CFG shapes, return frontiers, and value-flow evidence.
 * **Forbidden**: Direct imports of `d810.hexrays` or live mutation code. Do not put live `mba_t` value tracking logic inside the portable analyses layer.
 

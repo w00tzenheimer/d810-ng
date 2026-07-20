@@ -258,7 +258,7 @@ def collect_state_dispatcher_discovery_facts(
     initial_state: int | None = None,
     pre_header_serial: int | None = None,
 ) -> tuple[DispatcherDiscoveryFact, ...]:
-    """Project a dispatcher map into generic recon facts."""
+    "Project a dispatcher map into generic preanalysis facts."
 
     if state_dispatcher_map is None:
         return (

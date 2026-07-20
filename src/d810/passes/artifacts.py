@@ -1,9 +1,4 @@
-"""Helpers for consuming recon-store artifacts.
-
-This module keeps generic recon-store I/O separate from strategy-family
-orchestration. Family adapters remain responsible for naming and selecting
-which artifacts to consume.
-"""
+"Helpers for consuming preanalysis-store artifacts.\n\nThis module keeps generic preanalysis-store I/O separate from strategy-family\norchestration. Family adapters remain responsible for naming and selecting\nwhich artifacts to consume.\n"
 from __future__ import annotations
 
 import json
@@ -46,7 +41,7 @@ def _coerce_provider_level(
     legacy_level = legacy_fields.pop("maturity", None)
     if legacy_fields:
         names = ", ".join(sorted(legacy_fields))
-        raise TypeError(f"Unexpected recon artifact field(s): {names}")
+        raise TypeError(f"Unexpected preanalysis artifact field(s): {names}")
     if provider_level is None and legacy_level is not None:
         return int(legacy_level)
     if provider_level is None:
@@ -75,7 +70,7 @@ class ReturnSiteProvider(Protocol):
 
 
 def analysis_db_path(log_dir: Path | str | None) -> Path:
-    """Resolve the canonical recon DB path for a worktree session."""
+    "Resolve the canonical preanalysis DB path for a worktree session."
     if log_dir:
         return Path(log_dir) / "d810_analysis.db"
     return Path(tempfile.gettempdir()) / "d810_analysis.db"
@@ -118,7 +113,7 @@ def load_transition_report_from_store(
                 )
     except sqlite3.DatabaseError as exc:
         logger.warning(
-            "recon DB corrupt or unreadable (%s), deleting and returning None: %s",
+            "preanalysis DB corrupt or unreadable (%s), deleting and returning None: %s",
             db_path, exc,
         )
         _delete_corrupt_db(db_path)
@@ -140,7 +135,7 @@ def save_transition_report_to_store(
     provider_level: int | None = None,
     **legacy_fields: object,
 ) -> None:
-    """Persist a canonical transition report as a recon artifact."""
+    "Persist a canonical transition report as a preanalysis artifact."
     provider_level = _require_provider_level(provider_level, legacy_fields)
     db_path = analysis_db_path(log_dir)
     result = HandlerTransitionsCollector.build_result_from_report(
@@ -161,7 +156,7 @@ def load_return_sites_from_store(
     provider_level: int | None = None,
     **legacy_fields: object,
 ) -> tuple[ReturnSite, ...]:
-    """Load transition-report-derived return sites from the recon store."""
+    "Load transition-report-derived return sites from the preanalysis store."
     provider_level = _coerce_provider_level(provider_level, legacy_fields)
     report = load_transition_report_from_store(
         func_ea=func_ea,
@@ -200,7 +195,7 @@ def load_return_frontier_audit_from_store(
                 )
     except sqlite3.DatabaseError as exc:
         logger.warning(
-            "recon DB corrupt or unreadable (%s), deleting and returning None: %s",
+            "preanalysis DB corrupt or unreadable (%s), deleting and returning None: %s",
             db_path, exc,
         )
         _delete_corrupt_db(db_path)
@@ -222,7 +217,7 @@ def save_return_frontier_audit_to_store(
     provider_level: int | None = None,
     **legacy_fields: object,
 ) -> PreanalysisResult:
-    """Persist the full return frontier audit as a recon artifact."""
+    "Persist the full return frontier audit as a preanalysis artifact."
     provider_level = _require_provider_level(provider_level, legacy_fields)
     db_path = analysis_db_path(log_dir)
     result = ReturnFrontierCollector.build_result_from_audit(
@@ -395,7 +390,7 @@ def load_terminal_return_audit_from_store(
                 )
     except sqlite3.DatabaseError as exc:
         logger.warning(
-            "recon DB corrupt or unreadable (%s), deleting and returning None: %s",
+            "preanalysis DB corrupt or unreadable (%s), deleting and returning None: %s",
             db_path, exc,
         )
         _delete_corrupt_db(db_path)
@@ -417,7 +412,7 @@ def save_terminal_return_audit_to_store(
     provider_level: int | None = None,
     **legacy_fields: object,
 ) -> None:
-    """Persist a terminal return audit as a recon artifact."""
+    "Persist a terminal return audit as a preanalysis artifact."
     provider_level = _require_provider_level(provider_level, legacy_fields)
     db_path = analysis_db_path(log_dir)
     report_dict = _terminal_return_audit_to_dict(audit)

@@ -9,12 +9,7 @@ from d810.analyses.control_flow.terminal_tail_priors import TerminalTailCascadeE
 
 @dataclass(frozen=True, slots=True)
 class FunctionAnalysisPriors:
-    """Typed caller knowledge for one function.
-
-    These are not optimizer decisions and not family-specific configuration.
-    They are explicit facts supplied by the harness/project layer when it knows
-    something recon cannot infer safely from the current microcode alone.
-    """
+    "Typed caller knowledge for one function.\n\n    These are not optimizer decisions and not family-specific configuration.\n    They are explicit facts supplied by the harness/project layer when it knows\n    something preanalysis cannot infer safely from the current microcode alone.\n    "
 
     return_frontier_artifacts: ReturnFrontierArtifactPriors = field(
         default_factory=ReturnFrontierArtifactPriors

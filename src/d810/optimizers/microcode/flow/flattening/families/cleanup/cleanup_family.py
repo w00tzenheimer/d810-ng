@@ -111,7 +111,7 @@ family_logger = getLogger("D810.unflat.cleanup_family")
 
 CLEANUP_FAMILY_METADATA_KEY = "simple_flattening_cleanup"
 
-NORMALIZED_RECON_CFG_SCOPE = "normalized_recon_cfg_fact"
+NORMALIZED_RECON_CFG_SCOPE = "normalized_preanalysis_cfg_fact"
 ENGINE_CLEANUP_SCOPE = "engine_cleanup"
 
 _STRATEGY_SCOPES = {

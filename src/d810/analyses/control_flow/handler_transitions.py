@@ -1,11 +1,4 @@
-"""Handler transition recon collector.
-
-Thin adapter over the canonical transition report API. The collector accepts:
-
-- a prebuilt report object or serialized report payload in target metadata
-- graph-portable inputs (`flow_graph` + `transition_result`)
-- live condition-chain inputs (`mba` + dispatcher metadata) as a last resort
-"""
+"Handler transition preanalysis collector.\n\nThin adapter over the canonical transition report API. The collector accepts:\n\n- a prebuilt report object or serialized report payload in target metadata\n- graph-portable inputs (`flow_graph` + `transition_result`)\n- live condition-chain inputs (`mba` + dispatcher metadata) as a last resort\n"
 from __future__ import annotations
 
 import time
@@ -31,10 +24,10 @@ logger = getLogger(__name__)
 
 
 class HandlerTransitionsCollector:
-    """Recon collector for handler transition coverage and quality."""
+    "Preanalysis collector for handler transition coverage and quality."
 
     name: str = "handler_transitions"
-    # ``None`` == "fire at all maturities" (the ReconPhase ALL_MATURITIES
+    # ``None`` == "fire at all maturities" (the PreanalysisPhase ALL_MATURITIES
     # sentinel is itself ``None``). The phase id/maturity reaches collect()
     # as an int arg, so this collector no longer imports the orchestrator.
     maturities: frozenset[int] | None = None

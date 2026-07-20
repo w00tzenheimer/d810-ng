@@ -553,7 +553,7 @@ def cmd_dump(args: argparse.Namespace) -> None:
                                 maturity=None,
                             )
                             if report is None:
-                                print("[no terminal return audit available in recon store]")
+                                print("[no terminal return audit available in preanalysis store]")
                             else:
                                 print(report.format())
             print("=" * 88)

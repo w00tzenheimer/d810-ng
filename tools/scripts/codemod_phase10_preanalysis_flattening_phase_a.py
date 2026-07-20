@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Phase A codemod: move flattening analysis modules from optimizers -> recon.
-
-Default mode is dry-run. Use ``--apply`` to write file moves and rewrites.
-Run with ``pyenv exec`` so LibCST is available.
-"""
+"Phase A codemod: move flattening analysis modules from optimizers -> preanalysis.\n\nDefault mode is dry-run. Use ``--apply`` to write file moves and rewrites.\nRun with ``pyenv exec`` so LibCST is available.\n"
 
 from __future__ import annotations
 
@@ -15,27 +11,15 @@ import libcst as cst
 
 
 PHASE_A_RENAMES = {
-    "d810.optimizers.microcode.flow.flattening.dispatcher_detection": (
-        "d810.recon.flow.dispatcher_detection"
-    ),
-    "d810.optimizers.microcode.flow.flattening.heuristics": (
-        "d810.recon.flow.heuristics"
-    ),
-    "d810.optimizers.microcode.flow.flattening.loop_prover": (
-        "d810.recon.flow.loop_prover"
-    ),
+    "d810.optimizers.microcode.flow.flattening.dispatcher_detection": "d810.preanalysis.flow.dispatcher_detection",
+    "d810.optimizers.microcode.flow.flattening.heuristics": "d810.preanalysis.flow.heuristics",
+    "d810.optimizers.microcode.flow.flattening.loop_prover": "d810.preanalysis.flow.loop_prover",
 }
 
 PHASE_A_MOVES = {
-    "src/d810/optimizers/microcode/flow/flattening/dispatcher_detection.py": (
-        "src/d810/recon/flow/dispatcher_detection.py"
-    ),
-    "src/d810/optimizers/microcode/flow/flattening/heuristics.py": (
-        "src/d810/recon/flow/heuristics.py"
-    ),
-    "src/d810/optimizers/microcode/flow/flattening/loop_prover.py": (
-        "src/d810/recon/flow/loop_prover.py"
-    ),
+    "src/d810/optimizers/microcode/flow/flattening/dispatcher_detection.py": "src/d810/preanalysis/flow/dispatcher_detection.py",
+    "src/d810/optimizers/microcode/flow/flattening/heuristics.py": "src/d810/preanalysis/flow/heuristics.py",
+    "src/d810/optimizers/microcode/flow/flattening/loop_prover.py": "src/d810/preanalysis/flow/loop_prover.py",
 }
 
 

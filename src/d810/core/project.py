@@ -104,7 +104,7 @@ def emit_preanalysis_fact_collector_registration(
             handler(runtime=runtime, project_config=cfg)
         except Exception:  # noqa: BLE001 - profile registration must not stop loading
             logger.warning(
-                "recon fact collector registration failed: %s",
+                "preanalysis fact collector registration failed: %s",
                 name,
                 exc_info=True,
             )
@@ -381,12 +381,7 @@ class ProjectContext:
         function: str | int,
         priors: typing.Any,
     ) -> ProjectContext:
-        """Add scoped analysis priors for one function.
-
-        The concrete priors object is recon-owned.  ProjectContext only
-        provides the scoped project/test harness channel and restores it on
-        context exit.
-        """
+        "Add scoped analysis priors for one function.\n\n        The concrete priors object is preanalysis-owned.  ProjectContext only\n        provides the scoped project/test harness channel and restores it on\n        context exit.\n        "
         self.state.manager.add_function_analysis_priors(function, priors)
         return self
 

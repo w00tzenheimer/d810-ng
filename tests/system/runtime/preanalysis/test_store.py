@@ -8,7 +8,7 @@ from d810.passes.store import PreanalysisStore
 
 @pytest.fixture
 def store(tmp_path):
-    s = PreanalysisStore(tmp_path / "recon_test.db")
+    s = PreanalysisStore(tmp_path / "preanalysis_test.db")
     yield s
     s.close()
 
@@ -39,7 +39,7 @@ def sample_hints() -> DeobfuscationHints:
 
 
 class TestReconStoreSaveLoad:
-    def test_save_and_load_recon_result(self, store, sample_result):
+    def test_save_and_load_preanalysis_result(self, store, sample_result):
         store.save_preanalysis_result(sample_result)
         loaded = store.load_preanalysis_results(func_ea=0x401000, maturity=5)
         assert len(loaded) == 1
@@ -101,7 +101,7 @@ class TestReconStoreSaveLoad:
         maturities = {r.maturity for r in all_results}
         assert maturities == {5, 10, 15}
 
-    def test_load_latest_recon_result_prefers_highest_maturity(self, store):
+    def test_load_latest_preanalysis_result_prefers_highest_maturity(self, store):
         older = PreanalysisResult(
             collector_name="handler_transitions",
             func_ea=0x401000,
@@ -130,7 +130,7 @@ class TestReconStoreSaveLoad:
         assert loaded.maturity == 10
         assert loaded.metrics["handlers_total"] == 2
 
-    def test_load_latest_recon_result_can_filter_exact_maturity(self, store):
+    def test_load_latest_preanalysis_result_can_filter_exact_maturity(self, store):
         first = PreanalysisResult(
             collector_name="handler_transitions",
             func_ea=0x401000,

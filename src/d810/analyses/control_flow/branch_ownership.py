@@ -1,10 +1,4 @@
-"""Read-only branch ownership proofs for state-machine reconstruction.
-
-This module classifies conditional state-machine edges as semantic source
-control flow, opaque/BCF residue, or unresolved evidence.  It deliberately
-does not build graph modifications.  CFG lowering may consume trusted proof
-rows later, but recon owns producing and explaining the proof.
-"""
+"Read-only branch ownership proofs for state-machine reconstruction.\n\nThis module classifies conditional state-machine edges as semantic source\ncontrol flow, opaque/BCF residue, or unresolved evidence.  It deliberately\ndoes not build graph modifications.  CFG lowering may consume trusted proof\nrows later, but preanalysis owns producing and explaining the proof.\n"
 from __future__ import annotations
 
 import json
@@ -18,58 +12,7 @@ _MASK64 = 0xFFFFFFFFFFFFFFFF
 
 
 class BranchOwnershipProofKind(str, Enum):
-    """Semantic ownership classification for one conditional branch arm.
-
-    These values describe the *meaning of one observed branch arm*, not the
-    graph edit to perform.  Keep that separation intact:
-
-    - Semantic-edge authority means a consumer may preserve the arm as source
-      program control flow or use it as an explicit state-DAG bridge.
-    - Nonsemantic-rewrite authority means a consumer may remove, retarget, or
-      bypass the arm after matching exact edge identity.
-    - Diagnostic-only authority means the row explains why no mutation is
-      allowed.
-
-    ``REAL_DATA_DEPENDENT``
-        The arm is controlled by real program data, such as password/input
-        bytes, an API result, or another value that belongs to the source
-        program.  This is semantic program structure.  A trusted proof may
-        authorize explicit DAG bridging/preservation.  It must not authorize
-        branch removal.
-
-    ``OPAQUE_ALWAYS_TRUE`` / ``OPAQUE_ALWAYS_FALSE``
-        The predicate outcome is proven constant under the relevant path
-        constraints and this row identifies the arm selected by that constant
-        outcome.  This is predicate authority only: it does not prove that the
-        selected arm is semantic, nor that a CFG rewrite may remove it.  The
-        complementary non-selected arm should be represented separately as
-        ``OBFUSCATION_RESIDUE_ARM`` when recon can identify it.
-
-    ``EQUIVALENT_STATE_ARMS``
-        Both conditional arms resolve to the same semantic state/handler, so
-        the branch is not a meaningful source-level fork even if both CFG arms
-        are reachable.  This is useful for simplification diagnostics and
-        possible coalescing, but it is not enough by itself to delete one arm
-        unless a later consumer also proves the exact rewrite shape.
-
-    ``OBFUSCATION_RESIDUE_ARM``
-        The arm reaches a state-machine state that exists only as obfuscation
-        residue: for example a BCF false arm, selector backedge, dispatcher
-        residue state, or opaque branch target that should not appear as
-        recovered source control flow.  A trusted proof may authorize
-        nonsemantic branch rewrite after exact edge matching.  It must not
-        authorize semantic DAG bridging.
-
-    ``TERMINAL_RETURN_FRONTIER``
-        The arm identifies a return/exit frontier.  This is terminal ownership
-        evidence for return-frontier handling.  It is not opaque-branch proof
-        and does not authorize deleting a sibling arm.
-
-    ``UNRESOLVED``
-        Recon saw a conditional arm but no trusted oracle classified it.  This
-        row is diagnostics only.  No CFG mutation or semantic bridge may be
-        justified from it.
-    """
+    "Semantic ownership classification for one conditional branch arm.\n\n    These values describe the *meaning of one observed branch arm*, not the\n    graph edit to perform.  Keep that separation intact:\n\n    - Semantic-edge authority means a consumer may preserve the arm as source\n      program control flow or use it as an explicit state-DAG bridge.\n    - Nonsemantic-rewrite authority means a consumer may remove, retarget, or\n      bypass the arm after matching exact edge identity.\n    - Diagnostic-only authority means the row explains why no mutation is\n      allowed.\n\n    ``REAL_DATA_DEPENDENT``\n        The arm is controlled by real program data, such as password/input\n        bytes, an API result, or another value that belongs to the source\n        program.  This is semantic program structure.  A trusted proof may\n        authorize explicit DAG bridging/preservation.  It must not authorize\n        branch removal.\n\n    ``OPAQUE_ALWAYS_TRUE`` / ``OPAQUE_ALWAYS_FALSE``\n        The predicate outcome is proven constant under the relevant path\n        constraints and this row identifies the arm selected by that constant\n        outcome.  This is predicate authority only: it does not prove that the\n        selected arm is semantic, nor that a CFG rewrite may remove it.  The\n        complementary non-selected arm should be represented separately as\n        ``OBFUSCATION_RESIDUE_ARM`` when preanalysis can identify it.\n\n    ``EQUIVALENT_STATE_ARMS``\n        Both conditional arms resolve to the same semantic state/handler, so\n        the branch is not a meaningful source-level fork even if both CFG arms\n        are reachable.  This is useful for simplification diagnostics and\n        possible coalescing, but it is not enough by itself to delete one arm\n        unless a later consumer also proves the exact rewrite shape.\n\n    ``OBFUSCATION_RESIDUE_ARM``\n        The arm reaches a state-machine state that exists only as obfuscation\n        residue: for example a BCF false arm, selector backedge, dispatcher\n        residue state, or opaque branch target that should not appear as\n        recovered source control flow.  A trusted proof may authorize\n        nonsemantic branch rewrite after exact edge matching.  It must not\n        authorize semantic DAG bridging.\n\n    ``TERMINAL_RETURN_FRONTIER``\n        The arm identifies a return/exit frontier.  This is terminal ownership\n        evidence for return-frontier handling.  It is not opaque-branch proof\n        and does not authorize deleting a sibling arm.\n\n    ``UNRESOLVED``\n        Preanalysis saw a conditional arm but no trusted oracle classified it.  This\n        row is diagnostics only.  No CFG mutation or semantic bridge may be\n        justified from it.\n    "
 
     REAL_DATA_DEPENDENT = "REAL_DATA_DEPENDENT"
     OPAQUE_ALWAYS_TRUE = "OPAQUE_ALWAYS_TRUE"
@@ -102,7 +45,7 @@ class BranchOwnershipProof:
     target_entry: int | None = None
     predicate_block: int | None = None
     dispatcher_entry_block: int | None = None
-    oracle_kind: str = "recon_branch_ownership"
+    oracle_kind: str = "preanalysis_branch_ownership"
     evidence: dict[str, object] = field(default_factory=dict)
     payload: dict[str, object] = field(default_factory=dict)
 
@@ -239,7 +182,7 @@ def branch_ownership_proof_from_any(
             target_entry=_maybe_int(_field("target_entry")),
             predicate_block=_maybe_int(_field("predicate_block")),
             dispatcher_entry_block=_maybe_int(_field("dispatcher_entry_block")),
-            oracle_kind=str(_field("oracle_kind") or "recon_branch_ownership"),
+            oracle_kind=str(_field("oracle_kind") or "preanalysis_branch_ownership"),
             evidence=dict(_field("evidence") or {}),
             payload=dict(_field("payload") or {}),
         )

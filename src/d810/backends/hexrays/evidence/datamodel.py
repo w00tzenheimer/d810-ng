@@ -30,7 +30,7 @@ __all__ = [
     "StateHandler",
     "StateTransition",
     "StateUpdateSite",
-    # Re-exported from recon state-machine analysis
+    # Re-exported from preanalysis state-machine analysis
     "CarrierResolutionResult",
     "DispatcherStateMachine",
     "HodurStateMachine",

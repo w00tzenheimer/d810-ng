@@ -1034,29 +1034,22 @@ def d810_state_all_rules():
 
 
 # =============================================================================
-# Pytest Fixtures - Recon Store (E2E pipeline assertions)
+# Pytest Fixtures - Preanalysis Store (E2E pipeline assertions)
 # =============================================================================
 
 
 @pytest.fixture(scope="session")
 def analysis_store_path():
-    """Session-scoped: path to the recon DB created during this test session.
-
-    Searches for the recon DB in the standard log directory. When the full
-    system test suite runs in a single IDA session, earlier tests populate
-    the recon DB before these pipeline assertions execute.
-
-    Returns None if no recon DB is found.
-    """
+    "Session-scoped: path to the preanalysis DB created during this test session.\n\n    Searches for the preanalysis DB in the standard log directory. When the full\n    system test suite runs in a single IDA session, earlier tests populate\n    the preanalysis DB before these pipeline assertions execute.\n\n    Returns None if no preanalysis DB is found.\n    "
     import pathlib
 
-    # Search standard locations for the recon DB
+    # Search standard locations for the preanalysis DB
     candidates = [
         pathlib.Path.home() / ".idapro" / "logs" / "d810_logs" / "d810_analysis.db",
         pathlib.Path("/root/.idapro/logs/d810_logs/d810_analysis.db"),  # Docker
     ]
 
-    # Also check D810State.manager.recon_db if D810 is loaded
+    # Also check D810State.manager.analysis_db if D810 is loaded
     try:
         from d810.manager import D810State
 
@@ -1078,10 +1071,7 @@ def analysis_store_path():
 
 @pytest.fixture(scope="session")
 def analysis_store_session(analysis_store_path):
-    """Session-scoped: open ReconStore for aggregate queries.
-
-    Returns None if recon is disabled.
-    """
+    "Session-scoped: open PreanalysisStore for aggregate queries.\n\n    Returns None if preanalysis is disabled.\n    "
     if analysis_store_path is None:
         yield None
         return
@@ -1401,7 +1391,7 @@ def pytest_addoption(parser):
         help=(
             "Also print a grouped terminal-return valrange comparison report. "
             "Requires a D810-active dump path so terminal-return audit artifacts "
-            "exist in recon store. Useful for shared-epilogue debugging."
+            "exist in preanalysis store. Useful for shared-epilogue debugging."
         ),
     )
     parser.addoption(

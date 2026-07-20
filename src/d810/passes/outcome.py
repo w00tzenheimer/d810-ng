@@ -1,15 +1,4 @@
-"""Shared outcome vocabulary across all lifecycle consumers.
-
-Each consumer subsystem (rule-scope, flow-context, Hodur planner)
-produces its own detailed outcome type.  This module defines a
-:class:`ConsumerOutcomeReport` Protocol for cross-consumer comparison
-without forcing subsystem-specific provenance into one lossy format.
-
-Concrete adapters wrap existing outcome types to expose the shared view.
-
-:class:`ReconOutcomeLog` accumulates reports per-function for summary
-and diagnostic purposes.
-"""
+"Shared outcome vocabulary across all lifecycle consumers.\n\nEach consumer subsystem (rule-scope, flow-context, Hodur planner)\nproduces its own detailed outcome type.  This module defines a\n:class:`ConsumerOutcomeReport` Protocol for cross-consumer comparison\nwithout forcing subsystem-specific provenance into one lossy format.\n\nConcrete adapters wrap existing outcome types to expose the shared view.\n\n:class:`AnalysisOutcomeLog` accumulates reports per-function for summary\nand diagnostic purposes.\n"
 from __future__ import annotations
 
 from d810.core.typing import Protocol, runtime_checkable
@@ -32,7 +21,7 @@ class ConsumerOutcomeReport(Protocol):
 
     @property
     def source_artifacts_available(self) -> bool:
-        """Whether recon source artifacts were available at decision time."""
+        "Whether preanalysis source artifacts were available at decision time."
         ...
 
     @property
@@ -79,10 +68,7 @@ class _FlowGateDecisionLike(Protocol):
 
 
 class RuleScopeOutcomeAdapter:
-    """Adapter exposing :class:`ReconOutcome` as a :class:`ConsumerOutcomeReport`.
-
-    Wraps the rule-scope consumer's outcome without modifying it.
-    """
+    "Adapter exposing :class:`AnalysisOutcome` as a :class:`ConsumerOutcomeReport`.\n\n    Wraps the rule-scope consumer's outcome without modifying it.\n    "
 
     def __init__(self, outcome: _ReconOutcomeLike) -> None:
         self._outcome = outcome

@@ -189,7 +189,7 @@ def run_scenario(
     enable_probe: bool,
 ) -> ScenarioResult:
     """Run the docker dump for one scenario and return parsed stats."""
-    dump_label = f"recon_contrib_{name}_{timestamp}.txt"
+    dump_label = f"preanalysis_contrib_{name}_{timestamp}.txt"
     env = os.environ.copy()
     if enable_probe:
         env["D810_RECON_ROUND_CTX_PROBE"] = "1"

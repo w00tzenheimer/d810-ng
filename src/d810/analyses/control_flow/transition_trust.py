@@ -21,30 +21,7 @@ from d810.analyses.control_flow.dispatch_key import (
 
 
 class TransitionTrustKind(str, Enum):
-    """Typed source of authority for promoting transition evidence.
-
-    ``DYNAMIC_STATE_WRITE``
-        A recon producer observed a conditional state write through the
-        dispatcher state variable or a global/state alias with enough evidence
-        to treat the written state as the branch target.  This can authorize an
-        explicit conditional DAG bridge because it identifies real transition
-        data, not merely graph shape.
-
-    ``BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT``
-        Branch ownership proved the arm is real source-program control flow.
-        This is the only branch-ownership proof kind that becomes semantic DAG
-        bridge authority.  Nonsemantic ownership kinds remain rewrite evidence.
-
-    ``EXPLICIT_PRODUCER_TRUST``
-        A future oracle, for example MopTracker or Z3, attached a typed trust
-        result directly.  Use this only when the producer already performed the
-        semantic-vs-obfuscation distinction and can explain it in ``reason`` /
-        ``evidence``.
-
-    ``UNSUPPORTED``
-        The transition is diagnostic-only for this consumer.  No explicit
-        conditional bridge should be built from it.
-    """
+    "Typed source of authority for promoting transition evidence.\n\n    ``DYNAMIC_STATE_WRITE``\n        A preanalysis producer observed a conditional state write through the\n        dispatcher state variable or a global/state alias with enough evidence\n        to treat the written state as the branch target.  This can authorize an\n        explicit conditional DAG bridge because it identifies real transition\n        data, not merely graph shape.\n\n    ``BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT``\n        Branch ownership proved the arm is real source-program control flow.\n        This is the only branch-ownership proof kind that becomes semantic DAG\n        bridge authority.  Nonsemantic ownership kinds remain rewrite evidence.\n\n    ``EXPLICIT_PRODUCER_TRUST``\n        A future oracle, for example MopTracker or Z3, attached a typed trust\n        result directly.  Use this only when the producer already performed the\n        semantic-vs-obfuscation distinction and can explain it in ``reason`` /\n        ``evidence``.\n\n    ``UNSUPPORTED``\n        The transition is diagnostic-only for this consumer.  No explicit\n        conditional bridge should be built from it.\n    "
 
     DYNAMIC_STATE_WRITE = "DYNAMIC_STATE_WRITE"
     BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT = (

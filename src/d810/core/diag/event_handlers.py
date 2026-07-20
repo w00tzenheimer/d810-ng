@@ -487,13 +487,7 @@ def _handle_fact_consumer(ev: FactConsumersObserved) -> None:
 
 
 def _handle_fact_consumers_latest(ev: FactConsumersForLatestSnapshot) -> None:
-    """Late-binding fact-consumer writer.
-
-    Used by recon-time post-hoc auditing where no specific
-    just-emitted capture exists. The handler finds the latest
-    ``snapshots`` row for ``func_ea`` and writes consumer rows there
-    after deduplicating against existing rows.
-    """
+    "Late-binding fact-consumer writer.\n\n    Used by preanalysis-time post-hoc auditing where no specific\n    just-emitted capture exists. The handler finds the latest\n    ``snapshots`` row for ``func_ea`` and writes consumer rows there\n    after deduplicating against existing rows.\n    "
     try:
         conn = get_diag_conn(int(ev.func_ea))
     except Exception:

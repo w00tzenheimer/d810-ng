@@ -1,10 +1,10 @@
 """Unit cover for ``FLOWGRAPH_READY`` coordinator capture deduplication.
 
-E4a moves microcode recon collection from two direct
+E4a moves microcode preanalysis collection from two direct
 ``run_microcode_collectors(mba, ...)`` calls in the adapters to the
 manager-owned lifecycle coordinator.  Both maturity-transition gates still emit
 ``FLOWGRAPH_READY`` for the same ``(func_ea, maturity)``, so the
-subscriber fires twice -- but ``ReconPhase.run_microcode_collectors``
+subscriber fires twice -- but ``PreanalysisPhase.run_microcode_collectors``
 dedupes by ``(func_ea, maturity)`` internally, so exactly one
 collector pass actually runs.
 
@@ -13,7 +13,7 @@ This file tests two things:
 1. **Behavior**: routing an event twice for the same
    ``(func_ea, maturity)`` results in exactly one collector
    invocation.  Uses a local sentinel ``Event`` enum -- the dedup
-   contract is between ``EventEmitter`` and ``ReconPhase``, neither
+   contract is between ``EventEmitter`` and ``PreanalysisPhase``, neither
    of which cares about the specific event identity.  Avoiding the
    real ``DecompilationEvent`` import keeps this file under the
    ``unit-tests-no-hexrays`` contract.
@@ -24,7 +24,7 @@ This file tests two things:
 
 Lives in ``tests/unit/`` because:
 
-* The dedup behavior is exercised purely through ``ReconPhase`` and
+* The dedup behavior is exercised purely through ``PreanalysisPhase`` and
   ``EventEmitter`` -- no IDA imports needed.
 * The architectural pin is a text-grep over the source.
 """
@@ -48,22 +48,13 @@ from d810.manager.decompilation_lifecycle import (
 
 
 class _Event(enum.Enum):
-    """Local sentinel stand-in for ``DecompilationEvent.FLOWGRAPH_READY``.
-
-    The dedup behavior under test is in ``ReconPhase``, not in the
-    event identity -- ``EventEmitter`` just routes kwargs by enum
-    member.  Using a local enum keeps this unit test from
-    transitively importing ``d810.hexrays.*``."""
+    "Local sentinel stand-in for ``DecompilationEvent.FLOWGRAPH_READY``.\n\n    The dedup behavior under test is in ``PreanalysisPhase``, not in the\n    event identity -- ``EventEmitter`` just routes kwargs by enum\n    member.  Using a local enum keeps this unit test from\n    transitively importing ``d810.hexrays.*``."
 
     FLOWGRAPH_READY = "flowgraph.ready"
 
 
 class _StubStore:
-    """Minimal ``ReconStore``-shaped stub: just the attribute
-    ``ReconPhase`` reads (``db_path``).  No actual save needed --
-    we replace ``get_recon_writer`` with a stub at the test level
-    instead."""
-
+    """Minimal preanalysis-store stub with the required ``db_path``."""
     db_path = Path(":memory:")
 
 
@@ -90,7 +81,7 @@ class _CountingCollector:
 
 
 class _NoopWriter:
-    """``ReconStore.get_recon_writer``-shaped stub that drops saves."""
+    "``PreanalysisStore.get_preanalysis_writer``-shaped stub that drops saves."
 
     def submit(self, fn) -> None:
         pass
@@ -100,7 +91,7 @@ class _NoopWriter:
 
 
 class _CapturingFactRuntime:
-    """``FactLifecycleRuntime``-shaped stub for pre-D810 fact capture."""
+    """Fact-capture stub used by the composite preanalysis port."""
 
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -125,14 +116,47 @@ class _CapturingFactRuntime:
         )
 
 
+class _PreanalysisRuntime:
+    def __init__(
+        self,
+        phase: PreanalysisPhase | None,
+        fact_runtime: _CapturingFactRuntime | None,
+    ) -> None:
+        self.phase = phase
+        self.fact_runtime = fact_runtime
+
+    def capture_flowgraph(
+        self,
+        target,
+        *,
+        func_ea: int,
+        provider_phase: ProviderPhaseSnapshot,
+        snapshot,
+    ) -> None:
+        if self.phase is not None:
+            self.phase.run_microcode_collectors(
+                target,
+                func_ea=func_ea,
+                provider_phase=provider_phase,
+            )
+        if self.fact_runtime is not None:
+            self.fact_runtime.capture_maturity_facts(
+                target,
+                func_ea=func_ea,
+                provider_phase=provider_phase,
+                phase="pre_d810",
+                snapshot=snapshot,
+            )
+
+
 class TestFlowGraphReadyCoordinatorDedup:
     """Coordinator pattern: ``FLOWGRAPH_READY`` fires from two manager
-    maturity gates per maturity transition.  ``ReconPhase`` dedupes by
+    maturity gates per maturity transition.  ``PreanalysisPhase`` dedupes by
     ``(func_ea, maturity)`` -- exactly one collector pass runs even
     though the subscriber is invoked twice."""
 
     def _build_phase(self, monkeypatch, collector: _CountingCollector) -> PreanalysisPhase:
-        """Build a ``ReconPhase`` with the writer stubbed so saves
+        """Build a ``PreanalysisPhase`` with the writer stubbed so saves
         don't try to hit SQLite."""
         import d810.passes.phase
 
@@ -167,8 +191,8 @@ class TestFlowGraphReadyCoordinatorDedup:
     ) -> DecompilationLifecycleCoordinator:
         """Build the real coordinator without importing the IDA-facing hook."""
         return DecompilationLifecycleCoordinator(
-            preanalysis_phase=phase,
-            analysis_runtime=fact_runtime,
+            preanalysis_runtime=_PreanalysisRuntime(phase, fact_runtime),
+            analysis_runtime=None,
             rule_scope_service=None,
         )
 
@@ -299,7 +323,7 @@ class TestNoDirectCollectionInAdapterGates:
     def test_no_direct_run_microcode_collectors_call_in_hexrays_hooks(
         self,
     ) -> None:
-        # ``__file__`` is .../tests/unit/recon/<file>.py -- the worktree
+        # ``__file__`` is .../tests/unit/preanalysis/<file>.py -- the worktree
         # root is parents[3], then walk down to the source file.
         hexrays_hooks_path = (
             Path(__file__).resolve().parents[3]
@@ -329,10 +353,7 @@ class TestNoDirectCollectionInAdapterGates:
     def test_no_direct_pre_d810_fact_capture_call_in_hexrays_hooks(
         self,
     ) -> None:
-        """E4b contract: the block-manager gate must not call
-        ``capture_maturity_facts(mba, ...)`` directly.  Pre-D810
-        facts now route through the same ``FLOWGRAPH_READY`` payload
-        as recon collection."""
+        "E4b contract: the block-manager gate must not call\n        ``capture_maturity_facts(mba, ...)`` directly.  Pre-D810\n        facts now route through the same ``FLOWGRAPH_READY`` payload\n        as preanalysis collection."
         hexrays_hooks_path = (
             Path(__file__).resolve().parents[3]
             / "src"
@@ -377,4 +398,4 @@ class TestNoDirectCollectionInAdapterGates:
         assert "target = mba\n" not in src
         assert "target = mba_to_fact_target(mba)" in src
         assert "skipping fact capture" in src
-        assert "self.analysis_runtime.capture_maturity_facts(" in src
+        assert "self.preanalysis_runtime.capture_facts(" in src

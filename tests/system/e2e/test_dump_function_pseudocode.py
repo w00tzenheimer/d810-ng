@@ -586,7 +586,7 @@ class TestDumpFunctionPseudocode:
                                     f"{e}]"
                                 )
                             if os.environ.get("D810_USE_STRUCTURER") == "1":
-                                # State slot: pass recon's detected value straight
+                                # State slot: pass preanalysis's detected value straight
                                 # through (None when the detector context isn't
                                 # available at this maturity -- the structurer then
                                 # self-detects on its own mba). No hardcoded-slot
