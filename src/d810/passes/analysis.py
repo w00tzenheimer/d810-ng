@@ -1,4 +1,16 @@
-"AnalysisPhase - interprets PreanalysisResults into DeobfuscationHints.\n\nHeuristics are deliberately simple in this first pass. The intent is to\ncover the common OLLVM control-flow flattening case and emit inference names\nthat ``RuleScopeService.apply_hints()`` can act on.\n\nFour supplementary collectors\u2014``FixPredSignalsCollector``,\n``CompareChainCollector``, ``FlowProfileClassifierCollector``, and\n``OpcodeDistributionCollector``\u2014provide *additive* evidence when present.\nTheir absence does not change the baseline scoring.\n\nNo IDA imports - fully unit-testable.\n"
+"""AnalysisPhase - interprets PreanalysisResult values into hints.
+
+Heuristics are deliberately simple in this first pass. The intent is to
+cover the common OLLVM control-flow flattening case and emit inference names
+that ``RuleScopeService.apply_hints()`` can act on.
+
+Four supplementary collectors—``FixPredSignalsCollector``,
+``CompareChainCollector``, ``FlowProfileClassifierCollector``, and
+``OpcodeDistributionCollector``—provide *additive* evidence when present.
+Their absence does not change the baseline scoring.
+
+No IDA imports - fully unit-testable.
+"""
 from __future__ import annotations
 
 from d810.core.logging import getLogger
@@ -42,7 +54,15 @@ _FLATTENING_SUPPRESSED_RULES = (
 
 
 class AnalysisPhase:
-    "Classify obfuscation and produce DeobfuscationHints from PreanalysisResults.\n\n    Usage::\n\n        phase = AnalysisPhase()\n        hints = phase.interpret(func_ea=0x401000, results=[r1, r2, r3])\n        # or load from store:\n        hints = phase.interpret_from_store(func_ea=0x401000, store=store)\n    "
+    """Classify obfuscation and produce hints from preanalysis results.
+
+    Usage::
+
+        phase = AnalysisPhase()
+        hints = phase.interpret(func_ea=0x401000, results=[r1, r2, r3])
+        # or load from store:
+        hints = phase.interpret_from_store(func_ea=0x401000, store=store)
+    """
 
     def interpret(
         self,
@@ -51,7 +71,11 @@ class AnalysisPhase:
         results: list[PreanalysisResult],
         store: PreanalysisStore | None = None,
     ) -> DeobfuscationHints:
-        "Classify obfuscation type from a list of PreanalysisResults.\n\n        When *store* is provided and a user override exists for *func_ea*,\n        the override takes precedence over computed classification.\n        "
+        """Classify obfuscation type from a list of preanalysis results.
+
+        When *store* is provided and a user override exists for *func_ea*,
+        the override takes precedence over computed classification.
+        """
         # --- User override (takes precedence over computed classification) ---
         if store is not None:
             override = store.load_user_override(func_ea)
@@ -184,6 +208,6 @@ class AnalysisPhase:
     def interpret_from_store(
         self, *, func_ea: int, store: PreanalysisStore
     ) -> DeobfuscationHints:
-        "Load all PreanalysisResults from the store and interpret them."
+        """Load all preanalysis results from the store and interpret them."""
         results = store.load_all_preanalysis_results(func_ea=func_ea)
         return self.interpret(func_ea=func_ea, results=results, store=store)
