@@ -29,6 +29,7 @@ The historical fact source is the diag DB's fact_observations table
 queried at the highest snapshot whose label matches GLBOPT1 pre_d810.
 The caller resolves that for us via FactView.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -36,14 +37,15 @@ from d810.core.typing import Any, Iterable, Protocol
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 
 
-def _native_eas_identity(eas: Iterable[int]) -> StableBlockIdentity:
+def _native_eas_identity(eas: Iterable[int], *, native_key) -> StableBlockIdentity:
     return StableBlockIdentity.from_intervals(
-        NativeEaInterval(int(ea), int(ea) + 1) for ea in eas
+        (NativeEaInterval(int(ea), int(ea) + 1) for ea in eas),
+        native_key=native_key,
     )
 
 
-def _native_point_identity(ea: int) -> StableBlockIdentity:
-    return _native_eas_identity((int(ea),))
+def _native_point_identity(ea: int, *, native_key) -> StableBlockIdentity:
+    return _native_eas_identity((int(ea),), native_key=native_key)
 
 
 def parse_tail_distinct_byte_env(value: str | None) -> int | None:
@@ -256,7 +258,8 @@ class ConvergenceDuplicationReport:
 
 
 def _resolve_target_ea(
-    facts: Iterable[FactRow], byte_index: int,
+    facts: Iterable[FactRow],
+    byte_index: int,
 ) -> str | None:
     """Pick the start_ea_hex for the requested byte_index.
 
@@ -287,9 +290,7 @@ def _check_preconditions(block: BlockView) -> PrecheckResult:
     - tail_kind in {'goto', 'fallthrough'} (redirectable)
     """
     if block.nsucc != 1:
-        return PrecheckResult.failure(
-            f"preconditions_unmet:multi_succ:{block.nsucc}"
-        )
+        return PrecheckResult.failure(f"preconditions_unmet:multi_succ:{block.nsucc}")
     if block.succ_serial is None:
         return PrecheckResult.failure("preconditions_unmet:no_successor")
     if block.succ_npred is None or block.succ_npred < 2:
@@ -313,11 +314,12 @@ class MicrocodeAdapter(Protocol):
     Tests: a fake adapter recording every call.
     """
 
-    def find_block(self, identity: StableBlockIdentity) -> BlockView | None:
-        ...
+    def find_block(self, identity: StableBlockIdentity) -> BlockView | None: ...
 
     def insert_trampoline_after(
-        self, predecessor_serial: int, successor_serial: int,
+        self,
+        predecessor_serial: int,
+        successor_serial: int,
     ) -> int:
         """Insert an empty BLT_0WAY-style trampoline between
         predecessor_serial and successor_serial; rewire predecessor's
@@ -328,8 +330,7 @@ class MicrocodeAdapter(Protocol):
         """
         ...
 
-    def successor_npred(self, successor_serial: int) -> int:
-        ...
+    def successor_npred(self, successor_serial: int) -> int: ...
 
     def split_block_at_tail_jcnd(self, block_serial: int) -> int:
         """Split a 2-way block immediately before its tail conditional jump.
@@ -388,8 +389,7 @@ class ConvergenceAdapter(Protocol):
     Tests: a fake adapter recording every call.
     """
 
-    def find_block(self, identity: StableBlockIdentity) -> BlockView | None:
-        ...
+    def find_block(self, identity: StableBlockIdentity) -> BlockView | None: ...
 
     def block_has_m_stx(self, block_serial: int) -> bool:
         """True if the block contains at least one m_stx instruction.
@@ -452,7 +452,9 @@ class LiveUseAnchorAdapter(Protocol):
         ...
 
     def extract_source_byte_indexed_operand(
-        self, byte_emit_serial: int, byte_index: int,
+        self,
+        byte_emit_serial: int,
+        byte_index: int,
     ) -> Any:
         """Return the exact source-address ``mop_t`` operand-tree from
         the byte_emit block's existing indexed source-byte sub-expression.
@@ -527,7 +529,9 @@ def isolate_byte_emit_tail(
     )
     if target_ea_hex is None:
         return ShapingReport(
-            applied=False, byte_index=byte_index, reason="no_fact",
+            applied=False,
+            byte_index=byte_index,
+            reason="no_fact",
         )
 
     try:
@@ -539,7 +543,10 @@ def isolate_byte_emit_tail(
             reason=f"malformed_ea:{target_ea_hex!r}",
         )
 
-    target_identity = _native_point_identity(target_ea)
+    target_identity = _native_point_identity(
+        target_ea,
+        native_key=adapter.native_key,
+    )
     block = adapter.find_block(target_identity)
     if block is None:
         return ShapingReport(
@@ -659,7 +666,9 @@ def duplicate_convergence_for_byte_path(
     )
     if target_ea_hex is None:
         return ConvergenceDuplicationReport(
-            applied=False, byte_index=byte_index, reason="no_fact",
+            applied=False,
+            byte_index=byte_index,
+            reason="no_fact",
         )
 
     try:
@@ -671,7 +680,9 @@ def duplicate_convergence_for_byte_path(
             reason=f"malformed_ea:{target_ea_hex!r}",
         )
 
-    block = adapter.find_block(_native_point_identity(target_ea))
+    block = adapter.find_block(
+        _native_point_identity(target_ea, native_key=adapter.native_key)
+    )
     if block is None:
         return ConvergenceDuplicationReport(
             applied=False,
@@ -786,7 +797,9 @@ def execute_state_cascade(
             reason=f"planner_verdict_not_safe:{verdict}",
             planner_state_variable=getattr(plan_row, "state_variable", None),
             planner_state_required_value=getattr(
-                plan_row, "state_required_value", None,
+                plan_row,
+                "state_required_value",
+                None,
             ),
         )
 
@@ -798,7 +811,9 @@ def execute_state_cascade(
             reason="planner_row_missing_source_block",
             planner_state_variable=getattr(plan_row, "state_variable", None),
             planner_state_required_value=getattr(
-                plan_row, "state_required_value", None,
+                plan_row,
+                "state_required_value",
+                None,
             ),
         )
 
@@ -811,7 +826,9 @@ def execute_state_cascade(
             source_byte_block=int(source_block),
             planner_state_variable=getattr(plan_row, "state_variable", None),
             planner_state_required_value=getattr(
-                plan_row, "state_required_value", None,
+                plan_row,
+                "state_required_value",
+                None,
             ),
         )
 
@@ -825,7 +842,9 @@ def execute_state_cascade(
             post_guard_target=int(intended_target),
             planner_state_variable=getattr(plan_row, "state_variable", None),
             planner_state_required_value=getattr(
-                plan_row, "state_required_value", None,
+                plan_row,
+                "state_required_value",
+                None,
             ),
         )
 
@@ -872,7 +891,9 @@ def execute_state_cascade(
         proof=_PROOF_SAFE_TARGET_POST_GUARD,
         planner_state_variable=getattr(plan_row, "state_variable", None),
         planner_state_required_value=getattr(
-            plan_row, "state_required_value", None,
+            plan_row,
+            "state_required_value",
+            None,
         ),
     )
 

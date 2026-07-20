@@ -1,10 +1,12 @@
 """Synchronous receipt gateway for structural MBA mutation."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
 
 from d810.core.events import EventEmitter
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.typing import Iterable
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.ir.block_identity import MbaBlockHandle, StableBlockIdentity
@@ -69,6 +71,7 @@ class MbaMutationGateway:
     event is therefore diagnostic/lineage observation, never delayed routing.
     """
 
+    native_key: NativePreanalysisKey
     generation: int = 0
     session_id: str = "mutation-gateway"
     function_ea: int = 0
@@ -93,12 +96,15 @@ class MbaMutationGateway:
         if self.identity_index is None:
             self.identity_index = MbaBlockIdentityIndex(
                 session_id=self.session_id,
+                native_key=self.native_key,
                 generation=self.generation,
             )
         elif self.identity_index.session_id != self.session_id:
             raise ValueError("mutation gateway and identity index sessions differ")
         elif self.identity_index.generation != self.generation:
             raise ValueError("mutation gateway and identity index generations differ")
+        elif self.identity_index.native_key != self.native_key:
+            raise ValueError("mutation gateway and identity index native keys differ")
 
     @property
     def receipts(self) -> tuple[MbaMutationReceipt, ...]:
@@ -117,6 +123,7 @@ class MbaMutationGateway:
         carries neither this gateway's active batch nor its receipt history.
         """
         return MbaMutationGateway(
+            native_key=self.native_key,
             generation=int(self.identity_index.generation),
             session_id=self.session_id,
             function_ea=self.function_ea,
@@ -146,8 +153,8 @@ class MbaMutationGateway:
             raise RuntimeError("structural mutation must be inside a gateway batch")
 
     def _record_handle(self, handle: MbaBlockHandle | None) -> None:
-        if handle is not None and handle.identity is not None:
-            self._affected_identities.add(handle.identity)
+        if handle is not None and handle.stable_identity is not None:
+            self._affected_identities.add(handle.stable_identity)
 
     def resolve_serial(self, serial: int | None) -> int | None:
         if serial is None:
@@ -185,7 +192,9 @@ class MbaMutationGateway:
         self._operation_count += 1
         return created
 
-    def record_realized_serial(self, *, expected_serial: int, returned_serial: int) -> None:
+    def record_realized_serial(
+        self, *, expected_serial: int, returned_serial: int
+    ) -> None:
         self._require_active()
         self.identity_index.record_realized_serial(
             expected_serial=int(expected_serial),
@@ -243,9 +252,9 @@ class MbaMutationGateway:
         self._require_active()
         created = created or (
             self.identity_index.create_synthetic_handle()
-            if source.identity is None
+            if source.stable_identity is None
             else self.identity_index.create_native_handle(
-                source.identity,
+                source.stable_identity,
                 provenance=source.provenance,
             )
         )

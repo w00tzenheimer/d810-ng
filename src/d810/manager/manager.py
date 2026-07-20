@@ -74,6 +74,18 @@ D810_LOG_DIR_NAME = "d810_logs"
 logger = getLogger("D810")
 
 
+def _build_native_preanalysis_key(*, function_ea, profile_config):
+    """Hex-Rays backend port for lifecycle-owned portable identity."""
+    from d810.backends.hexrays.native_preanalysis_key import (
+        build_native_preanalysis_key,
+    )
+
+    return build_native_preanalysis_key(
+        function_ea,
+        profile_config=profile_config,
+    )
+
+
 def _initialize_resolver_session_extension(session):
     """Create the optimizer-owned attachment before lower callbacks consume it."""
     from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
@@ -116,6 +128,7 @@ def _build_current_mba_identity_index(*, session, mba):
     }
     index = MbaBlockIdentityIndex.from_flow_graph(
         generation=0,
+        native_key=session.native_key,
         evidence_generation=session.native_preanalysis.evidence_generation,
         flow_graph=flow_graph,
         session_id=session.identity_key,
@@ -136,6 +149,7 @@ def _new_current_mba_mutation_gateway(
     from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 
     return MbaMutationGateway(
+        native_key=session.native_key,
         generation=int(identity_index.generation),
         session_id=session.identity_key,
         function_ea=int(session.function_ea),
@@ -623,15 +637,19 @@ class D810Manager:
                 config=dict(self.config),
             )
             if self._analysis_bundle is not None:
-                self._preanalysis_runtime = (
-                    self._analysis_bundle.preanalysis_runtime
-                )
+                self._preanalysis_runtime = self._analysis_bundle.preanalysis_runtime
                 self._analysis_runtime = self._analysis_bundle.analysis_runtime
 
         self.decompilation_lifecycle = DecompilationLifecycleCoordinator(
             preanalysis_runtime=self._preanalysis_runtime,
             analysis_runtime=self._analysis_runtime,
             rule_scope_service=self.rule_scope_service,
+            native_preanalysis_key_provider=lambda function_ea: (
+                _build_native_preanalysis_key(
+                    function_ea=function_ea,
+                    profile_config=self.config,
+                )
+            ),
             event_emitter=self.event_emitter,
             current_mba_identity_index_builder=_build_current_mba_identity_index,
             mba_mutation_gateway_factory=_new_current_mba_mutation_gateway,
@@ -673,9 +691,7 @@ class D810Manager:
                 validated_fact_view_provider=(
                     self._analysis_runtime.validated_fact_view
                 ),
-                fact_consumer_callback=(
-                    self._analysis_runtime.record_fact_consumers
-                ),
+                fact_consumer_callback=(self._analysis_runtime.record_fact_consumers),
                 flow_context_summary_provider=(
                     self._analysis_runtime.load_flow_context_summary
                 ),

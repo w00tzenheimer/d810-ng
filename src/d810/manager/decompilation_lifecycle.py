@@ -12,6 +12,7 @@ from d810.core.decompilation_session import (
     DecompilationSessionEvent,
 )
 from d810.core.logging import getLogger
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.provider_phase import ProviderPhaseSnapshot
 
 logger = getLogger("D810.decompilation_lifecycle")
@@ -28,6 +29,7 @@ class DecompilationSessionContext:
     function_ea: int
     database_identity: str
     top_level_epoch: int
+    native_key: NativePreanalysisKey
     native_preanalysis: NativePreanalysisSessionState = field(
         default_factory=NativePreanalysisSessionState
     )
@@ -35,9 +37,7 @@ class DecompilationSessionContext:
     current_mba_generation: int = 0
     current_mba_identity_index: object | None = None
     preopt_ready_emitted_for_current_mba: bool = False
-    preopt_refresh_consumers_for_current_mba: set[str] = field(
-        default_factory=set
-    )
+    preopt_refresh_consumers_for_current_mba: set[str] = field(default_factory=set)
     extensions: dict[object, object] = field(default_factory=dict)
 
     @property
@@ -92,6 +92,7 @@ class DecompilationLifecycleCoordinator:
     preanalysis_runtime: typing.Any | None
     analysis_runtime: typing.Any | None
     rule_scope_service: typing.Any | None
+    native_preanalysis_key_provider: typing.Callable[[int], NativePreanalysisKey]
     event_emitter: typing.Any | None = None
     current_mba_identity_index_builder: typing.Callable[..., object | None] | None = (
         None
@@ -180,6 +181,7 @@ class DecompilationLifecycleCoordinator:
             function_ea=function_ea,
             database_identity=database_identity,
             top_level_epoch=epoch,
+            native_key=self.native_preanalysis_key_provider(function_ea),
         )
         self._active_sessions.append(
             _SessionActivation(session=session, owns_session=True)
@@ -333,8 +335,7 @@ class DecompilationLifecycleCoordinator:
         """Return whether an optinsn fallback would duplicate this MBA hook."""
         session = self.current_session(int(function_ea))
         return bool(
-            session is not None
-            and session.preopt_ready_emitted_for_current_mba
+            session is not None and session.preopt_ready_emitted_for_current_mba
         )
 
     def consume_preopt_microcode_modified(
@@ -354,9 +355,7 @@ class DecompilationLifecycleCoordinator:
         the containing function's session identity, so the adapter must not
         derive ownership from ``mba.entry_ea``.
         """
-        session = (
-            self._active_sessions[-1].session if self._active_sessions else None
-        )
+        session = self._active_sessions[-1].session if self._active_sessions else None
         return self._consume_preopt_microcode_modified(session, consumer)
 
     @staticmethod

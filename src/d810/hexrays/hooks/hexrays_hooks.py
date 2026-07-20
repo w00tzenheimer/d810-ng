@@ -409,7 +409,12 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
 
         # PruneUnreachable: diagnostic-only; logs unreachable condition-chain blocks
         # but does NOT remove them (see helper for rationale).
-        prune_unreachable_condition_chain(mba, self._block_optimizer)
+        decision = self._decision_for_mba(mba, bind_live_identity=True)
+        prune_unreachable_condition_chain(
+            mba,
+            self._block_optimizer,
+            identity_index=decision.get("identity_index"),
+        )
         # v2 (d81-fzlo): the GLBOPT1 pre-fold severance snapshot is function-keyed
         # on the block optimizer (it survives the GLBOPT1->GLBOPT2 boundary, where
         # glbopt() actually fires; the per-maturity flow_context does not). Empty

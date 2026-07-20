@@ -12,6 +12,7 @@ the live call graph once each work-list extraction lands its real body and the d
 (``run_d810_pipeline``) replaces the legacy state-machine orchestration. Until then this module is
 additive + behavior-neutral (not wired into the maturity hook).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -20,7 +21,8 @@ from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PassFact,
     PassResult,
-    PreservedAnalyses, PipelinePass,
+    PreservedAnalyses,
+    PipelinePass,
 )
 
 # --- WORK-LIST: portable extractions composed by the passes ---
@@ -135,8 +137,7 @@ def _build_comparison_model(recovery, range_evidence):
     router_kind = getattr(dispatch_map, "router_kind", RouterKind.UNKNOWN)
     table_provenance = getattr(dispatch_map, "table_provenance", None)
     is_switch_table = (
-        router_kind is RouterKind.TABLE
-        and table_provenance is TableProvenance.SWITCH
+        router_kind is RouterKind.TABLE and table_provenance is TableProvenance.SWITCH
     )
     if router_kind not in _COMPARISON_ROUTER_KINDS and not is_switch_table:
         return None
@@ -311,7 +312,9 @@ def _has_emulated_endpoint_rows(dmap) -> bool:
     return any(str(getattr(row, "branch_kind", "")) == "emulated" for row in rows)
 
 
-def _recovery_from_machine(machine, graph, min_state_constant: int) -> DispatcherRecovery:
+def _recovery_from_machine(
+    machine, graph, min_state_constant: int
+) -> DispatcherRecovery:
     """Adapt a P1 ``RecoveredMachine`` back into the existing ``DispatcherRecovery``.
 
     The reduced-product orchestrator (ticket llr-1d8u) returns the engine-neutral
@@ -370,8 +373,7 @@ def _materialized_dispatcher_recovery(
     router_serials = frozenset(
         int(serial)
         for serial in (
-            _analysis(context, "materialized_dispatcher_router_serials", ())
-            or ()
+            _analysis(context, "materialized_dispatcher_router_serials", ()) or ()
         )
     )
     if state_var_reg is None or entry_serial is None or not handlers:
@@ -547,8 +549,7 @@ class RecoverStateTransitions(PipelinePass):
                             phase=self.name,
                             predecessor_target_facts=predecessor_target_facts,
                         )
-                        if observation.kind
-                        == PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE
+                        if observation.kind == PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE
                     ),
                 )
         # Consume the injected value-range capability (north-star
@@ -600,6 +601,7 @@ class PlanSemanticRegions(PipelinePass):
             analysis_outputs={self.name: regions},
         )
 
+
 @dataclass
 class LowerStateMachine(PipelinePass):
     """Lower the recovered state machine to dispatcher-bypass redirects (unflatten).
@@ -643,9 +645,7 @@ class LowerStateMachine(PipelinePass):
             ),
             dispatcher_entry=dispatcher_entry,
             table_provenance=(
-                getattr(dmap, "table_provenance", None)
-                if dmap is not None
-                else None
+                getattr(dmap, "table_provenance", None) if dmap is not None else None
             ),
         )
         return select_router(
@@ -687,11 +687,7 @@ class LowerStateMachine(PipelinePass):
             if current_block_identity_index is None:
                 return None
             rebound = current_block_identity_index.rebind_identity(identity)
-            return (
-                None
-                if rebound.block is None
-                else int(rebound.block.serial)
-            )
+            return None if rebound.block is None else int(rebound.block.serial)
 
         # Direct interval-set unflatten (epic d81-jfg2): the interval-set
         # dispatcher (state -> handler) + per-handler next-state recovery IS the
@@ -745,7 +741,11 @@ class LowerStateMachine(PipelinePass):
             # PRIMARY emit path so a redirect that orphans a non-state carrier (the
             # OLLVM ``var_18 = var_378`` accumulator copies) is dropped. Gated
             # D810_USE_DEF_VETO (default OFF) inside the filter -> byte-identical default.
-            dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
+            dmap = (
+                getattr(recovery, "dispatch_map", None)
+                if recovery is not None
+                else None
+            )
             entry_bridge_requires_witness = _entry_bridge_requires_witness(dmap)
             branch_witness_map = (
                 build_static_equality_chain_witness_map(context.graph, dmap)
@@ -769,38 +769,41 @@ class LowerStateMachine(PipelinePass):
             recover_multi_entry_back_edges = _needs_multi_entry_back_edge_recovery(
                 range_evidence, dmap
             )
-            materialized_indirect_transfers = _analysis(
-                context, "materialized_indirect_transfers", ()
-            ) or ()
-            imported_direct_boundary_evidence = _analysis(
-                context, "imported_direct_boundary_evidence", ()
-            ) or ()
-            imported_conditional_boundary_evidence = _analysis(
-                context, "imported_conditional_boundary_evidence", ()
-            ) or ()
-            imported_native_eas_by_serial = _analysis(
-                context, "imported_native_eas_by_serial", {}
-            ) or {}
-            native_carrier_consumer_serials_by_load_ea = _analysis(
-                context,
-                "native_carrier_consumer_serials_by_load_ea",
-                {},
-            ) or {}
-            materialized_state_routes = _analysis(
-                context, "materialized_state_routes", ()
-            ) or ()
-            legacy_handler_by_state = _analysis(
-                context, "legacy_handler_by_state", {}
-            ) or {}
-            materialized_handler_by_state = _analysis(
-                context, "materialized_handler_by_state", {}
-            ) or {}
-            materialized_handler_entry_eas = _analysis(
-                context, "materialized_handler_entry_eas", {}
-            ) or {}
-            bound_bootstrap_routes = _analysis(
-                context, "bound_bootstrap_routes", ()
-            ) or ()
+            materialized_indirect_transfers = (
+                _analysis(context, "materialized_indirect_transfers", ()) or ()
+            )
+            imported_direct_boundary_evidence = (
+                _analysis(context, "imported_direct_boundary_evidence", ()) or ()
+            )
+            imported_conditional_boundary_evidence = (
+                _analysis(context, "imported_conditional_boundary_evidence", ()) or ()
+            )
+            imported_native_eas_by_serial = (
+                _analysis(context, "imported_native_eas_by_serial", {}) or {}
+            )
+            native_carrier_consumer_serials_by_load_ea = (
+                _analysis(
+                    context,
+                    "native_carrier_consumer_serials_by_load_ea",
+                    {},
+                )
+                or {}
+            )
+            materialized_state_routes = (
+                _analysis(context, "materialized_state_routes", ()) or ()
+            )
+            legacy_handler_by_state = (
+                _analysis(context, "legacy_handler_by_state", {}) or {}
+            )
+            materialized_handler_by_state = (
+                _analysis(context, "materialized_handler_by_state", {}) or {}
+            )
+            materialized_handler_entry_eas = (
+                _analysis(context, "materialized_handler_entry_eas", {}) or {}
+            )
+            bound_bootstrap_routes = (
+                _analysis(context, "bound_bootstrap_routes", ()) or ()
+            )
             materialized_computed_goto_profile = bool(
                 _analysis(context, "materialized_computed_goto_profile", False)
             )
@@ -832,9 +835,7 @@ class LowerStateMachine(PipelinePass):
                     or ()
                 )
             )
-            entry_bridge_evidence = _analysis(
-                context, "residual_entry_bridge_evidence"
-            )
+            entry_bridge_evidence = _analysis(context, "residual_entry_bridge_evidence")
             logger.info(
                 "unflat computed-goto profile: active=%s transfers=%d routes=%d "
                 "authoritative_handlers=%d state_reg=%s",
@@ -909,9 +910,11 @@ class LowerStateMachine(PipelinePass):
                         )
                     },
                 )
-            dispatcher_region_serials = frozenset(
-                int(block) for block in dmap.dispatcher_blocks
-            ) if dmap is not None else frozenset()
+            dispatcher_region_serials = (
+                frozenset(int(block) for block in dmap.dispatcher_blocks)
+                if dmap is not None
+                else frozenset()
+            )
             dispatcher_region_serials |= materialized_dispatcher_router_serials
             if range_evidence is not None:
                 dispatcher_region_serials |= frozenset(
@@ -947,9 +950,7 @@ class LowerStateMachine(PipelinePass):
                 ),
                 recover_multi_entry_back_edges=recover_multi_entry_back_edges,
                 materialized_indirect_transfers=materialized_indirect_transfers,
-                imported_direct_boundary_evidence=(
-                    imported_direct_boundary_evidence
-                ),
+                imported_direct_boundary_evidence=(imported_direct_boundary_evidence),
                 imported_conditional_boundary_evidence=(
                     imported_conditional_boundary_evidence
                 ),
@@ -964,9 +965,7 @@ class LowerStateMachine(PipelinePass):
                 state_carrier_vd_stkoffs_by_store_ea=(
                     state_carrier_vd_stkoffs_by_store_ea
                 ),
-                materialized_computed_goto_profile=(
-                    materialized_computed_goto_profile
-                ),
+                materialized_computed_goto_profile=(materialized_computed_goto_profile),
                 condition_chain_dag=condition_chain_dag,
                 condition_chain_handlers=condition_chain_handlers,
                 authoritative_handler_serials=authoritative_handler_serials,
@@ -976,8 +975,11 @@ class LowerStateMachine(PipelinePass):
                 dispatcher_region_serials=dispatcher_region_serials,
                 entry_bridge_evidence=entry_bridge_evidence,
                 bound_bootstrap_routes=bound_bootstrap_routes,
-                block_serial_for_native_identity=(
-                    block_serial_for_native_identity
+                block_serial_for_native_identity=(block_serial_for_native_identity),
+                native_key=(
+                    None
+                    if current_block_identity_index is None
+                    else current_block_identity_index.native_key
                 ),
             )
             plan_metadata = plan.metadata_dict()
@@ -1018,5 +1020,7 @@ class CleanupResidualDispatcher(PipelinePass):
 
     def run(self, context: FunctionPipelineContext) -> PassResult:
         candidates = _analysis(context, "cleanup_candidates", ()) or ()
-        plan = cleanup_residual_dispatcher(context.graph, context.facts, candidates=candidates)
+        plan = cleanup_residual_dispatcher(
+            context.graph, context.facts, candidates=candidates
+        )
         return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())

@@ -52,9 +52,9 @@ class BootstrapRouteEvidence:
     def __post_init__(self) -> None:
         source_anchor_ea = int(self.source_anchor_ea)
         handler_anchor_ea = int(self.handler_anchor_ea)
-        if not self.source_identity.native_eas.contains(source_anchor_ea):
+        if not self.source_identity.native_ranges.contains(source_anchor_ea):
             raise ValueError("bootstrap source anchor is outside source identity")
-        if not self.handler_identity.native_eas.contains(handler_anchor_ea):
+        if not self.handler_identity.native_ranges.contains(handler_anchor_ea):
             raise ValueError("bootstrap handler anchor is outside handler identity")
         object.__setattr__(self, "source_anchor_ea", source_anchor_ea)
         object.__setattr__(self, "handler_anchor_ea", handler_anchor_ea)
@@ -87,11 +87,11 @@ class BootstrapRouteBindingEvidence:
     evidence_generation: int
 
     def __post_init__(self) -> None:
-        if not self.source_identity.native_eas.contains(
+        if not self.source_identity.native_ranges.contains(
             int(self.route.source_anchor_ea)
         ):
             raise ValueError("bound bootstrap source identity lost its anchor")
-        if not self.handler_identity.native_eas.contains(
+        if not self.handler_identity.native_ranges.contains(
             int(self.route.handler_anchor_ea)
         ):
             raise ValueError("bound bootstrap handler identity lost its anchor")
@@ -191,7 +191,7 @@ class NativePreanalysisSessionState:
             self.rebound_bootstrap_keys - self.published_bootstrap_keys,
             key=lambda item: (
                 int(item[1]),
-                item[0].native_eas.diagnostic_label(),
+                item[0].native_ranges.diagnostic_label(),
             ),
         ):
             evidence = self.bootstrap_routes.get(key)

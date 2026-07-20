@@ -1,4 +1,5 @@
 """Portable evidence ownership for one top-level decompilation."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.native_preanalysis_session import (
@@ -7,14 +8,17 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from tests.native_preanalysis import make_native_key
+
+NATIVE_KEY = make_native_key()
 
 
 def test_changed_route_evidence_advances_once_and_binds_once() -> None:
     source = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D348, 0x40D349),)
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
     )
     handler = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAA8),)
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
     )
     state = NativePreanalysisSessionState()
     route = BootstrapRouteEvidence(
@@ -40,10 +44,10 @@ def test_changed_route_evidence_advances_once_and_binds_once() -> None:
 
 def test_first_pass_native_evidence_coalesces_until_preopt_binds() -> None:
     source = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401020, 0x401021),)
+        (NativeEaInterval(0x401020, 0x401021),), native_key=NATIVE_KEY
     )
     handler = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401100, 0x401101),)
+        (NativeEaInterval(0x401100, 0x401101),), native_key=NATIVE_KEY
     )
     state = NativePreanalysisSessionState()
 
@@ -68,10 +72,10 @@ def test_first_pass_native_evidence_coalesces_until_preopt_binds() -> None:
 
 def test_rebound_bootstrap_route_is_acknowledged_only_after_publication() -> None:
     source = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401020, 0x401021),)
+        (NativeEaInterval(0x401020, 0x401021),), native_key=NATIVE_KEY
     )
     handler = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401100, 0x401101),)
+        (NativeEaInterval(0x401100, 0x401101),), native_key=NATIVE_KEY
     )
     route = BootstrapRouteEvidence(
         source_identity=source,

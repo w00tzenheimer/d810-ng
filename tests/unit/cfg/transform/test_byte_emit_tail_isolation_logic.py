@@ -2,11 +2,15 @@
 
 No IDA imports. The orchestrator is exercised via a fake adapter.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 import pytest
+from tests.native_preanalysis import make_native_key
+
+NATIVE_KEY = make_native_key()
 
 from d810.transforms.byte_emit_tail_isolation import (
     BlockView,
@@ -84,9 +88,7 @@ def test_preconditions_ok_for_shared_tail_with_goto():
 
 
 def test_preconditions_ok_for_shared_tail_with_fallthrough():
-    res = _check_preconditions(
-        _block(nsucc=1, succ_npred=3, tail_kind="fallthrough")
-    )
+    res = _check_preconditions(_block(nsucc=1, succ_npred=3, tail_kind="fallthrough"))
     assert res.ok is True
     assert res.block is not None
 
@@ -129,6 +131,7 @@ class _FakeFactView:
 
 @dataclass
 class _FakeAdapter:
+    native_key = NATIVE_KEY
     block_at_ea: dict[int, BlockView] = field(default_factory=dict)
     insert_calls: list[tuple[int, int]] = field(default_factory=list)
     next_trampoline_serial: int = 999
@@ -140,7 +143,7 @@ class _FakeAdapter:
     split_should_raise: bool = False
 
     def find_block(self, identity):
-        ea = identity.native_eas.intervals[0].start_ea
+        ea = identity.native_ranges.intervals[0].start_ea
         # If a split has been recorded, prefer the post-split mapping.
         if self.split_calls and ea in self.block_after_split:
             return self.block_after_split[ea]
@@ -184,7 +187,9 @@ def test_isolate_block_not_findable_returns_no_op():
     fv = _FakeFactView(rows=[_row(2, 5, ea="0x0000000180012DF0")])
     adapter = _FakeAdapter(block_at_ea={})  # nothing at that EA
     res = isolate_byte_emit_tail(
-        byte_index=2, fact_view=fv, adapter=adapter,
+        byte_index=2,
+        fact_view=fv,
+        adapter=adapter,
     )
     assert res.applied is False
     assert res.reason == "block_not_resolvable_at_runtime"
@@ -198,7 +203,9 @@ def test_isolate_no_shared_tail_returns_no_op():
         block_at_ea={0x180012DF0: _block(succ_npred=1)},
     )
     res = isolate_byte_emit_tail(
-        byte_index=2, fact_view=fv, adapter=adapter,
+        byte_index=2,
+        fact_view=fv,
+        adapter=adapter,
     )
     assert res.applied is False
     assert res.reason == "no_shared_tail"
@@ -213,7 +220,9 @@ def test_isolate_happy_path_inserts_trampoline_and_reports_npred_change():
         npred_after_insert=3,  # original siblings still wired; pred replaced
     )
     res = isolate_byte_emit_tail(
-        byte_index=2, fact_view=fv, adapter=adapter,
+        byte_index=2,
+        fact_view=fv,
+        adapter=adapter,
     )
     assert res.applied is True
     assert res.reason == "ok"
@@ -229,7 +238,9 @@ def test_isolate_happy_path_inserts_trampoline_and_reports_npred_change():
 def test_isolate_malformed_ea_returns_no_op():
     fv = _FakeFactView(rows=[_row(2, 5, ea="not-a-hex")])
     res = isolate_byte_emit_tail(
-        byte_index=2, fact_view=fv, adapter=_FakeAdapter(),
+        byte_index=2,
+        fact_view=fv,
+        adapter=_FakeAdapter(),
     )
     assert res.applied is False
     assert res.reason.startswith("malformed_ea:")
@@ -242,6 +253,7 @@ def test_parse_tail_distinct_byte_env_unset_returns_none():
     from d810.transforms.byte_emit_tail_isolation import (
         parse_tail_distinct_byte_env,
     )
+
     assert parse_tail_distinct_byte_env(None) is None
     assert parse_tail_distinct_byte_env("") is None
 
@@ -250,6 +262,7 @@ def test_parse_tail_distinct_byte_env_non_integer_returns_none():
     from d810.transforms.byte_emit_tail_isolation import (
         parse_tail_distinct_byte_env,
     )
+
     assert parse_tail_distinct_byte_env("xyz") is None
     assert parse_tail_distinct_byte_env("2x") is None
 
@@ -258,6 +271,7 @@ def test_parse_tail_distinct_byte_env_out_of_range_returns_none():
     from d810.transforms.byte_emit_tail_isolation import (
         parse_tail_distinct_byte_env,
     )
+
     assert parse_tail_distinct_byte_env("-1") is None
     assert parse_tail_distinct_byte_env("7") is None
     assert parse_tail_distinct_byte_env("99") is None
@@ -267,6 +281,7 @@ def test_parse_tail_distinct_byte_env_valid_returns_int():
     from d810.transforms.byte_emit_tail_isolation import (
         parse_tail_distinct_byte_env,
     )
+
     for k in range(7):
         assert parse_tail_distinct_byte_env(str(k)) == k
 
@@ -275,6 +290,7 @@ def test_parse_tail_distinct_byte_env_strips_whitespace():
     from d810.transforms.byte_emit_tail_isolation import (
         parse_tail_distinct_byte_env,
     )
+
     assert parse_tail_distinct_byte_env("  2  ") == 2
 
 
@@ -300,7 +316,10 @@ class _FakeConvergenceAdapter(_FakeAdapter):
         return self.forward_walk_result
 
     def clone_convergence_for_byte_path(
-        self, *, predecessor_serial, convergence_serial,
+        self,
+        *,
+        predecessor_serial,
+        convergence_serial,
     ):
         self.clone_calls.append((predecessor_serial, convergence_serial))
         return self.next_clone_serial
@@ -309,8 +328,12 @@ class _FakeConvergenceAdapter(_FakeAdapter):
 def test_duplicate_convergence_byte6_happy_path_clones_and_reports():
     fv = _FakeFactView(rows=[_row(6, 5, ea="0x000000018001687C")])
     pre_block = BlockView(
-        serial=217, start_ea=0x18001687C, nsucc=1,
-        succ_serial=218, succ_npred=9, tail_kind="goto",
+        serial=217,
+        start_ea=0x18001687C,
+        nsucc=1,
+        succ_serial=218,
+        succ_npred=9,
+        tail_kind="goto",
     )
     adapter = _FakeConvergenceAdapter(
         block_at_ea={0x18001687C: pre_block},
@@ -319,7 +342,9 @@ def test_duplicate_convergence_byte6_happy_path_clones_and_reports():
         next_clone_serial=777,
     )
     res = duplicate_convergence_for_byte_path(
-        byte_index=6, fact_view=fv, adapter=adapter,
+        byte_index=6,
+        fact_view=fv,
+        adapter=adapter,
     )
     assert res.applied is True
     assert res.reason == "ok"
@@ -333,7 +358,9 @@ def test_duplicate_convergence_byte6_happy_path_clones_and_reports():
 def test_duplicate_convergence_rejects_non_byte6():
     fv = _FakeFactView(rows=[_row(2, 5, ea="0x0000000180012DF0")])
     res = duplicate_convergence_for_byte_path(
-        byte_index=2, fact_view=fv, adapter=_FakeConvergenceAdapter(),
+        byte_index=2,
+        fact_view=fv,
+        adapter=_FakeConvergenceAdapter(),
     )
     assert res.applied is False
     assert res.reason == "probe_byte6_only"
@@ -341,7 +368,8 @@ def test_duplicate_convergence_rejects_non_byte6():
 
 def test_duplicate_convergence_rejects_no_fact():
     res = duplicate_convergence_for_byte_path(
-        byte_index=6, fact_view=_FakeFactView(rows=[]),
+        byte_index=6,
+        fact_view=_FakeFactView(rows=[]),
         adapter=_FakeConvergenceAdapter(),
     )
     assert res.applied is False
@@ -351,8 +379,12 @@ def test_duplicate_convergence_rejects_no_fact():
 def test_duplicate_convergence_rejects_emit_block_lacks_m_stx():
     fv = _FakeFactView(rows=[_row(6, 5, ea="0x000000018001687C")])
     pre_block = BlockView(
-        serial=217, start_ea=0x18001687C, nsucc=1,
-        succ_serial=218, succ_npred=9, tail_kind="goto",
+        serial=217,
+        start_ea=0x18001687C,
+        nsucc=1,
+        succ_serial=218,
+        succ_npred=9,
+        tail_kind="goto",
     )
     adapter = _FakeConvergenceAdapter(
         block_at_ea={0x18001687C: pre_block},
@@ -360,7 +392,9 @@ def test_duplicate_convergence_rejects_emit_block_lacks_m_stx():
         forward_walk_result=(218, "ok"),
     )
     res = duplicate_convergence_for_byte_path(
-        byte_index=6, fact_view=fv, adapter=adapter,
+        byte_index=6,
+        fact_view=fv,
+        adapter=adapter,
     )
     assert res.applied is False
     assert res.reason == "no_m_stx_in_emit"
@@ -370,8 +404,12 @@ def test_duplicate_convergence_rejects_emit_block_lacks_m_stx():
 def test_duplicate_convergence_rejects_no_convergence_in_walk():
     fv = _FakeFactView(rows=[_row(6, 5, ea="0x000000018001687C")])
     pre_block = BlockView(
-        serial=217, start_ea=0x18001687C, nsucc=1,
-        succ_serial=218, succ_npred=1, tail_kind="goto",
+        serial=217,
+        start_ea=0x18001687C,
+        nsucc=1,
+        succ_serial=218,
+        succ_npred=1,
+        tail_kind="goto",
     )
     adapter = _FakeConvergenceAdapter(
         block_at_ea={0x18001687C: pre_block},
@@ -379,7 +417,9 @@ def test_duplicate_convergence_rejects_no_convergence_in_walk():
         forward_walk_result=(None, "no_npred_gt_1_within_depth"),
     )
     res = duplicate_convergence_for_byte_path(
-        byte_index=6, fact_view=fv, adapter=adapter,
+        byte_index=6,
+        fact_view=fv,
+        adapter=adapter,
     )
     assert res.applied is False
     assert res.reason == "no_npred_gt_1_within_depth"
@@ -389,8 +429,12 @@ def test_duplicate_convergence_rejects_no_convergence_in_walk():
 def test_duplicate_convergence_rejects_no_return_reachable():
     fv = _FakeFactView(rows=[_row(6, 5, ea="0x000000018001687C")])
     pre_block = BlockView(
-        serial=217, start_ea=0x18001687C, nsucc=1,
-        succ_serial=218, succ_npred=9, tail_kind="goto",
+        serial=217,
+        start_ea=0x18001687C,
+        nsucc=1,
+        succ_serial=218,
+        succ_npred=9,
+        tail_kind="goto",
     )
     adapter = _FakeConvergenceAdapter(
         block_at_ea={0x18001687C: pre_block},
@@ -398,7 +442,9 @@ def test_duplicate_convergence_rejects_no_return_reachable():
         forward_walk_result=(None, "convergence_does_not_reach_return"),
     )
     res = duplicate_convergence_for_byte_path(
-        byte_index=6, fact_view=fv, adapter=adapter,
+        byte_index=6,
+        fact_view=fv,
+        adapter=adapter,
     )
     assert res.applied is False
     assert res.reason == "convergence_does_not_reach_return"
@@ -408,6 +454,7 @@ def test_parse_tail_duplicate_convergence_byte_env_only_accepts_6():
     from d810.transforms.byte_emit_tail_isolation import (
         parse_tail_duplicate_convergence_byte_env,
     )
+
     assert parse_tail_duplicate_convergence_byte_env("6") == 6
     assert parse_tail_duplicate_convergence_byte_env("0") is None
     assert parse_tail_duplicate_convergence_byte_env("2") is None
@@ -474,7 +521,11 @@ class _FakeStateCascadeAdapter:
         return self.next_clone_serial
 
     def redirect_advance_edge(
-        self, *, source_serial, old_target_serial, new_target_serial,
+        self,
+        *,
+        source_serial,
+        old_target_serial,
+        new_target_serial,
     ):
         self.redirect_calls.append(
             (source_serial, old_target_serial, new_target_serial)
@@ -509,6 +560,7 @@ def test_execute_state_cascade_rejects_when_source_block_none():
     assert res.applied is False
     assert res.reason == "planner_row_missing_source_block"
     assert adapter.redirect_calls == []
+
 
 def test_execute_state_cascade_rejects_when_intended_target_none():
     row = _FakePlanRow(intended_target=None)

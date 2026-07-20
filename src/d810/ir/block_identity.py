@@ -5,6 +5,7 @@ compare across maturities or after block creation must include at least the
 serial-local snapshot context plus a physical/code identity.  These helpers are
 pure ``d810.ir`` utilities for logs that only have a :class:`FlowGraph`.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from d810.core.maturity_labels import MaturityNumbering, mmat_label
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, OperandKind
 from d810.ir.storage_identity import (
     StorageIdentityKind,
@@ -58,9 +60,11 @@ class NativeEaIntervalSet:
     ) -> tuple[NativeEaInterval, ...]:
         ordered = sorted(
             (
-                interval
-                if isinstance(interval, NativeEaInterval)
-                else NativeEaInterval(*interval)
+                (
+                    interval
+                    if isinstance(interval, NativeEaInterval)
+                    else NativeEaInterval(*interval)
+                )
                 for interval in intervals
             ),
             key=lambda interval: (interval.start_ea, interval.end_ea),
@@ -92,42 +96,132 @@ class NativeEaIntervalSet:
         """Return whether an exact native-EA anchor belongs to this identity."""
         ea = int(ea)
         return any(
-            interval.start_ea <= ea < interval.end_ea
-            for interval in self.intervals
+            interval.start_ea <= ea < interval.end_ea for interval in self.intervals
         )
 
     def diagnostic_label(self) -> str:
         if self.is_empty:
             return "native-ea=[]"
-        return "native-ea=[" + ",".join(
-            f"0x{interval.start_ea:X}-0x{interval.end_ea:X}"
-            for interval in self.intervals
-        ) + "]"
+        return (
+            "native-ea=["
+            + ",".join(
+                f"0x{interval.start_ea:X}-0x{interval.end_ea:X}"
+                for interval in self.intervals
+            )
+            + "]"
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class StableBlockIdentity:
     """Serial-free cross-maturity block identity."""
 
-    native_eas: NativeEaIntervalSet
+    native_key: NativePreanalysisKey
+    exact_instruction_eas: frozenset[int]
+    native_ranges: NativeEaIntervalSet
 
     def __post_init__(self) -> None:
-        if self.native_eas.is_empty:
-            raise ValueError("stable block identity requires at least one native EA")
+        if not isinstance(self.native_key, NativePreanalysisKey):
+            raise TypeError("stable block identity requires a native key")
+        exact_instruction_eas = frozenset(int(ea) for ea in self.exact_instruction_eas)
+        if any(ea < 0 or ea >= _BADADDR for ea in exact_instruction_eas):
+            raise ValueError("exact instruction EAs must be native addresses")
+        if self.native_ranges.is_empty:
+            raise ValueError("stable block identity requires native ranges")
+        if any(not self.native_ranges.contains(ea) for ea in exact_instruction_eas):
+            raise ValueError("exact instruction EAs must belong to native ranges")
+        object.__setattr__(self, "exact_instruction_eas", exact_instruction_eas)
 
     @classmethod
     def from_intervals(
         cls,
         intervals: Iterable[NativeEaInterval],
+        *,
+        native_key: NativePreanalysisKey,
+        exact_instruction_eas: Iterable[int] | None = None,
     ) -> StableBlockIdentity:
-        return cls(NativeEaIntervalSet.from_intervals(intervals))
+        native_ranges = NativeEaIntervalSet.from_intervals(intervals)
+        if exact_instruction_eas is None:
+            exact_instruction_eas = (
+                interval.start_ea
+                for interval in native_ranges.intervals
+                if interval.end_ea == interval.start_ea + 1
+            )
+        return cls(
+            native_key=native_key,
+            exact_instruction_eas=frozenset(exact_instruction_eas),
+            native_ranges=native_ranges,
+        )
+
+    @classmethod
+    def from_instruction_eas(
+        cls,
+        instruction_eas: Iterable[int],
+        *,
+        native_key: NativePreanalysisKey,
+    ) -> StableBlockIdentity:
+        exact_instruction_eas = frozenset(int(ea) for ea in instruction_eas)
+        return cls.from_intervals(
+            (
+                NativeEaInterval(ea, ea + 1)
+                for ea in sorted(exact_instruction_eas)
+                if 0 <= ea < _BADADDR
+            ),
+            native_key=native_key,
+            exact_instruction_eas=exact_instruction_eas,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "native_key": self.native_key.to_dict(),
+            "exact_instruction_eas": sorted(self.exact_instruction_eas),
+            "native_ranges": [
+                {"start_ea": interval.start_ea, "end_ea": interval.end_ea}
+                for interval in self.native_ranges.intervals
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> StableBlockIdentity:
+        if set(payload) != {
+            "native_key",
+            "exact_instruction_eas",
+            "native_ranges",
+        }:
+            raise ValueError("stable block identity fields mismatch")
+        native_key_payload = payload["native_key"]
+        exact_eas_payload = payload["exact_instruction_eas"]
+        native_ranges_payload = payload["native_ranges"]
+        if not isinstance(native_key_payload, dict):
+            raise TypeError("stable block native_key must be an object")
+        if not isinstance(exact_eas_payload, list):
+            raise TypeError("stable block exact_instruction_eas must be a list")
+        if not isinstance(native_ranges_payload, list):
+            raise TypeError("stable block native_ranges must be a list")
+        intervals: list[NativeEaInterval] = []
+        for item in native_ranges_payload:
+            if not isinstance(item, dict) or set(item) != {"start_ea", "end_ea"}:
+                raise ValueError("stable block native range fields mismatch")
+            intervals.append(NativeEaInterval(item["start_ea"], item["end_ea"]))
+        return cls.from_intervals(
+            intervals,
+            native_key=NativePreanalysisKey.from_dict(native_key_payload),
+            exact_instruction_eas=exact_eas_payload,
+        )
 
     def diagnostic_label(self) -> str:
-        return self.native_eas.diagnostic_label()
+        return (
+            f"input={self.native_key.input_identity} "
+            f"function-rva=0x{self.native_key.function_rva:X} "
+            f"exact-ea=[{','.join(f'0x{ea:X}' for ea in sorted(self.exact_instruction_eas))}] "
+            f"{self.native_ranges.diagnostic_label()}"
+        )
 
 
 def stable_block_identity_from_snapshot(
     block: BlockSnapshot,
+    *,
+    native_key: NativePreanalysisKey,
 ) -> StableBlockIdentity | None:
     """Derive portable identity from a lifted block's native EA anchors.
 
@@ -137,16 +231,15 @@ def stable_block_identity_from_snapshot(
     instruction EA, plus the block start, contributes a unit interval so the
     resulting identity is independent of the current block serial.
     """
-    anchors = {int(block.start_ea)}
-    anchors.update(int(insn.ea) for insn in block.insn_snapshots)
-    intervals = tuple(
-        NativeEaInterval(ea, ea + 1)
-        for ea in sorted(anchors)
-        if 0 <= ea < _BADADDR
+    instruction_eas = frozenset(
+        int(insn.ea) for insn in block.insn_snapshots if 0 <= int(insn.ea) < _BADADDR
     )
-    if not intervals:
+    if not instruction_eas:
         return None
-    return StableBlockIdentity.from_intervals(intervals)
+    return StableBlockIdentity.from_instruction_eas(
+        instruction_eas,
+        native_key=native_key,
+    )
 
 
 class BlockHandleProvenance(Enum):
@@ -168,7 +261,7 @@ class MbaBlockHandle:
 
     session_id: str
     token: str
-    identity: StableBlockIdentity | None
+    stable_identity: StableBlockIdentity | None
     provenance: BlockHandleProvenance
 
     def __post_init__(self) -> None:
@@ -182,10 +275,13 @@ class MbaBlockHandle:
                 BlockHandleProvenance.NATIVE,
                 BlockHandleProvenance.IMPORTED_NATIVE,
             }
-            and self.identity is None
+            and self.stable_identity is None
         ):
             raise ValueError("native MBA handle requires stable identity")
-        if self.provenance is BlockHandleProvenance.SYNTHETIC and self.identity is not None:
+        if (
+            self.provenance is BlockHandleProvenance.SYNTHETIC
+            and self.stable_identity is not None
+        ):
             raise ValueError("synthetic MBA handle must not claim stable identity")
         object.__setattr__(self, "session_id", session_id)
         object.__setattr__(self, "token", token)
@@ -201,7 +297,7 @@ class MbaBlockHandle:
         return cls(
             session_id=session_id,
             token=token,
-            identity=identity,
+            stable_identity=identity,
             provenance=BlockHandleProvenance.NATIVE,
         )
 
@@ -215,7 +311,7 @@ class MbaBlockHandle:
         return cls(
             session_id=session_id,
             token=token,
-            identity=None,
+            stable_identity=None,
             provenance=BlockHandleProvenance.SYNTHETIC,
         )
 
@@ -231,7 +327,7 @@ class MbaBlockHandle:
         return cls(
             session_id=session_id,
             token=token,
-            identity=identity,
+            stable_identity=identity,
             provenance=BlockHandleProvenance.IMPORTED_NATIVE,
         )
 
@@ -262,8 +358,8 @@ class BoundBlock:
         anchor_ea = self.anchor_ea
         if anchor_ea is not None:
             anchor_ea = int(anchor_ea)
-            identity = self.handle.identity
-            if identity is not None and not identity.native_eas.contains(anchor_ea):
+            identity = self.handle.stable_identity
+            if identity is not None and not identity.native_ranges.contains(anchor_ea):
                 raise ValueError("bound block anchor must belong to native identity")
         object.__setattr__(self, "serial", serial)
         object.__setattr__(self, "generation", generation)
@@ -451,7 +547,10 @@ def block_body_observation_fingerprint(
         separators=(",", ":"),
     )
     op_fp = json.dumps(
-        [int(getattr(insn, "raw_opcode", getattr(insn, "opcode", 0))) for insn in block.insn_snapshots],
+        [
+            int(getattr(insn, "raw_opcode", getattr(insn, "opcode", 0)))
+            for insn in block.insn_snapshots
+        ],
         separators=(",", ":"),
     )
     operand_rows: list[dict[str, object | None]] = []
@@ -459,17 +558,19 @@ def block_body_observation_fingerprint(
         d = _mop_row(getattr(insn, "d", None))
         l = _mop_row(getattr(insn, "l", None))
         r = _mop_row(getattr(insn, "r", None))
-        operand_rows.append({
-            "d_t": d["t"],
-            "d_o": d["o"],
-            "d_s": d["s"],
-            "l_t": l["t"],
-            "l_o": l["o"],
-            "l_v": l["v"],
-            "r_t": r["t"],
-            "r_o": r["o"],
-            "r_v": r["v"],
-        })
+        operand_rows.append(
+            {
+                "d_t": d["t"],
+                "d_o": d["o"],
+                "d_s": d["s"],
+                "l_t": l["t"],
+                "l_o": l["o"],
+                "l_v": l["v"],
+                "r_t": r["t"],
+                "r_o": r["o"],
+                "r_v": r["v"],
+            }
+        )
     operand_fp = json.dumps(operand_rows, sort_keys=True, separators=(",", ":"))
     payload = json.dumps(
         {"ea": ea_fp, "op": op_fp, "operand": operand_fp},
@@ -488,7 +589,11 @@ def block_origin_label(
 ) -> str:
     """Format clone/insert origin context for diagnostics."""
     assigned = block_label(flow_graph, assigned_serial)
-    origin = block_label(flow_graph, origin_serial) if origin_serial is not None else "synthetic"
+    origin = (
+        block_label(flow_graph, origin_serial)
+        if origin_serial is not None
+        else "synthetic"
+    )
     return f"{assigned} origin={origin} clone_reason={reason}"
 
 

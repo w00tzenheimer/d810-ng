@@ -6,6 +6,7 @@ The cfg layer describes what byte-tail CFG shape is wanted; this adapter says
 how Hex-Rays performs the live block copies, rewrites, dirtying, and verifier
 interaction.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -101,6 +102,7 @@ class _SourceByteAddressFamily:
 _MBL_KEEP = 0x10000
 _SOURCE_BYTE_MAX_INDEX = 6
 
+
 def _terminal_zero_guard_literal_return_values(mba: Any) -> tuple[int, ...]:
     return terminal_zero_guard_literal_return_values(mba)
 
@@ -153,6 +155,10 @@ class LiveMbaAdapter:
         self._identity_index = mutation_gateway.identity_index
         self._dispatcher_artifact_planner = dispatcher_artifact_planner
 
+    @property
+    def native_key(self):
+        return self._identity_index.native_key
+
     def _new_deferred_modifier(self):
         """Create one modifier transaction over the adapter's live index."""
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
@@ -199,9 +205,7 @@ class LiveMbaAdapter:
         if nsucc == 1 and callable(getattr(blk, "succ", None)):
             succ_serial = int(blk.succ(0))
             succ_blk = self._mba.get_mblock(succ_serial)
-            if succ_blk is not None and callable(
-                getattr(succ_blk, "npred", None)
-            ):
+            if succ_blk is not None and callable(getattr(succ_blk, "npred", None)):
                 succ_npred = int(succ_blk.npred())
 
         tail_kind = "unknown"
@@ -239,7 +243,10 @@ class LiveMbaAdapter:
         )
 
     def insert_trampoline_after(
-        self, *, predecessor_serial: int, successor_serial: int,
+        self,
+        *,
+        predecessor_serial: int,
+        successor_serial: int,
     ) -> int:
         """Insert an empty BLT_1WAY trampoline between predecessor and
         successor; the trampoline contains exactly one ``m_goto`` to
@@ -328,8 +335,7 @@ class LiveMbaAdapter:
         blk = mba.get_mblock(int(block_serial))
         if blk is None:
             raise RuntimeError(
-                "split_block_at_tail_jcnd: cannot resolve block "
-                f"{block_serial}"
+                "split_block_at_tail_jcnd: cannot resolve block " f"{block_serial}"
             )
 
         nsucc = (
@@ -484,9 +490,7 @@ class LiveMbaAdapter:
             b = mba.get_mblock(s)
             if b is None:
                 continue
-            npred = (
-                int(b.npred()) if callable(getattr(b, "npred", None)) else 0
-            )
+            npred = int(b.npred()) if callable(getattr(b, "npred", None)) else 0
             if d > 0 and npred > 1:
                 saw_candidate = True
                 if _reaches_stop(s):
@@ -546,7 +550,6 @@ class LiveMbaAdapter:
                 f"for conv={convergence_serial}"
             )
         return modifier.current_serial_for_planned(expected_serial)
-
 
     # ------------------------------------------------------------------
     # State-cascade adapter Protocol implementation (byte5->byte6 probe)
@@ -673,8 +676,7 @@ class LiveMbaAdapter:
         src = mba.get_mblock(int(source_serial))
         if src is None:
             raise RuntimeError(
-                "redirect_fallthrough_edge: cannot resolve "
-                f"src={source_serial}"
+                "redirect_fallthrough_edge: cannot resolve " f"src={source_serial}"
             )
         old_qty = int(mba.qty)
         helper_serial = self._new_deferred_modifier().redirect_fallthrough_edge_now(
@@ -734,10 +736,15 @@ class LiveMbaAdapter:
         if len(join_body) != 1:
             return None
         dispatcher_dst = getattr(join_body[0], "d", None)
-        if dispatcher_dst is None or getattr(dispatcher_dst, "t", None) == ida_hexrays.mop_z:
+        if (
+            dispatcher_dst is None
+            or getattr(dispatcher_dst, "t", None) == ida_hexrays.mop_z
+        ):
             return None
 
-        size = int(getattr(plan, "state_size", 0) or getattr(dispatcher_dst, "size", 0) or 4)
+        size = int(
+            getattr(plan, "state_size", 0) or getattr(dispatcher_dst, "size", 0) or 4
+        )
         mask = (1 << (size * 8)) - 1
         modifier = self._new_deferred_modifier()
         modifier.queue_const_mov_and_nop_pair(
@@ -931,10 +938,15 @@ class LiveMbaAdapter:
         # with literal constants, original m_goto, etc.). Then patch
         # the byte index in any kept instruction.
         byte_emit_opcodes = {
-            int(_ih.m_sar), int(_ih.m_shl), int(_ih.m_xdu),
-            int(_ih.m_ldx), int(_ih.m_stx),
+            int(_ih.m_sar),
+            int(_ih.m_shl),
+            int(_ih.m_xdu),
+            int(_ih.m_ldx),
+            int(_ih.m_stx),
             # Also keep arithmetic helpers that may appear:
-            int(_ih.m_add), int(_ih.m_and), int(_ih.m_mul),
+            int(_ih.m_add),
+            int(_ih.m_and),
+            int(_ih.m_mul),
         }
         cur = template_block.head
         patch_count = 0
@@ -972,7 +984,9 @@ class LiveMbaAdapter:
                 if int(cloned.opcode) == int(_ih.m_stx) and offset_delta != 0:
                     if cloned.d is not None:
                         _wrap_address_with_offset(
-                            cloned.d, offset_delta, _ih,
+                            cloned.d,
+                            offset_delta,
+                            _ih,
                             ea=int(getattr(cloned, "ea", 0) or 0),
                         )
                 # For ANY m_shl (top-level OR nested inside m_stx's value
@@ -981,14 +995,19 @@ class LiveMbaAdapter:
                 # buffer slot.
                 if shift_delta != 0:
                     _wrap_all_nested_shifts(
-                        cloned, shift_delta, _ih,
+                        cloned,
+                        shift_delta,
+                        _ih,
                         ea=int(getattr(cloned, "ea", 0) or 0),
                     )
                 anchor_insns.append(cloned)
             cur = cur.next
         logger.info(
             "byte_anchor[byte_store]: clone of block %d for byte %d->%d: %d patches applied",
-            template_block.serial, template_byte_index, target_byte_index, patch_count,
+            template_block.serial,
+            template_byte_index,
+            target_byte_index,
+            patch_count,
         )
         # Dump ALL kept instructions + walk every operand tree level.
         for idx, insn in enumerate(anchor_insns):
@@ -998,7 +1017,8 @@ class LiveMbaAdapter:
                 ds = "<err>"
             logger.info(
                 "byte_anchor[byte_store]:   kept insn[%d]: %s",
-                idx, ds[:300],
+                idx,
+                ds[:300],
             )
             if idx == 1:
                 _dump_mop_tree(insn.l, "l", 0, _ih)
@@ -1059,9 +1079,7 @@ class LiveMbaAdapter:
                 )
                 if found is not None:
                     return self.find_block(
-                        _native_point_identity(
-                            int(getattr(blk, "start", 0) or 0)
-                        ),
+                        _native_point_identity(int(getattr(blk, "start", 0) or 0)),
                     )
                 insn = insn.next
         logger.info(
@@ -1074,7 +1092,9 @@ class LiveMbaAdapter:
         return None
 
     def extract_source_byte_indexed_operand(
-        self, byte_emit_serial: int, byte_index: int,
+        self,
+        byte_emit_serial: int,
+        byte_index: int,
     ):
         """Find the source-byte address operand for ``byte_index`` in any
         nested m_ldx operand tree. Search the byte_emit block first, then
@@ -1118,7 +1138,9 @@ class LiveMbaAdapter:
                 logger.warning(
                     "byte_anchor: source-byte[%d] operand found in block "
                     "%d (not the byte_emit block %d).",
-                    int(byte_index), serial, byte_emit_serial,
+                    int(byte_index),
+                    serial,
+                    byte_emit_serial,
                 )
                 clone = _ih.mop_t()
                 clone.assign(found)
@@ -1138,7 +1160,8 @@ class LiveMbaAdapter:
         mba = self._mba
         qty = int(getattr(mba, "qty", 0) or 0)
         stop_serials = [
-            s for s in range(qty)
+            s
+            for s in range(qty)
             if mba.get_mblock(s) is not None
             and int(mba.get_mblock(s).type) == int(_ih.BLT_STOP)
         ]
@@ -1281,10 +1304,22 @@ def _dump_mop_tree(op, label: str, depth: int, _ih, max_depth: int = 8) -> None:
         return
     t = int(getattr(op, "t", -1))
     type_names = {
-        0: "mop_z", 1: "mop_r", 2: "mop_n", 3: "mop_str",
-        4: "mop_d", 5: "mop_S", 6: "mop_v", 7: "mop_b",
-        8: "mop_f", 9: "mop_l", 10: "mop_a", 11: "mop_h",
-        12: "mop_c", 13: "mop_fn", 14: "mop_p", 15: "mop_sc",
+        0: "mop_z",
+        1: "mop_r",
+        2: "mop_n",
+        3: "mop_str",
+        4: "mop_d",
+        5: "mop_S",
+        6: "mop_v",
+        7: "mop_b",
+        8: "mop_f",
+        9: "mop_l",
+        10: "mop_a",
+        11: "mop_h",
+        12: "mop_c",
+        13: "mop_fn",
+        14: "mop_p",
+        15: "mop_sc",
     }
     type_name = type_names.get(t, f"mop_t={t}")
     try:
@@ -1313,9 +1348,15 @@ def _dump_mop_tree(op, label: str, depth: int, _ih, max_depth: int = 8) -> None:
         if nnn is not None:
             extras.append(f"nnn={int(getattr(nnn, 'value', 0))}")
     indent = "  " * depth
-    logger.info("MOPTRACE %s%s.%s [%s] size=%s dstr=%s",
-                indent, label, type_name, ",".join(extras),
-                int(getattr(op, "size", 0) or 0), ds[:60])
+    logger.info(
+        "MOPTRACE %s%s.%s [%s] size=%s dstr=%s",
+        indent,
+        label,
+        type_name,
+        ",".join(extras),
+        int(getattr(op, "size", 0) or 0),
+        ds[:60],
+    )
     # Recurse if this is mop_d (wraps a sub-instruction).
     if t == int(_ih.mop_d):
         sub = getattr(op, "d", None)
@@ -1324,11 +1365,21 @@ def _dump_mop_tree(op, label: str, depth: int, _ih, max_depth: int = 8) -> None:
                 op_name = type_names.get(int(getattr(sub, "opcode", -1)), "?")
             except Exception:
                 op_name = "?"
-            logger.info("MOPTRACE %s  %s.sub opcode=%s", indent, label,
-                        int(getattr(sub, "opcode", -1)))
-            _dump_mop_tree(getattr(sub, "l", None), f"{label}.sub.l", depth + 1, _ih, max_depth)
-            _dump_mop_tree(getattr(sub, "r", None), f"{label}.sub.r", depth + 1, _ih, max_depth)
-            _dump_mop_tree(getattr(sub, "d", None), f"{label}.sub.d", depth + 1, _ih, max_depth)
+            logger.info(
+                "MOPTRACE %s  %s.sub opcode=%s",
+                indent,
+                label,
+                int(getattr(sub, "opcode", -1)),
+            )
+            _dump_mop_tree(
+                getattr(sub, "l", None), f"{label}.sub.l", depth + 1, _ih, max_depth
+            )
+            _dump_mop_tree(
+                getattr(sub, "r", None), f"{label}.sub.r", depth + 1, _ih, max_depth
+            )
+            _dump_mop_tree(
+                getattr(sub, "d", None), f"{label}.sub.d", depth + 1, _ih, max_depth
+            )
     # Recurse into mop_a (address-of) target.
     if t == int(_ih.mop_a):
         inner = getattr(op, "a", None)
@@ -1486,10 +1537,7 @@ def _source_address_candidates(op, _ih) -> tuple[tuple[str, int, Any | None], ..
     t = int(getattr(op, "t", -1))
     if t == int(_ih.mop_d):
         sub = getattr(op, "d", None)
-        if (
-            sub is not None
-            and int(getattr(sub, "opcode", -1)) == int(_ih.m_add)
-        ):
+        if sub is not None and int(getattr(sub, "opcode", -1)) == int(_ih.m_add):
             l = getattr(sub, "l", None)
             r = getattr(sub, "r", None)
             for base, index_op in ((l, r), (r, l)):
@@ -1566,13 +1614,15 @@ def _discover_source_byte_address_family(
             (base for base in observed_by_index.values() if base is not None),
             None,
         )
-        candidates.append((
-            len(observed),
-            1 if has_base else 0,
-            key,
-            base,
-            observed,
-        ))
+        candidates.append(
+            (
+                len(observed),
+                1 if has_base else 0,
+                key,
+                base,
+                observed,
+            )
+        )
     if not candidates:
         return None
     candidates.sort(key=lambda item: (-item[0], -item[1], item[2]))
@@ -1666,10 +1716,7 @@ def _find_source_byte_ldx_in_insn(
         return None
     if int(getattr(insn, "opcode", -1)) == int(_ih.m_ldx):
         r = getattr(insn, "r", None)
-        if (
-            r is not None
-            and _source_address_matches_family(r, byte_index, family, _ih)
-        ):
+        if r is not None and _source_address_matches_family(r, byte_index, family, _ih):
             return r
         if observed_byte_indices is not None and r is not None:
             for k in range(_SOURCE_BYTE_MAX_INDEX + 1):
@@ -1781,13 +1828,9 @@ class _ValidatedFactViewAdapter:
                 try:
                     if raw_ea is not None:
                         ea_int = (
-                            int(raw_ea, 0)
-                            if isinstance(raw_ea, str)
-                            else int(raw_ea)
+                            int(raw_ea, 0) if isinstance(raw_ea, str) else int(raw_ea)
                         )
-                        ea_hex = (
-                            f"0x{ea_int & ((1 << 64) - 1):016x}"
-                        )
+                        ea_hex = f"0x{ea_int & ((1 << 64) - 1):016x}"
                 except (TypeError, ValueError):
                     ea_hex = ""
             rows.append(
@@ -1929,13 +1972,12 @@ def maybe_run_tail_duplicate_convergence(
         )
     except NotImplementedError as exc:
         logger.warning(
-            "tail_duplicate_convergence: adapter not wired: %s", exc,
+            "tail_duplicate_convergence: adapter not wired: %s",
+            exc,
         )
         return
     except Exception:
-        logger.exception(
-            "tail_duplicate_convergence: unexpected failure; continuing"
-        )
+        logger.exception("tail_duplicate_convergence: unexpected failure; continuing")
         return
 
     logger.info("tail_duplicate_convergence: %s", report)
@@ -2214,7 +2256,8 @@ def _load_planner_sites_from_fact_view(fact_view, *, adapter=None):
         source_ea = getattr(obs, "source_ea", None)
         source_ea_hex = (
             f"0x{int(source_ea) & ((1 << 64) - 1):016x}"
-            if source_ea is not None else None
+            if source_ea is not None
+            else None
         )
         live_source_block = _resolve_live_site_block_from_payload(
             payload=payload,
@@ -2320,7 +2363,9 @@ def _bridge_plan_row_to_live_mba(
             dataclasses.replace(
                 plan_row,
                 source_block=mapped_serials["source_block"],
-                current_continuation_target=mapped_serials["current_continuation_target"],
+                current_continuation_target=mapped_serials[
+                    "current_continuation_target"
+                ],
                 intended_target=mapped_serials["intended_target"],
                 state_write_block=mapped_serials["state_write_block"],
             ),
@@ -2439,10 +2484,9 @@ def _shortest_path_to_block(
 
 
 def _site_is_memory_store(site) -> bool:
-    return (
-        getattr(site, "emitter_role", "") == "memory_store"
-        or getattr(site, "opcode", "") in {"store", "m_stx"}
-    )
+    return getattr(site, "emitter_role", "") == "memory_store" or getattr(
+        site, "opcode", ""
+    ) in {"store", "m_stx"}
 
 
 def _site_is_terminal_source_candidate(site, byte_index: int) -> bool:
@@ -2810,7 +2854,10 @@ def _rewrite_terminal_return_block_to_literal(
             return False
         if opcode == int(ida_hexrays.m_mov):
             destination = getattr(cur, "d", None)
-            if destination is not None and getattr(destination, "t", None) != ida_hexrays.mop_z:
+            if (
+                destination is not None
+                and getattr(destination, "t", None) != ida_hexrays.mop_z
+            ):
                 saw_return_move = True
         cur = cur.next
     if not saw_return_move:
@@ -2980,8 +3027,7 @@ def _load_dag_semantics_from_dag(dag) -> _DagSemantics | None:
                     else None
                 ),
                 ordered_path=tuple(
-                    int(block)
-                    for block in (getattr(edge, "ordered_path", ()) or ())
+                    int(block) for block in (getattr(edge, "ordered_path", ()) or ())
                 ),
             )
         )
@@ -2995,9 +3041,7 @@ def _load_dag_semantics_from_dag(dag) -> _DagSemantics | None:
         for state in scc.blocks:
             state_to_scc[int(state)] = int(scc.scc_id)
 
-    scc_successors_mut: dict[int, set[int]] = {
-        int(scc.scc_id): set() for scc in sccs
-    }
+    scc_successors_mut: dict[int, set[int]] = {int(scc.scc_id): set() for scc in sccs}
     for source, targets in adj.items():
         source_scc = state_to_scc.get(int(source))
         if source_scc is None:
@@ -3040,8 +3084,7 @@ def _load_dag_semantics_from_dag(dag) -> _DagSemantics | None:
             block: frozenset(sccs_) for block, sccs_ in block_to_sccs_mut.items()
         },
         scc_successors={
-            scc_id: frozenset(targets)
-            for scc_id, targets in scc_successors_mut.items()
+            scc_id: frozenset(targets) for scc_id, targets in scc_successors_mut.items()
         },
         edges=tuple(edges),
     )
@@ -3100,10 +3143,7 @@ def _first_cyclic_scc_reachable(
     max_depth: int = 10,
 ) -> CfgSCC | None:
     block_to_scc = {
-        block: scc
-        for scc in live_sccs
-        if scc.is_cyclic
-        for block in scc.blocks
+        block: scc for scc in live_sccs if scc.is_cyclic for block in scc.blocks
     }
     queue: deque[tuple[int, int]] = deque([(int(start_serial), 0)])
     seen: set[int] = set()
@@ -3407,7 +3447,9 @@ def _close_terminal_equality_frontiers(
                     skipped.append(f"{label}:state_frontier_payload_clear_unavailable")
                     continue
                 clear_payload(int(arm_live))
-                redirect_fallthrough = getattr(adapter, "redirect_fallthrough_edge", None)
+                redirect_fallthrough = getattr(
+                    adapter, "redirect_fallthrough_edge", None
+                )
                 if redirect_fallthrough is not None:
                     try:
                         redirect_fallthrough(
@@ -3441,9 +3483,7 @@ def _close_terminal_equality_frontiers(
                 source_sccs=source_sccs,
                 cfg_scc=cfg_scc,
             ):
-                skipped.append(
-                    f"{label}:no_dag_scc_violation:{arm_live}->{old_live}"
-                )
+                skipped.append(f"{label}:no_dag_scc_violation:{arm_live}->{old_live}")
                 continue
             clear_payload = getattr(adapter, "clear_state_frontier_payload", None)
             if clear_payload is None:
@@ -3578,9 +3618,7 @@ def _rewrite_terminal_zero_guard_literal_return_edges(
 ) -> tuple[tuple[int, int, int], ...]:
     "Rewrite residual zero-guard return arms once preanalysis proved a literal."
     literals = tuple(
-        dict.fromkeys(
-            int(value) & 0xFFFFFFFFFFFFFFFF for value in literal_values
-        )
+        dict.fromkeys(int(value) & 0xFFFFFFFFFFFFFFFF for value in literal_values)
     )
     if len(literals) != 1:
         return ()
@@ -3698,9 +3736,7 @@ def maybe_rewrite_impossible_return_artifact_edges(
         evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
         edge_proofs = tuple(evidence.impossible_return_artifact_edges or ())
     if not edge_proofs:
-        logger.info(
-            "impossible_return_artifact_edges: skipped reason=no_evidence"
-        )
+        logger.info("impossible_return_artifact_edges: skipped reason=no_evidence")
         return ()
 
     adapter = LiveMbaAdapter(mba)
@@ -3853,17 +3889,14 @@ def _select_terminal_tail_entry_live(
         live_succs = _live_successor_map(adapter)
         scored: list[tuple[int, int, int]] = []
         for candidate in candidates:
-            reaches_first = (
-                not first_byte_live
-                or any(
-                    _shortest_live_path(
-                        live_succs,
-                        start=int(candidate),
-                        target=int(first_byte_candidate),
-                        max_depth=16,
-                    )
-                    for first_byte_candidate in first_byte_live
+            reaches_first = not first_byte_live or any(
+                _shortest_live_path(
+                    live_succs,
+                    start=int(candidate),
+                    target=int(first_byte_candidate),
+                    max_depth=16,
                 )
+                for first_byte_candidate in first_byte_live
             )
             if not reaches_first:
                 continue
@@ -3887,8 +3920,7 @@ def _select_terminal_tail_entry_live(
         if not scored:
             return (
                 None,
-                "terminal_tail_effective_entry_has_no_live_candidate:"
-                f"{candidates}",
+                "terminal_tail_effective_entry_has_no_live_candidate:" f"{candidates}",
             )
         scored.sort()
         return (int(scored[0][1]), "ok")
@@ -3919,8 +3951,7 @@ def _select_terminal_tail_entry_live(
     if not candidate_set:
         return (
             None,
-            "live_block_not_resolvable:terminal_tail_effective_entry:"
-            f"{entry_snap}",
+            "live_block_not_resolvable:terminal_tail_effective_entry:" f"{entry_snap}",
         )
 
     reachable = _live_reachable_from_entry(adapter)
@@ -3948,26 +3979,21 @@ def _select_terminal_tail_entry_live(
             )
         )
         if first_byte_identity_eas:
-            view = adapter.find_block(
-                _native_eas_identity(first_byte_identity_eas)
-            )
+            view = adapter.find_block(_native_eas_identity(first_byte_identity_eas))
             if view is not None:
                 first_byte_live.add(int(getattr(view, "serial", -1)))
 
     live_succs = _live_successor_map(adapter)
     scored: list[tuple[int, int, int]] = []
     for candidate in candidates:
-        reaches_first = (
-            not first_byte_live
-            or any(
-                _shortest_live_path(
-                    live_succs,
-                    start=int(candidate),
-                    target=int(first_byte_candidate),
-                    max_depth=16,
-                )
-                for first_byte_candidate in first_byte_live
+        reaches_first = not first_byte_live or any(
+            _shortest_live_path(
+                live_succs,
+                start=int(candidate),
+                target=int(first_byte_candidate),
+                max_depth=16,
             )
+            for first_byte_candidate in first_byte_live
         )
         if not reaches_first:
             continue
@@ -3992,8 +4018,7 @@ def _select_terminal_tail_entry_live(
     if not scored:
         return (
             None,
-            "terminal_tail_effective_entry_has_no_live_candidate:"
-            f"{candidates}",
+            "terminal_tail_effective_entry_has_no_live_candidate:" f"{candidates}",
         )
     scored.sort()
     return (int(scored[0][1]), "ok")
@@ -4150,7 +4175,10 @@ def _close_terminal_tail_entry_frontier(
                 f"edge{edge.edge_id}:already_enters_dag_target:{target_entry_live}"
             )
             continue
-        if int(arm_live) in terminal_tail_live or int(frontier_live) in terminal_tail_live:
+        if (
+            int(arm_live) in terminal_tail_live
+            or int(frontier_live) in terminal_tail_live
+        ):
             skipped.append(
                 f"edge{edge.edge_id}:frontier_inside_terminal_tail:{frontier_live}"
             )
@@ -4225,9 +4253,7 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
         planner_evidence = evidence.terminal_tail_planner
 
     if fact_view is None and planner_evidence is None:
-        logger.warning(
-            "terminal_tail_cascade_egress: fact view unavailable; skipping"
-        )
+        logger.warning("terminal_tail_cascade_egress: fact view unavailable; skipping")
         return False
 
     diag_conn = None
@@ -4257,9 +4283,7 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
         plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
         dag = _load_dag_semantics_from_dag(dag)
     except Exception:
-        logger.exception(
-            "terminal_tail_cascade_egress: planner failed; skipping"
-        )
+        logger.exception("terminal_tail_cascade_egress: planner failed; skipping")
         return False
 
     rows_by_byte = {int(row.byte_index): row for row in plan.rows}
@@ -4339,15 +4363,19 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
             byte_index=int(bridge.target_store_guard_byte_index),
         )
         if source_block is None:
-            bridge_preflight_failures.append((
-                int(bridge.source_byte_index),
-                "source_loader_not_found_on_continuation",
-            ))
+            bridge_preflight_failures.append(
+                (
+                    int(bridge.source_byte_index),
+                    "source_loader_not_found_on_continuation",
+                )
+            )
         elif target_block is None:
-            bridge_preflight_failures.append((
-                int(bridge.source_byte_index),
-                "store_guard_target_not_found",
-            ))
+            bridge_preflight_failures.append(
+                (
+                    int(bridge.source_byte_index),
+                    "store_guard_target_not_found",
+                )
+            )
     if bridge_preflight_failures:
         logger.info(
             "terminal_tail_cascade_egress: skipped reason=bridge_preflight_failed "
@@ -4457,9 +4485,7 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
                     snapshot_id=target_snap,
                     snap_serial=int(source_block),
                     adapter=adapter,
-                    field_name=(
-                        f"byte{int(bridge.source_byte_index)}_source_loader"
-                    ),
+                    field_name=(f"byte{int(bridge.source_byte_index)}_source_loader"),
                 )
                 if mapped_source is None:
                     mapped_old, ro = (None, rs)
@@ -4477,22 +4503,14 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
                     snapshot_id=target_snap,
                     snap_serial=int(target_block),
                     adapter=adapter,
-                    field_name=(
-                        f"byte{int(bridge.source_byte_index)}_store_guard"
-                    ),
+                    field_name=(f"byte{int(bridge.source_byte_index)}_store_guard"),
                 )
                 if mapped_source is None:
-                    bridge_results.append(
-                        (int(bridge.source_byte_index), False, rs)
-                    )
+                    bridge_results.append((int(bridge.source_byte_index), False, rs))
                 elif mapped_old is None:
-                    bridge_results.append(
-                        (int(bridge.source_byte_index), False, ro)
-                    )
+                    bridge_results.append((int(bridge.source_byte_index), False, ro))
                 elif mapped_target is None:
-                    bridge_results.append(
-                        (int(bridge.source_byte_index), False, rt)
-                    )
+                    bridge_results.append((int(bridge.source_byte_index), False, rt))
                 else:
                     try:
                         adapter.redirect_advance_edge(
@@ -4575,9 +4593,7 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
                 ),
             )
         except Exception:
-            logger.exception(
-                "terminal_tail_cascade_egress: split failed; continuing"
-            )
+            logger.exception("terminal_tail_cascade_egress: split failed; continuing")
 
     entry_applied: tuple[tuple[int, int, int], ...] = ()
     entry_skipped: tuple[str, ...] = ()
@@ -4651,9 +4667,8 @@ def maybe_run_tail_state_cascade(
     if pair is None:
         return  # default-off: no log, no mutation
 
-    if (
-        os.environ.get("D810_TAIL_DISTINCT_BYTE")
-        or os.environ.get("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE")
+    if os.environ.get("D810_TAIL_DISTINCT_BYTE") or os.environ.get(
+        "D810_TAIL_DUPLICATE_CONVERGENCE_BYTE"
     ):
         logger.warning(
             "tail_state_cascade: D810_TERMINAL_TAIL_STATE_CASCADE_PAIR is "
@@ -4688,18 +4703,15 @@ def maybe_run_tail_state_cascade(
             sites = list(planner_evidence.sites)
         plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
     except Exception:
-        logger.exception(
-            "tail_state_cascade: planner failed; skipping"
-        )
+        logger.exception("tail_state_cascade: planner failed; skipping")
         return
 
     byte5_row = next(
-        (row for row in plan.rows if row.byte_index == 5), None,
+        (row for row in plan.rows if row.byte_index == 5),
+        None,
     )
     if byte5_row is None:
-        logger.warning(
-            "tail_state_cascade: planner produced no byte-5 row; skipping"
-        )
+        logger.warning("tail_state_cascade: planner produced no byte-5 row; skipping")
         return
 
     logger.info(
@@ -4729,11 +4741,15 @@ def maybe_run_tail_state_cascade(
     )
     if mapped_row is None:
         logger.info(
-            "tail_state_cascade: EA-bridge rejected: %s", bridge_reason,
+            "tail_state_cascade: EA-bridge rejected: %s",
+            bridge_reason,
         )
         from d810.transforms.byte_emit_tail_isolation import StateCascadeReport
+
         report = StateCascadeReport(
-            applied=False, pair="5:6", reason=bridge_reason,
+            applied=False,
+            pair="5:6",
+            reason=bridge_reason,
         )
         logger.info("tail_state_cascade: %s", report)
         return
@@ -4742,10 +4758,14 @@ def maybe_run_tail_state_cascade(
         "tail_state_cascade: EA-bridge mapped row "
         "source_block=%s->%s continuation=%s->%s intended=%s->%s "
         "state_write=%s->%s",
-        byte5_row.source_block, mapped_row.source_block,
-        byte5_row.current_continuation_target, mapped_row.current_continuation_target,
-        byte5_row.intended_target, mapped_row.intended_target,
-        byte5_row.state_write_block, mapped_row.state_write_block,
+        byte5_row.source_block,
+        mapped_row.source_block,
+        byte5_row.current_continuation_target,
+        mapped_row.current_continuation_target,
+        byte5_row.intended_target,
+        mapped_row.intended_target,
+        byte5_row.state_write_block,
+        mapped_row.state_write_block,
     )
 
     try:
@@ -4755,9 +4775,7 @@ def maybe_run_tail_state_cascade(
             adapter=adapter,
         )
     except Exception:
-        logger.exception(
-            "tail_state_cascade: unexpected failure; continuing"
-        )
+        logger.exception("tail_state_cascade: unexpected failure; continuing")
         return
 
     logger.info("tail_state_cascade: %s", report)
@@ -4788,12 +4806,8 @@ def maybe_run_byte_anchor(mba: Any) -> None:
     live_host_byte = parse_live_host_env(
         os.environ.get("D810_TAIL_ANCHOR_BYTE6_LIVE_HOST")
     )
-    multi_bytes = parse_multi_byte_env(
-        os.environ.get("D810_TAIL_ANCHOR_READ_BYTES")
-    )
-    store_bytes = parse_byte_store_env(
-        os.environ.get("D810_TAIL_ANCHOR_STORE_BYTES")
-    )
+    multi_bytes = parse_multi_byte_env(os.environ.get("D810_TAIL_ANCHOR_READ_BYTES"))
+    store_bytes = parse_byte_store_env(os.environ.get("D810_TAIL_ANCHOR_STORE_BYTES"))
     reconnect_bytes = parse_reconnect_env(
         os.environ.get("D810_TAIL_ANCHOR_RECONNECT_BYTES")
     )
@@ -4806,29 +4820,34 @@ def maybe_run_byte_anchor(mba: Any) -> None:
     # captures any remaining bytes (e.g. byte 4) as XOR-chain entries
     # into the rax slot. Other mechanisms remain mutually exclusive.
     hybrid_byte_store_xor = (
-        store_bytes is not None and multi_bytes is not None
+        store_bytes is not None
+        and multi_bytes is not None
         and split_mechanism is None
         and single_mechanism is None
         and live_host_byte is None
     )
     if not hybrid_byte_store_xor:
         active = sum(
-            1 for m in (
-                split_mechanism, single_mechanism, live_host_byte,
-                multi_bytes, store_bytes, reconnect_bytes,
+            1
+            for m in (
+                split_mechanism,
+                single_mechanism,
+                live_host_byte,
+                multi_bytes,
+                store_bytes,
+                reconnect_bytes,
             )
             if m is not None
         )
         if active > 1:
-            logger.warning(
-                "byte_anchor: multiple anchor-mechanism envs set; refusing."
-            )
+            logger.warning("byte_anchor: multiple anchor-mechanism envs set; refusing.")
             return
         if active == 0:
             return  # default-off
 
     conflicting = [
-        n for n in (
+        n
+        for n in (
             "D810_TAIL_DISTINCT_BYTE",
             "D810_TAIL_DUPLICATE_CONVERGENCE_BYTE",
             "D810_TERMINAL_TAIL_STATE_CASCADE_PAIR",
@@ -4837,8 +4856,7 @@ def maybe_run_byte_anchor(mba: Any) -> None:
     ]
     if conflicting:
         logger.warning(
-            "byte_anchor: refusing to run; conflicting tail-shape probes "
-            "set: %s",
+            "byte_anchor: refusing to run; conflicting tail-shape probes " "set: %s",
             ", ".join(conflicting),
         )
         return
@@ -4914,7 +4932,9 @@ def maybe_run_byte_anchor(mba: Any) -> None:
     anchor_a = getattr(report, "anchor_a_serial", None)
     anchor_b = getattr(report, "anchor_b_serial", None)
     byte_emit_serial = getattr(report, "byte_emit_serial", None)
-    if getattr(report, "applied", False) and (anchor_a is not None and anchor_b is not None):
+    if getattr(report, "applied", False) and (
+        anchor_a is not None and anchor_b is not None
+    ):
         diag_serials = [
             byte_emit_serial,
             anchor_a,
@@ -4940,13 +4960,20 @@ def maybe_run_byte_anchor(mba: Any) -> None:
                 btype = int(getattr(blk, "type", -1))
                 logger.info(
                     "byte_anchor: block %d type=%d preds=%s succs=%s",
-                    s, btype, preds, succs,
+                    s,
+                    btype,
+                    preds,
+                    succs,
                 )
                 insn = blk.head
                 idx = 0
                 while insn is not None and idx < 12:
                     try:
-                        ds = insn.dstr() if callable(getattr(insn, "dstr", None)) else "<no-dstr>"
+                        ds = (
+                            insn.dstr()
+                            if callable(getattr(insn, "dstr", None))
+                            else "<no-dstr>"
+                        )
                     except Exception:
                         ds = "<dstr-raised>"
                     logger.info("byte_anchor:   blk[%d] insn[%d]: %s", s, idx, ds)

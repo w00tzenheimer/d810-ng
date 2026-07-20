@@ -31,6 +31,10 @@ Lives in ``tests/unit/`` because:
 
 from __future__ import annotations
 
+from tests.native_preanalysis import make_native_key
+
+NATIVE_KEY = make_native_key()
+
 import enum
 import time
 from pathlib import Path
@@ -55,6 +59,7 @@ class _Event(enum.Enum):
 
 class _StubStore:
     """Minimal preanalysis-store stub with the required ``db_path``."""
+
     db_path = Path(":memory:")
 
 
@@ -155,7 +160,9 @@ class TestFlowGraphReadyCoordinatorDedup:
     ``(func_ea, maturity)`` -- exactly one collector pass runs even
     though the subscriber is invoked twice."""
 
-    def _build_phase(self, monkeypatch, collector: _CountingCollector) -> PreanalysisPhase:
+    def _build_phase(
+        self, monkeypatch, collector: _CountingCollector
+    ) -> PreanalysisPhase:
         """Build a ``PreanalysisPhase`` with the writer stubbed so saves
         don't try to hit SQLite."""
         import d810.passes.phase
@@ -194,6 +201,7 @@ class TestFlowGraphReadyCoordinatorDedup:
             preanalysis_runtime=_PreanalysisRuntime(phase, fact_runtime),
             analysis_runtime=None,
             rule_scope_service=None,
+            native_preanalysis_key_provider=lambda _function_ea: NATIVE_KEY,
         )
 
     def _payload(
@@ -239,9 +247,7 @@ class TestFlowGraphReadyCoordinatorDedup:
         assert func_ea == 0x140002000
         assert maturity == 14
 
-    def test_different_maturities_yield_separate_collects(
-        self, monkeypatch
-    ) -> None:
+    def test_different_maturities_yield_separate_collects(self, monkeypatch) -> None:
         """Different maturities for the same function must NOT
         collapse -- the dedup key is ``(func_ea, maturity)``, not
         ``func_ea`` alone."""
@@ -259,9 +265,7 @@ class TestFlowGraphReadyCoordinatorDedup:
         assert len(collector.calls) == 2
         assert {m for _, _, m in collector.calls} == {14, 15}
 
-    def test_different_functions_yield_separate_collects(
-        self, monkeypatch
-    ) -> None:
+    def test_different_functions_yield_separate_collects(self, monkeypatch) -> None:
         """Different ``func_ea`` -- e.g. nested decompilations -- must
         NOT collapse either."""
         collector = _CountingCollector()
@@ -281,7 +285,9 @@ class TestFlowGraphReadyCoordinatorDedup:
             0x140003000,
         }
 
-    def test_fact_capture_runs_without_snapshot_and_forwards_later_snapshot(self) -> None:
+    def test_fact_capture_runs_without_snapshot_and_forwards_later_snapshot(
+        self,
+    ) -> None:
         """Pre-D810 fact capture is production behavior, not diag-only.
 
         The no-snapshot event must still invoke capture. A later snapshot

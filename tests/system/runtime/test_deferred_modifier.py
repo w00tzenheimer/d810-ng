@@ -21,6 +21,9 @@ from d810.transforms.report import InvariantViolation
 from d810.ir.flowgraph import InsnSnapshot
 from d810.hexrays.mutation import deferred_modifier as dm
 from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
+from tests.native_preanalysis import make_native_key
+
+NATIVE_KEY = make_native_key()
 
 
 def _seed_current_serials(
@@ -79,12 +82,16 @@ class _FakeBlock:
         self.type = ida_hexrays.BLT_1WAY
         self.flags = 0
         self.head = None
-        self.tail = SimpleNamespace(opcode=ida_hexrays.m_goto, ea=0x1000, l=None, d=None, r=None)
+        self.tail = SimpleNamespace(
+            opcode=ida_hexrays.m_goto, ea=0x1000, l=None, d=None, r=None
+        )
         self.succset = _FakeEdgeSet()
         self.predset = _FakeEdgeSet()
         self.prevb = None
         # Stable byte-address range start (see class docstring).
-        self.start = start if start is not None else self._DEFAULT_EA_BASE + serial * 0x100
+        self.start = (
+            start if start is not None else self._DEFAULT_EA_BASE + serial * 0x100
+        )
         self.end = self.start + 0x100
 
     def nsucc(self) -> int:
@@ -127,6 +134,7 @@ def test_modifier_uses_an_injected_session_mutation_gateway() -> None:
         session_id="sample.i64:0x180000000:1",
         function_ea=mba.entry_ea,
         maturity=4,
+        native_key=NATIVE_KEY,
     )
 
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
@@ -141,21 +149,23 @@ def test_standalone_native_block_is_published_to_the_injected_identity_index(
 ) -> None:
     mba = _FakeMBA()
     existing_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x180000000, 0x180000100),)
+        (NativeEaInterval(0x180000000, 0x180000100),), native_key=NATIVE_KEY
     )
     imported_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAB0),)
+        (NativeEaInterval(0x40EAA7, 0x40EAB0),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         generation=0,
         bindings=((existing_identity, 0),),
         session_id="sample.i64:0x180000000:1",
+        native_key=NATIVE_KEY,
     )
     gateway = MbaMutationGateway(
         session_id=index.session_id,
         function_ea=mba.entry_ea,
         maturity=4,
         identity_index=index,
+        native_key=NATIVE_KEY,
     )
 
     def create_block(**_kwargs):
@@ -248,9 +258,15 @@ def test_apply_aborts_on_first_failed_modification_and_cleans(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
-        dm.GraphModification(dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000),
-        dm.GraphModification(dm.ModificationType.INSN_REMOVE, block_serial=0, insn_ea=0x1001),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
+        ),
+        dm.GraphModification(
+            dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000
+        ),
+        dm.GraphModification(
+            dm.ModificationType.INSN_REMOVE, block_serial=0, insn_ea=0x1001
+        ),
     ]
 
     calls: list[int] = []
@@ -331,9 +347,15 @@ def test_apply_transactional_rolls_back_when_mid_batch_aborts(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
-        dm.GraphModification(dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000),
-        dm.GraphModification(dm.ModificationType.INSN_REMOVE, block_serial=0, insn_ea=0x1001),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
+        ),
+        dm.GraphModification(
+            dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000
+        ),
+        dm.GraphModification(
+            dm.ModificationType.INSN_REMOVE, block_serial=0, insn_ea=0x1001
+        ),
     ]
 
     calls: list[int] = []
@@ -353,10 +375,14 @@ def test_apply_transactional_rolls_back_when_mid_batch_aborts(monkeypatch):
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
     monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
     monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
-    monkeypatch.setattr(dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0))
+    monkeypatch.setattr(
+        dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0)
+    )
 
     applied = modifier.apply(
-        run_optimize_local=False, run_deep_cleaning=False, transactional=True,
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        transactional=True,
     )
     assert applied == 0
     assert len(calls) == 2
@@ -371,8 +397,12 @@ def test_apply_transactional_returns_full_count_when_all_mods_succeed(monkeypatc
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
-        dm.GraphModification(dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
+        ),
+        dm.GraphModification(
+            dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000
+        ),
     ]
 
     restore_calls: list[object] = []
@@ -386,10 +416,14 @@ def test_apply_transactional_returns_full_count_when_all_mods_succeed(monkeypatc
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
     monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
     monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
-    monkeypatch.setattr(dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0))
+    monkeypatch.setattr(
+        dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0)
+    )
 
     applied = modifier.apply(
-        run_optimize_local=False, run_deep_cleaning=False, transactional=True,
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        transactional=True,
     )
     assert applied == 2
     assert restore_calls == []
@@ -409,19 +443,29 @@ def test_apply_transactional_rejects_batch_with_contradictory_redirects(monkeypa
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11),
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=2),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
+        ),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=2
+        ),
     ]
 
     apply_calls: list[int] = []
-    monkeypatch.setattr(modifier, "_apply_single", lambda _mod: apply_calls.append(1) or True)
+    monkeypatch.setattr(
+        modifier, "_apply_single", lambda _mod: apply_calls.append(1) or True
+    )
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
     monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
     monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
-    monkeypatch.setattr(dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0))
+    monkeypatch.setattr(
+        dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0)
+    )
 
     applied = modifier.apply(
-        run_optimize_local=False, run_deep_cleaning=False, transactional=True,
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        transactional=True,
     )
     assert applied == 0
     # Apply loop must not have been entered.
@@ -443,21 +487,31 @@ def test_detect_transactional_batch_conflicts_direct():
 
     # No conflict: single graph mod.
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
+        ),
     ]
     assert modifier._detect_transactional_batch_conflicts() is None
 
     # No conflict: graph mod + instruction mod on same block.
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11),
-        dm.GraphModification(dm.ModificationType.INSN_NOP, block_serial=76, insn_ea=0x1000),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
+        ),
+        dm.GraphModification(
+            dm.ModificationType.INSN_NOP, block_serial=76, insn_ea=0x1000
+        ),
     ]
     assert modifier._detect_transactional_batch_conflicts() is None
 
     # Conflict: two graph mods on blk[76] pointing at different targets.
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11),
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=2),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
+        ),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=2
+        ),
     ]
     reason = modifier._detect_transactional_batch_conflicts()
     assert reason is not None
@@ -466,21 +520,31 @@ def test_detect_transactional_batch_conflicts_direct():
 
     # No conflict: same block, same target (redundant but consistent).
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11),
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
+        ),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
+        ),
     ]
     assert modifier._detect_transactional_batch_conflicts() is None
 
 
-def test_apply_transactional_marks_verify_failed_when_rollback_itself_fails(monkeypatch):
+def test_apply_transactional_marks_verify_failed_when_rollback_itself_fails(
+    monkeypatch,
+):
     """If the snapshot restore call returns False, MBA is in an inconsistent
     state and verify_failed must be set so callers can abort gracefully.
     """
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
-        dm.GraphModification(dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
+        ),
+        dm.GraphModification(
+            dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000
+        ),
     ]
 
     calls: list[int] = []
@@ -494,10 +558,14 @@ def test_apply_transactional_marks_verify_failed_when_rollback_itself_fails(monk
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
     monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
     monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
-    monkeypatch.setattr(dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0))
+    monkeypatch.setattr(
+        dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0)
+    )
 
     applied = modifier.apply(
-        run_optimize_local=False, run_deep_cleaning=False, transactional=True,
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        transactional=True,
     )
     # restore failed → we cannot claim successful rollback → return partial count
     # and signal verify_failed so the caller can quarantine the function.
@@ -537,12 +605,15 @@ def test_apply_transactional_rolls_back_alias_scalarization_verify_failure(monke
     monkeypatch.setattr(
         modifier,
         "_restore_from_snapshot",
-        lambda _snap: restore_calls.__setitem__("count", restore_calls["count"] + 1) or True,
+        lambda _snap: restore_calls.__setitem__("count", restore_calls["count"] + 1)
+        or True,
     )
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
     monkeypatch.setattr(dm, "safe_verify", _safe_verify)
     monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
-    monkeypatch.setattr(dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0))
+    monkeypatch.setattr(
+        dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0)
+    )
 
     applied = modifier.apply(
         run_optimize_local=False,
@@ -570,15 +641,18 @@ def test_scalarize_local_alias_access_revalidates_live_host_text_hash() -> None:
     )
     block.head = host
 
-    assert modifier._apply_scalarize_local_alias_access(
-        block,
-        0x18000F123,
-        ida_hexrays.m_ldx,
-        "%var_378",
-        "%var_18",
-        "definitely-wrong",
-        4,
-    ) is False
+    assert (
+        modifier._apply_scalarize_local_alias_access(
+            block,
+            0x18000F123,
+            ida_hexrays.m_ldx,
+            "%var_378",
+            "%var_18",
+            "definitely-wrong",
+            4,
+        )
+        is False
+    )
 
 
 def test_retarget_output_store_rewrites_only_store_address_operand(monkeypatch) -> None:
@@ -630,15 +704,18 @@ def test_retarget_output_store_rewrites_only_store_address_operand(monkeypatch) 
     mba.qty = 2
     modifier = dm.DeferredGraphModifier(mba)
 
-    assert modifier._apply_retarget_output_store(
-        store_block,
-        0x18000FA83,
-        ida_hexrays.m_stx,
-        "%var_370",
-        "%var_30",
-        None,
-        4,
-    ) is True
+    assert (
+        modifier._apply_retarget_output_store(
+            store_block,
+            0x18000FA83,
+            ida_hexrays.m_stx,
+            "%var_370",
+            "%var_30",
+            None,
+            4,
+        )
+        is True
+    )
     assert target.dstr() == "%var_30.8"
     assert value.dstr().startswith("((bnot")
 
@@ -699,7 +776,9 @@ def test_apply_tolerates_queued_mod_logging_introspection_failure(monkeypatch):
     assert applied == 1
 
 
-def test_block_target_change_rewrites_fallthrough_via_helper_and_remaps_later_targets(monkeypatch):
+def test_block_target_change_rewrites_fallthrough_via_helper_and_remaps_later_targets(
+    monkeypatch,
+):
     mba = _FakeMBA()
     blk = _FakeBlock(15)
     blk.type = ida_hexrays.BLT_2WAY
@@ -1010,13 +1089,9 @@ def test_conditional_lowering_helpers_keep_target_identity_across_two_insertions
     )
 
     modifier = dm.DeferredGraphModifier(mba)
+    assert modifier._build_fallthrough_goto_helper(guard, taken_target) is not None
     assert (
-        modifier._build_fallthrough_goto_helper(guard, taken_target)
-        is not None
-    )
-    assert (
-        modifier._build_fallthrough_goto_helper(guard, fallthrough_target)
-        is not None
+        modifier._build_fallthrough_goto_helper(guard, fallthrough_target) is not None
     )
 
     second_target_serial = int(goto_targets[1][1])
@@ -1128,11 +1203,14 @@ def test_conditional_lowering_resolves_dispatcher_serial_once(monkeypatch):
     mba.blocks = {87: source}
     mba.qty = 143
     modifier = dm.DeferredGraphModifier(mba)
-    _seed_current_serials(modifier, {
-        86: 87,
-        140: 141,
-        141: 142,
-    })
+    _seed_current_serials(
+        modifier,
+        {
+            86: 87,
+            140: 141,
+            141: 142,
+        },
+    )
 
     captured: dict[str, int] = {}
 
@@ -1189,7 +1267,9 @@ def test_create_and_redirect_rejects_non_1way_source(monkeypatch):
     assert called["create"] == 0
 
 
-def test_create_and_redirect_materializes_symbolic_snapshots_before_block_creation(monkeypatch):
+def test_create_and_redirect_materializes_symbolic_snapshots_before_block_creation(
+    monkeypatch,
+):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     src = _FakeBlock(5)
@@ -1209,8 +1289,7 @@ def test_create_and_redirect_materializes_symbolic_snapshots_before_block_creati
         dm,
         "create_standalone_block",
         lambda *_a, **_k: (
-            captured.update({"blk_ins": _a[1]})
-            or SimpleNamespace(serial=1, head=None)
+            captured.update({"blk_ins": _a[1]}) or SimpleNamespace(serial=1, head=None)
         ),
     )
     monkeypatch.setattr(dm, "change_1way_block_successor", lambda *_a, **_k: True)
@@ -1218,7 +1297,9 @@ def test_create_and_redirect_materializes_symbolic_snapshots_before_block_creati
     ok = modifier._apply_create_and_redirect(
         source_blk=src,
         final_target=0,
-        instructions_to_copy=[InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0x1234, operands=())],
+        instructions_to_copy=[
+            InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0x1234, operands=())
+        ],
         is_0_way=False,
         expected_serial=None,
     )
@@ -1246,7 +1327,9 @@ def test_apply_pre_rejects_create_and_redirect_from_entry_block(monkeypatch):
     ]
 
     called = {"apply_single": 0}
-    monkeypatch.setattr(modifier, "_apply_single", lambda _m: called.__setitem__("apply_single", 1))
+    monkeypatch.setattr(
+        modifier, "_apply_single", lambda _m: called.__setitem__("apply_single", 1)
+    )
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
     monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
     monkeypatch.setattr(
@@ -1293,7 +1376,9 @@ def test_apply_runs_conservative_cleanup_without_optimize_local(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
+        ),
     ]
 
     monkeypatch.setattr(modifier, "_apply_single", lambda _m: True)
@@ -1321,7 +1406,9 @@ def test_apply_attempts_verify_recovery(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
+        ),
     ]
 
     monkeypatch.setattr(modifier, "_apply_single", lambda _m: True)
@@ -1351,7 +1438,9 @@ def test_apply_attempts_verify_recovery_on_non_runtime_preapply_exception(monkey
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
+        ),
     ]
 
     monkeypatch.setattr(modifier, "_apply_single", lambda _m: True)
@@ -1381,7 +1470,9 @@ def test_apply_executes_post_apply_hook(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
+        ),
     ]
 
     hook_calls = {"count": 0}
@@ -1460,7 +1551,9 @@ def test_apply_pre_rejects_illegal_edge_split_trampoline_and_continues(monkeypat
     assert calls == [dm.ModificationType.INSN_NOP]
 
 
-def test_create_conditional_redirect_records_serial_drift_remap_and_continues(monkeypatch, request):
+def test_create_conditional_redirect_records_serial_drift_remap_and_continues(
+    monkeypatch, request
+):
     import logging
 
     mba = _FakeMBA()
@@ -1541,8 +1634,7 @@ def test_create_conditional_redirect_records_serial_drift_remap_and_continues(mo
     assert modifier.current_serial_for_planned(12) == 8
     messages = [record.getMessage() for record in records]
     assert any(
-        "created conditional blk[7], expected blk[9]" in message
-        for message in messages
+        "created conditional blk[7], expected blk[9]" in message for message in messages
     )
     assert any(
         "created fallthrough blk[8], expected blk[12]" in message
@@ -1819,9 +1911,7 @@ def test_clone_conditional_as_goto_from_branch_arm_applies_2way_rewire(monkeypat
         return True
 
     monkeypatch.setattr(dm, "make_2way_block_goto", _convert)
-    monkeypatch.setattr(
-        dm, "change_2way_block_conditional_successor", _rewire_branch
-    )
+    monkeypatch.setattr(dm, "change_2way_block_conditional_successor", _rewire_branch)
 
     ok = modifier._apply_clone_conditional_as_goto_from_branch_arm(
         source_blk=source,
@@ -1942,8 +2032,7 @@ def test_clone_conditional_as_goto_from_branch_arm_refuses_one_way_predecessor(
 def test_clone_conditional_as_goto_from_branch_arm_refuses_branch_arm_mismatch(
     monkeypatch,
 ):
-    """Apply path rejects when pred's explicit branch arm doesn't point at source.
-    """
+    """Apply path rejects when pred's explicit branch arm doesn't point at source."""
     mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
     modifier = dm.DeferredGraphModifier(mba)
 
@@ -1975,12 +2064,13 @@ def test_clone_conditional_as_goto_from_branch_arm_refuses_branch_arm_mismatch(
     assert ok is False
 
 
-
 def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 def _verify_error(mba) -> str | None:
@@ -2053,7 +2143,8 @@ def test_apply_pre_rejects_duplicate_block_with_fallthrough_predecessor(monkeypa
     monkeypatch.setattr(
         modifier,
         "_apply_single",
-        lambda _m: called.__setitem__("apply_single", called["apply_single"] + 1) or True,
+        lambda _m: called.__setitem__("apply_single", called["apply_single"] + 1)
+        or True,
     )
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
     monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
@@ -2094,7 +2185,8 @@ def test_duplicate_block_rejects_unexpected_secondary_serial(monkeypatch):
             calls.__setitem__("pred", calls["pred"] + 1)
             if blk.serial == 6
             else calls.__setitem__("clone", calls["clone"] + 1)
-        ) or True,
+        )
+        or True,
     )
 
     ok = modifier._apply_duplicate_block_and_redirect(
@@ -2133,7 +2225,9 @@ def test_duplicate_block_applies_explicit_conditional_targets(monkeypatch):
     duplicated_blk.succset = _FakeEdgeSet([2, 10])
     duplicated_blk.predset = _FakeEdgeSet([6])
 
-    mba.blocks.update({5: source, 6: pred, 30: conditional_target, 40: fallthrough_target})
+    mba.blocks.update(
+        {5: source, 6: pred, 30: conditional_target, 40: fallthrough_target}
+    )
     mba.qty = len(mba.blocks)
     mba.copy_block = lambda *_args, **_kwargs: duplicated_blk  # type: ignore[attr-defined]
 
@@ -2143,9 +2237,9 @@ def test_duplicate_block_applies_explicit_conditional_targets(monkeypatch):
     monkeypatch.setattr(
         dm,
         "create_standalone_block",
-        lambda *_args, **kwargs: duplicated_default
-        if kwargs.get("target_serial") == 40
-        else None,
+        lambda *_args, **kwargs: (
+            duplicated_default if kwargs.get("target_serial") == 40 else None
+        ),
     )
 
     rewired: dict[str, object] = {}
@@ -2169,7 +2263,11 @@ def test_duplicate_block_applies_explicit_conditional_targets(monkeypatch):
         or True,
     )
 
-    monkeypatch.setattr(dm.ida_hexrays, "mop_t", lambda: SimpleNamespace(make_blkref=lambda _value: None))
+    monkeypatch.setattr(
+        dm.ida_hexrays,
+        "mop_t",
+        lambda: SimpleNamespace(make_blkref=lambda _value: None),
+    )
 
     ok = modifier._apply_duplicate_block_and_redirect(
         source_blk=source,
@@ -2190,7 +2288,9 @@ def test_apply_marks_verify_failed_on_post_apply_hook_exception(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
+        ),
     ]
 
     monkeypatch.setattr(modifier, "_apply_single", lambda _m: True)
@@ -2216,7 +2316,9 @@ def test_apply_skips_post_native_verify_after_contract_failure(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
+        ),
     ]
 
     verify_calls = {"count": 0}
@@ -2259,17 +2361,25 @@ def test_apply_rolls_back_snapshot_after_contract_failure(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
-        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
+        ),
     ]
 
     verify_calls = {"count": 0}
     restored = {"count": 0}
 
     monkeypatch.setattr(modifier, "_apply_single", lambda _m: True)
-    monkeypatch.setattr(modifier, "_restore_from_snapshot", lambda _snap: restored.__setitem__("count", restored["count"] + 1) or True)
+    monkeypatch.setattr(
+        modifier,
+        "_restore_from_snapshot",
+        lambda _snap: restored.__setitem__("count", restored["count"] + 1) or True,
+    )
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
     monkeypatch.setattr(dm, "capture_failure_artifact", lambda *_a, **_k: None)
-    monkeypatch.setattr(dm, "lift", lambda _mba: SimpleNamespace(num_blocks=1, entry_serial=0))
+    monkeypatch.setattr(
+        dm, "lift", lambda _mba: SimpleNamespace(num_blocks=1, entry_serial=0)
+    )
     monkeypatch.setattr(
         dm,
         "safe_verify",
@@ -2465,7 +2575,7 @@ def _make_suffix_block(
     # Build instruction linked list
     head = None
     prev = None
-    for opc in (insn_opcodes or (ida_hexrays.m_nop,)):
+    for opc in insn_opcodes or (ida_hexrays.m_nop,):
         ins = _FakeInsn(opcode=opc, ea=0x1000 + serial)
         if head is None:
             head = ins
@@ -2506,9 +2616,9 @@ def _patch_suffix_dependencies(monkeypatch, mba):
     Returns a state dict tracking created clones and successor changes.
     """
     state = {
-        "clones_created": [],       # list of (template_serial, clone_serial, is_0_way, target_serial)
-        "successor_changes": [],    # list of (blk_serial, new_target)
-        "next_serial": mba.qty,     # next serial for new clones
+        "clones_created": [],  # list of (template_serial, clone_serial, is_0_way, target_serial)
+        "successor_changes": [],  # list of (blk_serial, new_target)
+        "next_serial": mba.qty,  # next serial for new clones
     }
 
     # Monkeypatch ida_hexrays.minsn_t as identity copy constructor
@@ -2516,10 +2626,14 @@ def _patch_suffix_dependencies(monkeypatch, mba):
     monkeypatch.setattr(
         dm.ida_hexrays,
         "minsn_t",
-        lambda obj, _orig=original_minsn_t: obj if isinstance(obj, _FakeInsn) else _orig(obj),
+        lambda obj, _orig=original_minsn_t: (
+            obj if isinstance(obj, _FakeInsn) else _orig(obj)
+        ),
     )
 
-    def _fake_create_standalone_block(ref_blk, blk_ins, target_serial=None, is_0_way=False, verify=True):
+    def _fake_create_standalone_block(
+        ref_blk, blk_ins, target_serial=None, is_0_way=False, verify=True
+    ):
         serial = state["next_serial"]
         state["next_serial"] += 1
 
@@ -2532,7 +2646,9 @@ def _patch_suffix_dependencies(monkeypatch, mba):
         mba.blocks[serial] = clone
         mba.qty = max(mba.blocks.keys()) + 1
 
-        state["clones_created"].append((ref_blk.serial, serial, is_0_way, target_serial))
+        state["clones_created"].append(
+            (ref_blk.serial, serial, is_0_way, target_serial)
+        )
         return clone
 
     def _fake_change_1way(blk, new_target, verify=True):
@@ -2558,8 +2674,12 @@ class TestEdgeRedirectViaPredSplitCorridor:
         the live source block after an earlier rewrite, while later predecessors
         get private one-block copies routed to their own targets.
         """
-        pred = _make_suffix_block(24, nsucc=1, succ_serial=32, tail_opcode=ida_hexrays.m_goto)
-        src = _make_suffix_block(32, nsucc=1, succ_serial=62, tail_opcode=ida_hexrays.m_goto)
+        pred = _make_suffix_block(
+            24, nsucc=1, succ_serial=32, tail_opcode=ida_hexrays.m_goto
+        )
+        src = _make_suffix_block(
+            32, nsucc=1, succ_serial=62, tail_opcode=ida_hexrays.m_goto
+        )
         current_target = _make_suffix_block(62, nsucc=1, succ_serial=99)
         new_target = _make_suffix_block(70, nsucc=1, succ_serial=99)
         src.predset.push_back(24)
@@ -2578,15 +2698,23 @@ class TestEdgeRedirectViaPredSplitCorridor:
 
         assert ok is True
         assert len(state["clones_created"]) == 1
-        template_serial, clone_serial, is_0_way, target_serial = state["clones_created"][0]
+        template_serial, clone_serial, is_0_way, target_serial = state[
+            "clones_created"
+        ][0]
         assert (template_serial, is_0_way, target_serial) == (32, False, 70)
         assert state["successor_changes"] == [(24, clone_serial)]
         assert src.succ(0) == 62
 
-    def test_one_block_corridor_can_clone_when_source_already_on_target(self, monkeypatch):
+    def test_one_block_corridor_can_clone_when_source_already_on_target(
+        self, monkeypatch
+    ):
         """The private-copy proof remains valid after the original source retargets."""
-        pred = _make_suffix_block(24, nsucc=1, succ_serial=32, tail_opcode=ida_hexrays.m_goto)
-        src = _make_suffix_block(32, nsucc=1, succ_serial=62, tail_opcode=ida_hexrays.m_goto)
+        pred = _make_suffix_block(
+            24, nsucc=1, succ_serial=32, tail_opcode=ida_hexrays.m_goto
+        )
+        src = _make_suffix_block(
+            32, nsucc=1, succ_serial=62, tail_opcode=ida_hexrays.m_goto
+        )
         target = _make_suffix_block(62, nsucc=1, succ_serial=99)
         src.predset.push_back(24)
 
@@ -2604,16 +2732,24 @@ class TestEdgeRedirectViaPredSplitCorridor:
 
         assert ok is True
         assert len(state["clones_created"]) == 1
-        template_serial, clone_serial, is_0_way, target_serial = state["clones_created"][0]
+        template_serial, clone_serial, is_0_way, target_serial = state[
+            "clones_created"
+        ][0]
         assert (template_serial, is_0_way, target_serial) == (32, False, 62)
         assert state["successor_changes"] == [(24, clone_serial)]
         assert src.succ(0) == 62
 
     def test_multi_block_corridor_rejects_prior_source_retarget(self, monkeypatch):
         """Multi-block corridor proof remains tied to the planned old target."""
-        pred = _make_suffix_block(9, nsucc=1, succ_serial=10, tail_opcode=ida_hexrays.m_goto)
-        src = _make_suffix_block(10, nsucc=1, succ_serial=11, tail_opcode=ida_hexrays.m_goto)
-        tail = _make_suffix_block(11, nsucc=1, succ_serial=12, tail_opcode=ida_hexrays.m_goto)
+        pred = _make_suffix_block(
+            9, nsucc=1, succ_serial=10, tail_opcode=ida_hexrays.m_goto
+        )
+        src = _make_suffix_block(
+            10, nsucc=1, succ_serial=11, tail_opcode=ida_hexrays.m_goto
+        )
+        tail = _make_suffix_block(
+            11, nsucc=1, succ_serial=12, tail_opcode=ida_hexrays.m_goto
+        )
         src.predset.push_back(9)
 
         mba = _build_suffix_mba({9: pred, 10: src, 11: tail})
@@ -2649,9 +2785,15 @@ class TestPrivateTerminalSuffix:
                           S(2) -> T(3) still exists unchanged.
         """
         # Block 3 is 0-way (BLT_STOP equivalent), block 2 is 1-way -> 3
-        blk_a = _make_suffix_block(1, nsucc=1, succ_serial=2, tail_opcode=ida_hexrays.m_goto)
-        blk_s = _make_suffix_block(2, nsucc=1, succ_serial=3, tail_opcode=ida_hexrays.m_goto)
-        blk_t = _make_suffix_block(3, nsucc=0, succ_serial=0, tail_opcode=ida_hexrays.m_nop)
+        blk_a = _make_suffix_block(
+            1, nsucc=1, succ_serial=2, tail_opcode=ida_hexrays.m_goto
+        )
+        blk_s = _make_suffix_block(
+            2, nsucc=1, succ_serial=3, tail_opcode=ida_hexrays.m_goto
+        )
+        blk_t = _make_suffix_block(
+            3, nsucc=0, succ_serial=0, tail_opcode=ida_hexrays.m_nop
+        )
 
         mba = _build_suffix_mba({1: blk_a, 2: blk_s, 3: blk_t})
         state = _patch_suffix_dependencies(monkeypatch, mba)
@@ -2691,12 +2833,12 @@ class TestPrivateTerminalSuffix:
         ]
         anchor_redirects = [(s, t) for s, t in state["successor_changes"] if s == 1]
 
-        assert any(s == clone_s_serial and t == clone_t_serial for s, t in wiring_changes), (
-            f"Expected clone_S({clone_s_serial}) -> clone_T({clone_t_serial}), got {wiring_changes}"
-        )
-        assert any(t == clone_s_serial for _, t in anchor_redirects), (
-            f"Expected anchor redirect to clone_S({clone_s_serial}), got {anchor_redirects}"
-        )
+        assert any(
+            s == clone_s_serial and t == clone_t_serial for s, t in wiring_changes
+        ), f"Expected clone_S({clone_s_serial}) -> clone_T({clone_t_serial}), got {wiring_changes}"
+        assert any(
+            t == clone_s_serial for _, t in anchor_redirects
+        ), f"Expected anchor redirect to clone_S({clone_s_serial}), got {anchor_redirects}"
 
         # Original S->T chain is unchanged (blocks still in MBA)
         assert 2 in mba.blocks
@@ -2705,8 +2847,12 @@ class TestPrivateTerminalSuffix:
     def test_apply_suffix_anchor_wrong_successor_fails_closed(self, monkeypatch):
         """When anchor does NOT point at shared_entry_serial, apply rejects (P1 Bug 2)."""
         # Anchor points at block 5 (not the shared entry 2)
-        blk_a = _make_suffix_block(1, nsucc=1, succ_serial=5, tail_opcode=ida_hexrays.m_goto)
-        blk_s = _make_suffix_block(2, nsucc=1, succ_serial=3, tail_opcode=ida_hexrays.m_goto)
+        blk_a = _make_suffix_block(
+            1, nsucc=1, succ_serial=5, tail_opcode=ida_hexrays.m_goto
+        )
+        blk_s = _make_suffix_block(
+            2, nsucc=1, succ_serial=3, tail_opcode=ida_hexrays.m_goto
+        )
         blk_t = _make_suffix_block(3, nsucc=0, succ_serial=0)
         blk_other = _make_suffix_block(5, nsucc=1, succ_serial=3)
 
@@ -2732,9 +2878,15 @@ class TestPrivateTerminalSuffix:
 
         Non-final clones must get placeholder target_serial for chain wiring.
         """
-        blk_a = _make_suffix_block(1, nsucc=1, succ_serial=2, tail_opcode=ida_hexrays.m_goto)
-        blk_s1 = _make_suffix_block(2, nsucc=1, succ_serial=3, tail_opcode=ida_hexrays.m_goto)
-        blk_s2 = _make_suffix_block(3, nsucc=1, succ_serial=4, tail_opcode=ida_hexrays.m_goto)
+        blk_a = _make_suffix_block(
+            1, nsucc=1, succ_serial=2, tail_opcode=ida_hexrays.m_goto
+        )
+        blk_s1 = _make_suffix_block(
+            2, nsucc=1, succ_serial=3, tail_opcode=ida_hexrays.m_goto
+        )
+        blk_s2 = _make_suffix_block(
+            3, nsucc=1, succ_serial=4, tail_opcode=ida_hexrays.m_goto
+        )
         blk_t = _make_suffix_block(4, nsucc=0, succ_serial=0)
 
         mba = _build_suffix_mba({1: blk_a, 2: blk_s1, 3: blk_s2, 4: blk_t})
@@ -2780,8 +2932,7 @@ class TestPrivateTerminalSuffix:
 
         # Anchor redirect: A -> clone_S1
         assert any(
-            s == 1 and t == clone_s1_serial
-            for s, t in state["successor_changes"]
+            s == 1 and t == clone_s1_serial for s, t in state["successor_changes"]
         )
 
     def test_apply_suffix_clone_serial_mismatch_non_fatal(self, monkeypatch):
@@ -2789,8 +2940,12 @@ class TestPrivateTerminalSuffix:
 
         Apply must still succeed with clones created and anchor rewired.
         """
-        blk_a = _make_suffix_block(1, nsucc=1, succ_serial=2, tail_opcode=ida_hexrays.m_goto)
-        blk_s = _make_suffix_block(2, nsucc=1, succ_serial=3, tail_opcode=ida_hexrays.m_goto)
+        blk_a = _make_suffix_block(
+            1, nsucc=1, succ_serial=2, tail_opcode=ida_hexrays.m_goto
+        )
+        blk_s = _make_suffix_block(
+            2, nsucc=1, succ_serial=3, tail_opcode=ida_hexrays.m_goto
+        )
         blk_t = _make_suffix_block(3, nsucc=0, succ_serial=0)
 
         mba = _build_suffix_mba({1: blk_a, 2: blk_s, 3: blk_t})
@@ -2812,8 +2967,7 @@ class TestPrivateTerminalSuffix:
         # Anchor was redirected to actual clone serial (not the expected one)
         clone_s_serial = state["clones_created"][0][1]
         assert any(
-            s == 1 and t == clone_s_serial
-            for s, t in state["successor_changes"]
+            s == 1 and t == clone_s_serial for s, t in state["successor_changes"]
         )
 
 
@@ -2989,7 +3143,11 @@ def _staged_patch_wiring(monkeypatch, mba):
     monkeypatch.setattr(dm, "remove_block_edge", _fake_remove_edge)
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
     monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
-    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: setattr(mba, "cleaned", mba.cleaned + 1))
+    monkeypatch.setattr(
+        dm,
+        "mba_deep_cleaning",
+        lambda *_a, **_k: setattr(mba, "cleaned", mba.cleaned + 1),
+    )
 
     return changes
 
@@ -3016,9 +3174,9 @@ class TestStagedAtomicClassification:
         """Every ModificationType must have a staged_atomic classification."""
         for mod_type in dm.ModificationType:
             cls = dm.classify_for_staged_atomic(mod_type)
-            assert isinstance(cls, dm.StagedAtomicClassification), (
-                f"{mod_type.name} returned {cls!r}"
-            )
+            assert isinstance(
+                cls, dm.StagedAtomicClassification
+            ), f"{mod_type.name} returned {cls!r}"
 
     def test_classify_destructive_expressible_bucket_contents(self):
         """Every in-place topology mutation must use staged copy-and-swap."""
@@ -3031,7 +3189,8 @@ class TestStagedAtomicClassification:
             dm.ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL,
         }
         actual = {
-            mt for mt in dm.ModificationType
+            mt
+            for mt in dm.ModificationType
             if dm.classify_for_staged_atomic(mt)
             == dm.StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE
         }
@@ -3072,6 +3231,7 @@ class TestStagedAtomicPendingRewire:
         assert rw.original_start_ea == 0x1800C100
         assert rw.new_start_ea == 0x1F000000
         import dataclasses
+
         assert dataclasses.is_dataclass(rw)
 
 
@@ -3079,7 +3239,8 @@ class TestStagedAtomicApply:
     """Integration tests for DeferredGraphModifier.apply(staged_atomic=True)."""
 
     def test_staged_atomic_goto_change_stages_copy_and_redirects_preds(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """Destructive-expressible BLOCK_GOTO_CHANGE is lowered to copy-and-swap.
 
@@ -3127,7 +3288,8 @@ class TestStagedAtomicApply:
         assert applied >= 1
 
     def test_staged_atomic_terminal_goto_stages_copy_and_redirects_preds(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """A 0-way-to-1-way route is not applied sequentially in staged mode."""
         mba = _StagedFakeMBA()
@@ -3203,7 +3365,8 @@ class TestStagedAtomicApply:
         assert applied >= 1
 
     def test_staged_atomic_default_false_does_not_change_control_flow(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """staged_atomic=False (default) preserves the existing sequential path."""
         mba = _StagedFakeMBA()
@@ -3237,7 +3400,9 @@ class TestStagedAtomicApply:
     def test_staged_atomic_failed_staging_does_not_rewire_preds(self, monkeypatch):
         """If staging fails, no commit rewire is issued and preds stay on original."""
         mba = _StagedFakeMBA()
-        src = _StagedFakeBlock(5, nsucc=2, succ_serial=20)  # 2-way — rejects BLOCK_GOTO_CHANGE staging
+        src = _StagedFakeBlock(
+            5, nsucc=2, succ_serial=20
+        )  # 2-way — rejects BLOCK_GOTO_CHANGE staging
         src.succset.push_back(30)
         src.predset.push_back(10)
         pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5)
@@ -3286,7 +3451,10 @@ class TestStagedAtomicApply:
         _staged_patch_wiring(monkeypatch, mba)
         # Stub make_nop so INSN_NOP doesn't crash.
         monkeypatch.setattr(
-            _StagedFakeBlock, "make_nop", lambda self, _ins: None, raising=False,
+            _StagedFakeBlock,
+            "make_nop",
+            lambda self, _ins: None,
+            raising=False,
         )
 
         modifier = dm.DeferredGraphModifier(mba)
@@ -3319,7 +3487,8 @@ class TestStagedAtomicApply:
         assert len(mba.copied_blocks) == 1
 
     def test_staged_atomic_entry_block_pred_rewires_via_direct_succset(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """Bug 1 — Entry-block (serial 0) rewire must bypass change_1way_block_successor.
 
@@ -3369,19 +3538,19 @@ class TestStagedAtomicApply:
         # wired blk[0] -> copy.  Because we bypass change_1way_block_successor
         # for serial 0, no (0, *, "1way") entry is recorded by the patched
         # wiring helpers — we validate the succset/predset state instead.
-        assert 5 not in list(entry.succset), (
-            "entry blk[0] must no longer target the original blk[5]"
-        )
-        assert copy_serial in list(entry.succset), (
-            "entry blk[0] must target the copy after direct rewire"
-        )
-        assert 0 not in list(src.predset), (
-            "original blk[5] must no longer list blk[0] as a pred"
-        )
+        assert 5 not in list(
+            entry.succset
+        ), "entry blk[0] must no longer target the original blk[5]"
+        assert copy_serial in list(
+            entry.succset
+        ), "entry blk[0] must target the copy after direct rewire"
+        assert 0 not in list(
+            src.predset
+        ), "original blk[5] must no longer list blk[0] as a pred"
         copy_blk = mba.get_mblock(copy_serial)
-        assert 0 in list(copy_blk.predset), (
-            "copy must list blk[0] as a pred after direct rewire"
-        )
+        assert 0 in list(
+            copy_blk.predset
+        ), "copy must list blk[0] as a pred after direct rewire"
         # Sanity: no "1way"-style wrapper call ever fired for the entry block.
         assert not any(s == 0 for (s, _t, _k) in changes), (
             "entry-block rewire must avoid change_1way_block_successor "
@@ -3391,7 +3560,8 @@ class TestStagedAtomicApply:
         assert applied >= 1
 
     def test_staged_atomic_cleanup_pre_disconnects_edges_before_remove(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """Bug 2 — cleanup must strip succset/predset entries before remove_block.
 
@@ -3415,7 +3585,9 @@ class TestStagedAtomicApply:
 
         # Tighten remove_block: INTERR 51919 if the block still has edges.
         removed_ok: list[int] = []
-        remove_calls: list[tuple[int, int, int]] = []  # (serial, succset_sz, predset_sz)
+        remove_calls: list[tuple[int, int, int]] = (
+            []
+        )  # (serial, succset_sz, predset_sz)
 
         def _strict_remove_block(self, blk):
             succsz = blk.succset.size()
@@ -3558,25 +3730,34 @@ class TestStagedAtomicEaIdentity:
         assert rewire.preds_to_redirect[0] is pred
 
     def test_staged_goto_change_resolves_remapped_source_to_its_ea(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """A queued goto change must stage the remapped source, not its old slot."""
         mba = _StagedFakeMBA()
         stale_slot = _StagedFakeBlock(
-            100, nsucc=1, succ_serial=102, start=0x40B149,
+            100,
+            nsucc=1,
+            succ_serial=102,
+            start=0x40B149,
         )
         intended_source = _StagedFakeBlock(
-            101, nsucc=1, succ_serial=102, start=0x40B157,
+            101,
+            nsucc=1,
+            succ_serial=102,
+            start=0x40B157,
         )
         destination = _StagedFakeBlock(102, nsucc=0, start=0x40B163)
         stop = _StagedFakeBlock(112, nsucc=0)
         stop.type = ida_hexrays.BLT_STOP
-        mba.blocks.update({
-            100: stale_slot,
-            101: intended_source,
-            102: destination,
-            112: stop,
-        })
+        mba.blocks.update(
+            {
+                100: stale_slot,
+                101: intended_source,
+                102: destination,
+                112: stop,
+            }
+        )
         mba.qty = 113
 
         _staged_patch_wiring(monkeypatch, mba)
@@ -3665,9 +3846,7 @@ class TestStagedAtomicEaIdentity:
         # The recorded wiring change targeted the (post-drift) copy serial.
         copy_blk_now = dm._get_mblock_by_start_ea(mba, rewire.new_start_ea)
         assert copy_blk_now is not None
-        assert any(
-            t == copy_blk_now.serial for (_, t, _) in changes
-        ), (
+        assert any(t == copy_blk_now.serial for (_, t, _) in changes), (
             f"commit must redirect pred to the copy's CURRENT serial "
             f"({copy_blk_now.serial}), not the staging-time serial "
             f"({staged_copy_serial}); changes={changes}, "
@@ -3725,7 +3904,8 @@ class TestStagedAtomicEaIdentity:
         )
 
     def test_cleanup_removes_correct_block_after_multi_stage_serial_drift(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """Multiple staged mods -> cumulative serial drift -> cleanup targets each by EA.
 
@@ -3749,9 +3929,16 @@ class TestStagedAtomicEaIdentity:
         tgt_b = _StagedFakeBlock(21, nsucc=0, start=0x18015000)
         tgt_b.predset.push_back(6)
 
-        mba.blocks.update({
-            5: src_a, 6: src_b, 10: pred_a, 11: pred_b, 20: tgt_a, 21: tgt_b,
-        })
+        mba.blocks.update(
+            {
+                5: src_a,
+                6: src_b,
+                10: pred_a,
+                11: pred_b,
+                20: tgt_a,
+                21: tgt_b,
+            }
+        )
         mba.qty = max(mba.blocks.keys()) + 1
 
         _staged_patch_wiring(monkeypatch, mba)
@@ -3782,11 +3969,11 @@ class TestStagedAtomicEaIdentity:
         # Both original source objects must be gone from mba.blocks, identified
         # by their stable start EAs — not by their staging-time serials.
         live_starts = {b.start for b in mba.blocks.values()}
-        assert src_a.start not in live_starts, (
-            "src_a (ea=0x18005000) must be removed by cleanup"
-        )
-        assert src_b.start not in live_starts, (
-            "src_b (ea=0x18006000) must be removed by cleanup"
-        )
+        assert (
+            src_a.start not in live_starts
+        ), "src_a (ea=0x18005000) must be removed by cleanup"
+        assert (
+            src_b.start not in live_starts
+        ), "src_b (ea=0x18006000) must be removed by cleanup"
         # Both copies survived (distinct synthetic EAs per _StagedFakeMBA).
         assert len(mba.copied_blocks) == 2

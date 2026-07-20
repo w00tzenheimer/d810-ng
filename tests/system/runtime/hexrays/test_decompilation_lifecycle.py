@@ -6,6 +6,10 @@ manager composition. It does not substitute a fake Hex-Rays API.
 
 from __future__ import annotations
 
+from tests.native_preanalysis import make_native_key
+
+NATIVE_KEY = make_native_key()
+
 import ast
 from pathlib import Path
 from types import SimpleNamespace
@@ -89,9 +93,7 @@ def test_actual_hook_lifecycle_order_is_stable_across_merr_redo(monkeypatch) -> 
             )
             if phase_key not in self._provider_phases:
                 self._provider_phases.add(phase_key)
-                order.append(
-                    f"flowgraph:{provider_phase.friendly_provider_level}"
-                )
+                order.append(f"flowgraph:{provider_phase.friendly_provider_level}")
 
         def finish_session(self, event) -> None:
             order.append(f"preanalysis-finish:0x{int(event.function_ea):X}")
@@ -144,6 +146,7 @@ def test_actual_hook_lifecycle_order_is_stable_across_merr_redo(monkeypatch) -> 
         preanalysis_runtime=_PreanalysisRuntime(),
         analysis_runtime=_AnalysisRuntime(),
         rule_scope_service=_RuleScope(),
+        native_preanalysis_key_provider=lambda _function_ea: NATIVE_KEY,
         event_emitter=emitter,
     )
     emitter.coordinator = coordinator
@@ -185,9 +188,7 @@ def test_actual_hook_lifecycle_order_is_stable_across_merr_redo(monkeypatch) -> 
 
 
 def test_every_resolver_callback_receives_the_lifecycle_session_decision() -> None:
-    build_callinfo = _method_source(
-        _HOOK, "HexraysDecompilationHook", "build_callinfo"
-    )
+    build_callinfo = _method_source(_HOOK, "HexraysDecompilationHook", "build_callinfo")
     stkpnts = _method_source(_HOOK, "HexraysDecompilationHook", "stkpnts")
     preoptimized = _method_source(_HOOK, "HexraysDecompilationHook", "preoptimized")
 

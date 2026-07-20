@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from dataclasses import MISSING, dataclass, field, fields, replace
 from d810.core import getLogger
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteBindingEvidence,
     BootstrapRouteEvidence,
@@ -110,6 +111,7 @@ class ResolverSessionState:
     """
 
     native_preanalysis: NativePreanalysisSessionState
+    native_key: NativePreanalysisKey
     identity_index: MbaBlockIdentityIndex | None = None
     resolution: object | None = None
     materialization: ResolverMaterializationState | None = None
@@ -195,7 +197,10 @@ class ResolverSessionState:
                     )
                     and int(existing.source_jmp_ea) == int(transfer.source_jmp_ea)
                 ]
-                if len(matching_indices) == 1 and merged[matching_indices[0]] == transfer:
+                if (
+                    len(matching_indices) == 1
+                    and merged[matching_indices[0]] == transfer
+                ):
                     continue
                 if matching_indices:
                     combined = transfer
@@ -219,7 +224,8 @@ class ResolverSessionState:
                         changed_fields = tuple(
                             item.name
                             for item in fields(MaterializedIndirectTransfer)
-                            if getattr(previous, item.name) != getattr(combined, item.name)
+                            if getattr(previous, item.name)
+                            != getattr(combined, item.name)
                         )
                         logger.info(
                             "RESOLVER_TRANSFER_REPLACE generation=%d "
@@ -237,8 +243,7 @@ class ResolverSessionState:
             if transfer not in merged:
                 if trace_merge:
                     logger.info(
-                        "RESOLVER_TRANSFER_APPEND generation=%d source=0x%X "
-                        "kind=%s",
+                        "RESOLVER_TRANSFER_APPEND generation=%d source=0x%X " "kind=%s",
                         self.evidence_generation,
                         int(transfer.source_jmp_ea),
                         transfer.resolver_kind,
@@ -288,9 +293,10 @@ class ResolverSessionState:
         previous = self.portable_dispatcher_region_identity
         merged = StableBlockIdentity.from_intervals(
             (
-                *(previous.native_eas.intervals if previous is not None else ()),
-                *identity.native_eas.intervals,
-            )
+                *(previous.native_ranges.intervals if previous is not None else ()),
+                *identity.native_ranges.intervals,
+            ),
+            native_key=self.native_key,
         )
         if merged == previous:
             return False
@@ -322,10 +328,12 @@ class ResolverSessionState:
         if source_anchor_ea <= 0 or handler_anchor_ea <= 0:
             return False
         source_identity = StableBlockIdentity.from_intervals(
-            (NativeEaInterval(source_anchor_ea, source_anchor_ea + 1),)
+            (NativeEaInterval(source_anchor_ea, source_anchor_ea + 1),),
+            native_key=self.native_key,
         )
         handler_identity = StableBlockIdentity.from_intervals(
-            (NativeEaInterval(handler_anchor_ea, handler_anchor_ea + 1),)
+            (NativeEaInterval(handler_anchor_ea, handler_anchor_ea + 1),),
+            native_key=self.native_key,
         )
         return self.merge_bootstrap_route(
             BootstrapRouteEvidence(
@@ -413,10 +421,7 @@ class ResolverSessionState:
             return None
         source = index.rebind_identity(evidence.source_identity)
         handler = index.rebind_imported_identity(evidence.handler_identity)
-        if (
-            not prefer_imported_handler
-            or handler.status is RebindStatus.MISSING
-        ):
+        if not prefer_imported_handler or handler.status is RebindStatus.MISSING:
             handler = index.rebind_identity(evidence.handler_identity)
         if source.block is None or handler.block is None:
             return None
@@ -505,12 +510,20 @@ def resolver_session_state(session: object) -> ResolverSessionState:
         raise TypeError("resolver session state requires lifecycle native evidence")
     state = extensions.get(RESOLVER_SESSION_STATE_EXTENSION_KEY)
     if state is None:
-        state = ResolverSessionState(native_preanalysis=native_preanalysis)
+        native_key = getattr(session, "native_key", None)
+        if not isinstance(native_key, NativePreanalysisKey):
+            raise TypeError("resolver session state requires lifecycle native key")
+        state = ResolverSessionState(
+            native_preanalysis=native_preanalysis,
+            native_key=native_key,
+        )
         extensions[RESOLVER_SESSION_STATE_EXTENSION_KEY] = state
     if not isinstance(state, ResolverSessionState):
         raise TypeError("resolver session extension key is not ResolverSessionState")
     if state.native_preanalysis is not native_preanalysis:
         raise TypeError("resolver session binding belongs to another lifecycle")
+    if state.native_key != getattr(session, "native_key", None):
+        raise TypeError("resolver session native key belongs to another lifecycle")
     return state
 
 
