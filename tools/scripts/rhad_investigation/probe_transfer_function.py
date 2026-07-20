@@ -307,7 +307,7 @@ try:
         from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
             resolver_session_state,
         )
-        from tools.scripts.rhad_investigation.session_probe_evidence import (
+        from session_probe_evidence import (
             capture_preopt_union_preparation,
             latest_preopt_union_preparation,
         )
