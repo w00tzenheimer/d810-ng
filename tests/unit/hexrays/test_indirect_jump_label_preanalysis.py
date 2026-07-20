@@ -18,6 +18,7 @@ from d810.hexrays.preanalysis.indirect_jump_labels import (
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     TerminalReturnCarrierRequest,
+    mutation_authoritative_materialized_transfers,
 )
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
@@ -111,7 +112,7 @@ def test_materialized_transfer_evidence_is_session_scoped() -> None:
     assert materialized_indirect_transfers(state) == (transfer, second)
 
 
-def test_session_evidence_supersedes_stale_conditional_bridge() -> None:
+def test_session_evidence_retains_conflicting_conditional_bridge_generations() -> None:
     predicate_ea = 0x401020
     stale = MaterializedIndirectTransfer(
         source_jmp_ea=predicate_ea,
@@ -144,9 +145,13 @@ def test_session_evidence_supersedes_stale_conditional_bridge() -> None:
     assert merge_materialized_indirect_transfers(state, (refreshed,))
 
     assert materialized_indirect_transfers(state) == (
+        stale,
         unrelated,
         refreshed,
     )
+    assert mutation_authoritative_materialized_transfers(
+        materialized_indirect_transfers(state)
+    ) == ()
 
 
 def test_terminal_return_carrier_evidence_is_session_scoped() -> None:
