@@ -18,6 +18,7 @@ import ida_hexrays
 
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.decompilation_session import DecompilationEvent
+from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.manager.decompilation_lifecycle import (
     DecompilationLifecycleCoordinator,
@@ -210,6 +211,53 @@ def test_live_mba_gateway_is_bound_once_per_flow_context() -> None:
     create_branch = context.split("        else:\n", maxsplit=1)[0]
     assert "self._bind_resolver_session_state(self._flow_context, mba)" in create_branch
     assert "self._bind_mutation_gateway_port(self._flow_context, mba)" in create_branch
+
+
+def test_pre_context_whole_mba_extension_gets_gateway_from_coordinator() -> None:
+    calls: list[tuple[str, int]] = []
+    gateway = object()
+
+    class _Lifecycle:
+        @staticmethod
+        def build_current_mba_identity_index(*, function_ea: int, mba):
+            del mba
+            calls.append(("index", function_ea))
+            return object()
+
+        @staticmethod
+        def new_current_mba_mutation_gateway(*, function_ea: int, maturity: int):
+            calls.append(("gateway", function_ea))
+            calls.append(("maturity", maturity))
+            return gateway
+
+    manager = SimpleNamespace(
+        _decompilation_lifecycle=_Lifecycle(),
+        current_maturity=ida_hexrays.MMAT_GLBOPT1,
+    )
+    mba = SimpleNamespace(
+        entry_ea=0x401000,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+    )
+
+    result = BlockOptimizerManager._new_coordinator_mutation_gateway(manager, mba)
+
+    assert result is gateway
+    assert calls == [
+        ("index", 0x401000),
+        ("gateway", 0x401000),
+        ("maturity", ida_hexrays.MMAT_GLBOPT1),
+    ]
+
+
+def test_terminal_tail_extension_does_not_depend_on_future_flow_context() -> None:
+    terminal_tail = _method_source(
+        _OPTBLOCK,
+        "BlockOptimizerManager",
+        "_maybe_run_terminal_tail_cascade_egress_lowering",
+    )
+
+    assert "self._new_coordinator_mutation_gateway(mba)" in terminal_tail
+    assert "self._flow_context.new_mba_mutation_gateway()" not in terminal_tail
 
 
 def test_manager_has_one_coordinator_and_no_legacy_flowgraph_subscriber() -> None:
