@@ -9,6 +9,11 @@ import ida_hexrays
 import pytest
 
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+from tests.native_preanalysis import make_native_key
+from tests.system.runtime.mutation_gateway import make_mutation_gateway
+
+
+NATIVE_KEY = make_native_key()
 
 
 def test_calls_done_defers_generated_restart_to_the_flowchart_owner() -> None:
@@ -55,6 +60,7 @@ def _session_resolver_state(
 
     state = ResolverSessionState(
         native_preanalysis=NativePreanalysisSessionState(),
+        native_key=NATIVE_KEY,
         materialized=materialized,
         materialized_transfers=transfers,
     )
@@ -76,6 +82,12 @@ def _bind_rule_resolver_state(
         rule,
         "current_resolver_session_state",
         lambda: state,
+    )
+    mutation_gateway = make_mutation_gateway()
+    rule.set_flow_context(
+        SimpleNamespace(
+            new_mba_mutation_gateway=mutation_gateway.new_transaction,
+        )
     )
     return state
 
@@ -1253,7 +1265,7 @@ def test_island_rule_retries_after_pass_manager_reset(
     monkeypatch.setattr(
         island_rule,
         "_materialize_missing_detached_snippets",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, **_kwargs: 0,
     )
     monkeypatch.setattr(
         island_rule,
@@ -1263,12 +1275,12 @@ def test_island_rule_retries_after_pass_manager_reset(
     monkeypatch.setattr(
         island_rule,
         "_apply_residual_state_route_bridges",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, **_kwargs: 0,
     )
     monkeypatch.setattr(
         island_rule,
         "_apply_detached_snippet_terminal_routes",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, **_kwargs: 0,
     )
 
     def apply(
@@ -1276,6 +1288,7 @@ def test_island_rule_retries_after_pass_manager_reset(
         _plans: tuple[object, ...],
         *,
         state: object,
+        mutation_gateway: object,
     ) -> int:
         assert state is resolver_state
         attempts.append(id(mba))
@@ -1332,12 +1345,12 @@ def test_locopt_preservation_does_not_starve_conditional_bridge_planning(
     monkeypatch.setattr(
         island_rule,
         "_apply_detached_snippet_terminal_routes",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, **_kwargs: 0,
     )
     monkeypatch.setattr(
         island_rule,
         "_apply_residual_state_route_bridges",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, **_kwargs: 0,
     )
     monkeypatch.setattr(island_rule, "capture_call_result_carriers", lambda _mba: ())
 
@@ -1346,6 +1359,7 @@ def test_locopt_preservation_does_not_starve_conditional_bridge_planning(
         plans: tuple[object, ...],
         *,
         state: object,
+        mutation_gateway: object,
     ) -> int:
         assert state is resolver_state
         bridge_attempts.append(plans)
@@ -1386,12 +1400,12 @@ def test_calls_applies_conditional_bridge_recorded_after_locopt(
     monkeypatch.setattr(
         island_rule,
         "_apply_detached_snippet_terminal_routes",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, **_kwargs: 0,
     )
     monkeypatch.setattr(
         island_rule,
         "_apply_residual_state_route_bridges",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, **_kwargs: 0,
     )
     monkeypatch.setattr(
         island_rule,
@@ -1419,6 +1433,7 @@ def test_calls_applies_conditional_bridge_recorded_after_locopt(
         plans: tuple[object, ...],
         *,
         state: object,
+        mutation_gateway: object,
     ) -> int:
         assert state is resolver_state
         bridge_attempts.append(plans)
@@ -1454,7 +1469,7 @@ def test_calls_restores_profile_call_result_definition_before_early_return(
     monkeypatch.setattr(
         island_rule,
         "_materialize_live_handler_replacements",
-        lambda _mba, _transfers, *, state: 0,
+        lambda _mba, _transfers, *, state, mutation_gateway: 0,
     )
     monkeypatch.setattr(
         island_rule,
@@ -1474,12 +1489,12 @@ def test_calls_restores_profile_call_result_definition_before_early_return(
     monkeypatch.setattr(
         island_rule,
         "_apply_detached_snippet_terminal_routes",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, **_kwargs: 0,
     )
     monkeypatch.setattr(
         island_rule,
         "_apply_residual_state_route_bridges",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, **_kwargs: 0,
     )
     monkeypatch.setattr(
         island_rule,
@@ -1527,7 +1542,7 @@ def test_calls_imports_live_handler_replacement_before_terminal_routes(
     monkeypatch.setattr(
         island_rule,
         "_materialize_live_handler_replacements",
-        lambda _mba, _transfers, *, state: (
+        lambda _mba, _transfers, *, state, mutation_gateway: (
             events.append("replacement") or 1
             if state is resolver_state
             else pytest.fail("replacement did not receive session state")
@@ -1537,7 +1552,7 @@ def test_calls_imports_live_handler_replacement_before_terminal_routes(
     monkeypatch.setattr(
         island_rule,
         "_materialize_missing_detached_snippets",
-        lambda _mba, _transfers, *, require_live_residual_source, expected_template_maturity: (
+        lambda _mba, _transfers, *, mutation_gateway, require_live_residual_source, expected_template_maturity: (
             events.append("missing") or 1
             if require_live_residual_source
             and expected_template_maturity == int(ida_hexrays.MMAT_LOCOPT)
@@ -1557,7 +1572,7 @@ def test_calls_imports_live_handler_replacement_before_terminal_routes(
     monkeypatch.setattr(
         island_rule,
         "_apply_detached_snippet_terminal_routes",
-        lambda _mba, transfers: (
+        lambda _mba, transfers, **_kwargs: (
             events.append("terminal") or 1
             if transfers is bridged_transfers
             else pytest.fail("terminal routing did not receive bridge evidence")
@@ -1566,7 +1581,7 @@ def test_calls_imports_live_handler_replacement_before_terminal_routes(
     monkeypatch.setattr(
         island_rule,
         "_apply_residual_state_route_bridges",
-        lambda _mba, _transfers: events.append("residual") or 1,
+        lambda _mba, _transfers, **_kwargs: events.append("residual") or 1,
     )
     monkeypatch.setattr(
         island_rule,
@@ -1624,7 +1639,7 @@ def test_calls_recovers_bridges_for_snippets_imported_before_calls(
     monkeypatch.setattr(
         island_rule,
         "_materialize_live_handler_replacements",
-        lambda _mba, _transfers, *, state: (
+        lambda _mba, _transfers, *, state, mutation_gateway: (
             events.append("replacement") or 0
             if state is resolver_state
             else pytest.fail("replacement did not receive session state")
@@ -1647,7 +1662,7 @@ def test_calls_recovers_bridges_for_snippets_imported_before_calls(
     monkeypatch.setattr(
         island_rule,
         "_apply_detached_snippet_terminal_routes",
-        lambda _mba, transfers: (
+        lambda _mba, transfers, **_kwargs: (
             events.append("terminal") or 1
             if transfers is bridged_transfers
             else pytest.fail("terminal routing missed imported bridge evidence")
@@ -1656,7 +1671,7 @@ def test_calls_recovers_bridges_for_snippets_imported_before_calls(
     monkeypatch.setattr(
         island_rule,
         "_apply_residual_state_route_bridges",
-        lambda _mba, _transfers: events.append("residual") or 0,
+        lambda _mba, _transfers, **_kwargs: events.append("residual") or 0,
     )
     monkeypatch.setattr(
         island_rule,
@@ -1760,6 +1775,7 @@ def test_calls_missing_import_ignores_stale_evidence_when_live_delivery_exists(
         _function_ea: int,
         target_eas: tuple[int, ...],
         *,
+        mutation_gateway: object,
         expected_template_maturity: int | None,
         allow_raw_preopt_calls: bool,
         import_native_preopt_ranges: bool,
@@ -1780,6 +1796,7 @@ def test_calls_missing_import_ignores_stale_evidence_when_live_delivery_exists(
         island_rule._materialize_missing_detached_snippets(
             mba,
             (),
+            mutation_gateway=make_mutation_gateway(mba),
             require_live_residual_source=True,
             expected_template_maturity=int(ida_hexrays.MMAT_LOCOPT),
         )
@@ -1897,7 +1914,7 @@ def test_live_handler_replacement_releases_unreachable_native_keep_roots(
     monkeypatch.setattr(
         island_rule,
         "materialize_detached_replacement_snippet_templates",
-        lambda _mba, _function_ea, _target_eas: {0x40A7AE: 5},
+        lambda _mba, _function_ea, _target_eas, **_kwargs: {0x40A7AE: 5},
     )
     monkeypatch.setattr(
         island_rule,
@@ -1912,6 +1929,7 @@ def test_live_handler_replacement_releases_unreachable_native_keep_roots(
             mba,
             (transfer,),
             state=resolver_state,
+            mutation_gateway=make_mutation_gateway(mba),
         )
         == 1
     )
@@ -1933,6 +1951,7 @@ def test_locopt_preanalysis_imports_before_call_analysis_without_requesting_redo
     resolver_state = _session_resolver_state(transfers=transfers)
     session = SimpleNamespace(
         native_preanalysis=resolver_state.native_preanalysis,
+        native_key=NATIVE_KEY,
         extensions={
             "d810.optimizers.microcode.flow.jumps.resolver_session_state": (
                 resolver_state
@@ -1942,7 +1961,7 @@ def test_locopt_preanalysis_imports_before_call_analysis_without_requesting_redo
     monkeypatch.setattr(
         island_rule,
         "_materialize_missing_detached_snippets",
-        lambda candidate_mba, candidate_transfers, *, require_live_residual_source, expected_template_maturity: (
+        lambda candidate_mba, candidate_transfers, *, mutation_gateway, require_live_residual_source, expected_template_maturity: (
             3
             if candidate_mba is mba
             and candidate_transfers is transfers
@@ -1961,6 +1980,7 @@ def test_locopt_preanalysis_imports_before_call_analysis_without_requesting_redo
     decision: dict[str, object] = {
         "request_redo": False,
         "session": session,
+        "mutation_gateway": make_mutation_gateway(),
     }
 
     island_rule._materialize_locopt_preanalysis(
@@ -1972,6 +1992,7 @@ def test_locopt_preanalysis_imports_before_call_analysis_without_requesting_redo
     assert decision == {
         "request_redo": False,
         "session": session,
+        "mutation_gateway": decision["mutation_gateway"],
         "microcode_modified": True,
         "details": {"imported_snippets": 3, "residual_bridges": 0},
     }
@@ -2316,7 +2337,7 @@ def test_island_rule_materializes_semantic_island_before_other_bridges(
     monkeypatch.setattr(
         island_rule,
         "_materialize_missing_detached_snippets",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, **_kwargs: 0,
     )
     monkeypatch.setattr(
         island_rule,
@@ -2326,15 +2347,20 @@ def test_island_rule_materializes_semantic_island_before_other_bridges(
     monkeypatch.setattr(
         island_rule,
         "_apply_residual_state_route_bridges",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, **_kwargs: 0,
     )
     monkeypatch.setattr(
         island_rule,
         "_apply_detached_snippet_terminal_routes",
-        lambda _mba, _transfers: 0,
+        lambda _mba, _transfers, **_kwargs: 0,
     )
 
-    def materialize(mba: object, plan: object) -> bool:
+    def materialize(
+        mba: object,
+        plan: object,
+        *,
+        mutation_gateway: object,
+    ) -> bool:
         assert plan is island_plan
         island_attempts.append(id(mba))
         return True
@@ -2344,6 +2370,7 @@ def test_island_rule_materializes_semantic_island_before_other_bridges(
         plans: tuple[object, ...],
         *,
         state: object,
+        mutation_gateway: object,
     ) -> int:
         assert state is resolver_state
         bridge_attempts.append(plans)
@@ -2415,7 +2442,7 @@ def test_terminal_route_helper_reads_reloaded_importer_provenance(
     )
 
     class _Modifier:
-        def __init__(self, _mba: object) -> None:
+        def __init__(self, _mba: object, *, mutation_gateway: object) -> None:
             self.queued = 0
 
         def queue_terminal_goto_change(self, **_kwargs: object) -> None:
@@ -2431,6 +2458,7 @@ def test_terminal_route_helper_reads_reloaded_importer_provenance(
         island_rule._apply_detached_snippet_terminal_routes(
             mba,
             (transfer,),
+            mutation_gateway=make_mutation_gateway(mba),
         )
         == 1
     )
@@ -2499,7 +2527,7 @@ def test_terminal_route_helper_recovers_live_native_exit_from_state_snapshot(
     class _Modifier:
         queued: list[tuple[int, int]] = []
 
-        def __init__(self, _mba: object) -> None:
+        def __init__(self, _mba: object, *, mutation_gateway: object) -> None:
             type(self).queued = []
 
         def queue_terminal_goto_change(
@@ -2521,6 +2549,7 @@ def test_terminal_route_helper_recovers_live_native_exit_from_state_snapshot(
         island_rule._apply_detached_snippet_terminal_routes(
             mba,
             (equality, terminal),
+            mutation_gateway=make_mutation_gateway(mba),
         )
         == 1
     )
@@ -2669,7 +2698,11 @@ def test_detached_island_uses_standalone_predicate_fork_topology(
         lambda _modifier, _block: None,
     )
 
-    assert detached_handler_island.materialize_detached_handler_island(mba, plan)
+    assert detached_handler_island.materialize_detached_handler_island(
+        mba,
+        plan,
+        mutation_gateway=make_mutation_gateway(mba),
+    )
     assert inserted == [source.serial]
     assert standalone == [
         (source.serial, False, (ida_hexrays.m_mov,)),
