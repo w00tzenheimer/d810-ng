@@ -6,52 +6,9 @@
     "event-subscription"
   ],
   "direct_runtime": {
-    "baseline_count": 26,
-    "checkpoint_count": 23,
-    "allowed_production": [
-      {
-        "path": "src/d810/manager/decompilation_lifecycle.py",
-        "detail": "reset_for_func",
-        "maximum": 1
-      },
-      {
-        "path": "src/d810/manager/decompilation_lifecycle.py",
-        "detail": "analyze_and_persist",
-        "maximum": 1
-      },
-      {
-        "path": "src/d810/passes/runtime.py",
-        "detail": "reset_for_func",
-        "maximum": 2
-      }
-    ]
+    "checkpoint_count": 0,
+    "allowed_production": []
   },
-  "temporary_internal_ports": [
-    {
-      "detail": "template_maturity",
-      "locations": [
-        {
-          "path": "src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py",
-          "role": "definition",
-          "maximum": 1
-        },
-        {
-          "path": "tools/scripts/rhad_investigation/probe_preopt_snippet_import.py",
-          "role": "consumer",
-          "maximum": 1
-        }
-      ],
-      "removal_condition": "Remove with the probe-only fallback after fresh cache-disabled sub_40D200 succeeds through the PREOPT union path."
-    }
-  ],
-  "bridges": [
-    {
-      "path": "src/d810/manager/decompilation_lifecycle.py",
-      "kind": "direct-runtime-call",
-      "details": [
-        "reset_for_func",
-        "analyze_and_persist"
-      ]
-    }
-  ]
+  "temporary_internal_ports": [],
+  "bridges": []
 }
