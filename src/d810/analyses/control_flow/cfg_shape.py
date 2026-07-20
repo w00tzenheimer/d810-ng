@@ -131,13 +131,7 @@ class CFGShapeCollector:
         func_ea: int | None = None,
         **legacy_fields: object,
     ) -> PreanalysisResult:
-        """Collect CFG shape metrics.
-
-        :param target: portable ``d810.ir`` ``FlowGraph``.
-        :param func_ea: Function effective address.
-        :param maturity: Current maturity level.
-        :return: Frozen ``ReconResult`` with CFG shape metrics.
-        """
+        "Collect CFG shape metrics.\n\n        :param target: portable ``d810.ir`` ``FlowGraph``.\n        :param func_ea: Function effective address.\n        :param maturity: Current maturity level.\n        :return: Frozen ``PreanalysisResult`` with CFG shape metrics.\n        "
         context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,

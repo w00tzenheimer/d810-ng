@@ -1,15 +1,4 @@
-"""Live Hex-Rays implementation of the recon ``CarrierResolver`` boundary.
-
-This adapter lives in the optimizer layer (permitted to import
-``d810.hexrays`` and the live evaluator), so the pure recon
-``exit_path_effect_discovery`` never imports Hex-Rays to answer the one
-genuinely-live question it delegates: "what constant did this indirect
-state-variable write resolve to?"
-
-The two ``_resolve_*`` helpers were moved here verbatim from
-``d810.analyses.control_flow.exit_path_effect_discovery``; their logic is
-unchanged.
-"""
+"Live Hex-Rays implementation of the preanalysis ``CarrierResolver`` boundary.\n\nThis adapter lives in the optimizer layer (permitted to import\n``d810.hexrays`` and the live evaluator), so the pure preanalysis\n``exit_path_effect_discovery`` never imports Hex-Rays to answer the one\ngenuinely-live question it delegates: \"what constant did this indirect\nstate-variable write resolve to?\"\n\nThe two ``_resolve_*`` helpers were moved here verbatim from\n``d810.analyses.control_flow.exit_path_effect_discovery``; their logic is\nunchanged.\n"
 from __future__ import annotations
 
 from d810.ir.flowgraph import InsnKind, OperandKind

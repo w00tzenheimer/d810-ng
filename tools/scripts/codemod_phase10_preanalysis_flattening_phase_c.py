@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase C codemod: rewrite transition_builder imports to recon.flow."""
+"Phase C codemod: rewrite transition_builder imports to preanalysis.flow."
 
 from __future__ import annotations
 
@@ -11,9 +11,7 @@ import libcst as cst
 
 
 PHASE_C_RENAMES = {
-    "d810.optimizers.microcode.flow.flattening.transition_builder": (
-        "d810.recon.flow.transition_builder"
-    ),
+    "d810.optimizers.microcode.flow.flattening.transition_builder": "d810.preanalysis.flow.transition_builder",
 }
 
 

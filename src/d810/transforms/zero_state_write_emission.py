@@ -1,51 +1,4 @@
-"""Unified ZeroStateWrite (ZSW) collection — single-emitter consolidation.
-
-Phase 4 of the DAG-as-arbiter epic (uee-jrgq → uee-rjo8).
-
-Before this module, three near-identical collectors emitted ``ZeroStateWrite``
-mods from different points of the planning pipeline:
-
-1. ``cfg.reconstruction_emission._collect_zero_state_write_modifications``
-   — canonical. Walks reconstruction candidates whose ``.site`` is already
-   resolved by the planner.
-2. ``hodur.strategies.linearized_flow_graph._collect_structured_region_zero_state_write_modifications``
-   — LFG-local. Walks accepted candidates and resolves the deepest state
-   write site by walking ``ordered_path`` block-by-block via
-   :func:`recon.flow.state_machine_analysis.find_last_state_write_site_on_path_snapshot`.
-3. ``hodur.strategies.linearized_flow_graph._collect_trivial_redirect_tail_zero_state_write_modifications``
-   — LFG-local. Walks already-emitted ``RedirectGoto`` mods whose
-   ``old_target`` is the dispatcher and resolves the source block's last
-   state write via :func:`recon.flow.state_machine_analysis.find_last_state_write_site_snapshot`.
-
-Tracer evidence on sub_7FFD: 47 blocks emitted ZSW from 2-3 of these
-collectors. The mods coalesced at builder level via the
-``existing_modifications`` dedup seed (commit ``6e6a88ca``), but the
-ownership smell remained — a planner-level invariant violation hiding
-behind a coalescer.
-
-This module re-expresses all three collectors as a single function
-:func:`collect_zero_state_writes` taking a tagged-union :class:`ZsvSource`
-input.  Each collector's caller resolves its inputs into a uniform list
-of :class:`ZsvSiteRequest` records (an already-resolved tuple of
-``(block_serial, insn_ea, site_state, target_states)``) and dispatches
-through the single emitter, which performs the dedup pass once.
-
-The architectural payoff:
-
-* **Single dedup pass** across all callers — no more cross-collector
-  duplication. Tracer audit on sub_7FFD will show 0 blocks with ZSW
-  from multiple call sites.
-* **Single dedup-key invariant** — every ``(block_serial, insn_ea)``
-  ZSW decision is keyed identically across all 3 inputs.
-* **Layering preserved** — this module lives in :mod:`d810.transforms` (below
-  :mod:`d810.passes`); recon-level path resolution stays at the call
-  site. The unified function only sees already-resolved sites.
-
-The DagAuthority is consulted at the planner gateway in Phase 1; the
-single-emitter invariant established here is the proof of the
-``permits_zero_state_write`` arbiter's safety: the mod the planner
-proposes is the unique decision for a given site.
-"""
+"Unified ZeroStateWrite (ZSW) collection \u2014 single-emitter consolidation.\n\nPhase 4 of the DAG-as-arbiter epic (uee-jrgq \u2192 uee-rjo8).\n\nBefore this module, three near-identical collectors emitted ``ZeroStateWrite``\nmods from different points of the planning pipeline:\n\n1. ``cfg.reconstruction_emission._collect_zero_state_write_modifications``\n   \u2014 canonical. Walks reconstruction candidates whose ``.site`` is already\n   resolved by the planner.\n2. ``hodur.strategies.linearized_flow_graph._collect_structured_region_zero_state_write_modifications``\n   \u2014 LFG-local. Walks accepted candidates and resolves the deepest state\n   write site by walking ``ordered_path`` block-by-block via\n   :func:`preanalysis.flow.state_machine_analysis.find_last_state_write_site_on_path_snapshot`.\n3. ``hodur.strategies.linearized_flow_graph._collect_trivial_redirect_tail_zero_state_write_modifications``\n   \u2014 LFG-local. Walks already-emitted ``RedirectGoto`` mods whose\n   ``old_target`` is the dispatcher and resolves the source block's last\n   state write via :func:`preanalysis.flow.state_machine_analysis.find_last_state_write_site_snapshot`.\n\nTracer evidence on sub_7FFD: 47 blocks emitted ZSW from 2-3 of these\ncollectors. The mods coalesced at builder level via the\n``existing_modifications`` dedup seed (commit ``6e6a88ca``), but the\nownership smell remained \u2014 a planner-level invariant violation hiding\nbehind a coalescer.\n\nThis module re-expresses all three collectors as a single function\n:func:`collect_zero_state_writes` taking a tagged-union :class:`ZsvSource`\ninput.  Each collector's caller resolves its inputs into a uniform list\nof :class:`ZsvSiteRequest` records (an already-resolved tuple of\n``(block_serial, insn_ea, site_state, target_states)``) and dispatches\nthrough the single emitter, which performs the dedup pass once.\n\nThe architectural payoff:\n\n* **Single dedup pass** across all callers \u2014 no more cross-collector\n  duplication. Tracer audit on sub_7FFD will show 0 blocks with ZSW\n  from multiple call sites.\n* **Single dedup-key invariant** \u2014 every ``(block_serial, insn_ea)``\n  ZSW decision is keyed identically across all 3 inputs.\n* **Layering preserved** \u2014 this module lives in :mod:`d810.transforms` (below\n  :mod:`d810.passes`); preanalysis-level path resolution stays at the call\n  site. The unified function only sees already-resolved sites.\n\nThe DagAuthority is consulted at the planner gateway in Phase 1; the\nsingle-emitter invariant established here is the proof of the\n``permits_zero_state_write`` arbiter's safety: the mod the planner\nproposes is the unique decision for a given site.\n"
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -98,21 +51,7 @@ class ZsvSiteRequest:
 
 @dataclass(frozen=True, slots=True)
 class ZsvSource:
-    """Tagged-union input to :func:`collect_zero_state_writes`.
-
-    The three legacy collectors map onto three constructors:
-
-    * :meth:`from_candidates` — wraps reconstruction candidates whose
-      ``.site`` is already resolved by the planner. Replaces the
-      canonical ``cfg.reconstruction_emission._collect_zero_state_write_modifications``.
-    * :meth:`from_resolved_sites` — wraps already-resolved
-      ``ZsvSiteRequest`` tuples directly. Replaces the two LFG-local
-      collectors after they perform their own recon-layer path/block
-      resolution.
-
-    A union with explicit constructors keeps the call surface narrow
-    while letting each caller provide the inputs in its native shape.
-    """
+    "Tagged-union input to :func:`collect_zero_state_writes`.\n\n    The three legacy collectors map onto three constructors:\n\n    * :meth:`from_candidates` \u2014 wraps reconstruction candidates whose\n      ``.site`` is already resolved by the planner. Replaces the\n      canonical ``cfg.reconstruction_emission._collect_zero_state_write_modifications``.\n    * :meth:`from_resolved_sites` \u2014 wraps already-resolved\n      ``ZsvSiteRequest`` tuples directly. Replaces the two LFG-local\n      collectors after they perform their own preanalysis-layer path/block\n      resolution.\n\n    A union with explicit constructors keeps the call surface narrow\n    while letting each caller provide the inputs in its native shape.\n    "
 
     requests: tuple[ZsvSiteRequest, ...]
 
@@ -152,13 +91,7 @@ class ZsvSource:
         cls,
         sites: Iterable[ZsvSiteRequest],
     ) -> "ZsvSource":
-        """Build from already-resolved :class:`ZsvSiteRequest` records.
-
-        Used by callers that perform their own recon-layer path/block
-        resolution (the two LFG-local collectors). Each caller
-        resolves its sites via :mod:`d810.analyses.control_flow.state_machine_analysis`
-        helpers and forwards the resulting tuples here.
-        """
+        "Build from already-resolved :class:`ZsvSiteRequest` records.\n\n        Used by callers that perform their own preanalysis-layer path/block\n        resolution (the two LFG-local collectors). Each caller\n        resolves its sites via :mod:`d810.analyses.control_flow.state_machine_analysis`\n        helpers and forwards the resulting tuples here.\n        "
         return cls(requests=tuple(sites))
 
 

@@ -1,12 +1,4 @@
-"""Return frontier recon collector.
-
-Generic collector that audits return site preservation across
-unflattening pipeline stages. Consumes return_sites and planned_mods
-from FlowGraph metadata (populated by the active unflattener).
-
-IMPORTANT: This collector is generic — it must NOT import any
-unflattener-specific code (no hodur imports).
-"""
+"Return frontier preanalysis collector.\n\nGeneric collector that audits return site preservation across\nunflattening pipeline stages. Consumes return_sites and planned_mods\nfrom FlowGraph metadata (populated by the active unflattener).\n\nIMPORTANT: This collector is generic \u2014 it must NOT import any\nunflattener-specific code (no hodur imports).\n"
 from __future__ import annotations
 
 import json
@@ -31,20 +23,10 @@ logger = getLogger(__name__)
 
 
 class ReturnFrontierCollector:
-    """Recon collector for return frontier audit.
-
-    Satisfies ReconCollector protocol structurally.
-
-    Expected FlowGraph metadata keys:
-        - "return_sites": tuple[ReturnSite, ...]
-        - "cfg_successors": Mapping[int, Sequence[int]]
-        - "cfg_entry": int
-        - "cfg_exits": frozenset[int]
-        - "stage_name": str (current pipeline stage)
-    """
+    "Preanalysis collector for return frontier audit.\n\n    Satisfies PreanalysisCollector protocol structurally.\n\n    Expected FlowGraph metadata keys:\n        - \"return_sites\": tuple[ReturnSite, ...]\n        - \"cfg_successors\": Mapping[int, Sequence[int]]\n        - \"cfg_entry\": int\n        - \"cfg_exits\": frozenset[int]\n        - \"stage_name\": str (current pipeline stage)\n    "
 
     name: str = "return_frontier"
-    # ``None`` == "fire at all maturities" (the ReconPhase ALL_MATURITIES
+    # ``None`` == "fire at all maturities" (the PreanalysisPhase ALL_MATURITIES
     # sentinel is itself ``None``). The phase id/maturity reaches collect()
     # as an int arg, so this collector no longer imports the orchestrator.
     maturities: frozenset[int] | None = None
@@ -52,7 +34,7 @@ class ReturnFrontierCollector:
 
     def __init__(self) -> None:
         self._audit: ReturnFrontierAudit | None = None
-        self._artifact_dir = Path(".tmp/recon")
+        self._artifact_dir = Path(".tmp/preanalysis")
 
     @classmethod
     def build_result_from_audit(
@@ -64,7 +46,7 @@ class ReturnFrontierCollector:
         timestamp: float | None = None,
         stage_results: tuple[ReturnSiteStatus, ...] | None = None,
     ) -> PreanalysisResult:
-        """Persist the latest audit state as a recon result."""
+        "Persist the latest audit state as a preanalysis result."
         latest_results = stage_results
         if latest_results is None and audit._stage_results:
             latest_results = tuple(next(reversed(audit._stage_results.values())))
@@ -111,18 +93,7 @@ class ReturnFrontierCollector:
         func_ea: int | None = None,
         **legacy_fields: object,
     ) -> PreanalysisResult:
-        """Collect return frontier audit data.
-
-        ``target`` is expected to be a FlowGraph (or any object with
-        a ``metadata`` mapping containing the required keys).
-
-        Called once per stage by the unflattener after populating metadata.
-
-        :param target: Object with a ``metadata`` mapping.
-        :param func_ea: Function effective address.
-        :param maturity: Current maturity level.
-        :return: Frozen ``ReconResult`` with return frontier metrics.
-        """
+        "Collect return frontier audit data.\n\n        ``target`` is expected to be a FlowGraph (or any object with\n        a ``metadata`` mapping containing the required keys).\n\n        Called once per stage by the unflattener after populating metadata.\n\n        :param target: Object with a ``metadata`` mapping.\n        :param func_ea: Function effective address.\n        :param maturity: Current maturity level.\n        :return: Frozen ``PreanalysisResult`` with return frontier metrics.\n        "
         context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,

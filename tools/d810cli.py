@@ -1284,7 +1284,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "recommended for unflattening investigations: enable diag snapshots "
-            "and use the full recon/diagnostic microcode, valrange, and condition-chain dump set"
+            "and use the full preanalysis/diagnostic microcode, valrange, and condition-chain dump set"
         ),
     )
     sp.add_argument("--extra", action="append",
@@ -1789,7 +1789,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "--analysis-db", default=None,
-        help="explicit recon SQLite DB (default: auto-detect)",
+        help="explicit preanalysis SQLite DB (default: auto-detect)",
     )
     sp.add_argument(
         "--log", default=None,

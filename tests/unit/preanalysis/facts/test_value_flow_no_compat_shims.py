@@ -9,9 +9,9 @@ from d810.analyses.value_flow.model import FactObservation
 
 
 def test_carrier_import_shim_is_removed() -> None:
-    # recon/ is fully dissolved: the entire d810.recon namespace is gone, so
-    # the carrier-era compat shim (and all of recon.facts) cannot exist.
-    assert importlib.util.find_spec("d810.recon") is None
+    # preanalysis/ is fully dissolved: the entire d810.preanalysis namespace is gone, so
+    # the carrier-era compat shim (and all of preanalysis.facts) cannot exist.
+    assert importlib.util.find_spec("d810.preanalysis") is None
 
 
 def test_value_flow_fact_types_are_canonical_and_complete() -> None:

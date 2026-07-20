@@ -29,11 +29,11 @@ CALL_NEW = "make_bound_diag_db()"
 
 # (relpath, keep_create_import?)
 REPLACE_FILES = [
-    ("tests/unit/recon/flow/test_edge_diagnostics.py", False),
-    ("tests/unit/recon/flow/test_condition_chain_resolution.py", False),
-    ("tests/unit/recon/flow/test_alternate_selection.py", False),
-    ("tests/unit/recon/flow/test_alternate_correlation.py", False),
-    ("tests/unit/recon/flow/test_selected_alternate_edge_override.py", False),
+    ("tests/unit/preanalysis/flow/test_edge_diagnostics.py", False),
+    ("tests/unit/preanalysis/flow/test_condition_chain_resolution.py", False),
+    ("tests/unit/preanalysis/flow/test_alternate_selection.py", False),
+    ("tests/unit/preanalysis/flow/test_alternate_correlation.py", False),
+    ("tests/unit/preanalysis/flow/test_selected_alternate_edge_override.py", False),
     ("tests/unit/diagnostics/test_state_dispatcher_resolution.py", False),
     ("tests/unit/diagnostics/test_scenarios.py", False),
     ("tests/unit/diagnostics/test_inspect_state_node.py", False),

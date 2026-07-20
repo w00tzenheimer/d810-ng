@@ -500,7 +500,7 @@ _STATUS_TO_NARRATIVE: dict[str, str] = {
     ),
     "no_dag_evidence": (
         "byte's state node was never seen in HCC's dag / corrected_dag"
-        " (likely a recon collector gap)"
+        " (likely a preanalysis collector gap)"
     ),
     "unknown": "no final-stage observation recorded",
 }

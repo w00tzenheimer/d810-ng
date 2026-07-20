@@ -213,12 +213,7 @@ def _derive_terminal_return_risk(audit: object | None) -> float:
 
 @dataclass(frozen=True)
 class HintAdjustment:
-    """Score adjustment produced by recon hint analysis.
-
-    Attributes:
-        score_delta: Additive adjustment to the fragment's composite score.
-        reasons: Human-readable reasons for the adjustment.
-    """
+    "Score adjustment produced by preanalysis hint analysis.\n\n    Attributes:\n        score_delta: Additive adjustment to the fragment's composite score.\n        reasons: Human-readable reasons for the adjustment.\n    "
 
     score_delta: float = 0.0
     reasons: tuple[str, ...] = ()
@@ -227,17 +222,7 @@ class HintAdjustment:
 def compute_hint_adjustment(
     fragment: PlanFragment, signals: PlannerHintSignals
 ) -> HintAdjustment:
-    """Compute a score adjustment for *fragment* based on recon *signals*.
-
-    This is a pure function with no side effects.
-
-    Args:
-        fragment: The plan fragment to evaluate.
-        signals: Normalized recon signals.
-
-    Returns:
-        A :class:`HintAdjustment` with the cumulative score delta and reasons.
-    """
+    "Compute a score adjustment for *fragment* based on preanalysis *signals*.\n\n    This is a pure function with no side effects.\n\n    Args:\n        fragment: The plan fragment to evaluate.\n        signals: Normalized preanalysis signals.\n\n    Returns:\n        A :class:`HintAdjustment` with the cumulative score delta and reasons.\n    "
     delta = 0.0
     reasons: list[str] = []
 
@@ -454,18 +439,7 @@ _SUB7FFD3338C040_ENTRY_EA = 0x180012B60
 
 
 def _corridor_seed_data_for_snapshot(snapshot: AnalysisSnapshot) -> tuple:
-    """Return function-specific CorridorSpliceData for the snapshot.
-
-    uee-7wcd seed registry.  Keyed off ``mba.entry_ea``.  Today's only
-    registered corridor is sub_7FFD3338C040's poll-corridor splice
-    (shared_block=45, base_target=126, clone_source=122,
-    clone_target=180).  Returns an empty tuple when the function has
-    no registered corridor.
-
-    Until recon analysis can derive corridor patterns directly, this
-    seed registry is the canonical source of corridor data for the
-    DAG arbiter.
-    """
+    "Return function-specific CorridorSpliceData for the snapshot.\n\n    uee-7wcd seed registry.  Keyed off ``mba.entry_ea``.  Today's only\n    registered corridor is sub_7FFD3338C040's poll-corridor splice\n    (shared_block=45, base_target=126, clone_source=122,\n    clone_target=180).  Returns an empty tuple when the function has\n    no registered corridor.\n\n    Until preanalysis analysis can derive corridor patterns directly, this\n    seed registry is the canonical source of corridor data for the\n    DAG arbiter.\n    "
     from d810.transforms.dag_authority import (
         CorridorSpliceData,
     )
@@ -490,17 +464,7 @@ def _corridor_seed_data_for_snapshot(snapshot: AnalysisSnapshot) -> tuple:
 
 
 def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
-    """Construct the DAG-as-arbiter for this pipeline run, or None.
-
-    Phase 2 of uee-jrgq.  Reads the recon DAG off ``snapshot.discovery``
-    if present; returns ``None`` when no discovery context is available
-    (legacy / non-Hodur families that haven't built a LinearizedStateDag
-    yet).  Built once per ``UnflatteningPlanner.plan()`` call.
-
-    Per the deferral decision (mem_52073043), per-round rederivation is
-    intentionally deferred — the same authority is threaded through
-    every cumulative-view rebuild within this plan() invocation.
-    """
+    "Construct the DAG-as-arbiter for this pipeline run, or None.\n\n    Phase 2 of uee-jrgq.  Reads the preanalysis DAG off ``snapshot.discovery``\n    if present; returns ``None`` when no discovery context is available\n    (legacy / non-Hodur families that haven't built a LinearizedStateDag\n    yet).  Built once per ``UnflatteningPlanner.plan()`` call.\n\n    Per the deferral decision (mem_52073043), per-round rederivation is\n    intentionally deferred \u2014 the same authority is threaded through\n    every cumulative-view rebuild within this plan() invocation.\n    "
     discovery = getattr(snapshot, "discovery", None)
     if discovery is None:
         return None
@@ -516,7 +480,7 @@ def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
     # uee-7wcd: seed function-specific corridor data based on
     # ``mba.entry_ea``.  Currently only sub_7FFD3338C040 has a
     # registered corridor; new entries can be added here when other
-    # functions surface the same shape.  Long-term: have recon
+    # functions surface the same shape.  Long-term: have preanalysis
     # analysis derive corridor patterns from the DAG itself.
     corridor_data = _corridor_seed_data_for_snapshot(snapshot)
     try:
@@ -651,20 +615,7 @@ class PipelinePolicy:
 
 
 class UnflatteningPlanner:
-    """Selects, orders, and arbitrates strategy fragments.
-
-    As a lifecycle consumer, the planner receives a :class:`PlannerInputs`
-    envelope containing recon artifacts (handler transitions, return
-    frontier, terminal return audit) and derives :class:`PlannerHintSignals`
-    to bias fragment scoring.  The outcome layer --
-    :class:`PipelineProvenance` -- records every accept/reject decision
-    with full audit trail, closing the lifecycle loop.
-
-    **Hint persistence:** ``PlannerHintSignals`` remain ephemeral —
-    see :class:`~d810.analyses.control_flow.provenance.PlannerInputs`
-    for rationale.  Persist only if a concrete need appears (offline
-    audit, cross-pass caching, or a second planner consumer).
-    """
+    "Selects, orders, and arbitrates strategy fragments.\n\n    As a lifecycle consumer, the planner receives a :class:`PlannerInputs`\n    envelope containing preanalysis artifacts (handler transitions, return\n    frontier, terminal return audit) and derives :class:`PlannerHintSignals`\n    to bias fragment scoring.  The outcome layer --\n    :class:`PipelineProvenance` -- records every accept/reject decision\n    with full audit trail, closing the lifecycle loop.\n\n    **Hint persistence:** ``PlannerHintSignals`` remain ephemeral \u2014\n    see :class:`~d810.analyses.control_flow.provenance.PlannerInputs`\n    for rationale.  Persist only if a concrete need appears (offline\n    audit, cross-pass caching, or a second planner consumer).\n    "
 
     def __init__(self, policy: PipelinePolicy | None = None):
         self.policy = policy or PipelinePolicy()
@@ -675,26 +626,11 @@ class UnflatteningPlanner:
         strategies: list[UnflatteningStrategy],
         inputs: PlannerInputs | None = None,
     ) -> tuple[list[PlanFragment], PipelineProvenance]:
-        """Poll strategies, collect fragments, and compose the pipeline.
-
-        This is the primary public API. It owns:
-        1. Strategy polling (``is_applicable`` + ``plan``).
-        2. Fragment collection.
-        3. Pipeline composition via :meth:`compose_pipeline`.
-        4. Provenance generation (including INAPPLICABLE/CRASHED records).
-
-        Args:
-            snapshot: Read-only view of the current function's analysis state.
-            strategies: Ordered list of strategy instances to poll.
-            inputs: Structured envelope with recon artifacts and handler count.
-
-        Returns:
-            A tuple of (ordered pipeline, complete provenance ledger).
-        """
+        "Poll strategies, collect fragments, and compose the pipeline.\n\n        This is the primary public API. It owns:\n        1. Strategy polling (``is_applicable`` + ``plan``).\n        2. Fragment collection.\n        3. Pipeline composition via :meth:`compose_pipeline`.\n        4. Provenance generation (including INAPPLICABLE/CRASHED records).\n\n        Args:\n            snapshot: Read-only view of the current function's analysis state.\n            strategies: Ordered list of strategy instances to poll.\n            inputs: Structured envelope with preanalysis artifacts and handler count.\n\n        Returns:\n            A tuple of (ordered pipeline, complete provenance ledger).\n        "
         fragments: list[PlanFragment] = []
         pre_planner_records: list[DecisionRecord] = []
 
-        # Build a DagAuthority once per pipeline run from the recon DAG
+        # Build a DagAuthority once per pipeline run from the preanalysis DAG
         # if one is available. Per the deferral decision (mem_52073043),
         # the authority is NOT re-derived per round — same DagAuthority
         # is threaded through every CumulativePlannerView.compile() call
@@ -889,15 +825,7 @@ class UnflatteningPlanner:
         *,
         inputs: PlannerInputs | None = None,
     ) -> tuple[list[PlanFragment], PipelineProvenance]:
-        """Full pipeline: filter -> policy -> resolve conflicts -> order.
-
-        Args:
-            fragments: Candidate plan fragments from strategies.
-            inputs: Structured envelope with recon artifacts and handler count.
-
-        Returns:
-            A tuple of (ordered pipeline, provenance ledger).
-        """
+        "Full pipeline: filter -> policy -> resolve conflicts -> order.\n\n        Args:\n            fragments: Candidate plan fragments from strategies.\n            inputs: Structured envelope with preanalysis artifacts and handler count.\n\n        Returns:\n            A tuple of (ordered pipeline, provenance ledger).\n        "
         if inputs is not None:
             effective_total_handlers = inputs.total_handlers
             input_summary = inputs.to_input_summary()

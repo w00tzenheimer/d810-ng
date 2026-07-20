@@ -1,20 +1,4 @@
-"""Source-lifter capability Protocol + registry.
-
-A :class:`SourceLifter` turns a backend-native *source* (a live Hex-Rays ``mba``,
-a future angr function, ...) into a portable flow graph that portable analyses
-iterate.  The Hex-Rays implementation lives at ``d810.backends.facts.ida`` and
-registers itself at import time (the only lawful call site); portable code picks
-a lifter via :func:`select_lifter` and falls back to its existing
-snapshot/instruction iteration when none is registered (Landing Sequence LS10).
-
-Layering: ``d810.capabilities`` sits BELOW ``backends`` (which register lifters
-DOWN) and BELOW ``recon`` (which selects DOWN), so hosting the registry here
-inverts the dependency honestly.  ``FlowGraph`` lives in ``d810.ir`` (BELOW
-capabilities); ``lift``'s return and ``matches``'s argument are still typed ``Any``
-to keep this contract decoupled from any concrete graph type.  Protocol parameters are
-contravariant, so ``Any`` is what lets a concrete ``lift(self, mba: mba_t)``
-structurally satisfy the contract (mirrors ``capabilities/constant_fixpoint.py``).
-"""
+"Source-lifter capability Protocol + registry.\n\nA :class:`SourceLifter` turns a backend-native *source* (a live Hex-Rays ``mba``,\na future angr function, ...) into a portable flow graph that portable analyses\niterate.  The Hex-Rays implementation lives at ``d810.backends.facts.ida`` and\nregisters itself at import time (the only lawful call site); portable code picks\na lifter via :func:`select_lifter` and falls back to its existing\nsnapshot/instruction iteration when none is registered (Landing Sequence LS10).\n\nLayering: ``d810.capabilities`` sits BELOW ``backends`` (which register lifters\nDOWN) and BELOW ``preanalysis`` (which selects DOWN), so hosting the registry here\ninverts the dependency honestly.  ``FlowGraph`` lives in ``d810.ir`` (BELOW\ncapabilities); ``lift``'s return and ``matches``'s argument are still typed ``Any``\nto keep this contract decoupled from any concrete graph type.  Protocol parameters are\ncontravariant, so ``Any`` is what lets a concrete ``lift(self, mba: mba_t)``\nstructurally satisfy the contract (mirrors ``capabilities/constant_fixpoint.py``).\n"
 from __future__ import annotations
 
 import threading
@@ -65,12 +49,7 @@ def register_live_lifter(lifter: SourceLifter) -> None:
 
 
 def select_lifter(source: Any) -> Optional[SourceLifter]:
-    """Return the first registered lifter whose ``matches(source)`` is True.
-
-    Returns ``None`` when no lifter is registered or none matches -- callers then
-    use their own default portable iteration (the recon snapshot/instruction
-    fallback).
-    """
+    "Return the first registered lifter whose ``matches(source)`` is True.\n\n    Returns ``None`` when no lifter is registered or none matches -- callers then\n    use their own default portable iteration (the preanalysis snapshot/instruction\n    fallback).\n    "
     with _lock:
         lifters = tuple(_LIVE_LIFTERS)
     for lifter in lifters:

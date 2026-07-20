@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.analyses.control_flow.recon_dag_index import (
+from d810.analyses.control_flow.preanalysis_dag_index import (
     build_dag_node_maps,
     incoming_edges_by_target_entry,
     resolve_target_node,

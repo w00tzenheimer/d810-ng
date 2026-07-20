@@ -321,17 +321,7 @@ class DiagSourceLifter:
     """Lift an offline diag-snapshot source into a canonical ``FlowGraph``."""
 
     def matches(self, source: Any) -> bool:
-        """True iff ``source`` is a diag-snapshot graph.
-
-        A diag block carries raw instruction rows (``instructions``) and no
-        canonical ``insn_snapshots`` -- the exact discriminator the removed
-        inline collector branch used (``getattr(blk, "insn_snapshots", None) is
-        not None``).  Duck-typed so it covers both
-        :class:`d810.core.diag.snapshot.BlockSnapshot` and the loose
-        ``SimpleNamespace`` doubles some collector tests build.  Canonical
-        ``FlowGraph`` snapshots (``d810.ir`` blocks carry ``insn_snapshots``) and
-        live ``mba`` sources (no ``blocks``) do not match, so the recon default
-        iteration / the live lifter handle them."""
+        "True iff ``source`` is a diag-snapshot graph.\n\n        A diag block carries raw instruction rows (``instructions``) and no\n        canonical ``insn_snapshots`` -- the exact discriminator the removed\n        inline collector branch used (``getattr(blk, \"insn_snapshots\", None) is\n        not None``).  Duck-typed so it covers both\n        :class:`d810.core.diag.snapshot.BlockSnapshot` and the loose\n        ``SimpleNamespace`` doubles some collector tests build.  Canonical\n        ``FlowGraph`` snapshots (``d810.ir`` blocks carry ``insn_snapshots``) and\n        live ``mba`` sources (no ``blocks``) do not match, so the preanalysis default\n        iteration / the live lifter handle them."
         blocks_attr = getattr(source, "blocks", None)
         if blocks_attr is None:
             return False

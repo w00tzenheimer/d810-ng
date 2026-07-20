@@ -118,14 +118,7 @@ def observe_cfg_provenance_latest(
     target_ea: int | None = None,
     maturity_label: str | None = None,
 ) -> None:
-    """Publish CFG provenance against the latest snapshot for ``func_ea``.
-
-    Late-binding companion to :func:`observe_cfg_provenance`, for
-    planning/recon observations (abstentions, vetoes) where there may be
-    no later MBA snapshot to flush a buffered row. Label resolution mirrors
-    :func:`observe_cfg_provenance` (delegated to
-    :mod:`d810.core.observability_labels`).
-    """
+    "Publish CFG provenance against the latest snapshot for ``func_ea``.\n\n    Late-binding companion to :func:`observe_cfg_provenance`, for\n    planning/preanalysis observations (abstentions, vetoes) where there may be\n    no later MBA snapshot to flush a buffered row. Label resolution mirrors\n    :func:`observe_cfg_provenance` (delegated to\n    :mod:`d810.core.observability_labels`).\n    "
     if mba is not None:
         block_int = safe_serial(block_serial)
         target_int = (

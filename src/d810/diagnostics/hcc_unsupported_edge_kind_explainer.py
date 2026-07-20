@@ -1,35 +1,4 @@
-"""Read-only explainer for HCC ``unsupported_edge_kind`` rejections.
-
-For every byte the byte-cascade trace marks with
-``candidate_rejection=unsupported_edge_kind``, this module lists the
-exact outgoing DAG edges that triggered the rejection, the actual edge
-kind HCC observed, the kinds the check accepts, and whether existing
-TerminalByteEmitterFact rows on the rejected target make the edge
-"byte-cascade safe" -- so we can say either:
-
-    "rejected because edge kind X is not accepted by check Y, despite
-     facts Z" (likely safe to allow)
-
-or
-
-    "rejected correctly; byte N needs a different path" (no byte
-     facts on the target state).
-
-This is the gate before any HCC behavior change to the
-``candidate_build`` edge-kind check. It never imports ``ida_hexrays``.
-
-Source of the rejection (single point in the codebase):
-
-- ``src/d810/recon/flow/reconstruction_candidate_builder.py``
-  ``build_reconstruction_candidate``: ``edge.kind not in
-  (SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION)``
-- ``src/d810/recon/flow/reconstruction_discovery.py``
-  ``discover_reconstruction_candidate_seed``: same check.
-
-Both return ``rejection_reason="unsupported_edge_kind"``. So the
-"allowed kinds" set is ``{TRANSITION, CONDITIONAL_TRANSITION}`` and
-the "first responsible check" is ``build_reconstruction_candidate``.
-"""
+"Read-only explainer for HCC ``unsupported_edge_kind`` rejections.\n\nFor every byte the byte-cascade trace marks with\n``candidate_rejection=unsupported_edge_kind``, this module lists the\nexact outgoing DAG edges that triggered the rejection, the actual edge\nkind HCC observed, the kinds the check accepts, and whether existing\nTerminalByteEmitterFact rows on the rejected target make the edge\n\"byte-cascade safe\" -- so we can say either:\n\n    \"rejected because edge kind X is not accepted by check Y, despite\n     facts Z\" (likely safe to allow)\n\nor\n\n    \"rejected correctly; byte N needs a different path\" (no byte\n     facts on the target state).\n\nThis is the gate before any HCC behavior change to the\n``candidate_build`` edge-kind check. It never imports ``ida_hexrays``.\n\nSource of the rejection (single point in the codebase):\n\n- ``src/d810/preanalysis/flow/reconstruction_candidate_builder.py``\n  ``build_reconstruction_candidate``: ``edge.kind not in\n  (SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION)``\n- ``src/d810/preanalysis/flow/reconstruction_discovery.py``\n  ``discover_reconstruction_candidate_seed``: same check.\n\nBoth return ``rejection_reason=\"unsupported_edge_kind\"``. So the\n\"allowed kinds\" set is ``{TRANSITION, CONDITIONAL_TRANSITION}`` and\nthe \"first responsible check\" is ``build_reconstruction_candidate``.\n"
 from __future__ import annotations
 
 import json

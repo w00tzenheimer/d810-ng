@@ -1,21 +1,4 @@
-"""Tests for the ``FlowGraph.metadata`` contract pinned by ``lift`` (E2b).
-
-E2b slice of ``docs/plans/recon-portability-end-state.md``: the lifter
-guarantees every ``FlowGraph`` it produces carries three metadata
-fields so recon consumers never reach back into the live ``mba_t``:
-
-* ``maturity``       -- ``int``  (raw ``mba.maturity``)
-* ``maturity_name``  -- ``str``  (``MMAT_*`` name)
-* ``cpu_arch_name``  -- ``str``  (``idaapi.inf_get_procname()``)
-
-Lives in ``tests/system/runtime/hexrays/`` because ``lift`` imports
-``ida_hexrays`` / ``idaapi``; the ``unit-tests-no-hexrays``
-import-linter contract forbids ``tests/unit/`` from importing
-``d810.hexrays``.
-
-Tests use a stub ``mba`` + monkeypatched ``idaapi.inf_get_procname``
-so they exercise the *contract* without needing a live decompilation.
-"""
+"Tests for the ``FlowGraph.metadata`` contract pinned by ``lift`` (E2b).\n\nE2b slice of ``docs/plans/preanalysis-portability-end-state.md``: the lifter\nguarantees every ``FlowGraph`` it produces carries three metadata\nfields so preanalysis consumers never reach back into the live ``mba_t``:\n\n* ``maturity``       -- ``int``  (raw ``mba.maturity``)\n* ``maturity_name``  -- ``str``  (``MMAT_*`` name)\n* ``cpu_arch_name``  -- ``str``  (``idaapi.inf_get_procname()``)\n\nLives in ``tests/system/runtime/hexrays/`` because ``lift`` imports\n``ida_hexrays`` / ``idaapi``; the ``unit-tests-no-hexrays``\nimport-linter contract forbids ``tests/unit/`` from importing\n``d810.hexrays``.\n\nTests use a stub ``mba`` + monkeypatched ``idaapi.inf_get_procname``\nso they exercise the *contract* without needing a live decompilation.\n"
 
 from __future__ import annotations
 
@@ -39,9 +22,7 @@ class _StubMba:
 
 
 class TestLifterMetadataContract:
-    """Every ``FlowGraph`` produced by ``lift`` carries the E2b
-    metadata fields.  Recon consumers can depend on this contract;
-    consumers MUST NOT reach back into ``mba_t`` for these values."""
+    "Every ``FlowGraph`` produced by ``lift`` carries the E2b\n    metadata fields.  Preanalysis consumers can depend on this contract;\n    consumers MUST NOT reach back into ``mba_t`` for these values."
 
     def test_all_three_keys_present(self, monkeypatch) -> None:
         from d810.hexrays.mutation import ir_translator

@@ -100,32 +100,7 @@ def recover_dynamic_state_write_transitions(
     state_var_stkoff: int | None,
     known_states: Iterable[int],
 ) -> TransitionResult:
-    """Add guarded transitions recovered from dynamic state-carrier writes.
-
-    The condition-chain walker can miss handlers that compute the next dispatcher state
-    through writable storage.  The Approov VM sample has this form:
-    ``global |= STATE; state_var = global``.  Since the previous global value
-    is not proven here, the recovered edge is marked conditional/advisory and
-    carries provenance back to the handler block rather than pretending to be
-    an unconditional state write.
-
-    Derived-XOR dispatchers use the same enrichment workflow but with a
-    different state space:
-
-    1. Recognize the dispatcher expression ``key = low8(carrier) ^ K``.
-    2. Derive the initial dispatcher state from the preheader carrier write.
-    3. Convert each handler-side ``carrier ^= C`` into
-       ``next_key = current_key ^ (C & 0xff)``.
-    4. Store those edges as ``StateTransition`` objects with
-       ``provenance_kind == "derived_xor_dispatch_key"``.
-
-    The emulated-dispatcher lowerer intentionally requires that provenance
-    before it emits redirects, and generic cleanup/FCP rules use the same
-    recognizer as an ownership signal.  Future dispatcher families should
-    follow this pattern: recover evidence into recon first, tag the provenance,
-    then make lowering consume the tagged transitions instead of rewriting
-    pseudocode or teaching a generic rule to guess the derived state.
-    """
+    "Add guarded transitions recovered from dynamic state-carrier writes.\n\n    The condition-chain walker can miss handlers that compute the next dispatcher state\n    through writable storage.  The Approov VM sample has this form:\n    ``global |= STATE; state_var = global``.  Since the previous global value\n    is not proven here, the recovered edge is marked conditional/advisory and\n    carries provenance back to the handler block rather than pretending to be\n    an unconditional state write.\n\n    Derived-XOR dispatchers use the same enrichment workflow but with a\n    different state space:\n\n    1. Recognize the dispatcher expression ``key = low8(carrier) ^ K``.\n    2. Derive the initial dispatcher state from the preheader carrier write.\n    3. Convert each handler-side ``carrier ^= C`` into\n       ``next_key = current_key ^ (C & 0xff)``.\n    4. Store those edges as ``StateTransition`` objects with\n       ``provenance_kind == \"derived_xor_dispatch_key\"``.\n\n    The emulated-dispatcher lowerer intentionally requires that provenance\n    before it emits redirects, and generic cleanup/FCP rules use the same\n    recognizer as an ownership signal.  Future dispatcher families should\n    follow this pattern: recover evidence into preanalysis first, tag the provenance,\n    then make lowering consume the tagged transitions instead of rewriting\n    pseudocode or teaching a generic rule to guess the derived state.\n    "
 
     known_state_set = {int(value) & 0xFFFFFFFF for value in known_states}
     if not known_state_set or not transition_result.handlers:

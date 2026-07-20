@@ -423,16 +423,7 @@ def _detect_dead_def_state_guard(
     mop_S: int,
     mop_l: int,
 ):
-    """Detect protected non-carrier return-frontier writers.
-
-    If the writer's source mop is an m_add (or similar arithmetic op)
-    whose .l references a stkoff/lvar that has *no* live def anywhere
-    else in the function (i.e. no m_mov/m_stx writes to that stkoff
-    exist), the writer is encoding a use-of-dead-def. Recon treats that
-    writer as topology evidence to preserve, not as a carrier to lower.
-
-    Returns (matched, reason_str).
-    """
+    "Detect protected non-carrier return-frontier writers.\n\n    If the writer's source mop is an m_add (or similar arithmetic op)\n    whose .l references a stkoff/lvar that has *no* live def anywhere\n    else in the function (i.e. no m_mov/m_stx writes to that stkoff\n    exist), the writer is encoding a use-of-dead-def. Preanalysis treats that\n    writer as topology evidence to preserve, not as a carrier to lower.\n\n    Returns (matched, reason_str).\n    "
     if writer is None:
         return False, ""
     op = _safe_int(getattr(writer, "opcode", None), -1)

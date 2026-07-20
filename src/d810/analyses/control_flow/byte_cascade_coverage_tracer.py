@@ -403,23 +403,7 @@ def _classify_preservation(
 
 
 def _classify_final_status(record: "ByteRecord") -> str:
-    """Map a record's accumulated state to a final-status taxonomy bucket.
-
-    Hierarchy (first match wins):
-
-    - ``preserved_insertblock`` -- evidence was composed into an InsertBlock body
-    - ``preserved_redirect`` -- block is the explicit target of a redirect
-    - ``redirected_away`` -- final-stage mods rewired the block away with no
-      InsertBlock claim
-    - ``no_dag_evidence`` -- HCC's recon never saw the byte's state node
-    - ``region_detection_gap`` -- byte is in dag/corrected_dag but no raw region
-      contains its block AND no InsertBlock body holds its evidence; HCC did
-      not pick this up as a region candidate
-    - ``unmaterialized_original_block`` -- byte is in dag AND in some raw region,
-      but no final HCC-owned mod materialised the evidence; the original block
-      remains in the CFG, but HCC made no positive claim on it
-    - ``unknown`` -- record_finalize was never called (no FINAL observation)
-    """
+    "Map a record's accumulated state to a final-status taxonomy bucket.\n\n    Hierarchy (first match wins):\n\n    - ``preserved_insertblock`` -- evidence was composed into an InsertBlock body\n    - ``preserved_redirect`` -- block is the explicit target of a redirect\n    - ``redirected_away`` -- final-stage mods rewired the block away with no\n      InsertBlock claim\n    - ``no_dag_evidence`` -- HCC's preanalysis never saw the byte's state node\n    - ``region_detection_gap`` -- byte is in dag/corrected_dag but no raw region\n      contains its block AND no InsertBlock body holds its evidence; HCC did\n      not pick this up as a region candidate\n    - ``unmaterialized_original_block`` -- byte is in dag AND in some raw region,\n      but no final HCC-owned mod materialised the evidence; the original block\n      remains in the CFG, but HCC made no positive claim on it\n    - ``unknown`` -- record_finalize was never called (no FINAL observation)\n    "
     if record.preserved_in_insertblock:
         return FINAL_STATUS_PRESERVED_INSERTBLOCK
     final = record.stages.get(ByteCascadeStage.FINAL.value)

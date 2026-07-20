@@ -15,7 +15,7 @@ from d810.core.logging import getLogger
 from d810.hexrays.mutation.ir_translator import lift
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 from d810.analyses.control_flow.switch_table_analysis import analyze_switch_table_flow_graph
-from d810.core.observability_recon import observe_state_dispatcher_rows
+from d810.core.observability_preanalysis import observe_state_dispatcher_rows
 
 logger = getLogger("D810.switch_table_adapter")
 

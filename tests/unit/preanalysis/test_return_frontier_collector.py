@@ -53,7 +53,7 @@ def _make_target(
 class TestReturnFrontierCollector:
 
     def test_collect_with_return_sites(self):
-        """Provide full metadata — verify ReconResult has correct metrics."""
+        "Provide full metadata \u2014 verify PreanalysisResult has correct metrics."
         site = _make_site("s0", origin_block=1)
         # Simple linear graph: 0 -> 1 -> 2(exit)
         successors = {0: [1], 1: [2], 2: []}
@@ -76,7 +76,7 @@ class TestReturnFrontierCollector:
         assert result.metrics["audit_report"]["total_sites"] == 1
 
     def test_collect_empty_metadata(self):
-        """No return_sites in metadata — returns empty ReconResult."""
+        "No return_sites in metadata \u2014 returns empty PreanalysisResult."
         target = SimpleNamespace(metadata={})
 
         collector = ReturnFrontierCollector()
@@ -87,7 +87,7 @@ class TestReturnFrontierCollector:
         assert result.candidates == ()
 
     def test_collect_missing_metadata_attr(self):
-        """Target with no metadata attribute — returns empty ReconResult."""
+        "Target with no metadata attribute \u2014 returns empty PreanalysisResult."
         target = SimpleNamespace()  # no metadata attr
 
         collector = ReturnFrontierCollector()

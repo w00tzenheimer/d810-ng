@@ -1,20 +1,4 @@
-"""Pure-snapshot condition-chain default-block discovery.
-
-Companion to ``d810.backends.hexrays.evidence.condition_chain_analysis`` that holds the
-snapshot-only half of the condition-chain dispatcher analysis surface.  This
-module is intentionally IDA-free at module-import time so it can be
-exercised from ``tests/unit/`` without dragging the live ``ida_hexrays``
-imports that ``condition_chain_analysis.py`` keeps for its live-mba helpers.
-
-Axis-C slice 5a (the architectural split that unblocks 5b's vendor-ref
-normalization in ``condition_chain_analysis.py``): pulling the single
-snapshot-based function the unit suite consumes
-(``find_condition_chain_default_block_snapshot``) out of the larger live-IDA file
-lets ``condition_chain_analysis.py`` add ``d810.hexrays.mutation.ir_translator``
-imports without tripping the ``unit-tests-no-hexrays`` import-linter
-contract via the previous transitive path
-``tests.unit.recon.flow.test_condition_chain_snapshot -> d810.backends.hexrays.evidence.condition_chain_analysis -> d810.hexrays.*``.
-"""
+"Pure-snapshot condition-chain default-block discovery.\n\nCompanion to ``d810.backends.hexrays.evidence.condition_chain_analysis`` that holds the\nsnapshot-only half of the condition-chain dispatcher analysis surface.  This\nmodule is intentionally IDA-free at module-import time so it can be\nexercised from ``tests/unit/`` without dragging the live ``ida_hexrays``\nimports that ``condition_chain_analysis.py`` keeps for its live-mba helpers.\n\nAxis-C slice 5a (the architectural split that unblocks 5b's vendor-ref\nnormalization in ``condition_chain_analysis.py``): pulling the single\nsnapshot-based function the unit suite consumes\n(``find_condition_chain_default_block_snapshot``) out of the larger live-IDA file\nlets ``condition_chain_analysis.py`` add ``d810.hexrays.mutation.ir_translator``\nimports without tripping the ``unit-tests-no-hexrays`` import-linter\ncontract via the previous transitive path\n``tests.unit.preanalysis.flow.test_condition_chain_snapshot -> d810.backends.hexrays.evidence.condition_chain_analysis -> d810.hexrays.*``.\n"
 
 from __future__ import annotations
 

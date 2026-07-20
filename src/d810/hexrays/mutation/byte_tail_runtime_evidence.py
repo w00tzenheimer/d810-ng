@@ -32,11 +32,7 @@ class ByteTailRuntimeEvidence:
 
 
 class ByteTailRuntimeEvidenceProvider(Protocol):
-    """Provider for current-function byte-tail evidence.
-
-    Implementations should be backed by process-local recon/runtime evidence,
-    not by diagnostic SQLite rows.
-    """
+    "Provider for current-function byte-tail evidence.\n\n    Implementations should be backed by process-local preanalysis/runtime evidence,\n    not by diagnostic SQLite rows.\n    "
 
     def byte_tail_runtime_evidence(self, mba: Any) -> ByteTailRuntimeEvidence | None:
         ...

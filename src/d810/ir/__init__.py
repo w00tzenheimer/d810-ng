@@ -1,46 +1,4 @@
-"""Portable IR layer for d810.
-
-Per the LLVM/LiSA-style taxonomy in
-``docs/plans/recon-and-cfg-restructuring.md``, this package hosts the
-backend-neutral IR vocabulary: opaque handles for references that
-flow across capability boundaries (``BlockHandle``, ``OperandHandle``,
-``FlowGraphHandle``) and portable analysis-result dataclasses
-(``ConstantFixpointResult``).
-
-It sits **below** ``d810.capabilities`` in the layer stack so
-capability Protocols can reference IR result/handle types without
-circularity, and **above** ``d810.core`` / ``d810.errors`` only.
-This package must remain IDA-free at import time -- enforced by
-``rules/no-live-ida-in-portable-core.yml`` and by import-linter's
-``portable-core-no-ida`` contract.
-
-Scope discipline:
-
-* Slice 9: ``BlockHandle``, ``OperandHandle``, ``FlowGraphHandle``,
-  ``ConstantFixpointResult``.  Handles are opaque identity types (no
-  methods) so future capability moves have a portable counterpart
-  without forcing a premature graph/value/SSA representation.
-  ``ConstantFixpointResult`` is lifted from the existing
-  ``SnapshotConstantFixpointResult`` shape because
-  ``ConstantFixpointCapability.compute()`` needs to tighten its
-  return annotation off ``Any``.
-* Slice 10: ``RedirectGotoIntent``, ``RedirectBranchIntent``,
-  ``RedirectIntent`` union for tightening
-  ``UseDefSafetyCapability.redirect_use_def_violations`` off ``Any``.
-  The CFG-layer ``RedirectGoto`` / ``RedirectBranch`` types stay
-  where they are (they own construction-time diagnostics that don't
-  belong in IR); call sites convert via the
-  ``d810.transforms.graph_modification.to_redirect_intent`` helper at the
-  capability boundary.
-* Axis-C operation vocabulary: ``ValueOpKind`` + ``PredicateKind`` +
-  ``ControlTransferKind`` + ``CallKind``. Backend adapters normalize raw
-  opcodes into these families and keep raw opcode integers/names in
-  diagnostic attrs only.
-* llr-epu0: ``Instruction`` is the canonical portable instruction record. Its
-  ``operation`` field uses the operation vocabulary above, operands/results are
-  ``Varnode``s, and legacy statement projections remain views over the
-  canonical instruction source.
-"""
+"Portable IR layer for d810.\n\nPer the LLVM/LiSA-style taxonomy in\n``docs/plans/preanalysis-and-cfg-restructuring.md``, this package hosts the\nbackend-neutral IR vocabulary: opaque handles for references that\nflow across capability boundaries (``BlockHandle``, ``OperandHandle``,\n``FlowGraphHandle``) and portable analysis-result dataclasses\n(``ConstantFixpointResult``).\n\nIt sits **below** ``d810.capabilities`` in the layer stack so\ncapability Protocols can reference IR result/handle types without\ncircularity, and **above** ``d810.core`` / ``d810.errors`` only.\nThis package must remain IDA-free at import time -- enforced by\n``rules/no-live-ida-in-portable-core.yml`` and by import-linter's\n``portable-core-no-ida`` contract.\n\nScope discipline:\n\n* Slice 9: ``BlockHandle``, ``OperandHandle``, ``FlowGraphHandle``,\n  ``ConstantFixpointResult``.  Handles are opaque identity types (no\n  methods) so future capability moves have a portable counterpart\n  without forcing a premature graph/value/SSA representation.\n  ``ConstantFixpointResult`` is lifted from the existing\n  ``SnapshotConstantFixpointResult`` shape because\n  ``ConstantFixpointCapability.compute()`` needs to tighten its\n  return annotation off ``Any``.\n* Slice 10: ``RedirectGotoIntent``, ``RedirectBranchIntent``,\n  ``RedirectIntent`` union for tightening\n  ``UseDefSafetyCapability.redirect_use_def_violations`` off ``Any``.\n  The CFG-layer ``RedirectGoto`` / ``RedirectBranch`` types stay\n  where they are (they own construction-time diagnostics that don't\n  belong in IR); call sites convert via the\n  ``d810.transforms.graph_modification.to_redirect_intent`` helper at the\n  capability boundary.\n* Axis-C operation vocabulary: ``ValueOpKind`` + ``PredicateKind`` +\n  ``ControlTransferKind`` + ``CallKind``. Backend adapters normalize raw\n  opcodes into these families and keep raw opcode integers/names in\n  diagnostic attrs only.\n* llr-epu0: ``Instruction`` is the canonical portable instruction record. Its\n  ``operation`` field uses the operation vocabulary above, operands/results are\n  ``Varnode``s, and legacy statement projections remain views over the\n  canonical instruction source.\n"
 
 from __future__ import annotations
 

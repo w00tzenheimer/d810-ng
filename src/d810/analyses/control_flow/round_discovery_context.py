@@ -1,20 +1,4 @@
-"""Per-round discovery-context publisher for the unflattening engine.
-
-This module publishes a single read-only bundle of classification facts that
-every recon-consuming strategy needs on a per-round basis. It is **classification
-only**: no ``ModificationBuilder`` calls, no appends to a ``modifications`` list,
-no flow-graph mutation. The resulting :class:`ReconRoundDiscoveryContext` is
-built once per ``(func_ea, maturity, pass_number)`` in Hodur's family adapter
-and attached to ``AnalysisSnapshot`` as the canonical round-level classification
-view; the engine stays pure-Python because all recon types are imported under
-``TYPE_CHECKING`` only.
-
-Layer: ``d810.analyses.control_flow`` (portable-core analyses). It composes
-existing recon helpers — it does **not** re-derive anything. In particular
-:func:`build_reconstruction_discovery_indexes` is wrapped verbatim; the
-dispatcher region, shared-suffix sets, node maps, and structured-region data
-all come straight out of the chunk-6 bundle.
-"""
+"Per-round discovery-context publisher for the unflattening engine.\n\nThis module publishes a single read-only bundle of classification facts that\nevery preanalysis-consuming strategy needs on a per-round basis. It is **classification\nonly**: no ``ModificationBuilder`` calls, no appends to a ``modifications`` list,\nno flow-graph mutation. The resulting :class:`PreanalysisRoundDiscoveryContext` is\nbuilt once per ``(func_ea, maturity, pass_number)`` in Hodur's family adapter\nand attached to ``AnalysisSnapshot`` as the canonical round-level classification\nview; the engine stays pure-Python because all preanalysis types are imported under\n``TYPE_CHECKING`` only.\n\nLayer: ``d810.analyses.control_flow`` (portable-core analyses). It composes\nexisting preanalysis helpers \u2014 it does **not** re-derive anything. In particular\n:func:`build_reconstruction_discovery_indexes` is wrapped verbatim; the\ndispatcher region, shared-suffix sets, node maps, and structured-region data\nall come straight out of the chunk-6 bundle.\n"
 from __future__ import annotations
 
 import time
@@ -31,7 +15,7 @@ from d810.analyses.control_flow.linearized_state_dag import (
     build_linearized_state_program,
     build_live_linearized_state_dag_from_graph,
 )
-from d810.analyses.control_flow.persisted_recon_dag import store_persisted_recon_dag
+from d810.analyses.control_flow.persisted_preanalysis_dag import store_persisted_preanalysis_dag
 from d810.analyses.control_flow.reconstruction_discovery_indexes import (
     build_reconstruction_discovery_indexes,
 )
@@ -104,7 +88,7 @@ class PreanalysisRoundDiscoveryContext:
     scope; do not write back to this context.
     """
 
-    # Live semantic DAGs (recon-layer objects, IDA-linked).
+    # Live semantic DAGs (preanalysis-layer objects, IDA-linked).
     dag: LinearizedStateDag
     corrected_dag: LinearizedStateDag
 
@@ -263,13 +247,13 @@ def build_round_discovery_context(
     )
     corrected_dag = corrected_dag_out[0] if corrected_dag_out else dag
 
-    # Stash the FIRST DAG built per func_ea as the canonical recon-time
+    # Stash the FIRST DAG built per func_ea as the canonical preanalysis-time
     # anchor selection. Diagnostic dumps consult this cache so they label
     # what HCC actually consumed instead of a post-mutation rebuild. Pure
     # observability — no effect on lowering. Subsequent builds in the same
     # decompilation are silently ignored (first-write wins).
     try:
-        store_persisted_recon_dag(int(func_ea), dag)
+        store_persisted_preanalysis_dag(int(func_ea), dag)
     except Exception:
         pass
 
@@ -295,7 +279,7 @@ def build_round_discovery_context(
         )
     except Exception as exc:
         logger.debug(
-            "ReconRoundDiscoveryContext: linearized_program render failed: %s",
+            "PreanalysisRoundDiscoveryContext: linearized_program render failed: %s",
             exc,
         )
         linearized_program = None
@@ -320,7 +304,7 @@ def build_round_discovery_context(
 
     if logger.debug_on:
         logger.debug(
-            "ReconRoundDiscoveryContext: dispatcher=%d region=%d shared_suffix=%d "
+            "PreanalysisRoundDiscoveryContext: dispatcher=%d region=%d shared_suffix=%d "
             "boundary_shared=%d node_by_key=%d structured_regions=%d "
             "local_fact_entries=%d linearized_program=%s round_id=%s",
             indexes.dispatcher_serial,

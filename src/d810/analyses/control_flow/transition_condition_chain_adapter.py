@@ -16,7 +16,7 @@ from d810.analyses.control_flow.transition_analysis import (
 
 
 # Registry-backed seams: the Hex-Rays condition-chain walkers are supplied by the
-# composition root via ``d810.capabilities.providers`` so recon stays
+# composition root via ``d810.capabilities.providers`` so preanalysis stays
 # backend-free (ticket d81-1w16).  Kept as module-level names so call sites are
 # unchanged and tests can monkeypatch them in place.
 def _detect_state_var_stkoff(*args, **kwargs):

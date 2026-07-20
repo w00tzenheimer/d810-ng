@@ -1,30 +1,4 @@
-"""Microcode dump tool — render/explanation half + compat facade.
-
-This module hosts the RENDER / DISPATCHER-OVERLAY / DAG-DUMP half of
-the historical ``d810.backends.hexrays.evidence.microcode_dump`` tool.  These functions
-build human-readable strings, dispatcher-tree visualisations, and
-linearized-state-DAG dumps; they consume recon and evaluator analyses
-to annotate the live Hex-Rays MBA with semantic information.
-
-Axis-C slice 1 (first half of the ``microcode_dump`` split):
-
-* The LIVE-CAPTURE half (``mba_to_dict`` / ``dump_function_microcode`` /
-  ``dump_microcode_json`` / ``dump_mba_json`` and the four dict-shaped
-  dataclasses) was moved to ``d810.hexrays.diagnostics.microcode_capture``
-  -- a layer-honest home for live-IDA capture per the
-  ``no-live-runtime-in-diagnostics`` rule's lawful-fix list.
-* The seven moved symbols (plus the constant tables) are re-exported
-  below as a compatibility facade so the existing import sites at
-  ``d810.backends.hexrays.evidence.microcode_dump`` keep working.
-* Dependency direction is **one-way**:
-  ``d810.backends.hexrays.evidence.microcode_dump -> d810.hexrays.diagnostics.microcode_capture``,
-  never the reverse.  Do not add an import from microcode_capture
-  back into this module.
-
-The render half + dispatcher / DAG / state-machine dumpers stay here
-for a follow-up slice -- they import recon / evaluator and therefore
-cannot live below those layers.
-"""
+"Microcode dump tool \u2014 render/explanation half + compat facade.\n\nThis module hosts the RENDER / DISPATCHER-OVERLAY / DAG-DUMP half of\nthe historical ``d810.backends.hexrays.evidence.microcode_dump`` tool.  These functions\nbuild human-readable strings, dispatcher-tree visualisations, and\nlinearized-state-DAG dumps; they consume preanalysis and evaluator analyses\nto annotate the live Hex-Rays MBA with semantic information.\n\nAxis-C slice 1 (first half of the ``microcode_dump`` split):\n\n* The LIVE-CAPTURE half (``mba_to_dict`` / ``dump_function_microcode`` /\n  ``dump_microcode_json`` / ``dump_mba_json`` and the four dict-shaped\n  dataclasses) was moved to ``d810.hexrays.diagnostics.microcode_capture``\n  -- a layer-honest home for live-IDA capture per the\n  ``no-live-runtime-in-diagnostics`` rule's lawful-fix list.\n* The seven moved symbols (plus the constant tables) are re-exported\n  below as a compatibility facade so the existing import sites at\n  ``d810.backends.hexrays.evidence.microcode_dump`` keep working.\n* Dependency direction is **one-way**:\n  ``d810.backends.hexrays.evidence.microcode_dump -> d810.hexrays.diagnostics.microcode_capture``,\n  never the reverse.  Do not add an import from microcode_capture\n  back into this module.\n\nThe render half + dispatcher / DAG / state-machine dumpers stay here\nfor a follow-up slice -- they import preanalysis / evaluator and therefore\ncannot live below those layers.\n"
 
 from __future__ import annotations
 
@@ -105,7 +79,7 @@ from d810.analyses.control_flow.linearized_state_dag import (
 from d810.backends.hexrays.evidence.flattening.dynamic_state_transition_recovery import (
     recover_dynamic_state_write_transitions,
 )
-from d810.analyses.control_flow.persisted_recon_dag import get_persisted_recon_dag
+from d810.analyses.control_flow.persisted_preanalysis_dag import get_persisted_preanalysis_dag
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
 )
@@ -1178,25 +1152,12 @@ def dump_linearized_dag(
     *,
     order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
 ) -> str:
-    """Render the canonical recon-time DAG when available, else the
-    post-mutation live rebuild with an explicit non-canonical label.
-
-    Diagnostics that rebuild the DAG from a mutated MBA can produce
-    different anchor selections than what HCC actually consumed at
-    recon time (the condition-chain/state-machine analysis reads the live CFG).
-    The recon-time DAG is captured into the per-function process-level
-    cache by ``build_round_discovery_context``; consult it first so the
-    diagnostic shows what the engine actually saw.
-
-    Adds an explicit ``POST_MUTATION_INFERRED — not canonical`` header
-    to live-rebuild output so future debuggers don't trust it as
-    semantic ground truth.
-    """
+    "Render the canonical preanalysis-time DAG when available, else the\n    post-mutation live rebuild with an explicit non-canonical label.\n\n    Diagnostics that rebuild the DAG from a mutated MBA can produce\n    different anchor selections than what HCC actually consumed at\n    preanalysis time (the condition-chain/state-machine analysis reads the live CFG).\n    The preanalysis-time DAG is captured into the per-function process-level\n    cache by ``build_round_discovery_context``; consult it first so the\n    diagnostic shows what the engine actually saw.\n\n    Adds an explicit ``POST_MUTATION_INFERRED \u2014 not canonical`` header\n    to live-rebuild output so future debuggers don't trust it as\n    semantic ground truth.\n    "
     func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-    persisted = get_persisted_recon_dag(func_ea) if func_ea else None
+    persisted = get_persisted_preanalysis_dag(func_ea) if func_ea else None
     if persisted is not None:
         rendered = render_linearized_state_dag(persisted, order_strategy=order_strategy)
-        return _prepend_dag_header_label(rendered, "persisted recon-time")
+        return _prepend_dag_header_label(rendered, "persisted preanalysis-time")
     live_dag = _build_live_linearized_state_dag(
         mba,
         dispatcher_entry_serial,
@@ -1327,18 +1288,9 @@ def build_live_linearized_program(
     boundary_inline_mode: BoundaryInlineMode = BoundaryInlineMode.LABELS_ONLY,
     comment_mode: ProgramCommentMode = ProgramCommentMode.DEBUG_METADATA,
 ) -> RenderedProgramSnapshot:
-    """Build the linearized-program IR for a dispatcher.
-
-    Prefers the canonical recon-time DAG (persisted by
-    ``build_round_discovery_context``) when available so the rendered
-    program reflects what HCC actually consumed.  Falls back to live
-    rebuild from the post-mutation MBA only when no persisted DAG
-    exists; live rebuilds are intrinsically less stable across pipeline
-    mutations and may produce different anchor selections than recon
-    time.
-    """
+    "Build the linearized-program IR for a dispatcher.\n\n    Prefers the canonical preanalysis-time DAG (persisted by\n    ``build_round_discovery_context``) when available so the rendered\n    program reflects what HCC actually consumed.  Falls back to live\n    rebuild from the post-mutation MBA only when no persisted DAG\n    exists; live rebuilds are intrinsically less stable across pipeline\n    mutations and may produce different anchor selections than preanalysis\n    time.\n    "
     func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-    dag = get_persisted_recon_dag(func_ea) if func_ea else None
+    dag = get_persisted_preanalysis_dag(func_ea) if func_ea else None
     if dag is None:
         dag = _build_live_linearized_state_dag(
             mba,
@@ -1372,7 +1324,7 @@ def snapshot_linearized_program(
     try:
         from d810.hexrays.mba_serializer import mba_to_block_snapshots
         from d810.hexrays.observability import request_capture_mba_snapshot
-        from d810.core.observability_recon import observe_rendered_program
+        from d810.core.observability_preanalysis import observe_rendered_program
 
         snap = request_capture_mba_snapshot(
             blocks=mba_to_block_snapshots(mba),
@@ -1401,24 +1353,13 @@ def dump_linearized_dag_dot(
     *,
     expanded: bool = False,
 ) -> str:
-    """Build and render the unified state-level DAG as Graphviz DOT.
-
-    Prefers the canonical recon-time DAG (persisted by
-    ``build_round_discovery_context``) when available so the rendered
-    graph reflects what HCC actually consumed.  Falls back to live
-    rebuild from the post-mutation MBA only when no persisted DAG
-    exists; live rebuilds are intrinsically less stable across pipeline
-    mutations and may produce different anchor selections than recon
-    time.  The fallback output is explicitly labeled
-    ``POST_MUTATION_INFERRED`` so future debuggers don't trust it as
-    semantic ground truth.
-    """
+    "Build and render the unified state-level DAG as Graphviz DOT.\n\n    Prefers the canonical preanalysis-time DAG (persisted by\n    ``build_round_discovery_context``) when available so the rendered\n    graph reflects what HCC actually consumed.  Falls back to live\n    rebuild from the post-mutation MBA only when no persisted DAG\n    exists; live rebuilds are intrinsically less stable across pipeline\n    mutations and may produce different anchor selections than preanalysis\n    time.  The fallback output is explicitly labeled\n    ``POST_MUTATION_INFERRED`` so future debuggers don't trust it as\n    semantic ground truth.\n    "
     func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-    dag = get_persisted_recon_dag(func_ea) if func_ea else None
+    dag = get_persisted_preanalysis_dag(func_ea) if func_ea else None
     rendered = None
     if dag is not None:
         rendered = render_linearized_state_dag_dot(dag, expanded=expanded)
-        return _prepend_dot_header_label(rendered, "persisted recon-time")
+        return _prepend_dot_header_label(rendered, "persisted preanalysis-time")
     dag = _build_live_linearized_state_dag(
         mba,
         dispatcher_entry_serial,

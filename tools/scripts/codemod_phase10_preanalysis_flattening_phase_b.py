@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Phase B codemod: rewrite conditional_exit imports to recon.flow.
-
-Default mode is dry-run. Use ``--apply`` to write changes.
-"""
+"Phase B codemod: rewrite conditional_exit imports to preanalysis.flow.\n\nDefault mode is dry-run. Use ``--apply`` to write changes.\n"
 
 from __future__ import annotations
 
@@ -14,9 +11,7 @@ import libcst as cst
 
 
 PHASE_B_RENAMES = {
-    "d810.optimizers.microcode.flow.flattening.conditional_exit": (
-        "d810.recon.flow.conditional_exit"
-    ),
+    "d810.optimizers.microcode.flow.flattening.conditional_exit": "d810.preanalysis.flow.conditional_exit",
 }
 
 

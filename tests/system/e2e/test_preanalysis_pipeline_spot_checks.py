@@ -1,15 +1,4 @@
-"""E2E per-function recon pipeline spot checks.
-
-Layer 2: For known-flattened functions, verify that the recon pipeline
-produced correct analysis AND the inference layer acted on it:
-- Classification is a flattening type
-- Confidence >= 0.7
-- "unflattening" inference is recommended
-- Session summary records the inference
-- Consumer outcomes are recorded
-
-Uses the same IDB/fixture chain as the DSL test suite.
-"""
+"E2E per-function preanalysis pipeline spot checks.\n\nLayer 2: For known-flattened functions, verify that the preanalysis pipeline\nproduced correct analysis AND the inference layer acted on it:\n- Classification is a flattening type\n- Confidence >= 0.7\n- \"unflattening\" inference is recommended\n- Session summary records the inference\n- Consumer outcomes are recorded\n\nUses the same IDB/fixture chain as the DSL test suite.\n"
 import platform
 
 import pytest
@@ -52,14 +41,14 @@ class TestReconPipelineSpotChecks:
     ):
         """Known-flattened functions should be classified as flattening."""
         if analysis_store_session is None:
-            pytest.skip("Recon pipeline disabled")
+            pytest.skip("Preanalysis pipeline disabled")
         func_ea = _resolve_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"Function {func_name} not found in IDB")
 
         hints = analysis_store_session.load_hints(func_ea=func_ea)
         assert hints is not None, (
-            f"{func_name} (0x{func_ea:x}): no hints in recon DB"
+            f"{func_name} (0x{func_ea:x}): no hints in preanalysis DB"
         )
         assert hints.obfuscation_type in _FLATTENING_TYPES, (
             f"{func_name}: expected one of {_FLATTENING_TYPES}, "
@@ -72,7 +61,7 @@ class TestReconPipelineSpotChecks:
     ):
         """Known-flattened functions should have confidence >= 0.7."""
         if analysis_store_session is None:
-            pytest.skip("Recon pipeline disabled")
+            pytest.skip("Preanalysis pipeline disabled")
         func_ea = _resolve_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"Function {func_name} not found in IDB")
@@ -89,7 +78,7 @@ class TestReconPipelineSpotChecks:
     ):
         """Known-flattened functions should recommend 'unflattening' inference."""
         if analysis_store_session is None:
-            pytest.skip("Recon pipeline disabled")
+            pytest.skip("Preanalysis pipeline disabled")
         func_ea = _resolve_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"Function {func_name} not found in IDB")
@@ -106,7 +95,7 @@ class TestReconPipelineSpotChecks:
     ):
         """Session summary for flattened functions should list unflattening."""
         if analysis_store_session is None:
-            pytest.skip("Recon pipeline disabled")
+            pytest.skip("Preanalysis pipeline disabled")
         func_ea = _resolve_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"Function {func_name} not found in IDB")
@@ -126,7 +115,7 @@ class TestReconPipelineSpotChecks:
     ):
         """Flattened functions should have consumer outcomes recorded."""
         if analysis_store_session is None:
-            pytest.skip("Recon pipeline disabled")
+            pytest.skip("Preanalysis pipeline disabled")
         func_ea = _resolve_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"Function {func_name} not found in IDB")

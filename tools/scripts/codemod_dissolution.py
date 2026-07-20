@@ -1,39 +1,5 @@
 #!/usr/bin/env python3
-"""recon/cfg DISSOLUTION codemod (umbrella ticket llr-lyly).
-
-Generalizes ``codemod_ls11_dispatcher_cluster.py`` from a single
-``OLD_PKG -> NEW_PKG`` pair to an arbitrary many->many per-module
-``old_dotted -> new_dotted`` map (recon -> analyses/pre_analysis/passes,
-cfg -> ir/analyses/transforms/passes), and adds the high-value
-``--stage preflight`` UPWARD-EDGE DETECTOR.
-
-The map is DATA-DRIVEN by module role-suffix (playbook
-``recon-cfg-dissolution-execution-playbook.md`` section 9): the codebase names
-modules by role, so ``home_for()`` resolves each recon/cfg module to its
-destination package deterministically.
-
-Stages:
-  --stage preflight   THE detector. For each module's POST-MOVE home + the
-                      target layer order, statically (grimp) resolve every
-                      import to its post-move layer and list every edge that
-                      would point UPWARD (layer-fatal).  Converts Risk #1
-                      (intra-cfg upward edges) from an unknown into a per-cluster
-                      worklist: a cluster is either "clean, codemod-move it" or
-                      "these N edges need manual P1-style severance first".
-                      READ-ONLY.
-  --stage move        Relocate modules (filtered by --only) + sys.modules-alias
-                      shims + libcst+regex intra rewrites. (Per-cluster, golden-gated.)
-  --stage cutover     Repoint consumers off the shims; --delete-shims removes them.
-  --stage scaffold    Create passes/ support/ pre_analysis/ (docstring __init__).
-  --stage selftest    Boundary-regex correctness (prefix-collision guard).
-
-Default dry-run; --apply writes.  --only <substr> restricts move/cutover to a
-cluster.  Run from the worktree root with ``PYTHONPATH=src``.
-
-NB the move/cutover engine is the LS11 engine verbatim (hybrid libcst import-node
-rewrite + boundary regex + alias shims + per-file regex fallback); only the
-mapping is generalized.  preflight is net-new.
-"""
+"preanalysis/cfg DISSOLUTION codemod (umbrella ticket llr-lyly).\n\nGeneralizes ``codemod_ls11_dispatcher_cluster.py`` from a single\n``OLD_PKG -> NEW_PKG`` pair to an arbitrary many->many per-module\n``old_dotted -> new_dotted`` map (preanalysis -> analyses/pre_analysis/passes,\ncfg -> ir/analyses/transforms/passes), and adds the high-value\n``--stage preflight`` UPWARD-EDGE DETECTOR.\n\nThe map is DATA-DRIVEN by module role-suffix (playbook\n``preanalysis-cfg-dissolution-execution-playbook.md`` section 9): the codebase names\nmodules by role, so ``home_for()`` resolves each preanalysis/cfg module to its\ndestination package deterministically.\n\nStages:\n  --stage preflight   THE detector. For each module's POST-MOVE home + the\n                      target layer order, statically (grimp) resolve every\n                      import to its post-move layer and list every edge that\n                      would point UPWARD (layer-fatal).  Converts Risk #1\n                      (intra-cfg upward edges) from an unknown into a per-cluster\n                      worklist: a cluster is either \"clean, codemod-move it\" or\n                      \"these N edges need manual P1-style severance first\".\n                      READ-ONLY.\n  --stage move        Relocate modules (filtered by --only) + sys.modules-alias\n                      shims + libcst+regex intra rewrites. (Per-cluster, golden-gated.)\n  --stage cutover     Repoint consumers off the shims; --delete-shims removes them.\n  --stage scaffold    Create passes/ support/ pre_analysis/ (docstring __init__).\n  --stage selftest    Boundary-regex correctness (prefix-collision guard).\n\nDefault dry-run; --apply writes.  --only <substr> restricts move/cutover to a\ncluster.  Run from the worktree root with ``PYTHONPATH=src``.\n\nNB the move/cutover engine is the LS11 engine verbatim (hybrid libcst import-node\nrewrite + boundary regex + alias shims + per-file regex fallback); only the\nmapping is generalized.  preflight is net-new.\n"
 from __future__ import annotations
 
 import argparse
@@ -45,7 +11,7 @@ from pathlib import Path
 import libcst as cst
 
 SRC = Path("src")
-DISSOLVING_ROOTS = ("src/d810/recon", "src/d810/cfg")
+DISSOLVING_ROOTS = ("src/d810/preanalysis", "src/d810/cfg")
 
 # --------------------------------------------------------------------------- #
 # Target layer order (high -> low; index 0 = highest, imports everything below).
@@ -53,7 +19,7 @@ DISSOLVING_ROOTS = ("src/d810/recon", "src/d810/cfg")
 # Planned end-state spine: support < ir < capabilities < analyses < transforms
 # < passes (per the design doc).  The three NEW packages (passes/pre_analysis/
 # support) are placed at their planned positions; FINALIZED in Phase 0b -- adjust
-# here if the .importlinter ordering lands differently.  recon/cfg are dissolving
+# here if the .importlinter ordering lands differently.  preanalysis/cfg are dissolving
 # (kept here only so pre-move imports still resolve to a layer).
 # --------------------------------------------------------------------------- #
 TARGET_LAYER_ORDER: tuple[str, ...] = (
@@ -62,7 +28,7 @@ TARGET_LAYER_ORDER: tuple[str, ...] = (
     "d810.optimizers",
     "d810.families",
     "d810.passes",          # NEW: scheduler; above transforms, below families
-    "d810.recon",           # dissolving
+    "d810.preanalysis",           # dissolving
     "d810.backends",
     "d810.evaluator",
     "d810.hexrays",
@@ -116,7 +82,7 @@ ROLE_RULES: tuple[RoleRule, ...] = (
                  "materialization", "reorder_blocks", "select_loop_planning"),
        exact=("dead_block_elimination", "fake_jump_fixer", "opaque_jump_fixer",
               "simplify_identical_branch", "loop_carrier_backedge_refresh")),
-    # passes: scheduler / pipeline / transaction engine / recon orchestration root
+    # passes: scheduler / pipeline / transaction engine / preanalysis orchestration root
     RoleRule("d810.passes", exact=(
         "pipeline", "transaction_engine", "transaction_policy", "invariants",
         "contract", "phase", "runtime", "store", "inferences", "persist_inference",
@@ -137,7 +103,7 @@ ROLE_RULES: tuple[RoleRule, ...] = (
     # observability -> core (lowest layer): keeps its optimizer/runtime
     # importers DOWN-pointing.  d810.diagnostics sits ABOVE optimizers/passes,
     # so homing observability there would flip those into upward-fatal edges.
-    # recon + cfg observability share leaf "observability"; both are pinned to
+    # preanalysis + cfg observability share leaf "observability"; both are pinned to
     # distinct core leaves via OVERRIDES below to avoid a dest collision.
     RoleRule("d810.core", exact=("observability",)),
 )
@@ -165,38 +131,34 @@ OVERRIDES: dict[str, str] = {
     # sit BELOW optimizers and at/above transforms. d810.diagnostics (post-hoc
     # query layer) is ABOVE optimizers -> homing there makes the 2 consumers
     # import upward (layer-fatal). Home at transforms (cohesive + downward-legal).
-    "d810.recon.flow.reconstruction_diagnostics": "d810.transforms.reconstruction_diagnostics",
-    # R4: recon root coordination interprets results -> passes, not analyses
-    "d810.recon.analysis": "d810.passes.analysis",
-    "d810.recon.artifacts": "d810.passes.artifacts",
+    "d810.preanalysis.flow.reconstruction_diagnostics": "d810.transforms.reconstruction_diagnostics",
+    # R4: preanalysis root coordination interprets results -> passes, not analyses
+    "d810.preanalysis.analysis": "d810.passes.analysis",
+    "d810.preanalysis.artifacts": "d810.passes.artifacts",
     # P: cfg.contracts.report is a passes contract module (role-rule gap)
     "d810.cfg.contracts.report": "d810.transforms.report",
-    # R2/P COLLISION: fact runtime vs recon.runtime both -> passes.runtime; distinct leaf
-    "d810.recon.facts.runtime": "d810.passes.fact_runtime",
+    # R2/P COLLISION: fact runtime vs preanalysis.runtime both -> passes.runtime; distinct leaf
+    "d810.preanalysis.facts.runtime": "d810.passes.fact_runtime",
     # R2: model non-observation symbols -> value_flow.model (FactObservation etc.
     # already cut over to value_flow.observation in Phase 0a)
-    "d810.recon.facts.model": "d810.analyses.value_flow.model",
+    "d810.preanalysis.facts.model": "d810.analyses.value_flow.model",
     # R3 COLLISION: collector vs cfg algorithm share leaf -> rename the collector
-    "d810.recon.collectors.compare_chain": "d810.analyses.control_flow.compare_chain_collector",
+    "d810.preanalysis.collectors.compare_chain": "d810.analyses.control_flow.compare_chain_collector",
     # COLLISIONS surfaced by the dest-collision detector (distinct modules, same
-    # leaf -> rename the recon/collector side; the cfg algorithm keeps the leaf):
-    "d810.recon.flow.dag_index": "d810.analyses.control_flow.recon_dag_index",
-    "d810.recon.collectors.profile_classifier": "d810.analyses.control_flow.profile_classifier_collector",
-    "d810.recon.collectors.return_frontier": "d810.analyses.control_flow.return_frontier_collector",
-    "d810.recon.observability": "d810.core.observability_recon",
+    # leaf -> rename the preanalysis/collector side; the cfg algorithm keeps the leaf):
+    "d810.preanalysis.flow.dag_index": "d810.analyses.control_flow.preanalysis_dag_index",
+    "d810.preanalysis.collectors.profile_classifier": "d810.analyses.control_flow.profile_classifier_collector",
+    "d810.preanalysis.collectors.return_frontier": "d810.analyses.control_flow.return_frontier_collector",
+    "d810.preanalysis.observability": "d810.core.observability_preanalysis",
     # cfg.observability -> core too (distinct leaf to avoid colliding with
-    # recon.observability); Phase Z Step 0 first severs its back-compat
+    # preanalysis.observability); Phase Z Step 0 first severs its back-compat
     # provenance re-export (cfg/observability.py) so the move is core-only.
     "d810.cfg.observability": "d810.core.observability_cfg",
 }
 
 
 def home_for(old_dotted: str) -> str | None:
-    """Resolve a recon/cfg module's destination dotted path by role-suffix.
-
-    Returns the new dotted module path (dest package + original leaf), or None
-    when no rule matches (those need a manual home decision -- preflight lists
-    them as UNMAPPED)."""
+    "Resolve a preanalysis/cfg module's destination dotted path by role-suffix.\n\n    Returns the new dotted module path (dest package + original leaf), or None\n    when no rule matches (those need a manual home decision -- preflight lists\n    them as UNMAPPED)."
     if old_dotted in OVERRIDES:
         return OVERRIDES[old_dotted]
     leaf = old_dotted.rsplit(".", 1)[-1]
@@ -207,16 +169,16 @@ def home_for(old_dotted: str) -> str | None:
             or any(c in leaf for c in rule.contains)
         ):
             return f"{rule.dest}.{leaf}"
-    # Source-package default (the three-tier bias: recon = read-only discovery
+    # Source-package default (the three-tier bias: preanalysis = read-only discovery
     # -> analyses; cfg = planning/emission -> transforms). Strong role rules
     # above override this for the cross-source patterns (ir dataclasses, passes
     # orchestration, pre_analysis profiling). This resolves dual-leaf conflicts
-    # (e.g. target_entry_resolution exists in BOTH recon and cfg -> analyses vs
+    # (e.g. target_entry_resolution exists in BOTH preanalysis and cfg -> analyses vs
     # transforms by source). Genuinely-ambiguous leaves (protocol/models/etc.)
     # land on the source default and are reviewed at slice time.
-    if old_dotted.startswith("d810.recon.facts"):
+    if old_dotted.startswith("d810.preanalysis.facts"):
         return f"d810.analyses.value_flow.{leaf}"
-    if old_dotted.startswith("d810.recon"):  # incl. recon.collectors profiling
+    if old_dotted.startswith("d810.preanalysis"):  # incl. preanalysis.collectors profiling
         return f"d810.analyses.control_flow.{leaf}"
     if old_dotted.startswith("d810.cfg"):
         return f"d810.transforms.{leaf}"
@@ -385,10 +347,10 @@ def _alias_shim(old_dotted: str, new_dotted: str) -> str:
         'private symbols.  Deleted in Phase Z once consumers repoint.\n"""\n'
     )
     # If the destination sits at a HIGHER layer than the old path (e.g.
-    # cfg -> transforms/passes, recon -> passes), a STATIC `from <new> import`
+    # cfg -> transforms/passes, preanalysis -> passes), a STATIC `from <new> import`
     # in the shim is an upward-fatal layer edge (the shim file still lives at the
     # old, lower-layer path). Use a DYNAMIC importlib alias the import graph does
-    # not follow. Downward moves (recon/cfg -> analyses/ir) keep the static form.
+    # not follow. Downward moves (preanalysis/cfg -> analyses/ir) keep the static form.
     ol, nl = layer_index(old_dotted), layer_index(new_dotted)
     upward = ol is not None and nl is not None and nl < ol
     if upward:
@@ -510,7 +472,7 @@ def run_scaffold(*, apply: bool) -> int:
 def run_selftest() -> int:
     mm = {
         "d810.cfg.flowgraph": "d810.ir.flowgraph",
-        "d810.recon.flow.x_discovery": "d810.analyses.control_flow.x_discovery",
+        "d810.preanalysis.flow.x_discovery": "d810.analyses.control_flow.x_discovery",
     }
     patterns = tuple((_dotted_pattern(o), n) for o, n in mm.items())
     cases = [
@@ -518,7 +480,7 @@ def run_selftest() -> int:
          "from d810.ir.flowgraph import FlowGraph"),
         # prefix-collision guard: flowgraph must not match flowgraph_utils
         ("from d810.cfg.flowgraph_utils import X", "from d810.cfg.flowgraph_utils import X"),
-        ("import d810.recon.flow.x_discovery as d",
+        ("import d810.preanalysis.flow.x_discovery as d",
          "import d810.analyses.control_flow.x_discovery as d"),
         ("d810.cfg.flowgraph.FlowGraph", "d810.ir.flowgraph.FlowGraph"),
     ]

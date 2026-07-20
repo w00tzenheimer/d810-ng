@@ -1,34 +1,13 @@
 from __future__ import annotations
 
-import enum
-
 from d810.core import getLogger
+from d810.core.decompilation_session import DecompilationEvent as _DecompilationEvent
 from d810.hexrays.mutation.ir_translator import lift as lift_mba_to_flowgraph
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 optimizer_logger = getLogger("D810.optimizer")
 
 HEXRAYS_MICROCODE_PROVIDER = "hexrays_microcode"
-
-
-class DecompilationEvent(enum.Enum):
-    # Dotted hierarchical event values: domain.object.action.
-    # Filter by prefix (e.g. ``decompilation.``) in subscribers / logs.
-    # Underscores within a segment are OK (`post_d810`); the SEPARATOR is `.`.
-    SESSION_STARTED = "decompilation.session.started"
-    SESSION_FINISHED = "decompilation.session.finished"
-    MATURITY_CHANGED = "decompilation.maturity.changed"
-    POST_D810_CAPTURE = "decompilation.post_d810.capture"
-    HEXRAYS_FLOWCHART_READY = "decompilation.hexrays.flowchart.ready"
-    HEXRAYS_PREOPT_READY = "decompilation.hexrays.preopt.ready"
-    HEXRAYS_LOCOPT_READY = "decompilation.hexrays.locopt.ready"
-    HEXRAYS_STKPNTS = "decompilation.hexrays.stkpnts"
-    HEXRAYS_BUILD_CALLINFO = "decompilation.hexrays.callinfo.build"
-    HEXRAYS_CALLS_DONE = "decompilation.hexrays.calls_done"
-    # Axis-C end-state event (E1): emitted once per maturity transition
-    # with a portable ``FlowGraph`` snapshot.  Recon-side subscribers
-    # land in E4 -- E1 only publishes the event; no consumers yet.
-    FLOWGRAPH_READY = "decompilation.flowgraph.ready"
 
 
 def _emit_flowgraph_ready_event(
@@ -43,15 +22,15 @@ def _emit_flowgraph_ready_event(
     ``InstructionOptimizerManager.log_info_on_input`` and
     ``BlockOptimizerManager.log_info_on_input``.  Both producers
     route through one helper so the cross-layer event fires at
-    every recon-collection lifecycle point.
+    every preanalysis-collection lifecycle point.
 
     The manager-owned lifecycle coordinator is the sole invoker of
-    ``ReconPhase.run_microcode_collectors`` for the microcode path. The legacy
+    ``PreanalysisRuntime.capture_flowgraph`` for the microcode path. The legacy
     live-mba direct calls that used to live in the hook module are gone.
 
     Lift failures log via ``optimizer_logger.exception`` and return
     cleanly -- the subscriber never runs for the failed transition,
-    so recon misses one maturity but decompilation is never gated
+    so preanalysis misses one maturity but decompilation is never gated
     by a lift bug.
 
     Payload: ``flow_graph`` + ``func_ea`` + the provider-neutral stage
@@ -97,4 +76,4 @@ def _emit_flowgraph_ready_event(
     }
     if snapshot is not None:
         payload["snapshot"] = snapshot
-    event_emitter.emit(DecompilationEvent.FLOWGRAPH_READY, **payload)
+    event_emitter.emit(_DecompilationEvent.FLOWGRAPH_READY, **payload)

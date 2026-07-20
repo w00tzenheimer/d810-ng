@@ -1,55 +1,4 @@
-"""Terminal plan-fragment finalizer for the Hodur reconstruction strategy.
-
-Packages the round's accumulated modifications + ownership + metadata into a
-``PlanFragment``. Also applies the late PTS-vs-block-creator deferral and the
-structured-region-leakage soft-gate on post-apply condition-chain cleanup.
-
-Lives in the Hodur strategies package because ``PlanFragment`` is a
-Hodur-specific type; moving this to ``d810.transforms`` would require an upward
-import. Kept Hodur-local per the Option C decomposition plan.
-
-Conflict-resolution filter cascade (uee-jrgq Phase 6 — retirement gate)
-=======================================================================
-
-When ``finalize_reconstruction_fragment`` runs, modifications flow through
-two filters in this order.  Each filter is single-purpose; together they
-form a cascade with a clear retirement criterion.
-
-  1. ``filter_dag_disagreements`` (Phase 3 of uee-jrgq) — the shared
-     engine DAG-as-arbiter check.  When
-     ``cumulative_planner_view.dag_authority`` is present, each redirect
-     mod is validated against the recon DAG's canonical decision.  Drops
-     on ``DAG_DISAGREEMENT``; keeps and lets through on ``ALLOW`` or
-     ``DAG_GAP:<name>`` (DAG silent).  Records each disagreement as a
-     ``DagDisagreementRecord`` (Phase 5) for the pipeline-level audit
-     summary.
-
-  2. ``_drop_conflicting_redirects`` — legacy "first-fragment-wins"
-     Mode 1 filter.  Fallback for DAG_GAP regions where the DAG cannot
-     answer authoritatively.  Reads ``cumulative_planner_view``'s
-     ``LinearizationDecision`` aggregates (echoed from prior fragments'
-     emitted mods via ``_build_planner_context_contribution``).
-
-Retirement gate
----------------
-Filter (2) and the mod-echo logic in
-``_build_planner_context_contribution`` are conceptually redundant once
-the DAG arbiter has authoritative coverage of every emission decision
-point.  Today the DAG returns ``DAG_GAP`` for sources the
-``LinearizedStateDag`` doesn't enumerate as in-scope edges.  Until
-those gaps close, retiring the legacy filter would regress observable
-behaviour — e.g., on sub_7FFD3338C040 the legacy filter catches 5 of 8
-Mode 1 drops in DAG_GAP regions that the arbiter cannot yet see.
-
-Retirement criterion: when ``PipelineProvenance.dag_audit_records``
-shows zero ``DAG_GAP``-bucket drops on the corpus AND filter (2)
-fires zero times across the corpus for a full release cycle, it can
-be deleted along with the mod-echo in ``_build_planner_context_contribution``.
-
-This module's docstring + Phase 6 commit (uee-6yu7) formalises the
-retirement contract; the actual deletion lands as a follow-up commit
-once the criterion is met.
-"""
+"Terminal plan-fragment finalizer for the Hodur reconstruction strategy.\n\nPackages the round's accumulated modifications + ownership + metadata into a\n``PlanFragment``. Also applies the late PTS-vs-block-creator deferral and the\nstructured-region-leakage soft-gate on post-apply condition-chain cleanup.\n\nLives in the Hodur strategies package because ``PlanFragment`` is a\nHodur-specific type; moving this to ``d810.transforms`` would require an upward\nimport. Kept Hodur-local per the Option C decomposition plan.\n\nConflict-resolution filter cascade (uee-jrgq Phase 6 \u2014 retirement gate)\n=======================================================================\n\nWhen ``finalize_reconstruction_fragment`` runs, modifications flow through\ntwo filters in this order.  Each filter is single-purpose; together they\nform a cascade with a clear retirement criterion.\n\n  1. ``filter_dag_disagreements`` (Phase 3 of uee-jrgq) \u2014 the shared\n     engine DAG-as-arbiter check.  When\n     ``cumulative_planner_view.dag_authority`` is present, each redirect\n     mod is validated against the preanalysis DAG's canonical decision.  Drops\n     on ``DAG_DISAGREEMENT``; keeps and lets through on ``ALLOW`` or\n     ``DAG_GAP:<name>`` (DAG silent).  Records each disagreement as a\n     ``DagDisagreementRecord`` (Phase 5) for the pipeline-level audit\n     summary.\n\n  2. ``_drop_conflicting_redirects`` \u2014 legacy \"first-fragment-wins\"\n     Mode 1 filter.  Fallback for DAG_GAP regions where the DAG cannot\n     answer authoritatively.  Reads ``cumulative_planner_view``'s\n     ``LinearizationDecision`` aggregates (echoed from prior fragments'\n     emitted mods via ``_build_planner_context_contribution``).\n\nRetirement gate\n---------------\nFilter (2) and the mod-echo logic in\n``_build_planner_context_contribution`` are conceptually redundant once\nthe DAG arbiter has authoritative coverage of every emission decision\npoint.  Today the DAG returns ``DAG_GAP`` for sources the\n``LinearizedStateDag`` doesn't enumerate as in-scope edges.  Until\nthose gaps close, retiring the legacy filter would regress observable\nbehaviour \u2014 e.g., on sub_7FFD3338C040 the legacy filter catches 5 of 8\nMode 1 drops in DAG_GAP regions that the arbiter cannot yet see.\n\nRetirement criterion: when ``PipelineProvenance.dag_audit_records``\nshows zero ``DAG_GAP``-bucket drops on the corpus AND filter (2)\nfires zero times across the corpus for a full release cycle, it can\nbe deleted along with the mod-echo in ``_build_planner_context_contribution``.\n\nThis module's docstring + Phase 6 commit (uee-6yu7) formalises the\nretirement contract; the actual deletion lands as a follow-up commit\nonce the criterion is met.\n"
 from __future__ import annotations
 
 from d810.core import logging
@@ -151,28 +100,7 @@ def _drop_conflicting_redirects(
     *,
     strategy_name: str,
 ) -> list:
-    """Drop RedirectGoto mods that contradict prior-fragment linearizations.
-
-    Legacy "first-fragment-wins" Mode 1 filter.  Since Phase 3 of
-    uee-jrgq, this filter is the FALLBACK consulted only for mods the
-    DagAuthority returned ``DAG_GAP`` for — i.e., regions where the
-    recon DAG cannot answer authoritatively.  For DAG-known regions,
-    ``filter_dag_disagreements`` has already dropped any planner mod that
-    disagreed with the canonical DAG decision, so this filter sees
-    only conforming or gap-region mods.
-
-    Original Mode 1 fix rationale (preserved for context): when SSR
-    (running first in the pipeline) linearizes blk[X] to tgt=A via a
-    RedirectGoto, then SRW (running second) queues RedirectGoto src=X
-    tgt=B (B != A), the coalescer can't dedupe because old_target
-    differs.  The engine's ``PLANNER_CTX_CONFLICT`` diagnostic surfaces
-    this, but defaults to log-only.  This filter enforces
-    "first fragment wins" — SRW's contradictory emission is dropped
-    and SSR's decision stands.
-
-    Returns the filtered list. Non-RedirectGoto mods are untouched.
-    Matching emissions (same src + same new_target) are also untouched.
-    """
+    "Drop RedirectGoto mods that contradict prior-fragment linearizations.\n\n    Legacy \"first-fragment-wins\" Mode 1 filter.  Since Phase 3 of\n    uee-jrgq, this filter is the FALLBACK consulted only for mods the\n    DagAuthority returned ``DAG_GAP`` for \u2014 i.e., regions where the\n    preanalysis DAG cannot answer authoritatively.  For DAG-known regions,\n    ``filter_dag_disagreements`` has already dropped any planner mod that\n    disagreed with the canonical DAG decision, so this filter sees\n    only conforming or gap-region mods.\n\n    Original Mode 1 fix rationale (preserved for context): when SSR\n    (running first in the pipeline) linearizes blk[X] to tgt=A via a\n    RedirectGoto, then SRW (running second) queues RedirectGoto src=X\n    tgt=B (B != A), the coalescer can't dedupe because old_target\n    differs.  The engine's ``PLANNER_CTX_CONFLICT`` diagnostic surfaces\n    this, but defaults to log-only.  This filter enforces\n    \"first fragment wins\" \u2014 SRW's contradictory emission is dropped\n    and SSR's decision stands.\n\n    Returns the filtered list. Non-RedirectGoto mods are untouched.\n    Matching emissions (same src + same new_target) are also untouched.\n    "
     if cumulative_planner_view is None:
         return modifications
     kept: list = []

@@ -80,6 +80,9 @@ SKIP_PARTS = frozenset(
 MODULE_RENAMES = {
     "d810.passes.recon_runtime_factory": "d810.passes.analysis_runtime_factory",
 }
+MODULE_SEGMENT_RENAMES = {
+    "recon_runtime_factory": "analysis_runtime_factory",
+}
 NAME_RENAMES = {
     "ReconPhase": "PreanalysisPhase",
     "FactLifecycleRuntime": "PreanalysisFactRuntime",
@@ -196,6 +199,8 @@ _PYTHON_REWRITE_NEEDLES = tuple(
             *NAME_RENAMES,
             *CLI_RENAMES,
             *LITERAL_RENAMES,
+            "Recon",
+            "recon",
             *(f"DecompilationEvent.{name}" for name in EVENT_RENAMES),
         }
     )
@@ -241,7 +246,7 @@ def _residual_text_candidates(
                 column=column,
                 kind="residual-recon-text",
                 detail=match.group(0),
-                rewriteable=False,
+                rewriteable=True,
             )
         )
     return candidates
@@ -255,20 +260,62 @@ def _node_code(node: cst.CSTNode) -> str:
     return cst.Module([]).code_for_node(node)
 
 
+def _rewrite_residual_term(term: str) -> str:
+    direct = LITERAL_RENAMES.get(term)
+    if direct is not None:
+        return direct
+    if term.startswith("D810.recon"):
+        return "D810.preanalysis" + term[len("D810.recon") :]
+    if term.startswith("d810-recon"):
+        return "d810-preanalysis" + term[len("d810-recon") :]
+    if term.startswith("--recon"):
+        return "--preanalysis" + term[len("--recon") :]
+    if term.startswith("Recon"):
+        return "Preanalysis" + term[len("Recon") :]
+    if term.startswith("_recon"):
+        return "_preanalysis" + term[len("_recon") :]
+    if term.startswith("recon"):
+        return "preanalysis" + term[len("recon") :]
+    return term
+
+
+def _rewrite_residual_text(value: str) -> str:
+    return _RECON_TEXT_TERM.sub(
+        lambda match: _rewrite_residual_term(match.group(0)),
+        value,
+    )
+
+
+def _rewrite_identifier(value: str) -> str:
+    module_segment = MODULE_SEGMENT_RENAMES.get(value)
+    if module_segment is not None:
+        return module_segment
+    direct = NAME_RENAMES.get(value)
+    if direct is not None:
+        return direct
+    if "_recon_" in value:
+        value = value.replace("_recon_", "_preanalysis_")
+    if value.endswith("_recon"):
+        value = value[: -len("_recon")] + "_preanalysis"
+    return _rewrite_residual_text(value)
+
+
 def _rewrite_dotted_symbol_literal(value: str) -> str:
     """Rewrite declared module/symbol spellings in an import or mock target."""
     whole_module = MODULE_RENAMES.get(value)
     if whole_module is not None:
         return whole_module
     if "." not in value:
-        return value
-    return ".".join(NAME_RENAMES.get(part, part) for part in value.split("."))
+        return _rewrite_identifier(value)
+    return ".".join(_rewrite_identifier(part) for part in value.split("."))
 
 
 def _rewrite_literal(value: str) -> str:
     """Return the declared replacement for one string literal, if any."""
     direct = LITERAL_RENAMES.get(value)
-    return direct if direct is not None else _rewrite_dotted_symbol_literal(value)
+    if direct is not None:
+        return direct
+    return _rewrite_residual_text(_rewrite_dotted_symbol_literal(value))
 
 
 class _LifecycleRenameTransformer(cst.CSTTransformer):
@@ -279,8 +326,10 @@ class _LifecycleRenameTransformer(cst.CSTTransformer):
         original_node: cst.Name,
         updated_node: cst.Name,
     ) -> cst.Name:
-        replacement = NAME_RENAMES.get(updated_node.value)
-        if replacement is None:
+        if updated_node.value in MANUAL_CONSTRUCTOR_KEYWORDS:
+            return updated_node
+        replacement = _rewrite_identifier(updated_node.value)
+        if replacement == updated_node.value:
             return updated_node
         return updated_node.with_changes(value=replacement)
 
@@ -292,8 +341,9 @@ class _LifecycleRenameTransformer(cst.CSTTransformer):
         aliases = []
         changed = False
         for alias in updated_node.names:
-            replacement = MODULE_RENAMES.get(_node_code(alias.name))
-            if replacement is None:
+            original_name = _node_code(alias.name)
+            replacement = _rewrite_dotted_symbol_literal(original_name)
+            if replacement == original_name:
                 aliases.append(alias)
                 continue
             aliases.append(alias.with_changes(name=cst.parse_expression(replacement)))
@@ -309,8 +359,9 @@ class _LifecycleRenameTransformer(cst.CSTTransformer):
     ) -> cst.ImportFrom:
         if updated_node.module is None:
             return updated_node
-        replacement = MODULE_RENAMES.get(_node_code(updated_node.module))
-        if replacement is None:
+        original_module = _node_code(updated_node.module)
+        replacement = _rewrite_dotted_symbol_literal(original_module)
+        if replacement == original_module:
             return updated_node
         return updated_node.with_changes(module=cst.parse_expression(replacement))
 
@@ -327,7 +378,20 @@ class _LifecycleRenameTransformer(cst.CSTTransformer):
             return updated_node.with_changes(
                 attr=cst.Name(EVENT_RENAMES[updated_node.attr.value])
             )
-        return updated_node
+        replacement = _rewrite_identifier(updated_node.attr.value)
+        if replacement == updated_node.attr.value:
+            return updated_node
+        return updated_node.with_changes(attr=cst.Name(replacement))
+
+    def leave_Comment(
+        self,
+        original_node: cst.Comment,
+        updated_node: cst.Comment,
+    ) -> cst.Comment:
+        replacement = _rewrite_residual_text(updated_node.value)
+        if replacement == updated_node.value:
+            return updated_node
+        return updated_node.with_changes(value=replacement)
 
     def leave_SimpleString(
         self,
@@ -386,6 +450,12 @@ def rewrite_toml_text(source: str) -> RewriteResult:
             rf"\g<indent>{replacement}",
             rewritten,
         )
+    return RewriteResult(text=rewritten, changed=rewritten != source)
+
+
+def rewrite_plain_text(source: str) -> RewriteResult:
+    """Rewrite residual lifecycle terminology in documentation and text code."""
+    rewritten = _rewrite_residual_text(source)
     return RewriteResult(text=rewritten, changed=rewritten != source)
 
 
@@ -458,7 +528,7 @@ class _CandidateVisitor(ast.NodeVisitor):
                 node,
                 kind="residual-recon-api",
                 detail=module,
-                rewriteable=False,
+                rewriteable=True,
             )
         for alias in node.names:
             if alias.name in NAME_RENAMES or module in MODULE_RENAMES:
@@ -490,7 +560,7 @@ class _CandidateVisitor(ast.NodeVisitor):
                     node,
                     kind="residual-recon-api",
                     detail=alias.name,
-                    rewriteable=False,
+                    rewriteable=True,
                 )
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -520,7 +590,7 @@ class _CandidateVisitor(ast.NodeVisitor):
                 node,
                 kind="residual-recon-api",
                 detail=node.id,
-                rewriteable=False,
+                rewriteable=True,
             )
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
@@ -551,7 +621,7 @@ class _CandidateVisitor(ast.NodeVisitor):
                 node,
                 kind="residual-recon-api",
                 detail=node.attr,
-                rewriteable=False,
+                rewriteable=True,
             )
         self.generic_visit(node)
 
@@ -568,7 +638,7 @@ class _CandidateVisitor(ast.NodeVisitor):
                 node,
                 kind="residual-recon-api",
                 detail=node.name,
-                rewriteable=False,
+                rewriteable=True,
             )
         for argument in (
             *node.args.posonlyargs,
@@ -600,7 +670,7 @@ class _CandidateVisitor(ast.NodeVisitor):
                 node,
                 kind="residual-recon-api",
                 detail=node.name,
-                rewriteable=False,
+                rewriteable=True,
             )
         self.generic_visit(node)
 
@@ -659,7 +729,7 @@ class _CandidateVisitor(ast.NodeVisitor):
                             argument,
                             kind="legacy-cli-name",
                             detail=argument.value,
-                            rewriteable=False,
+                            rewriteable=True,
                         )
                     elif (
                         node.func.attr == "add_parser" and argument.value in CLI_RENAMES
@@ -817,9 +887,18 @@ def _scan_python_prose(
                     value = ast.literal_eval(token.string)
                 except (SyntaxError, ValueError):
                     value = None
+                declared_dotted = bool(
+                    isinstance(value, str)
+                    and (
+                        value in MODULE_RENAMES
+                        or any(
+                            part in NAME_RENAMES
+                            for part in value.split(".")
+                        )
+                    )
+                )
                 if isinstance(value, str) and (
-                    value in LITERAL_RENAMES
-                    or _rewrite_dotted_symbol_literal(value) != value
+                    value in LITERAL_RENAMES or declared_dotted
                 ):
                     continue
             candidates.extend(
@@ -1046,6 +1125,13 @@ def _manual_candidate_dicts(payload: dict[str, object]) -> list[dict[str, object
     ]
 
 
+def _candidate_dicts(payload: dict[str, object]) -> list[dict[str, object]]:
+    candidates = payload.get("candidates", [])
+    if not isinstance(candidates, list):
+        return []
+    return [candidate for candidate in candidates if isinstance(candidate, dict)]
+
+
 def _candidate_fingerprint(candidate: dict[str, object]) -> tuple[str, str, str]:
     return (
         str(candidate.get("path", "")),
@@ -1092,6 +1178,8 @@ def verify_manifest(
     if not isinstance(baseline_payload, dict):
         return [f"manifest baseline report is not an object: {baseline_path}"]
 
+    current_candidates = _candidate_dicts(payload)
+    baseline_candidates = _candidate_dicts(baseline_payload)
     current_manual = _manual_candidate_dicts(payload)
     baseline_manual = _manual_candidate_dicts(baseline_payload)
     retired_kinds = {
@@ -1099,7 +1187,7 @@ def verify_manifest(
         for kind in manifest.get("retired_manual_kinds", [])
         if isinstance(kind, str)
     }
-    for candidate in current_manual:
+    for candidate in current_candidates:
         kind = str(candidate.get("kind", ""))
         if kind in retired_kinds:
             errors.append(
@@ -1110,13 +1198,13 @@ def verify_manifest(
 
     current_non_runtime = [
         candidate
-        for candidate in current_manual
+        for candidate in current_candidates
         if str(candidate.get("kind", ""))
         not in {"direct-runtime-call", "temporary-internal-port"}
     ]
     baseline_non_runtime = [
         candidate
-        for candidate in baseline_manual
+        for candidate in baseline_candidates
         if str(candidate.get("kind", ""))
         not in {"direct-runtime-call", "temporary-internal-port"}
     ]
@@ -1351,7 +1439,7 @@ def _rewrite_candidates(paths: Sequence[Path]) -> list[tuple[Path, RewriteResult
         elif path.suffix == ".toml":
             result = rewrite_toml_text(source)
         else:
-            result = RewriteResult(text=source, changed=False)
+            result = rewrite_plain_text(source)
         if result.changed:
             rewrites.append((path, result))
     return rewrites

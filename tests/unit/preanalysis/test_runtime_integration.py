@@ -1,4 +1,4 @@
-"""Unit tests for ReconAnalysisRuntime.apply_to_rule_scope lifecycle."""
+"""Unit tests for consumer analysis and rule-scope delivery."""
 from __future__ import annotations
 
 from types import MappingProxyType
@@ -32,7 +32,7 @@ def _phase(level: int = _MATURITY, friendly: str | None = None) -> ProviderPhase
     )
 
 
-def _make_recon_result(
+def _make_preanalysis_result(
     collector_name: str = "CFGShapeCollector",
     func_ea: int = _FUNC_EA,
     maturity: int = _MATURITY,
@@ -113,7 +113,7 @@ def _make_runtime() -> tuple[
     mock_phase = create_autospec(PreanalysisPhase, instance=True)
     mock_analysis = create_autospec(AnalysisPhase, instance=True)
     mock_store = create_autospec(PreanalysisStore, instance=True)
-    mock_store.db_path = Path("/tmp/test_recon.db")
+    mock_store.db_path = Path("/tmp/test_preanalysis.db")
 
     writer = _make_sync_writer(mock_store)
     p1 = patch("d810.passes.runtime.get_preanalysis_writer", return_value=writer)
@@ -122,7 +122,7 @@ def _make_runtime() -> tuple[
     p2.start()
     _active_patchers.extend([p1, p2])
 
-    rt = DecompilationAnalysisRuntime(mock_phase, mock_analysis, mock_store)
+    rt = DecompilationAnalysisRuntime(mock_analysis, mock_store)
     return rt, mock_phase, mock_analysis, mock_store
 
 
@@ -132,35 +132,28 @@ def _make_runtime() -> tuple[
 
 
 def test_apply_to_rule_scope_fresh_analysis() -> None:
-    """No cached hints -> runs full pipeline (collect, analyze, apply)."""
+    """No cached hints -> analyzes persisted evidence and applies it."""
     rt, mock_phase, mock_analysis, mock_store = _make_runtime()
     mock_rule_scope = create_autospec(RuleScopeService, instance=True)
 
-    results = [_make_recon_result()]
+    results = [_make_preanalysis_result()]
     hints = _make_hints()
     apply_result = _make_apply_result()
 
     mock_store.load_hints.return_value = None
-    mock_phase.run_microcode_collectors.return_value = results
+    mock_store.load_all_preanalysis_results.return_value = results
     mock_analysis.interpret.return_value = hints
     mock_rule_scope.apply_hints.return_value = apply_result
 
-    outcome = rt.apply_to_rule_scope(
-        _FUNC_EA, mock_rule_scope,
-        target=_SENTINEL_TARGET, provider_phase=_phase(),
-        persist_hints=True,
-    )
+    outcome = rt.apply_to_rule_scope(_FUNC_EA, mock_rule_scope)
 
     assert outcome.func_ea == _FUNC_EA
     assert outcome.hints is hints
     assert outcome.apply_result is apply_result
     assert outcome.source == "analyzed"
 
-    # Verify full pipeline ran
     mock_store.load_hints.assert_called_once_with(func_ea=_FUNC_EA)
-    mock_phase.run_microcode_collectors.assert_called_once_with(
-        _SENTINEL_TARGET, func_ea=_FUNC_EA, provider_phase=_phase(),
-    )
+    mock_phase.run_microcode_collectors.assert_not_called()
     mock_analysis.interpret.assert_called_once_with(
         func_ea=_FUNC_EA, results=results, store=mock_store,
     )
@@ -178,10 +171,7 @@ def test_apply_to_rule_scope_cached_hints() -> None:
     mock_store.load_hints.return_value = cached_hints
     mock_rule_scope.apply_hints.return_value = apply_result
 
-    outcome = rt.apply_to_rule_scope(
-        _FUNC_EA, mock_rule_scope,
-        target=_SENTINEL_TARGET, provider_phase=_phase(),
-    )
+    outcome = rt.apply_to_rule_scope(_FUNC_EA, mock_rule_scope)
 
     assert outcome.func_ea == _FUNC_EA
     assert outcome.hints is cached_hints
@@ -199,11 +189,9 @@ def test_apply_to_rule_scope_no_hints_available() -> None:
     mock_rule_scope = create_autospec(RuleScopeService, instance=True)
 
     mock_store.load_hints.return_value = None
+    mock_store.load_all_preanalysis_results.return_value = []
 
-    outcome = rt.apply_to_rule_scope(
-        _FUNC_EA, mock_rule_scope,
-        target=None, provider_phase=None,
-    )
+    outcome = rt.apply_to_rule_scope(_FUNC_EA, mock_rule_scope)
 
     assert outcome.func_ea == _FUNC_EA
     assert outcome.hints is None
@@ -227,27 +215,23 @@ def test_outcome_records_source_correctly() -> None:
     mock_store.load_hints.return_value = hints
     mock_rule_scope.apply_hints.return_value = apply_result
 
-    cached_outcome = rt.apply_to_rule_scope(
-        _FUNC_EA, mock_rule_scope, target=None, provider_phase=None,
-    )
+    cached_outcome = rt.apply_to_rule_scope(_FUNC_EA, mock_rule_scope)
     assert cached_outcome.source == "cached"
 
     # --- "analyzed" ---
     mock_store.load_hints.return_value = None
-    mock_phase.run_microcode_collectors.return_value = [_make_recon_result()]
+    mock_store.load_all_preanalysis_results.return_value = [
+        _make_preanalysis_result()
+    ]
     mock_analysis.interpret.return_value = hints
     mock_rule_scope.apply_hints.return_value = apply_result
 
-    analyzed_outcome = rt.apply_to_rule_scope(
-        _FUNC_EA, mock_rule_scope,
-        target=_SENTINEL_TARGET, provider_phase=_phase(),
-    )
+    analyzed_outcome = rt.apply_to_rule_scope(_FUNC_EA, mock_rule_scope)
     assert analyzed_outcome.source == "analyzed"
 
     # --- "unavailable" ---
     mock_store.load_hints.return_value = None
+    mock_store.load_all_preanalysis_results.return_value = []
 
-    unavailable_outcome = rt.apply_to_rule_scope(
-        _FUNC_EA, mock_rule_scope, target=None, provider_phase=None,
-    )
+    unavailable_outcome = rt.apply_to_rule_scope(_FUNC_EA, mock_rule_scope)
     assert unavailable_outcome.source == "unavailable"

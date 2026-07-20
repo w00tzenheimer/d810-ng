@@ -1,4 +1,4 @@
-"""Backend-neutral instruction semantic helpers for recon collectors."""
+"Backend-neutral instruction semantic helpers for preanalysis collectors."
 from __future__ import annotations
 
 from collections.abc import Sequence

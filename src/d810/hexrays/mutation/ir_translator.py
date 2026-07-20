@@ -245,7 +245,7 @@ def classify_live_operand_kind(mop: object) -> OperandKind | None:
 # These functions are the Hex-Rays side of the backend-neutral semantic
 # vocabulary defined in `d810.ir.semantics`.  They take a live Hex-Rays
 # instruction and return a portable kind enum -- so consumers in
-# `d810.recon` and elsewhere can branch on `PredicateKind.ULT` /
+# `d810.preanalysis` and elsewhere can branch on `PredicateKind.ULT` /
 # `ControlTransferKind.GOTO` without learning `m_jb` / `m_goto` / the
 # numeric mcode_t opcode values.  The mapping below is the ONLY place
 # the project ties Hex-Rays opcode names to portable semantics.
@@ -320,20 +320,7 @@ def _control_transfer_from_hexrays(opcode: int) -> ControlTransferKind | None:
 
 
 def classify_branch_predicate(insn: object) -> PredicateKind | None:
-    """Return the portable predicate carried by a live conditional
-    branch / set instruction, or ``None`` for non-predicate opcodes.
-
-    Note that this covers BOTH conditional branches (``m_jX``) and
-    byte-materialized predicates (``m_setX``); they share the
-    predicate semantic and the call site decides whether the
-    result is consumed as branch direction (pair with
-    ``classify_control_transfer``) or as a materialized byte (no
-    associated transfer kind).
-
-    Use this at the recon-side seam where a file previously did
-    ``if insn.opcode == ida_hexrays.m_jbe`` -- now ask
-    ``if classify_branch_predicate(insn) is PredicateKind.ULE``.
-    """
+    "Return the portable predicate carried by a live conditional\n    branch / set instruction, or ``None`` for non-predicate opcodes.\n\n    Note that this covers BOTH conditional branches (``m_jX``) and\n    byte-materialized predicates (``m_setX``); they share the\n    predicate semantic and the call site decides whether the\n    result is consumed as branch direction (pair with\n    ``classify_control_transfer``) or as a materialized byte (no\n    associated transfer kind).\n\n    Use this at the preanalysis-side seam where a file previously did\n    ``if insn.opcode == ida_hexrays.m_jbe`` -- now ask\n    ``if classify_branch_predicate(insn) is PredicateKind.ULE``.\n    "
     try:
         return _predicate_kind_from_hexrays(int(getattr(insn, "opcode")))
     except (AttributeError, TypeError, ValueError):
@@ -726,7 +713,7 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
         blocks[blk.serial] = lift_block(blk, lvar_stkoff_map)
 
     # E2b: pin a small, portable metadata contract on every lifted
-    # ``FlowGraph`` so recon consumers never have to reach back into
+    # ``FlowGraph`` so preanalysis consumers never have to reach back into
     # the live ``mba_t`` for these values:
     #
     # * ``maturity``        -- int, raw ``mba.maturity`` (already present)

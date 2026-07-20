@@ -47,10 +47,7 @@ class TestPredicateKind:
 
 class TestControlTransferKind:
     def test_transfer_kinds(self) -> None:
-        """Five transfer kinds cover the recon-side dispatch shapes
-        the adapter needs today: gotos, conditional branches, jump
-        tables, indirect jumps, and returns.  Calls have their own
-        sibling ``CallKind`` family."""
+        "Five transfer kinds cover the preanalysis-side dispatch shapes\n        the adapter needs today: gotos, conditional branches, jump\n        tables, indirect jumps, and returns.  Calls have their own\n        sibling ``CallKind`` family."
         names = {member.name for member in ControlTransferKind}
         assert names == {
             "GOTO",

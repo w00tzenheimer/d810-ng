@@ -1,32 +1,5 @@
 #!/usr/bin/env python3
-"""Detector codemod: portable-core IDA-shape abstraction leaks (epic llr-rv7p).
-
-The ``portable-core-no-ida`` import-linter contract forbids ``import ida_*`` but
-canNOT see SHAPE -- so portable-core (ir / analyses / transforms / passes /
-capabilities / families) is full of pure-Python code that PASSES the import gate
-while mirroring the Hex-Rays data model.  This script is the deterministic,
-re-runnable replacement for the one-time agent sweep recorded at
-``.tmp/abstraction-audit/INVENTORY.md``.
-
-It does THREE jobs:
-  1. AUDIT -- deterministic leak inventory (validate / re-measure the ~124 count)
-  2. BURN-DOWN -- ``--json`` per-category counts to track slices S4/S5/S6/S9
-  3. S8 SEED -- the detection core the shape-lint gate (ticket llr-f130) wraps
-
-Categories (match the audit taxonomy):
-  A  maturity -- MMAT_* name-tables, ``maturity:int`` fields/params, MMAT literals
-  B  serial   -- ``*serial*`` dataclass FIELDS (persistent identity), serial as
-                 a dict/set key (mblock_t mirror); within-fn index = ignored
-  C  mop      -- the duck-typed dodge: ``getattr(x,"t"/"nnn"/"stkoff"...)`` and
-                 ``"mop_n"``/``"mop_S"`` string compares on object-typed operands
-  D  stale    -- comments/docstrings/loggers citing DELETED d810.cfg / d810.recon
-  E  opcode   -- hardcoded ``"m_<op>"`` mnemonic string dispatch / raw opcode ints
-
-This is a CONSERVATIVE structural detector (AST for A/B/C/E so comments never
-false-positive; text scan for D since it lives in comments).  It is calibrated
-against the agent audit, not identical to it: it trades a little recall for zero
-comment-noise and full repeatability.  Read-only -- it never writes.
-"""
+"Detector codemod: portable-core IDA-shape abstraction leaks (epic llr-rv7p).\n\nThe ``portable-core-no-ida`` import-linter contract forbids ``import ida_*`` but\ncanNOT see SHAPE -- so portable-core (ir / analyses / transforms / passes /\ncapabilities / families) is full of pure-Python code that PASSES the import gate\nwhile mirroring the Hex-Rays data model.  This script is the deterministic,\nre-runnable replacement for the one-time agent sweep recorded at\n``.tmp/abstraction-audit/INVENTORY.md``.\n\nIt does THREE jobs:\n  1. AUDIT -- deterministic leak inventory (validate / re-measure the ~124 count)\n  2. BURN-DOWN -- ``--json`` per-category counts to track slices S4/S5/S6/S9\n  3. S8 SEED -- the detection core the shape-lint gate (ticket llr-f130) wraps\n\nCategories (match the audit taxonomy):\n  A  maturity -- MMAT_* name-tables, ``maturity:int`` fields/params, MMAT literals\n  B  serial   -- ``*serial*`` dataclass FIELDS (persistent identity), serial as\n                 a dict/set key (mblock_t mirror); within-fn index = ignored\n  C  mop      -- the duck-typed dodge: ``getattr(x,\"t\"/\"nnn\"/\"stkoff\"...)`` and\n                 ``\"mop_n\"``/``\"mop_S\"`` string compares on object-typed operands\n  D  stale    -- comments/docstrings/loggers citing DELETED d810.cfg / d810.preanalysis\n  E  opcode   -- hardcoded ``\"m_<op>\"`` mnemonic string dispatch / raw opcode ints\n\nThis is a CONSERVATIVE structural detector (AST for A/B/C/E so comments never\nfalse-positive; text scan for D since it lives in comments).  It is calibrated\nagainst the agent audit, not identical to it: it trades a little recall for zero\ncomment-noise and full repeatability.  Read-only -- it never writes.\n"
 from __future__ import annotations
 
 import argparse
@@ -189,7 +162,7 @@ class _Visitor(ast.NodeVisitor):
 def _scan_stale(rel: str, text: str) -> list[Finding]:
     """D: deleted-package refs live in comments/docstrings/logger strings."""
     out: list[Finding] = []
-    needles = ("d810.cfg", "d810.recon", "recon.collectors", "D810.recon", "D810.cfg")
+    needles = ("d810.cfg", "d810.preanalysis", "preanalysis.collectors", "D810.preanalysis", "D810.cfg")
     for i, line in enumerate(text.splitlines(), 1):
         for n in needles:
             if n in line:
@@ -254,15 +227,15 @@ def _maturity_bucket(finding: Finding) -> str | None:
         "src/d810/analyses/control_flow/models.py",
         "src/d810/passes/artifacts.py",
         "src/d810/passes/audit_runtime.py",
-        "src/d810/passes/recon_artifacts.py",
+        "src/d810/passes/preanalysis_artifacts.py",
         "src/d810/passes/store.py",
     }:
-        return "recon-artifact-store-compatibility"
+        return "preanalysis-artifact-store-compatibility"
     if rel.startswith("src/d810/analyses/control_flow/") or rel in {
         "src/d810/passes/core.py",
         "src/d810/passes/phase.py",
     }:
-        return "legacy-recon-collector-api"
+        return "legacy-preanalysis-collector-api"
     return "uncategorized-maturity"
 
 

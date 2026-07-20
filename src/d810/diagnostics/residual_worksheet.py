@@ -1,17 +1,4 @@
-"""Build a residual dispatcher worksheet from persisted diagnostics.
-
-The worksheet is intentionally read-only. It correlates:
-
-- post-pipeline microcode blocks from the diagnostic SQLite DB
-- semantic rendered-program spans from the same DB
-- optional DAG/modification snapshots from the diagnostic DB
-- optional transition/planner data from the recon DB
-- optional residual-handoff log lines from a text dump or log file
-
-Exposed as the ``residual-worksheet`` subcommand of
-``python -m d810.diagnostics``. Distinct from ``d810cli.py residuals``
-(which is a text-only grep over the AFTER pseudocode).
-"""
+"Build a residual dispatcher worksheet from persisted diagnostics.\n\nThe worksheet is intentionally read-only. It correlates:\n\n- post-pipeline microcode blocks from the diagnostic SQLite DB\n- semantic rendered-program spans from the same DB\n- optional DAG/modification snapshots from the diagnostic DB\n- optional transition/planner data from the preanalysis DB\n- optional residual-handoff log lines from a text dump or log file\n\nExposed as the ``residual-worksheet`` subcommand of\n``python -m d810.diagnostics``. Distinct from ``d810cli.py residuals``\n(which is a text-only grep over the AFTER pseudocode).\n"
 from __future__ import annotations
 
 import argparse
@@ -224,7 +211,7 @@ def find_latest_diag_db(
 
 
 def find_latest_analysis_db(*, search_roots: Sequence[Path]) -> Path | None:
-    """Find the latest recon DB in known log roots."""
+    "Find the latest preanalysis DB in known log roots."
     candidates: list[Path] = []
     for root in search_roots:
         candidate = root / "d810_analysis.db"

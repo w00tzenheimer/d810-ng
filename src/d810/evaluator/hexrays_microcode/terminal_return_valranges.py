@@ -589,14 +589,7 @@ def build_terminal_return_valrange_report_from_mba(
     carrier_mreg: int = 0,
     carrier_size: int = 8,
 ) -> TerminalReturnValrangeReport:
-    """Discover shared terminal merges directly from the current MBA.
-
-    This is a fallback for dump/debug paths where recon-store terminal audit
-    artifacts are unavailable. It scans for:
-    - BLT_STOP / no-succ blocks with multiple predecessors, or
-    - BLT_STOP / no-succ blocks whose sole predecessor already has multiple
-      predecessors (shared epilogue entry followed by private stop).
-    """
+    "Discover shared terminal merges directly from the current MBA.\n\n    This is a fallback for dump/debug paths where preanalysis-store terminal audit\n    artifacts are unavailable. It scans for:\n    - BLT_STOP / no-succ blocks with multiple predecessors, or\n    - BLT_STOP / no-succ blocks whose sole predecessor already has multiple\n      predecessors (shared epilogue entry followed by private stop).\n    "
     discovered: list[tuple[int, int]] = []
     qty = int(getattr(mba, "qty", 0))
     for serial in range(qty):

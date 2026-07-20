@@ -40,7 +40,7 @@ class TransitionPath:
 
 @dataclass(frozen=True)
 class TransitionRow:
-    """One transition row for rendering and recon metrics."""
+    "One transition row for rendering and preanalysis metrics."
 
     state_const: Optional[int]
     state_range_lo: Optional[int]

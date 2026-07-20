@@ -38,9 +38,9 @@ mutation path inside strategy code.
 
 Use the lowest layer that owns the concept:
 
-- `d810.recon` owns read-only analysis, source facts, transition facts, and
-  observations. Recon code may emit observations; diagnostics subscribers
-  persist them. Recon and behavior code must not directly read or write
+- `d810.preanalysis` owns read-only analysis, source facts, transition facts, and
+  observations. Preanalysis code may emit observations; diagnostics subscribers
+  persist them. Preanalysis and behavior code must not directly read or write
   diagnostic SQLite.
 - `d810.cfg` owns backend-neutral graph modifications, materialization payloads,
   planning fragments, and validation helpers. Add a cfg primitive when more
@@ -82,14 +82,14 @@ Use the lowest layer that owns the concept:
 7. Record provenance and diagnostics.
    - Planner provenance should explain accepted and rejected fragments.
    - Observability should flow through emitted events and subscribers, not
-     direct persistence from recon or strategy code.
+     direct persistence from preanalysis or strategy code.
 
 ## What Belongs In A Strategy
 
 A strategy may:
 
 - inspect the immutable snapshot;
-- combine recon/cfg facts into a proposed edit;
+- combine preanalysis/cfg facts into a proposed edit;
 - emit one or more `PlanFragment` objects;
 - attach proof metadata used by preflight, gates, or diagnostics.
 
@@ -104,9 +104,9 @@ A strategy must not:
 If a strategy cannot prove safety, it should abstain with enough metadata for a
 gap card or diagnostic row to explain what evidence is missing.
 
-## When To Add A Recon Helper
+## When To Add A Preanalysis Helper
 
-Add recon code when the missing piece is read-only evidence:
+Add preanalysis code when the missing piece is read-only evidence:
 
 - branch ownership;
 - state transition facts;
@@ -115,7 +115,7 @@ Add recon code when the missing piece is read-only evidence:
 - return-carrier or terminal-byte facts;
 - structural observations that diagnostics should persist.
 
-Recon helpers should return structured objects or emit observations. Behavior
+Preanalysis helpers should return structured objects or emit observations. Behavior
 code should consume the in-memory result, not a diagnostic database row.
 
 ## When To Add A Cfg Primitive
@@ -135,7 +135,7 @@ only choose the primitive and provide proof metadata.
 
 Use the smallest gate that proves the contract, then climb:
 
-1. Unit-test the recon fact or cfg primitive in isolation.
+1. Unit-test the preanalysis fact or cfg primitive in isolation.
 2. Unit-test the family profile, strategy ordering, and abstention reasons.
 3. Unit-test `PlanFragment` output and planner/provenance rows.
 4. Run focused dump/diagnostic checks for one representative function.

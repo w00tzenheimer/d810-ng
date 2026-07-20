@@ -50,8 +50,8 @@ def test_rewrite_import_text_handles_moved_modules_and_symbols() -> None:
     mod = _load_module()
     source = "\n".join(
         [
-            "from d810.recon.flow.edge_diagnostics import classify_dag_edges",
-            "from d810.recon.flow.selected_alternate_edge_override import apply_selected_alternate_edge_overrides, apply_selected_alternate_edge_overrides_from_diag",
+            "from d810.preanalysis.flow.edge_diagnostics import classify_dag_edges",
+            "from d810.preanalysis.flow.selected_alternate_edge_override import apply_selected_alternate_edge_overrides, apply_selected_alternate_edge_overrides_from_diag",
             "",
         ]
     )
@@ -64,7 +64,7 @@ def test_rewrite_import_text_handles_moved_modules_and_symbols() -> None:
         in result.text
     )
     assert (
-        "from d810.recon.flow.selected_alternate_edge_override import "
+        "from d810.preanalysis.flow.selected_alternate_edge_override import "
         "apply_selected_alternate_edge_overrides"
         in result.text
     )
@@ -111,7 +111,7 @@ def test_render_report_lists_ignores_and_phase_manifest() -> None:
 def test_rewrite_imports_cli_dry_run_does_not_write(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     sample.write_text(
-        "from d810.recon.flow.edge_diagnostics import classify_dag_edges\n",
+        "from d810.preanalysis.flow.edge_diagnostics import classify_dag_edges\n",
         encoding="utf-8",
     )
 
@@ -134,4 +134,4 @@ def test_rewrite_imports_cli_dry_run_does_not_write(tmp_path: Path) -> None:
     assert "would rewrite" in result.stdout
     assert "--- " in result.stdout
     assert "dry-run: rewritten=1 warnings=0" in result.stdout
-    assert "d810.recon.flow.edge_diagnostics" in sample.read_text(encoding="utf-8")
+    assert "d810.preanalysis.flow.edge_diagnostics" in sample.read_text(encoding="utf-8")

@@ -1,17 +1,4 @@
-"""Semantic-region entry resolution.
-
-This module classifies the CFG splice point for a semantic-DAG-like region
-without depending on a live Hex-Rays ``mba_t`` or importing ``d810.passes``.
-Strategy code supplies a small block view and the transition-kind sentinel for
-the DAG representation it is using.  The resolver stays backend-neutral and
-only reasons about DAG edge shape plus projected block successor shape.
-
-The intentionally loose ``dag`` / ``region_head_node`` parameters are a
-layering compromise: concrete DAG node and edge dataclasses currently live in
-``recon``, while this decision logic belongs in ``cfg``.  Keeping the API
-structural lets Hodur pass ``LinearizedStateDag`` data without making ``cfg``
-depend upward on ``recon``.
-"""
+"Semantic-region entry resolution.\n\nThis module classifies the CFG splice point for a semantic-DAG-like region\nwithout depending on a live Hex-Rays ``mba_t`` or importing ``d810.passes``.\nStrategy code supplies a small block view and the transition-kind sentinel for\nthe DAG representation it is using.  The resolver stays backend-neutral and\nonly reasons about DAG edge shape plus projected block successor shape.\n\nThe intentionally loose ``dag`` / ``region_head_node`` parameters are a\nlayering compromise: concrete DAG node and edge dataclasses currently live in\n``preanalysis``, while this decision logic belongs in ``cfg``.  Keeping the API\nstructural lets Hodur pass ``LinearizedStateDag`` data without making ``cfg``\ndepend upward on ``preanalysis``.\n"
 from __future__ import annotations
 
 import enum
@@ -57,7 +44,7 @@ class RegionEntryBlockView(Protocol):
 
 # TODO(semantic-region-entry-shape): If this resolver gets another caller,
 # define tiny structural Protocols for the DAG node/edge/view shape instead of
-# accepting raw ``object``. Keep those Protocols in cfg, not recon, so the
+# accepting raw ``object``. Keep those Protocols in cfg, not preanalysis, so the
 # layered architecture contract remains cfg -> core only.
 
 

@@ -419,13 +419,7 @@ def snapshot_dag_local_facts(
     snapshot_id: int,
     dag: object,
 ) -> None:
-    """Snapshot typed node-local facts from a LinearizedStateDag-like object.
-
-    This intentionally uses duck typing so the core diag module remains pure
-    Python and does not import the recon layer. ``snapshot_dag`` stores the
-    outer state graph; this stores each node's block roles, local segments, and
-    state-local CFG edges for on-demand DB rendering and planner audits.
-    """
+    "Snapshot typed node-local facts from a LinearizedStateDag-like object.\n\n    This intentionally uses duck typing so the core diag module remains pure\n    Python and does not import the preanalysis layer. ``snapshot_dag`` stores the\n    outer state graph; this stores each node's block roles, local segments, and\n    state-local CFG edges for on-demand DB rendering and planner audits.\n    "
     nodes = tuple(getattr(dag, "nodes", ()) or ())
     block_rows: list[dict] = []
     segment_rows: list[dict] = []
@@ -1490,12 +1484,7 @@ def snapshot_fact_observations(
     func_ea: int,
     observations: Iterable[Mapping[str, Any] | object],
 ) -> None:
-    """Snapshot maturity fact observations.
-
-    Rows may be plain mappings or dataclass-like objects.  This keeps the core
-    diag layer independent of ``d810.recon.facts`` while still accepting those
-    model objects directly.
-    """
+    "Snapshot maturity fact observations.\n\n    Rows may be plain mappings or dataclass-like objects.  This keeps the core\n    diag layer independent of ``d810.preanalysis.facts`` while still accepting those\n    model objects directly.\n    "
     func_hex, func_i64 = _dual(func_ea)
     rows = []
     for obs in observations:

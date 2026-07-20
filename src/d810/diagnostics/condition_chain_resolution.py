@@ -1,39 +1,4 @@
-"""Single-hop condition-chain resolution for ``StateTransitionAnchorFact`` enrichment.
-
-This module composes three already-persisted observations to enrich
-LOCOPT-pre transition facts with the immediate post-dispatcher target:
-
-1. ``StateTransitionAnchorFact`` -- captures source state const +
-   LOCOPT-pre transit chain.
-2. The condition-chain interval-dispatcher rows persisted in the diag DB
-   (one-hop interval lookup ``state_const -> handler block``).
-3. ``StateWriteAnchorFact`` at the resolved handler block at LOCOPT-pre
-   (gives the next state constant when the handler has a canonical
-   state-write).
-
-All three exist already; this module composes them.  No recon or HCC
-behavior depends on the result; the enrichment lives in a dedicated
-``state_transition_condition_chain_resolutions`` table.
-
-Resolution rules
-----------------
-
-* For each LOCOPT-pre ``StateTransitionAnchorFact`` whose
-  ``successor_kind`` is ``branch`` AND whose ``transit_blocks`` chain
-  ends at the dispatcher head (the condition-chain interval dispatcher's most
-  common target, by frequency), the resolver consults the condition-chain interval rows and
-  records the single-hop target handler block + that block's first
-  canonical state-write const at LOCOPT-pre, if any.
-* When ``successor_kind`` is ``direct`` / ``transit`` / ``loop`` /
-  ``exit`` / ``unresolved``, no condition-chain resolution is performed and the
-  reason column records why.
-* The resolver mirrors :func:`d810.analyses.control_flow.condition_chain_model.resolve_target_via_condition_chain`
-  semantics for the interval lookup.
-
-The ``condition_chain_resolution_maturity`` column records which maturity provided
-the condition-chain data (always ``MMAT_GLBOPT1`` today; left as a column so the
-schema can accommodate later sources without migration).
-"""
+"Single-hop condition-chain resolution for ``StateTransitionAnchorFact`` enrichment.\n\nThis module composes three already-persisted observations to enrich\nLOCOPT-pre transition facts with the immediate post-dispatcher target:\n\n1. ``StateTransitionAnchorFact`` -- captures source state const +\n   LOCOPT-pre transit chain.\n2. The condition-chain interval-dispatcher rows persisted in the diag DB\n   (one-hop interval lookup ``state_const -> handler block``).\n3. ``StateWriteAnchorFact`` at the resolved handler block at LOCOPT-pre\n   (gives the next state constant when the handler has a canonical\n   state-write).\n\nAll three exist already; this module composes them.  No preanalysis or HCC\nbehavior depends on the result; the enrichment lives in a dedicated\n``state_transition_condition_chain_resolutions`` table.\n\nResolution rules\n----------------\n\n* For each LOCOPT-pre ``StateTransitionAnchorFact`` whose\n  ``successor_kind`` is ``branch`` AND whose ``transit_blocks`` chain\n  ends at the dispatcher head (the condition-chain interval dispatcher's most\n  common target, by frequency), the resolver consults the condition-chain interval rows and\n  records the single-hop target handler block + that block's first\n  canonical state-write const at LOCOPT-pre, if any.\n* When ``successor_kind`` is ``direct`` / ``transit`` / ``loop`` /\n  ``exit`` / ``unresolved``, no condition-chain resolution is performed and the\n  reason column records why.\n* The resolver mirrors :func:`d810.analyses.control_flow.condition_chain_model.resolve_target_via_condition_chain`\n  semantics for the interval lookup.\n\nThe ``condition_chain_resolution_maturity`` column records which maturity provided\nthe condition-chain data (always ``MMAT_GLBOPT1`` today; left as a column so the\nschema can accommodate later sources without migration).\n"
 from __future__ import annotations
 
 import json

@@ -29,7 +29,7 @@ from typing import Any
 
 RULE_FILES = (
     "rules/no-cfg-diagnostic-storage-imports.yml",
-    "rules/no-recon-diagnostic-storage-imports.yml",
+    "rules/no-preanalysis-diagnostic-storage-imports.yml",
     "rules/no-optimizers-diagnostic-storage-imports.yml",
     "rules/no-hexrays-mutation-diagnostic-storage-imports.yml",
 )
@@ -49,17 +49,17 @@ SKIP_PARTS = frozenset(
 )
 
 EXACT_MODULE_RENAMES: dict[str, str] = {
-    "d810.recon.flow.alternate_correlation": (
+    "d810.preanalysis.flow.alternate_correlation": (
         "d810.diagnostics.alternate_correlation"
     ),
-    "d810.recon.flow.alternate_selection": "d810.diagnostics.alternate_selection",
-    "d810.recon.flow.condition_chain_resolution": "d810.diagnostics.condition_chain_resolution",
-    "d810.recon.flow.edge_diagnostics": "d810.diagnostics.edge_diagnostics",
+    "d810.preanalysis.flow.alternate_selection": "d810.diagnostics.alternate_selection",
+    "d810.preanalysis.flow.condition_chain_resolution": "d810.diagnostics.condition_chain_resolution",
+    "d810.preanalysis.flow.edge_diagnostics": "d810.diagnostics.edge_diagnostics",
 }
 
 MOVED_SYMBOL_RENAMES: dict[tuple[str, str], str] = {
     (
-        "d810.recon.flow.selected_alternate_edge_override",
+        "d810.preanalysis.flow.selected_alternate_edge_override",
         "apply_selected_alternate_edge_overrides_from_diag",
     ): "d810.diagnostics.selected_alternate_edge_override",
 }
@@ -301,14 +301,14 @@ def candidate_phases() -> list[dict[str, Any]]:
             ],
         },
         {
-            "phase": "protected-recon-store-review",
+            "phase": "protected-preanalysis-store-review",
             "automation": "completed-rule-refined",
-            "rule": "no-recon-diagnostic-storage-imports",
+            "rule": "no-preanalysis-diagnostic-storage-imports",
             "candidate_files": [],
             "notes": [
-                "src/d810/recon/store.py and src/d810/recon/artifacts.py are "
-                "recon-local behavior/data stores.",
-                "The recon rule blocks core diag imports, active diag DB access, "
+                "src/d810/preanalysis/store.py and src/d810/preanalysis/artifacts.py are "
+                "preanalysis-local behavior/data stores.",
+                "The preanalysis rule blocks core diag imports, active diag DB access, "
                 "and common diag-table queries without banning generic sqlite3.",
             ],
         },
@@ -366,7 +366,7 @@ def build_manifest(
             "sg scan --config sgconfig.yml --filter "
             "no-cfg-diagnostic-storage-imports --report-style short",
             "sg scan --config sgconfig.yml --filter "
-            "no-recon-diagnostic-storage-imports --report-style short",
+            "no-preanalysis-diagnostic-storage-imports --report-style short",
             "sg scan --config sgconfig.yml --filter "
             "no-optimizers-diagnostic-storage-imports --report-style short",
             "sg scan --config sgconfig.yml --filter "

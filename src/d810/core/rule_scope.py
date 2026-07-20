@@ -77,29 +77,7 @@ class RuleScopeCaches:
 
 @dataclass(frozen=True)
 class RuleDelta:
-    """A single rule adjustment inferred from recon analysis.
-
-    Represents a diff from baseline rule behavior for a specific function.
-    Deltas are ephemeral by default (applied per-decompilation via
-    ``apply_hints``) and can be persisted to project config via the
-    ``persist_inference`` action.
-
-    Precedence (highest to lowest):
-        1. User ``per_function_overrides`` in project JSON
-        2. User ``whitelisted_functions`` / ``blacklisted_functions``
-        3. Inference ``override`` deltas (this type, runtime)
-        4. Inference ``suppress``/``activate`` deltas (this type, runtime)
-        5. Global rule config defaults
-
-    Actions:
-        - ``"suppress"``: Disable the rule for this function.
-        - ``"activate"``: Force-enable the rule for this function.
-        - ``"override"``: Apply parameter overrides from ``overrides`` dict.
-
-    The naming choice of "inference" reflects that these adjustments are
-    *derived from automated recon analysis*, not hand-authored presets.
-    "Delta" conveys a diff from baseline behavior.
-    """
+    "A single rule adjustment inferred from preanalysis analysis.\n\n    Represents a diff from baseline rule behavior for a specific function.\n    Deltas are ephemeral by default (applied per-decompilation via\n    ``apply_hints``) and can be persisted to project config via the\n    ``persist_inference`` action.\n\n    Precedence (highest to lowest):\n        1. User ``per_function_overrides`` in project JSON\n        2. User ``whitelisted_functions`` / ``blacklisted_functions``\n        3. Inference ``override`` deltas (this type, runtime)\n        4. Inference ``suppress``/``activate`` deltas (this type, runtime)\n        5. Global rule config defaults\n\n    Actions:\n        - ``\"suppress\"``: Disable the rule for this function.\n        - ``\"activate\"``: Force-enable the rule for this function.\n        - ``\"override\"``: Apply parameter overrides from ``overrides`` dict.\n\n    The naming choice of \"inference\" reflects that these adjustments are\n    *derived from automated preanalysis analysis*, not hand-authored presets.\n    \"Delta\" conveys a diff from baseline behavior.\n    "
 
     rule_name: str
     action: str  # "suppress" | "activate" | "override"

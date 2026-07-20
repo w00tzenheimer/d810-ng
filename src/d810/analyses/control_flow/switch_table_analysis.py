@@ -1,30 +1,4 @@
-"""Switch-table dispatcher analysis.
-
-Extracts exact state-dispatcher rows from portable ``FlowGraph`` switch-table
-snapshots. Live Hex-Rays adapters live above recon and call
-``analyze_switch_table_flow_graph()`` after lifting an MBA.
-
-d81-qlal -- canonical Instruction port.  The operand reads no longer touch the
-backend-shaped ``InsnSnapshot`` operand slots (``.l`` / ``.r`` / ``.d``).  Each
-tail :class:`~d810.ir.flowgraph.InsnSnapshot` is projected through
-:func:`~d810.ir.insn_projection.project_instruction` to the canonical
-:class:`~d810.ir.instructions.Instruction`, and:
-
-* the switch case-target pairs (was ``blk.tail.r.switch_cases``) are read off
-  ``Instruction.control.switch_cases``;
-* the table-jump state variable (was ``blk.tail.l`` -> ``stack_refs`` / ``stkoff``
-  / ``size``) is read off ``Instruction.inputs`` -- a ``Varnode`` in the STACK
-  identity space (the projection exposes the SUBINSN/stack-ref state operand as a
-  ``Varnode(Space.STACK, offset, size)`` input);
-* the loop-guard compare operands (was ``tail.l`` / ``tail.r``) are read off the
-  canonical slot-aligned storage views (``operand_storages`` -> ``l`` / ``r``):
-  a ``NUMBER`` operand projects to a ``Varnode(Space.CONST, value, size)`` and a
-  stack operand to a ``Varnode(Space.STACK, offset, size)``.
-
-STRUCTURAL block topology stays direct -- ``flow_graph.get_block`` /
-``BlockSnapshot.tail`` / ``.succs`` / ``.preds`` / ``.tail_kind`` /
-``.is_conditional_jump`` are portable model surfaces, not operand slots.
-"""
+"Switch-table dispatcher analysis.\n\nExtracts exact state-dispatcher rows from portable ``FlowGraph`` switch-table\nsnapshots. Live Hex-Rays adapters live above preanalysis and call\n``analyze_switch_table_flow_graph()`` after lifting an MBA.\n\nd81-qlal -- canonical Instruction port.  The operand reads no longer touch the\nbackend-shaped ``InsnSnapshot`` operand slots (``.l`` / ``.r`` / ``.d``).  Each\ntail :class:`~d810.ir.flowgraph.InsnSnapshot` is projected through\n:func:`~d810.ir.insn_projection.project_instruction` to the canonical\n:class:`~d810.ir.instructions.Instruction`, and:\n\n* the switch case-target pairs (was ``blk.tail.r.switch_cases``) are read off\n  ``Instruction.control.switch_cases``;\n* the table-jump state variable (was ``blk.tail.l`` -> ``stack_refs`` / ``stkoff``\n  / ``size``) is read off ``Instruction.inputs`` -- a ``Varnode`` in the STACK\n  identity space (the projection exposes the SUBINSN/stack-ref state operand as a\n  ``Varnode(Space.STACK, offset, size)`` input);\n* the loop-guard compare operands (was ``tail.l`` / ``tail.r``) are read off the\n  canonical slot-aligned storage views (``operand_storages`` -> ``l`` / ``r``):\n  a ``NUMBER`` operand projects to a ``Varnode(Space.CONST, value, size)`` and a\n  stack operand to a ``Varnode(Space.STACK, offset, size)``.\n\nSTRUCTURAL block topology stays direct -- ``flow_graph.get_block`` /\n``BlockSnapshot.tail`` / ``.succs`` / ``.preds`` / ``.tail_kind`` /\n``.is_conditional_jump`` are portable model surfaces, not operand slots.\n"
 from __future__ import annotations
 
 from dataclasses import dataclass

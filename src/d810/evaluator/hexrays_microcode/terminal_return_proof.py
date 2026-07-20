@@ -1,18 +1,4 @@
-"""Layered proof orchestrator for terminal return handlers.
-
-Given an MBA and a :class:`TerminalReturnAuditReport` from recon, determine
-whether each terminal handler has a provable return-carrier (rax.8) definition
-using progressively heavier analysis layers:
-
-1. **Topology** -- consume audit report (no live analysis)
-2. **Single-predecessor walk** -- backward walk through single-pred chain
-3. **Chain-backed merge** -- UD chain query at merge points
-4. **Reaching-def** -- forward dataflow on handler subgraph
-5. **Emulator** -- MopTracker fallback (future)
-
-All layers are fault-tolerant: if any layer throws, it is logged and the
-orchestrator continues to the next layer.
-"""
+"Layered proof orchestrator for terminal return handlers.\n\nGiven an MBA and a :class:`TerminalReturnAuditReport` from preanalysis, determine\nwhether each terminal handler has a provable return-carrier (rax.8) definition\nusing progressively heavier analysis layers:\n\n1. **Topology** -- consume audit report (no live analysis)\n2. **Single-predecessor walk** -- backward walk through single-pred chain\n3. **Chain-backed merge** -- UD chain query at merge points\n4. **Reaching-def** -- forward dataflow on handler subgraph\n5. **Emulator** -- MopTracker fallback (future)\n\nAll layers are fault-tolerant: if any layer throws, it is logged and the\norchestrator continues to the next layer.\n"
 from __future__ import annotations
 
 import enum
@@ -93,7 +79,7 @@ class ProofLayer(str, enum.Enum):
     """Which analysis layer resolved the return-carrier proof."""
 
     TOPOLOGY = "topology"
-    """From recon audit (has_rax_write field)."""
+    "From preanalysis audit (has_rax_write field)."
 
     SINGLE_PRED_WALK = "single_pred_walk"
     """Backward single-predecessor walk found a definition."""
@@ -577,20 +563,7 @@ def prove_terminal_returns(
     carrier_mreg: int = _DEFAULT_CARRIER_MREG,
     carrier_size: int = 8,
 ) -> TerminalReturnProofReport:
-    """Orchestrate layered proof for all terminal return handlers.
-
-    For each site in *audit_report*, run progressively heavier analysis
-    layers until one resolves or all are exhausted.
-
-    Args:
-        mba: An ``ida_hexrays.mba_t`` instance (or ``None`` for topology-only).
-        audit_report: The terminal return audit from recon.
-        carrier_mreg: Micro-register number for the return carrier (default: mr_rax=0).
-        carrier_size: Operand size in bytes for the return carrier (default: 8).
-
-    Returns:
-        A :class:`TerminalReturnProofReport` with per-handler proof results.
-    """
+    "Orchestrate layered proof for all terminal return handlers.\n\n    For each site in *audit_report*, run progressively heavier analysis\n    layers until one resolves or all are exhausted.\n\n    Args:\n        mba: An ``ida_hexrays.mba_t`` instance (or ``None`` for topology-only).\n        audit_report: The terminal return audit from preanalysis.\n        carrier_mreg: Micro-register number for the return carrier (default: mr_rax=0).\n        carrier_size: Operand size in bytes for the return carrier (default: 8).\n\n    Returns:\n        A :class:`TerminalReturnProofReport` with per-handler proof results.\n    "
     carrier_kind = f"mreg{carrier_mreg}.{carrier_size}"
     proofs: list[TerminalReturnValueProof] = []
 
@@ -618,18 +591,7 @@ def _prove_single_site(
     carrier_size: int,
     carrier_kind: str,
 ) -> TerminalReturnValueProof:
-    """Run the layered proof for a single terminal handler site.
-
-    Args:
-        mba: An ``ida_hexrays.mba_t`` instance (or ``None`` for topology-only).
-        site: A single audit site from the recon report.
-        carrier_mreg: Micro-register number for the return carrier.
-        carrier_size: Operand size in bytes.
-        carrier_kind: Human-readable carrier description.
-
-    Returns:
-        A :class:`TerminalReturnValueProof` for this handler.
-    """
+    "Run the layered proof for a single terminal handler site.\n\n    Args:\n        mba: An ``ida_hexrays.mba_t`` instance (or ``None`` for topology-only).\n        site: A single audit site from the preanalysis report.\n        carrier_mreg: Micro-register number for the return carrier.\n        carrier_size: Operand size in bytes.\n        carrier_kind: Human-readable carrier description.\n\n    Returns:\n        A :class:`TerminalReturnValueProof` for this handler.\n    "
     # --- Layer 1: Topology ---
     try:
         if (

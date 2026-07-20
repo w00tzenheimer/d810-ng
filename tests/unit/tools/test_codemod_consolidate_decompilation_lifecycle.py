@@ -323,14 +323,36 @@ def test_scan_anchors_implicit_string_residue_to_the_physical_literal_line(
     )
 
 
-def test_plain_text_inventory_is_never_rewritten_as_toml(tmp_path: Path) -> None:
+def test_plain_text_terminology_rewrite_is_not_toml_specific(tmp_path: Path) -> None:
     mod = _load_module()
     docs = tmp_path / "README.md"
     source = "d810-recon = historical command spelling\n"
     docs.write_text(source, encoding="utf-8")
 
-    assert mod._rewrite_candidates([docs]) == []
+    rewrites = mod._rewrite_candidates([docs])
+
+    assert len(rewrites) == 1
+    assert rewrites[0][1].text == (
+        "d810-preanalysis = historical command spelling\n"
+    )
     assert docs.read_text(encoding="utf-8") == source
+
+
+def test_rewrite_text_migrates_residual_modules_identifiers_comments_and_logs() -> None:
+    mod = _load_module()
+    source = (
+        "from d810.analyses.control_flow.recon_dag_index import build_index\n"
+        "# Recon collector uses recon_artifacts.\n"
+        "recon_artifacts = 'D810.recon.bootstrap'\n"
+    )
+
+    result = mod.rewrite_text(source)
+
+    assert result.text == (
+        "from d810.analyses.control_flow.preanalysis_dag_index import build_index\n"
+        "# Preanalysis collector uses preanalysis_artifacts.\n"
+        'preanalysis_artifacts = "D810.preanalysis.bootstrap"\n'
+    )
 
 
 def test_toml_inventory_and_rewrite_only_touch_console_script_key(
@@ -375,8 +397,8 @@ def test_scan_inventories_unknown_recon_apis_and_cli_names(tmp_path: Path) -> No
         (candidate.kind, candidate.detail, candidate.rewriteable)
         for candidate in candidates
     } >= {
-        ("residual-recon-api", "recon_orphan", False),
-        ("legacy-cli-name", "--recon-orphan", False),
+        ("residual-recon-api", "recon_orphan", True),
+        ("legacy-cli-name", "--recon-orphan", True),
     }
 
 
@@ -398,9 +420,9 @@ def test_scan_inventories_residual_recon_module_imports(tmp_path: Path) -> None:
         (
             "residual-recon-api",
             "d810.analyses.control_flow.recon_dag_index",
-            False,
+            True,
         ),
-        ("residual-recon-api", "d810.core.observability_recon", False),
+        ("residual-recon-api", "d810.core.observability_recon", True),
     }
 
 

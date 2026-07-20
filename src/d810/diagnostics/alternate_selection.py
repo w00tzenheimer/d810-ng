@@ -1,43 +1,4 @@
-"""Selector for ``state_cfg_edge_alternate_correlations`` rows.
-
-Resolves the ambiguity that the correlation substrate exposes when
-multiple alternate edges overlap a collapsed source.  The selector is
-**observability-only**: it produces a ``selected``/``rejected``
-decision per (collapsed_edge, alternate_edge) pair with a fact-backed
-reason; no recon edge target selection or HCC behavior depends on the
-output.
-
-Selection rule
---------------
-
-For a collapsed edge whose ``source_byte_index = N`` (cross-linked
-from ``TerminalByteEmitterFact.destination_block`` against the
-collapsed source's owned blocks):
-
-* Bounded BFS from the alternate's ``target_state`` through
-  ``state_cfg_edges``, depth ``<= 2``.
-* If any reachable state's owned blocks contain a
-  ``corridor_role = terminal_tail``
-  ``TerminalByteEmitterFact`` destination with ``byte_index > N``,
-  mark **selected** and record the reached byte_index + state.
-* Otherwise:
-  - if all reachable states from the alternate have only
-    ``CONDITIONAL_RETURN`` outgoing edges, mark **rejected** with
-    reason ``early_return_arm_no_later_terminal_tail``.
-  - otherwise mark **rejected** with reason ``no_later_terminal_tail_within_depth``.
-
-When the source has no derivable byte_index (no terminal_tail emit
-fact for the source's blocks), no selection is recorded -- the
-correlation row is preserved but no decision is made.
-
-Bounded BFS
------------
-
-Depth <= 2 means: the alternate's direct target state, then its
-direct successors.  Two hops is sufficient for the byte5 -> byte6
-case (target ``STATE_10743C4C`` -> ``STATE_6107F8EC`` is one hop).
-Recursive walking is explicitly out of scope.
-"""
+"Selector for ``state_cfg_edge_alternate_correlations`` rows.\n\nResolves the ambiguity that the correlation substrate exposes when\nmultiple alternate edges overlap a collapsed source.  The selector is\n**observability-only**: it produces a ``selected``/``rejected``\ndecision per (collapsed_edge, alternate_edge) pair with a fact-backed\nreason; no preanalysis edge target selection or HCC behavior depends on the\noutput.\n\nSelection rule\n--------------\n\nFor a collapsed edge whose ``source_byte_index = N`` (cross-linked\nfrom ``TerminalByteEmitterFact.destination_block`` against the\ncollapsed source's owned blocks):\n\n* Bounded BFS from the alternate's ``target_state`` through\n  ``state_cfg_edges``, depth ``<= 2``.\n* If any reachable state's owned blocks contain a\n  ``corridor_role = terminal_tail``\n  ``TerminalByteEmitterFact`` destination with ``byte_index > N``,\n  mark **selected** and record the reached byte_index + state.\n* Otherwise:\n  - if all reachable states from the alternate have only\n    ``CONDITIONAL_RETURN`` outgoing edges, mark **rejected** with\n    reason ``early_return_arm_no_later_terminal_tail``.\n  - otherwise mark **rejected** with reason ``no_later_terminal_tail_within_depth``.\n\nWhen the source has no derivable byte_index (no terminal_tail emit\nfact for the source's blocks), no selection is recorded -- the\ncorrelation row is preserved but no decision is made.\n\nBounded BFS\n-----------\n\nDepth <= 2 means: the alternate's direct target state, then its\ndirect successors.  Two hops is sufficient for the byte5 -> byte6\ncase (target ``STATE_10743C4C`` -> ``STATE_6107F8EC`` is one hop).\nRecursive walking is explicitly out of scope.\n"
 from __future__ import annotations
 
 import json

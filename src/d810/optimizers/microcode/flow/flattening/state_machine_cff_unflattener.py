@@ -112,7 +112,7 @@ from d810.core.observability_models import (
     DagNode as _DiagDagNode,
     Modification as _DiagModification,
 )
-from d810.core.observability_recon import (
+from d810.core.observability_preanalysis import (
     diagnostics_enabled as _preanalysis_diagnostics_enabled,
     observe_dag,
     observe_dag_local_facts,
@@ -743,7 +743,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             valrange_confirmable,
         )
         # Diag DB: publish the unflatten structural analysis so the SQLite diag tables are not blind to
-        # this path (the legacy recon instrumentation does not run under the flag). llr-6dq7.
+        # this path (the legacy preanalysis instrumentation does not run under the flag). llr-6dq7.
         self._publish_unflat_diagnostics(
             mba, source, rec, tr, regions, fact_view, range_evidence, capabilities
         )
@@ -1908,18 +1908,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
     def _publish_unflat_diagnostics(
         self, mba, source, rec, tr, regions, fact_view, range_evidence=None, capabilities=None
     ) -> None:
-        """Populate the structured diag tables for the unflatten path (otherwise blind under the flag).
-
-        Two tiers:
-        * ``state_dispatcher_rows`` -- keyed by func_ea + maturity, no snapshot ref; mirrors the
-          backend's ``_observe_state_dispatcher_map``. Published whenever a recon subscriber exists.
-        * ``block_classification`` / ``dag_edges`` / ``modifications`` -- snapshot-correlated, so they
-          need a capture snapshot. We capture from the portable ``source.flow_graph`` (the stable,
-          already-lifted graph the analyses ran on -- NOT the live mid-pipeline mba, which trips
-          ``snapshot_mba``) and rebuild the DAG/plan here. The rebuild is GATED on an installed
-          capture subscriber, so it only runs under ``--full-diagnostics``; production decompilation
-          never pays for it. Best-effort: any failure degrades to a debug log, never breaks optimize.
-        """
+        "Populate the structured diag tables for the unflatten path (otherwise blind under the flag).\n\n        Two tiers:\n        * ``state_dispatcher_rows`` -- keyed by func_ea + maturity, no snapshot ref; mirrors the\n          backend's ``_observe_state_dispatcher_map``. Published whenever a preanalysis subscriber exists.\n        * ``block_classification`` / ``dag_edges`` / ``modifications`` -- snapshot-correlated, so they\n          need a capture snapshot. We capture from the portable ``source.flow_graph`` (the stable,\n          already-lifted graph the analyses ran on -- NOT the live mid-pipeline mba, which trips\n          ``snapshot_mba``) and rebuild the DAG/plan here. The rebuild is GATED on an installed\n          capture subscriber, so it only runs under ``--full-diagnostics``; production decompilation\n          never pays for it. Best-effort: any failure degrades to a debug log, never breaks optimize.\n        "
         func_ea = int(getattr(mba, "entry_ea", 0) or 0)
         maturity = maturity_to_string(int(getattr(mba, "maturity", -1) or -1))
         dmap = getattr(rec, "dispatch_map", None) if rec is not None else None

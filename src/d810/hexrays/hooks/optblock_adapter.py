@@ -13,12 +13,10 @@ from d810.hexrays.hooks.optimization_suppression import (
 )
 
 from d810.core import getLogger, typing
+from d810.core.decompilation_session import DecompilationEvent
 from d810.core.rule_scope import PIPELINE_FLOW
 from d810.errors import D810Exception
-from d810.hexrays.lifecycle import (
-    DecompilationEvent,
-    _emit_flowgraph_ready_event,
-)
+from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
 from d810.hexrays.mutation.return_carrier_corruption import (
     snapshot_return_reg_consumer_def_eas,
@@ -81,9 +79,12 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._generation: int = 0
         self._flow_context: FlowMaturityContext | None = None
         self._flow_context_key: tuple[int, int] | None = None
-        # Optional ReconAnalysisRuntime - set via configure(recon_runtime=...).
-        # It supplies optimizer-local validated facts and outcome sinks.
-        self._analysis_runtime = None  # ReconAnalysisRuntime | None
+        # Narrow manager-owned evidence and outcome ports.
+        self._validated_fact_view_provider = None
+        self._fact_consumer_callback = None
+        self._flow_context_summary_provider = None
+        self._planner_outcome_callback = None
+        self._flow_gate_outcome_callback = None
         # Manager-owned lifecycle port for session reset, capture, analysis,
         # and rule-scope hint delivery.
         self._decompilation_lifecycle = None
@@ -432,7 +433,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # Axis-C end-state event (E1): mirror the
             # ``InstructionOptimizerManager`` site -- emit
             # ``FLOWGRAPH_READY`` so the cross-layer event lands at
-            # every existing recon-collection lifecycle point.  When
+            # every existing preanalysis-collection lifecycle point.  When
             # E4 swaps the live-mba ``run_microcode_collectors(...)``
             # path for ``FLOWGRAPH_READY`` subscribers, neither
             # manager silently drops out of the chain.
@@ -563,7 +564,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     source="analyzed",
                 )
 
-            self._run_glbopt1_recon_backed_extensions(mba)
+            self._run_glbopt1_preanalysis_backed_extensions(mba)
 
             # PassPipeline: fire once at MMAT_GLBOPT2, after the unflattener
             # has already run at MMAT_GLBOPT1.  Runs at most once per maturity
@@ -700,11 +701,18 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
             self._flow_context_key = key
             self._attach_hint_summary(self._flow_context)
-            if self._analysis_runtime is not None:
+            if (
+                self._planner_outcome_callback is not None
+                or self._flow_gate_outcome_callback is not None
+            ):
                 self._flow_context.set_outcome_callback(self._record_flow_outcome)
+            if (
+                self._validated_fact_view_provider is not None
+                or self._fact_consumer_callback is not None
+            ):
                 self._flow_context.set_fact_lifecycle_callbacks(
-                    view_provider=self._analysis_runtime.validated_fact_view,
-                    consumer_callback=self._analysis_runtime.record_fact_consumers,
+                    view_provider=self._validated_fact_view_provider,
+                    consumer_callback=self._fact_consumer_callback,
                 )
             # v2 (d81-fzlo): capture the pre-fold rax-family consumer DEF EAs ONCE
             # per (func, GLBOPT1), here in the create-branch where the mba is still
@@ -806,10 +814,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             set_state(None)
 
     def _attach_hint_summary(self, flow_context: FlowMaturityContext) -> None:
-        """Derive and attach a hint summary from the recon store if available."""
-        if self._analysis_runtime is None:
+        """Derive and attach a persisted hint summary when available."""
+        provider = self._flow_context_summary_provider
+        if not callable(provider):
             return
-        summary = self._analysis_runtime.load_flow_context_summary(flow_context.func_ea)
+        summary = provider(flow_context.func_ea)
         if summary is None:
             return
         flow_context.set_hint_summary(summary)
@@ -828,17 +837,19 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self, func_ea: int, outcome_object: object, consumer_type: str,
     ) -> None:
         """Callback for flow-context rules to record outcomes."""
-        if self._analysis_runtime is None:
-            return
         if consumer_type == "planner":
-            self._analysis_runtime.record_planner_outcome(func_ea, outcome_object)
+            callback = self._planner_outcome_callback
+            if callable(callback):
+                callback(func_ea, outcome_object)
         else:
             if consumer_type not in self._KNOWN_GATE_TYPES:
                 optimizer_logger.warning(
                     "_record_flow_outcome: unknown consumer_type=%r for func=0x%x",
                     consumer_type, func_ea,
                 )
-            self._analysis_runtime.record_flow_gate_outcome(func_ea, outcome_object, gate_name=consumer_type)
+            callback = self._flow_gate_outcome_callback
+            if callable(callback):
+                callback(func_ea, outcome_object, gate_name=consumer_type)
 
     def _record_run_later_requests(
         self,
@@ -1074,15 +1085,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
         return len(applied)
 
-    def _run_glbopt1_recon_backed_extensions(self, mba: ida_hexrays.mba_t) -> None:
-        """Run whole-function GLBOPT1 rewrites that consume recon evidence.
-
-        This is intentionally not a normal ``FlowOptimizationRule`` callback:
-        terminal-tail egress consumes whole-function facts emitted by
-        ``FLOWGRAPH_READY`` / ``analyze_and_persist`` above and then mutates
-        multiple blocks. Running it at the next maturity is too late because
-        IDA may already have collapsed the CFG shape that those facts describe.
-        """
+    def _run_glbopt1_preanalysis_backed_extensions(self, mba: ida_hexrays.mba_t) -> None:
+        "Run whole-function GLBOPT1 rewrites that consume preanalysis evidence.\n\n        This is intentionally not a normal ``FlowOptimizationRule`` callback:\n        terminal-tail egress consumes whole-function facts emitted by\n        ``FLOWGRAPH_READY`` / ``analyze_and_persist`` above and then mutates\n        multiple blocks. Running it at the next maturity is too late because\n        IDA may already have collapsed the CFG shape that those facts describe.\n        "
         terminal_tail_patch_count = (
             self._maybe_run_terminal_tail_cascade_egress_lowering(mba)
         )
@@ -1138,9 +1142,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         )
 
         fact_view = None
-        if self._analysis_runtime is not None:
+        if callable(self._validated_fact_view_provider):
             try:
-                fact_view = self._analysis_runtime.validated_fact_view(
+                fact_view = self._validated_fact_view_provider(
                     func_ea,
                     current_maturity_name,
                 )
@@ -1157,8 +1161,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 ensure_terminal_byte_fact_view,
                 get_latest_reconstruction_dag,
             )
-            from d810.analyses.control_flow.persisted_recon_dag import (
-                get_persisted_recon_dag,
+            from d810.analyses.control_flow.persisted_preanalysis_dag import (
+                get_persisted_preanalysis_dag,
             )
             from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
                 maybe_run_terminal_tail_cascade_egress_lowering,
@@ -1173,7 +1177,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
             dag = get_latest_reconstruction_dag(func_ea)
             if dag is None:
-                dag = get_persisted_recon_dag(func_ea)
+                dag = get_persisted_preanalysis_dag(func_ea)
             applied = maybe_run_terminal_tail_cascade_egress_lowering(
                 mba,
                 fact_view=fact_view,
@@ -1244,7 +1248,26 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     def configure(self, **kwargs):
         if "project_name" in kwargs or any(key in kwargs for key in _PROJECT_CONFIG_KEYS):
             self._project_config = self._extract_project_config(kwargs)
-        self._analysis_runtime = kwargs.get("analysis_runtime", self._analysis_runtime)
+        self._validated_fact_view_provider = kwargs.get(
+            "validated_fact_view_provider",
+            self._validated_fact_view_provider,
+        )
+        self._fact_consumer_callback = kwargs.get(
+            "fact_consumer_callback",
+            self._fact_consumer_callback,
+        )
+        self._flow_context_summary_provider = kwargs.get(
+            "flow_context_summary_provider",
+            self._flow_context_summary_provider,
+        )
+        self._planner_outcome_callback = kwargs.get(
+            "planner_outcome_callback",
+            self._planner_outcome_callback,
+        )
+        self._flow_gate_outcome_callback = kwargs.get(
+            "flow_gate_outcome_callback",
+            self._flow_gate_outcome_callback,
+        )
         self._decompilation_lifecycle = kwargs.get(
             "decompilation_lifecycle",
             self._decompilation_lifecycle,

@@ -1,31 +1,4 @@
-"""Live Hex-Rays microcode capture — portable record producer.
-
-This module is the LIVE-CAPTURE half of the legacy
-``d810.recon.microcode_dump`` tool.  It walks live Hex-Rays ``mba_t``
-/ ``mblock_t`` / ``mop_t`` objects and emits backend-neutral dict
-records (and the matching JSON serialization wrappers).  It is a
-direct port: same function bodies, same dict schema, same operand /
-opcode / maturity name lookups.
-
-History of the ``microcode_dump`` split (now complete):
-
-* The original home ``d810.recon.microcode_dump`` was a layer-misfit
-  per the LLVM/LiSA taxonomy: a live-IDA diagnostic placed in a layer
-  that must be portable-core.  Live capture belongs in a Hex-Rays
-  adapter; anything that imports recon / evaluator cannot live below
-  them.
-* This module hosts the live-capture half -- the functions whose
-  import surface is ``idaapi`` plus the central
-  ``d810.hexrays.utils.hexrays_helpers`` opcode / mop / maturity
-  tables.  No recon, no evaluator, no optimizer imports.
-* The render half (``mba_to_human_readable`` + ``_print_*`` helpers)
-  and the analysis-overlay half (dispatcher / DAG / state-machine
-  dumpers) now live in ``d810.backends.hexrays.evidence.microcode_dump``
-  (they need recon / evaluator imports, legal from the optimizer
-  layer).  The legacy ``d810.recon.microcode_dump`` module no longer
-  exists -- recon is now Hex-Rays-free, enforced by the
-  ``portable-core-no-ida`` import contract.
-"""
+"Live Hex-Rays microcode capture \u2014 portable record producer.\n\nThis module is the LIVE-CAPTURE half of the legacy\n``d810.preanalysis.microcode_dump`` tool.  It walks live Hex-Rays ``mba_t``\n/ ``mblock_t`` / ``mop_t`` objects and emits backend-neutral dict\nrecords (and the matching JSON serialization wrappers).  It is a\ndirect port: same function bodies, same dict schema, same operand /\nopcode / maturity name lookups.\n\nHistory of the ``microcode_dump`` split (now complete):\n\n* The original home ``d810.preanalysis.microcode_dump`` was a layer-misfit\n  per the LLVM/LiSA taxonomy: a live-IDA diagnostic placed in a layer\n  that must be portable-core.  Live capture belongs in a Hex-Rays\n  adapter; anything that imports preanalysis / evaluator cannot live below\n  them.\n* This module hosts the live-capture half -- the functions whose\n  import surface is ``idaapi`` plus the central\n  ``d810.hexrays.utils.hexrays_helpers`` opcode / mop / maturity\n  tables.  No preanalysis, no evaluator, no optimizer imports.\n* The render half (``mba_to_human_readable`` + ``_print_*`` helpers)\n  and the analysis-overlay half (dispatcher / DAG / state-machine\n  dumpers) now live in ``d810.backends.hexrays.evidence.microcode_dump``\n  (they need preanalysis / evaluator imports, legal from the optimizer\n  layer).  The legacy ``d810.preanalysis.microcode_dump`` module no longer\n  exists -- preanalysis is now Hex-Rays-free, enforced by the\n  ``portable-core-no-ida`` import contract.\n"
 
 from __future__ import annotations
 

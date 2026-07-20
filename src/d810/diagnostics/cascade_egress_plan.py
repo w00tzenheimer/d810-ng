@@ -118,19 +118,7 @@ def _diag_block_state_views(
 
 
 def choose_fact_snapshot(conn: sqlite3.Connection) -> int:
-    """Pick the snapshot that holds the ``TerminalByteEmitterFact`` rows.
-
-    Preference order:
-
-    1. Most recent ``MMAT_GLBOPT1 / pre_d810`` snapshot with at least one
-       ``TerminalByteEmitterFact`` row -- this is the recon collector's
-       expected fire site.
-    2. Fall back to the most recent snapshot of any maturity / phase that
-       has TerminalByteEmitterFact rows.
-
-    Raises :class:`LookupError` when no fact rows exist at all (callers
-    surface this as a CLI error rather than crashing the parser).
-    """
+    "Pick the snapshot that holds the ``TerminalByteEmitterFact`` rows.\n\n    Preference order:\n\n    1. Most recent ``MMAT_GLBOPT1 / pre_d810`` snapshot with at least one\n       ``TerminalByteEmitterFact`` row -- this is the preanalysis collector's\n       expected fire site.\n    2. Fall back to the most recent snapshot of any maturity / phase that\n       has TerminalByteEmitterFact rows.\n\n    Raises :class:`LookupError` when no fact rows exist at all (callers\n    surface this as a CLI error rather than crashing the parser).\n    "
     # raw-SQL: GROUP BY snapshot over a fact/snapshot JOIN with a multi-
     # predicate maturity/phase gate, latest-first; a grouped latest-with-
     # fact probe reads more clearly as SQL (§3 complex-SQL policy).

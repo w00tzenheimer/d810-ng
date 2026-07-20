@@ -23,7 +23,7 @@ Scope (E1 only):
 from __future__ import annotations
 
 from d810.core.events import EventEmitter
-from d810.hexrays.lifecycle import DecompilationEvent
+from d810.core.decompilation_session import DecompilationEvent
 
 
 class TestDecompilationEventValues:
@@ -139,13 +139,7 @@ class TestFlowGraphReadyPayloadShape:
         assert payload["producer_stage_name"] == "MMAT_GLBOPT1"
 
     def test_payload_does_not_carry_mba(self) -> None:
-        """``mba_t`` MUST NOT cross the cross-layer event boundary.
-        E1's contract is: portable payloads only.  Future axis-C
-        slices subscribe recon-side; recon must not receive a live
-        ``mba``.  This test pins the contract by inspecting the
-        keyword names the producer site uses (see the
-        ``BlockOptimizerManager`` maturity gate in
-        ``hexrays_hooks.py``)."""
+        "``mba_t`` MUST NOT cross the cross-layer event boundary.\n        E1's contract is: portable payloads only.  Future axis-C\n        slices subscribe preanalysis-side; preanalysis must not receive a live\n        ``mba``.  This test pins the contract by inspecting the\n        keyword names the producer site uses (see the\n        ``BlockOptimizerManager`` maturity gate in\n        ``hexrays_hooks.py``)."
         # Inspect the actual producer call: the emit site uses these
         # four kwargs.  If a future edit adds ``mba=...`` to the emit,
         # this test catches it by failing the keyword-set assertion
@@ -240,7 +234,8 @@ class TestProducerHelper:
         an alternate convention)."""
         from d810.core.events import EventEmitter
         from d810.hexrays import lifecycle
-        from d810.hexrays.lifecycle import DecompilationEvent, _emit_flowgraph_ready_event
+        from d810.core.decompilation_session import DecompilationEvent
+        from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 
         sentinel_flow_graph = self._fake_flow_graph(
             func_ea=0x140002000,
@@ -294,7 +289,8 @@ class TestProducerHelper:
         four-key payload."""
         from d810.core.events import EventEmitter
         from d810.hexrays import lifecycle
-        from d810.hexrays.lifecycle import DecompilationEvent, _emit_flowgraph_ready_event
+        from d810.core.decompilation_session import DecompilationEvent
+        from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 
         sentinel_flow_graph = self._fake_flow_graph()
         monkeypatch.setattr(
@@ -348,7 +344,8 @@ class TestProducerHelper:
         metadata through, this test catches the drift."""
         from d810.core.events import EventEmitter
         from d810.hexrays import lifecycle
-        from d810.hexrays.lifecycle import DecompilationEvent, _emit_flowgraph_ready_event
+        from d810.core.decompilation_session import DecompilationEvent
+        from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 
         # Deliberately uncommon maturity name and arch so we can
         # detect any code that hard-codes ``maturity_to_string(...)``
@@ -420,7 +417,8 @@ class TestProducerHelper:
         event is suppressed for that one transition."""
         from d810.core.events import EventEmitter
         from d810.hexrays import lifecycle
-        from d810.hexrays.lifecycle import DecompilationEvent, _emit_flowgraph_ready_event
+        from d810.core.decompilation_session import DecompilationEvent
+        from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 
         def failing_lift(mba):
             raise RuntimeError("simulated lift failure")
@@ -445,13 +443,7 @@ class TestProducerHelper:
         assert received == []
 
     def test_both_managers_invoke_helper(self, monkeypatch) -> None:
-        """Architectural regression cover for the P1 review finding:
-        BOTH ``InstructionOptimizerManager`` and
-        ``BlockOptimizerManager`` must invoke
-        ``_emit_flowgraph_ready_event`` at their maturity gates.
-        If a future edit silently removes the call from one manager,
-        ``FLOWGRAPH_READY`` would only fire from the other and E4's
-        consumer rewire would lose a recon collection point."""
+        "Architectural regression cover for the P1 review finding:\n        BOTH ``InstructionOptimizerManager`` and\n        ``BlockOptimizerManager`` must invoke\n        ``_emit_flowgraph_ready_event`` at their maturity gates.\n        If a future edit silently removes the call from one manager,\n        ``FLOWGRAPH_READY`` would only fire from the other and E4's\n        consumer rewire would lose a preanalysis collection point."
         import inspect
 
         from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager

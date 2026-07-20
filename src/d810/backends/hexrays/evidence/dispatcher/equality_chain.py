@@ -120,14 +120,7 @@ class _MopView:
 
 
 def _mop_snapshot_from_view(view: _MopView | None) -> MopSnapshot | None:
-    """Materialize a normalized ``_MopView`` into a frozen ``MopSnapshot``.
-
-    The ``_MopView`` already normalizes the raw Hex-Rays operand into portable
-    fields (``kind`` / ``size`` / ``value`` / ``stkoff`` / ``reg`` /
-    ``block_ref`` / ``gaddr`` / ``lvar_off``); copying them onto a real
-    ``MopSnapshot`` lets the canonical recon extractor read operands through
-    ``operand_storages`` / ``project_instruction`` instead of raw operand slots.
-    """
+    "Materialize a normalized ``_MopView`` into a frozen ``MopSnapshot``.\n\n    The ``_MopView`` already normalizes the raw Hex-Rays operand into portable\n    fields (``kind`` / ``size`` / ``value`` / ``stkoff`` / ``reg`` /\n    ``block_ref`` / ``gaddr`` / ``lvar_off``); copying them onto a real\n    ``MopSnapshot`` lets the canonical preanalysis extractor read operands through\n    ``operand_storages`` / ``project_instruction`` instead of raw operand slots.\n    "
     if view is None:
         return None
     kind = view.kind
@@ -152,17 +145,7 @@ def _insn_snapshot_from_live(
     opcode_names: Mapping[int, str],
     mop_type_names: Mapping[int, str],
 ) -> InsnSnapshot:
-    """Build a portable ``InsnSnapshot`` from one live microcode instruction.
-
-    The raw opcode / operand types are normalized through the same
-    ``opcode_names`` / ``mop_type_names`` maps the legacy views used, then the
-    portable semantic ``kind`` / ``predicate_kind`` and the ``l`` / ``r`` / ``d``
-    ``MopSnapshot`` operands are stamped onto a real ``InsnSnapshot``.  The
-    canonical projection infers ``control_transfer_kind`` (CONDITIONAL_BRANCH for
-    the equality-jump ``kind``) so the recon extractor's
-    ``project_instruction`` reads of ``control.target`` / ``control.predicate``
-    resolve.
-    """
+    "Build a portable ``InsnSnapshot`` from one live microcode instruction.\n\n    The raw opcode / operand types are normalized through the same\n    ``opcode_names`` / ``mop_type_names`` maps the legacy views used, then the\n    portable semantic ``kind`` / ``predicate_kind`` and the ``l`` / ``r`` / ``d``\n    ``MopSnapshot`` operands are stamped onto a real ``InsnSnapshot``.  The\n    canonical projection infers ``control_transfer_kind`` (CONDITIONAL_BRANCH for\n    the equality-jump ``kind``) so the preanalysis extractor's\n    ``project_instruction`` reads of ``control.target`` / ``control.predicate``\n    resolve.\n    "
     raw_opcode = getattr(insn, "opcode", None)
     try:
         opcode_name = opcode_names.get(int(raw_opcode), raw_opcode)
@@ -346,7 +329,7 @@ def _observe_state_dispatcher_map(
 ) -> None:
     """Publish equality-chain rows for the diag DB when observability is on."""
     try:
-        from d810.core.observability_recon import observe_state_dispatcher_rows
+        from d810.core.observability_preanalysis import observe_state_dispatcher_rows
 
         observe_state_dispatcher_rows(
             func_ea=int(getattr(mba, "entry_ea", 0) or 0),

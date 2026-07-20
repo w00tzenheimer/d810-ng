@@ -114,12 +114,12 @@ def log_sccs(sccs: tuple[StateSCC, ...]) -> None:
     cyclic = [s for s in sccs if s.is_cyclic]
     if not cyclic:
         return
-    logger.info("recon SCC: %d cyclic component(s)", len(cyclic))
+    logger.info("preanalysis SCC: %d cyclic component(s)", len(cyclic))
     for s in cyclic:
         sample_states = ", ".join(f"0x{x:08X}" for x in sorted(s.states)[:8])
         more = "..." if len(s.states) > 8 else ""
         logger.info(
-            "recon SCC: cycle id=%d size=%d states=[%s%s]%s",
+            "preanalysis SCC: cycle id=%d size=%d states=[%s%s]%s",
             s.scc_id,
             len(s.states),
             sample_states,

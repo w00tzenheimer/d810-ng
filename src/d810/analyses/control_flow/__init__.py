@@ -1,17 +1,1 @@
-"""Portable control-flow graph algorithms (LLVM / LiSA-style).
-
-``d810.analyses.control_flow`` hosts backend-neutral CFG analyses:
-dominators, reachability, SESE regions, and the state-machine / dispatcher
-recognition graph algorithms relocated out of the dissolved recon-flow package
-(condition-chain interval maps, route-node models, snapshot-only topology
-helpers).
-
-Portable-core layer: no live IDA / Hex-Rays imports, no vendor mutation
-surfaces (enforced by the ``portable-core-*`` import-linter contracts and
-the ``no-*-in-portable-core`` ast-grep rules).  Hex-Rays evidence walkers
-that duck-type live ``mba``/``mop`` objects belong in
-``d810.backends.hexrays.evidence``, not here.
-
-See ``docs/plans/recon-and-cfg-restructuring.md`` (Suggested Landing
-Sequence, step 6) and the migration playbook for the relocation slice.
-"""
+"Portable control-flow graph algorithms (LLVM / LiSA-style).\n\n``d810.analyses.control_flow`` hosts backend-neutral CFG analyses:\ndominators, reachability, SESE regions, and the state-machine / dispatcher\nrecognition graph algorithms relocated out of the dissolved preanalysis-flow package\n(condition-chain interval maps, route-node models, snapshot-only topology\nhelpers).\n\nPortable-core layer: no live IDA / Hex-Rays imports, no vendor mutation\nsurfaces (enforced by the ``portable-core-*`` import-linter contracts and\nthe ``no-*-in-portable-core`` ast-grep rules).  Hex-Rays evidence walkers\nthat duck-type live ``mba``/``mop`` objects belong in\n``d810.backends.hexrays.evidence``, not here.\n\nSee ``docs/plans/preanalysis-and-cfg-restructuring.md`` (Suggested Landing\nSequence, step 6) and the migration playbook for the relocation slice.\n"

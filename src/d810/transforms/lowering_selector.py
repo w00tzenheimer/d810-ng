@@ -211,7 +211,7 @@ class PredecessorPeelContext:
 
 @dataclass(frozen=True, slots=True)
 class SharedFeederContext:
-    """Structured recon -> cfg handoff for shared-feeder lowering selection."""
+    "Structured preanalysis -> cfg handoff for shared-feeder lowering selection."
 
     source_serial: int
     source_pred_count: int

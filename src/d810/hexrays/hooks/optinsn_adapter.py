@@ -11,13 +11,11 @@ from d810.hexrays.hooks.optimization_suppression import (
 
 from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
+from d810.core.decompilation_session import DecompilationEvent
 from d810.core.rule_scope import PIPELINE_INSTRUCTION
 from d810.errors import D810Exception
 from d810.hexrays.ir.minsn_utils import build_z3_equivalence_proof
-from d810.hexrays.lifecycle import (
-    DecompilationEvent,
-    _emit_flowgraph_ready_event,
-)
+from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import (

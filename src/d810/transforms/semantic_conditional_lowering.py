@@ -1,11 +1,4 @@
-"""Backend-neutral exact conditional site analysis.
-
-This module classifies conditional semantic-DAG sites that are safe to lower as
-small SESE-style hammocks.  It deliberately accepts DAG-like objects from the
-caller instead of importing recon models, and it does not touch live Hex-Rays
-objects.  Hodur remains responsible for strategy ordering, logging policy, and
-materializing any returned sites into backend-specific modifications.
-"""
+"Backend-neutral exact conditional site analysis.\n\nThis module classifies conditional semantic-DAG sites that are safe to lower as\nsmall SESE-style hammocks.  It deliberately accepts DAG-like objects from the\ncaller instead of importing preanalysis models, and it does not touch live Hex-Rays\nobjects.  Hodur remains responsible for strategy ordering, logging policy, and\nmaterializing any returned sites into backend-specific modifications.\n"
 from __future__ import annotations
 
 from dataclasses import dataclass, replace

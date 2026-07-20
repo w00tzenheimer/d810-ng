@@ -1,15 +1,4 @@
-"""Unit tests for ``python -m d810.diagnostics residual-worksheet``.
-
-Covers:
-
-- pure helpers (``parse_int``, ``_normalize_maturity_name``, ``_collapse``,
-  ``_truncate``, ``_unique_preserve_order``, ``parse_residual_log_events``)
-- feeder-block selection (``detect_feeder_blocks``, ``_bfs_reachable``)
-- end-to-end ``build_residual_dispatcher_worksheet`` on a synthetic
-  SQLite fixture (no recon DB, no log) and the rendered Markdown / JSON
-  output
-- the CLI: ``--list-snapshots``, missing diag DB, end-to-end Markdown
-"""
+"Unit tests for ``python -m d810.diagnostics residual-worksheet``.\n\nCovers:\n\n- pure helpers (``parse_int``, ``_normalize_maturity_name``, ``_collapse``,\n  ``_truncate``, ``_unique_preserve_order``, ``parse_residual_log_events``)\n- feeder-block selection (``detect_feeder_blocks``, ``_bfs_reachable``)\n- end-to-end ``build_residual_dispatcher_worksheet`` on a synthetic\n  SQLite fixture (no preanalysis DB, no log) and the rendered Markdown / JSON\n  output\n- the CLI: ``--list-snapshots``, missing diag DB, end-to-end Markdown\n"
 from __future__ import annotations
 
 import json

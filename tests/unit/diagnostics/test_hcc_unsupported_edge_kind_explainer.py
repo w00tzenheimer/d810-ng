@@ -69,7 +69,7 @@ def _row(
 # ---------------------------------------------------------------------------
 
 
-def test_allowed_edge_kinds_match_check_in_recon_builder():
+def test_allowed_edge_kinds_match_check_in_preanalysis_builder():
     """Allowed kinds must match SemanticEdgeKind.{TRANSITION,CONDITIONAL_TRANSITION}.
 
     Update this test together with the rejection check in
@@ -79,7 +79,7 @@ def test_allowed_edge_kinds_match_check_in_recon_builder():
     assert ALLOWED_EDGE_KINDS == {"TRANSITION", "CONDITIONAL_TRANSITION"}
 
 
-def test_rejection_check_label_points_at_recon_builder():
+def test_rejection_check_label_points_at_preanalysis_builder():
     assert "reconstruction_candidate_builder" in REJECTION_CHECK_LABEL
     assert "build_reconstruction_candidate" in REJECTION_CHECK_LABEL
 

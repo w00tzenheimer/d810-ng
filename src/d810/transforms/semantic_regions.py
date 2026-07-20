@@ -1,21 +1,4 @@
-"""Plan semantic regions over a portable FlowGraph (unflatten pass #3) — LLVM RegionInfo style.
-
-This is the ``RegionInfo`` analog: detect maximal **linear** (single-entry / single-exit) handler
-chains in the recon state DAG. A region is ``state_0 -> state_1 -> ... -> state_n`` where each node
-has exactly one outgoing transition and the next exactly one incoming — the LLVM SESE region
-specialised to straight-line chains.
-
-It is a pure composition of already-portable analyses (no extraction from the live composer needed):
-
-* ``build_live_linearized_state_dag_from_graph`` (portable; ``mba`` is optional) builds the DAG from
-  the FlowGraph + the resolved transitions;
-* ``detect_linear_transition_regions`` finds the maximal linear regions.
-
-The two analysis dependencies are the LLVM ``AnalysisManager.getResult`` inputs: ``transition_result``
-from pass #2 (``resolve_state_transitions``) and ``dispatcher_entry_serial`` / ``state_var_stkoff``
-from pass #1 (``recover_dispatcher``). Until the driver threads those through the AnalysisManager they
-default to ``None`` and the plan is empty (no dispatcher info -> no regions).
-"""
+"Plan semantic regions over a portable FlowGraph (unflatten pass #3) \u2014 LLVM RegionInfo style.\n\nThis is the ``RegionInfo`` analog: detect maximal **linear** (single-entry / single-exit) handler\nchains in the preanalysis state DAG. A region is ``state_0 -> state_1 -> ... -> state_n`` where each node\nhas exactly one outgoing transition and the next exactly one incoming \u2014 the LLVM SESE region\nspecialised to straight-line chains.\n\nIt is a pure composition of already-portable analyses (no extraction from the live composer needed):\n\n* ``build_live_linearized_state_dag_from_graph`` (portable; ``mba`` is optional) builds the DAG from\n  the FlowGraph + the resolved transitions;\n* ``detect_linear_transition_regions`` finds the maximal linear regions.\n\nThe two analysis dependencies are the LLVM ``AnalysisManager.getResult`` inputs: ``transition_result``\nfrom pass #2 (``resolve_state_transitions``) and ``dispatcher_entry_serial`` / ``state_var_stkoff``\nfrom pass #1 (``recover_dispatcher``). Until the driver threads those through the AnalysisManager they\ndefault to ``None`` and the plan is empty (no dispatcher info -> no regions).\n"
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -36,11 +19,7 @@ logger = logging.getLogger("D810.unflat.regions")
 
 @dataclass(frozen=True, slots=True)
 class SemanticRegionPlan:
-    """Maximal linear handler chains discovered over the recon DAG.
-
-    Each region is the ordered tuple of handler block serials forming one straight-line chain
-    (LLVM RegionInfo SESE-linear region).
-    """
+    "Maximal linear handler chains discovered over the preanalysis DAG.\n\n    Each region is the ordered tuple of handler block serials forming one straight-line chain\n    (LLVM RegionInfo SESE-linear region).\n    "
 
     linear_regions: tuple[tuple[int, ...], ...] = ()
 

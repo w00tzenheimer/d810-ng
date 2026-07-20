@@ -3603,7 +3603,7 @@ def _rewrite_terminal_zero_guard_literal_return_edges(
     adapter,
     literal_values: Iterable[int],
 ) -> tuple[tuple[int, int, int], ...]:
-    """Rewrite residual zero-guard return arms once recon proved a literal."""
+    "Rewrite residual zero-guard return arms once preanalysis proved a literal."
     literals = tuple(
         dict.fromkeys(
             int(value) & 0xFFFFFFFFFFFFFFFF for value in literal_values

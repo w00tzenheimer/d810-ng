@@ -1,35 +1,4 @@
-"""Classify CFG back-edges as real-loop iteration vs spurious round-trip.
-
-Companion to ``d810.analyses.control_flow.scc``: SCCs identify cycles, this module
-classifies the cycle-closing edges.
-
-Definitions
------------
-A back-edge ``(src, tgt)`` in a strongly-connected component is
-**real-loop** when ``src`` mutates a variable that ``tgt`` reads in its
-tail predicate. The mutation is the iteration update; the read is the
-loop test. This is what compilers emit for ``while``/``for``/``do-while``.
-
-A back-edge is **spurious** when no overlap exists. The cycle is closing
-but no iteration is happening — typical of OLLVM dispatcher state-machine
-residue that survived recon-DAG-level unflattening: a "redo with new
-state" jump where ``src`` does not actually change anything ``tgt`` tests.
-
-The classifier is **strictly local** — it compares ``src``'s writes to
-``tgt``'s predicate read-set without walking the full SCC. This keeps the
-algorithm O(1) per edge and pure-Python. Multi-step write chains
-(e.g. ``A`` writes carrier, ``A → B → tgt`` and ``B`` is the back-edge
-source) are intentionally classified as ``UNKNOWN`` and left to a
-downstream pass that does full reaching-def analysis.
-
-Token convention
-----------------
-Variables are represented as ``%var_HEX`` strings, matching the
-``dstr`` rendering used by ``loop_carrier.py``. The
-``parse_var_tokens(text)`` helper extracts them from a ``dstr``-like
-string. Consumers that have access to typed operands can populate the
-write/read maps directly without going through the regex helper.
-"""
+"Classify CFG back-edges as real-loop iteration vs spurious round-trip.\n\nCompanion to ``d810.analyses.control_flow.scc``: SCCs identify cycles, this module\nclassifies the cycle-closing edges.\n\nDefinitions\n-----------\nA back-edge ``(src, tgt)`` in a strongly-connected component is\n**real-loop** when ``src`` mutates a variable that ``tgt`` reads in its\ntail predicate. The mutation is the iteration update; the read is the\nloop test. This is what compilers emit for ``while``/``for``/``do-while``.\n\nA back-edge is **spurious** when no overlap exists. The cycle is closing\nbut no iteration is happening \u2014 typical of OLLVM dispatcher state-machine\nresidue that survived preanalysis-DAG-level unflattening: a \"redo with new\nstate\" jump where ``src`` does not actually change anything ``tgt`` tests.\n\nThe classifier is **strictly local** \u2014 it compares ``src``'s writes to\n``tgt``'s predicate read-set without walking the full SCC. This keeps the\nalgorithm O(1) per edge and pure-Python. Multi-step write chains\n(e.g. ``A`` writes carrier, ``A \u2192 B \u2192 tgt`` and ``B`` is the back-edge\nsource) are intentionally classified as ``UNKNOWN`` and left to a\ndownstream pass that does full reaching-def analysis.\n\nToken convention\n----------------\nVariables are represented as ``%var_HEX`` strings, matching the\n``dstr`` rendering used by ``loop_carrier.py``. The\n``parse_var_tokens(text)`` helper extracts them from a ``dstr``-like\nstring. Consumers that have access to typed operands can populate the\nwrite/read maps directly without going through the regex helper.\n"
 from __future__ import annotations
 
 import re

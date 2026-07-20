@@ -102,27 +102,7 @@ def _classify_exact_handler_side_effect_corridor(
     *,
     depth: int = 4,
 ) -> tuple[bool, tuple[str, ...], tuple[int, ...]]:
-    """Inspect the local CFG corridor rooted at ``handler_serial`` and
-    return ``(has_side_effects, signature, walked_serials)``.
-
-    ``has_side_effects`` is ``True`` when the exact handler block — or any
-    block within ``depth`` forward steps that does **not** pass through
-    ``dispatcher_target`` — contains an ``m_stx``/``m_call``/``m_icall``
-    instruction.  Such corridors carry semantically meaningful side effects
-    (buffer writes, counter increments, callees) that would be silently
-    discarded if recon overrides the exact handler with a range-backed
-    dispatcher anchor.
-
-    ``signature`` is an ordered tuple of human-readable markers in the form
-    ``"blk[N]@0xEA:op=K"`` for each detected side-effect instruction (capped
-    at the first 8 to keep log output bounded).
-
-    ``walked_serials`` is the BFS frontier visited (for diagnostic dumping).
-
-    The detection is intentionally conservative: zero/m_mov/m_jcnd-only
-    blocks are ignored, so simple state-routing cascades that contain no
-    real work do **not** get preserved by mistake.
-    """
+    "Inspect the local CFG corridor rooted at ``handler_serial`` and\n    return ``(has_side_effects, signature, walked_serials)``.\n\n    ``has_side_effects`` is ``True`` when the exact handler block \u2014 or any\n    block within ``depth`` forward steps that does **not** pass through\n    ``dispatcher_target`` \u2014 contains an ``m_stx``/``m_call``/``m_icall``\n    instruction.  Such corridors carry semantically meaningful side effects\n    (buffer writes, counter increments, callees) that would be silently\n    discarded if preanalysis overrides the exact handler with a range-backed\n    dispatcher anchor.\n\n    ``signature`` is an ordered tuple of human-readable markers in the form\n    ``\"blk[N]@0xEA:op=K\"`` for each detected side-effect instruction (capped\n    at the first 8 to keep log output bounded).\n\n    ``walked_serials`` is the BFS frontier visited (for diagnostic dumping).\n\n    The detection is intentionally conservative: zero/m_mov/m_jcnd-only\n    blocks are ignored, so simple state-routing cascades that contain no\n    real work do **not** get preserved by mistake.\n    "
     if flow_graph is None or handler_serial is None:
         return False, (), ()
     visited: set[int] = set()
@@ -2462,7 +2442,7 @@ def _resolve_sub7ffd_corridor_dispatcher_anchor_override(
 def _is_supported_explicit_conditional_transition(
     transition: object,
 ) -> bool:
-    """Return whether recon trust evidence can authorize explicit bridging."""
+    "Return whether preanalysis trust evidence can authorize explicit bridging."
 
     return transition_is_trusted_for_explicit_conditional_bridge(transition)
 
@@ -5135,20 +5115,7 @@ def build_live_linearized_state_dag_from_graph(
     return_frontier_artifact_priors: ReturnFrontierArtifactPriors | None = None,
     corrected_dag_out: list | None = None,
 ) -> LinearizedStateDag:
-    """Build a live DAG from graph-backed analysis inputs.
-
-    When *corrected_dag_out* is a list, a second DAG is built after the
-    supplemental loop with dispatcher-validated supplemental anchors and
-    appended to it.  The returned DAG uses the original (possibly stale)
-    supplemental anchors — callers can use it for phase-1 corridor emission
-    (preserving baseline redirect targets) and switch to the corrected DAG
-    for late phases only.
-
-    This is the shared semantic-graph builder for both recon dumping and
-    strategy planning. When ``mba`` and ``state_var_stkoff`` are available,
-    it enriches the base transition report with path-evaluated conditional and
-    fallback states before materializing the DAG.
-    """
+    "Build a live DAG from graph-backed analysis inputs.\n\n    When *corrected_dag_out* is a list, a second DAG is built after the\n    supplemental loop with dispatcher-validated supplemental anchors and\n    appended to it.  The returned DAG uses the original (possibly stale)\n    supplemental anchors \u2014 callers can use it for phase-1 corridor emission\n    (preserving baseline redirect targets) and switch to the corrected DAG\n    for late phases only.\n\n    This is the shared semantic-graph builder for both preanalysis dumping and\n    strategy planning. When ``mba`` and ``state_var_stkoff`` are available,\n    it enriches the base transition report with path-evaluated conditional and\n    fallback states before materializing the DAG.\n    "
 
     report = build_dispatcher_transition_report_from_graph(
         flow_graph=flow_graph,
@@ -7906,11 +7873,7 @@ def render_linearized_state_dag(
 
 @dataclass(frozen=True, slots=True)
 class StateAnchorDivergence:
-    """Per-state mismatch between two DAGs' anchor selections.
-
-    Diagnostic-only.  Constructed by :func:`compute_dag_anchor_divergence`
-    when comparing the persisted recon-time DAG against a live rebuild.
-    """
+    "Per-state mismatch between two DAGs' anchor selections.\n\n    Diagnostic-only.  Constructed by :func:`compute_dag_anchor_divergence`\n    when comparing the persisted preanalysis-time DAG against a live rebuild.\n    "
 
     state_const: int
     persisted_entry: int | None

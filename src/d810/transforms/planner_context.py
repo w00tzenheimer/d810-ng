@@ -154,37 +154,7 @@ class PlannerContextContribution:
 
 @dataclass(frozen=True, slots=True)
 class CumulativePlannerView:
-    """Read-only aggregate of every strategy's contributions this pipeline.
-
-    The engine builds one of these before calling each strategy's
-    ``plan()``, accumulating contributions from all prior fragments in the
-    current pipeline run. Strategies read from it via the query helpers
-    (``is_linearized``, ``linearization_target_for``, ``original_state_for``)
-    to avoid stepping on prior planners' decisions.
-
-    Instances are cheap to construct via :meth:`compile`. They are NOT
-    cumulative across pipeline runs — each run starts with an empty
-    view. This matches the semantics callers expect: a pipeline is the
-    unit of planning, and strategies in round N should see decisions
-    made in rounds 0..N-1 of the same pipeline, not decisions from some
-    unrelated previous decompilation.
-
-    DAG-as-arbiter (Phase 2 of uee-jrgq)
-    ------------------------------------
-    The optional ``dag_authority`` field carries the canonical answer
-    for "what does the recon DAG commit src/arm to?". Strategies and
-    fragment-finalisers query it BEFORE emitting redirects; mods that
-    disagree with the DAG are dropped (Phase 3).  ``dag_authority`` is
-    None when no DAG is available for the current pipeline (e.g. a
-    family that hasn't built one yet) — callers MUST tolerate None and
-    fall through to the legacy ``LinearizationDecision``-based filter.
-
-    Per the deferral decision (mem_52073043), the authority is built
-    once per pipeline run; per-round rederivation is intentionally
-    deferred. The view is rebuilt every iteration to absorb new
-    fragment contributions, but it carries the same DagAuthority across
-    iterations.
-    """
+    "Read-only aggregate of every strategy's contributions this pipeline.\n\n    The engine builds one of these before calling each strategy's\n    ``plan()``, accumulating contributions from all prior fragments in the\n    current pipeline run. Strategies read from it via the query helpers\n    (``is_linearized``, ``linearization_target_for``, ``original_state_for``)\n    to avoid stepping on prior planners' decisions.\n\n    Instances are cheap to construct via :meth:`compile`. They are NOT\n    cumulative across pipeline runs \u2014 each run starts with an empty\n    view. This matches the semantics callers expect: a pipeline is the\n    unit of planning, and strategies in round N should see decisions\n    made in rounds 0..N-1 of the same pipeline, not decisions from some\n    unrelated previous decompilation.\n\n    DAG-as-arbiter (Phase 2 of uee-jrgq)\n    ------------------------------------\n    The optional ``dag_authority`` field carries the canonical answer\n    for \"what does the preanalysis DAG commit src/arm to?\". Strategies and\n    fragment-finalisers query it BEFORE emitting redirects; mods that\n    disagree with the DAG are dropped (Phase 3).  ``dag_authority`` is\n    None when no DAG is available for the current pipeline (e.g. a\n    family that hasn't built one yet) \u2014 callers MUST tolerate None and\n    fall through to the legacy ``LinearizationDecision``-based filter.\n\n    Per the deferral decision (mem_52073043), the authority is built\n    once per pipeline run; per-round rederivation is intentionally\n    deferred. The view is rebuilt every iteration to absorb new\n    fragment contributions, but it carries the same DagAuthority across\n    iterations.\n    "
 
     linearization_decisions: frozenset[LinearizationDecision]
     neutralized_state_writes: frozenset[StateWriteNeutralization]

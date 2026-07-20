@@ -1448,11 +1448,11 @@ def main(argv: list[str] | None = None) -> int:
         "dag-edge-diagnostics",
         parents=[common],
         help=(
-            "Classify recon-time state_cfg_edges by correlating them with "
+            "Classify preanalysis-time state_cfg_edges by correlating them with "
             "StateWriteAnchor STATE_CONST_REWRITTEN mappings, "
             "StateTransitionAnchor transit chains, and "
             "TerminalByteEmitterFact destinations. "
-            "Observability-only: classifications never affect recon "
+            "Observability-only: classifications never affect preanalysis "
             "edge target selection or HCC behavior."
         ),
     )
@@ -1503,7 +1503,7 @@ def main(argv: list[str] | None = None) -> int:
             "single-hop condition-chain routing for their source_state_const, "
             "and (when the resolved handler block has a canonical "
             "state-write at LOCOPT-pre) the next state constant. "
-            "Observability-only; no recon edge target selection or "
+            "Observability-only; no preanalysis edge target selection or "
             "HCC behavior depends on these rows."
         ),
     )

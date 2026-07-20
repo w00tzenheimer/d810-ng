@@ -70,22 +70,7 @@ def _discarded_corridor_has_side_effect_payload(
     max_depth: int,
     required_constant_markers: tuple[str, ...] = (),
 ) -> bool:
-    """Return whether the branch being removed owns local payload side effects.
-
-    JumpFixer normally treats Z3-proven opaque branches as disposable.  That is
-    fine for pure dispatcher-routing blocks, but OLLVM state-map lowering can
-    leave branch-local payload corridors behind: one arm may contain a memory
-    store that recon has identified as semantic work.  If a later opaque fold
-    discards that arm, IDA DCE erases the payload and the final pseudocode looks
-    cleaner while no longer representing both semantic outcomes.  When
-    ``required_constant_markers`` is supplied, this guard preserves only stores
-    whose value expression carries one of those semantic constants; generic
-    stack-zeroing and local bookkeeping stores remain foldable.
-
-    Keep this bounded and local.  The guard looks only through a small corridor
-    rooted at the discarded successor and stops when it reaches the successor
-    chosen by the fold.  It is enabled by profile config rather than globally.
-    """
+    "Return whether the branch being removed owns local payload side effects.\n\n    JumpFixer normally treats Z3-proven opaque branches as disposable.  That is\n    fine for pure dispatcher-routing blocks, but OLLVM state-map lowering can\n    leave branch-local payload corridors behind: one arm may contain a memory\n    store that preanalysis has identified as semantic work.  If a later opaque fold\n    discards that arm, IDA DCE erases the payload and the final pseudocode looks\n    cleaner while no longer representing both semantic outcomes.  When\n    ``required_constant_markers`` is supplied, this guard preserves only stores\n    whose value expression carries one of those semantic constants; generic\n    stack-zeroing and local bookkeeping stores remain foldable.\n\n    Keep this bounded and local.  The guard looks only through a small corridor\n    rooted at the discarded successor and stops when it reaches the successor\n    chosen by the fold.  It is enabled by profile config rather than globally.\n    "
 
     try:
         qty = int(getattr(mba, "qty", 0) or 0)

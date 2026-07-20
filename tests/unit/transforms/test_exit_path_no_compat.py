@@ -60,7 +60,7 @@ def test_terminal_corridor_module_shims_are_removed(module_name: str) -> None:
             "CorridorShortcutDecisionsObserved",
         ),
         (
-            "d810.core.observability_recon",
+            "d810.core.observability_preanalysis",
             "observe_corridor_shortcut_decisions",
         ),
         (

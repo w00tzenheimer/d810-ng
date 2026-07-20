@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
-from d810.hexrays.lifecycle import DecompilationEvent
 from d810.manager.manager import D810Manager
 from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
@@ -70,7 +69,7 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
     assert manager.prepare_native_preanalysis(0x401000) == 3
 
     state = resolver_session_state(session)
-    assert events == [(DecompilationEvent.SESSION_STARTED, session.event)]
+    assert events == []
     assert calls == [
         (
             "ensure",

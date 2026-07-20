@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.analyses.control_flow.recon_dag_index import (
+from d810.analyses.control_flow.preanalysis_dag_index import (
     incoming_edges_by_target_entry,
     semantic_entry_anchors,
 )

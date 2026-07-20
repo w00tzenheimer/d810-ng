@@ -162,7 +162,7 @@ def _emulate_chain_exit(
 
 
 @algorithm_metadata(
-    algorithm_id="recon.collect_conditional_fork_resolution_candidates",
+    algorithm_id="preanalysis.collect_conditional_fork_resolution_candidates",
     family="conditional_fork_resolution",
     summary="Resolves both arms of conditional state forks from chain walk or emulation.",
     use_cases=(
@@ -175,7 +175,7 @@ def _emulate_chain_exit(
     ),
     tags=("conditional", "fork", "emulation", "dispatcher", "reconstruction"),
     related_paths=(
-        "src/d810/optimizers/microcode/flow/flattening/hodur/recon/conditional_chain_resolution.py",
+        "src/d810/optimizers/microcode/flow/flattening/hodur/preanalysis/conditional_chain_resolution.py",
         "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/conditional_fork_fallback.py",
     ),
 )

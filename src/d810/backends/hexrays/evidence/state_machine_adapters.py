@@ -19,7 +19,7 @@ from d810.hexrays.mutation.ir_translator import lift as lift_flow_graph
 
 @dataclass(frozen=True)
 class SwitchTableStateMachineAdapterResult:
-    """State-machine view derived from recon switch-table evidence."""
+    "State-machine view derived from preanalysis switch-table evidence."
 
     state_machine: DispatcherStateMachine
     state_dispatcher_map: object

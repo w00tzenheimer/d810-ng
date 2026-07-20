@@ -143,7 +143,7 @@ def test_worktree_checkout_can_infer_current_worktree(
     assert d810cli.worktree_dir(args.worktree) == wt
 
 
-def test_dump_full_diagnostics_expands_recon_diag_flags(
+def test_dump_full_diagnostics_expands_preanalysis_diag_flags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

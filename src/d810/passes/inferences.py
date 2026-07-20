@@ -1,25 +1,4 @@
-"""Built-in inference factories for the rule inference layer.
-
-An inference factory translates ``DeobfuscationHints`` into a list of
-``RuleDelta`` objects that adjust rule behavior for the analyzed function.
-
-Design rationale
-----------------
-The naming choice of "inference" reflects that these adjustments are
-*derived from automated recon analysis*, not hand-authored presets.  "Delta" conveys a diff from baseline behavior, not an absolute
-configuration.
-
-Precedence
-----------
-Inference deltas are ephemeral (applied per-decompilation).  User
-``per_function_overrides`` and ``whitelisted_functions`` in the project
-JSON config always take precedence.  When a user config overrides an
-inference delta, a WARN log is emitted so the user can understand why
-the inferred behavior is not taking effect.
-
-See ``docs/plans/2026-03-09-rule-inference-layer-design.md`` for the
-full design document.
-"""
+"Built-in inference factories for the rule inference layer.\n\nAn inference factory translates ``DeobfuscationHints`` into a list of\n``RuleDelta`` objects that adjust rule behavior for the analyzed function.\n\nDesign rationale\n----------------\nThe naming choice of \"inference\" reflects that these adjustments are\n*derived from automated preanalysis analysis*, not hand-authored presets.  \"Delta\" conveys a diff from baseline behavior, not an absolute\nconfiguration.\n\nPrecedence\n----------\nInference deltas are ephemeral (applied per-decompilation).  User\n``per_function_overrides`` and ``whitelisted_functions`` in the project\nJSON config always take precedence.  When a user config overrides an\ninference delta, a WARN log is emitted so the user can understand why\nthe inferred behavior is not taking effect.\n\nSee ``docs/plans/2026-03-09-rule-inference-layer-design.md`` for the\nfull design document.\n"
 from __future__ import annotations
 
 from d810.core.rule_scope import RuleDelta

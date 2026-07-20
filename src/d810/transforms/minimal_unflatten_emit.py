@@ -87,7 +87,7 @@ from d810.analyses.value_flow import (
 )
 from d810.core import logging
 from d810.core.typing import Mapping
-from d810.core.observability_recon import (
+from d810.core.observability_preanalysis import (
     observe_branch_witness_decisions,
     observe_exit_path_shortcut_decisions,
 )

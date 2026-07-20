@@ -1981,7 +1981,7 @@ def test_locopt_preanalysis_imports_before_call_analysis_without_requesting_redo
 
 def test_locopt_hook_continues_after_preanalysis_modifies_microcode() -> None:
     from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
-    from d810.hexrays.lifecycle import DecompilationEvent
+    from d810.core.decompilation_session import DecompilationEvent
 
     mba = SimpleNamespace(entry_ea=0x40A560)
     events: list[object] = []
@@ -2004,7 +2004,7 @@ def test_locopt_hook_continues_after_preanalysis_modifies_microcode() -> None:
 
 def test_preoptimized_hook_dispatches_live_mba_before_locopt() -> None:
     from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
-    from d810.hexrays.lifecycle import DecompilationEvent
+    from d810.core.decompilation_session import DecompilationEvent
 
     mba = SimpleNamespace(entry_ea=0x40A560)
     events: list[object] = []
@@ -2028,7 +2028,7 @@ def test_preoptimized_hook_dispatches_live_mba_before_locopt() -> None:
 def test_flowchart_hook_scopes_active_lifecycle_session_into_decision() -> None:
     """Flowchart lazily creates and scopes one coordinator-owned session."""
     from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
-    from d810.hexrays.lifecycle import DecompilationEvent
+    from d810.core.decompilation_session import DecompilationEvent
 
     mba = SimpleNamespace(entry_ea=0x40D200)
     session = SimpleNamespace(event=object())
@@ -2098,7 +2098,7 @@ def test_flowchart_hook_uses_containing_function_as_lifecycle_owner(
     """An internal MBA entry must not create a second function session."""
     import d810.hexrays.hooks.hexrays_hooks as hook_module
     from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
-    from d810.hexrays.lifecycle import DecompilationEvent
+    from d810.core.decompilation_session import DecompilationEvent
 
     mba = SimpleNamespace(entry_ea=0x40D348)
     session = SimpleNamespace(event=object())
@@ -2135,7 +2135,7 @@ def test_flowchart_hook_uses_containing_function_as_lifecycle_owner(
 
 def test_stkpnts_hook_dispatches_transient_stack_points() -> None:
     from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
-    from d810.hexrays.lifecycle import DecompilationEvent
+    from d810.core.decompilation_session import DecompilationEvent
 
     mba = SimpleNamespace(entry_ea=0x40A560)
     stack_points = object()

@@ -170,13 +170,7 @@ class CleanupFollowUpReclassification:
 
 @dataclass(frozen=True)
 class CleanupFollowUpTargetProof:
-    """Exact-target proof for one deferred BadWhileLoop follow-up.
-
-    Follow-up rows are diagnostic metadata. This object lets callers feed
-    modern recon evidence into the read-only classifier without making the
-    cleanup engine depend on transition-report, DAG, range, or state-fixpoint
-    concrete types.
-    """
+    "Exact-target proof for one deferred BadWhileLoop follow-up.\n\n    Follow-up rows are diagnostic metadata. This object lets callers feed\n    modern preanalysis evidence into the read-only classifier without making the\n    cleanup engine depend on transition-report, DAG, range, or state-fixpoint\n    concrete types.\n    "
 
     dispatcher_entry: int
     from_serial: int
@@ -2092,12 +2086,7 @@ def build_bad_while_loop_follow_up_proofs(
     tuple[CleanupFollowUpTargetProof, ...],
     tuple[CleanupFollowUpPerPredTargetProof, ...],
 ]:
-    """Build read-only BadWhileLoop follow-up proofs from modern evidence.
-
-    This is intentionally an adapter over structural inputs. The cleanup engine
-    should not import recon/DAG/range concrete types, but callers can still feed
-    those results into the follow-up classifier through neutral proof rows.
-    """
+    "Build read-only BadWhileLoop follow-up proofs from modern evidence.\n\n    This is intentionally an adapter over structural inputs. The cleanup engine\n    should not import preanalysis/DAG/range concrete types, but callers can still feed\n    those results into the follow-up classifier through neutral proof rows.\n    "
 
     target_proofs: list[CleanupFollowUpTargetProof] = []
     per_pred_proofs: list[CleanupFollowUpPerPredTargetProof] = []

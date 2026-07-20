@@ -1,18 +1,4 @@
-"""Explicit lowering modes for state-machine / flow-automaton recovery (LS12).
-
-Per the ``docs/plans/recon-and-cfg-restructuring.md`` "Lowering Strategies"
-section, lowering is a *choice of target CFG shape* over the same recovered
-recognition result, deliberately separate from the recognition graph and from
-the obfuscation *family*.  A strategy's family answers "which obfuscation does
-this address?"; its lowering mode answers "what CFG shape do we hand Hex-Rays?".
-The two are orthogonal: ``TopologicalSort`` and ``HandlerChainComposer`` are
-both ``family=direct`` yet lower as ``DAG_LINEARIZATION`` vs
-``REGION_COMPOSITION``.
-
-Net-new and backend-neutral: this package must stay IDA-free at import time.
-The mode is recorded as provenance on plan fragments (LS12 C4); it does NOT
-drive planner scoring or arbitration, which key on ``fragment.family``.
-"""
+"Explicit lowering modes for state-machine / flow-automaton recovery (LS12).\n\nPer the ``docs/plans/preanalysis-and-cfg-restructuring.md`` \"Lowering Strategies\"\nsection, lowering is a *choice of target CFG shape* over the same recovered\nrecognition result, deliberately separate from the recognition graph and from\nthe obfuscation *family*.  A strategy's family answers \"which obfuscation does\nthis address?\"; its lowering mode answers \"what CFG shape do we hand Hex-Rays?\".\nThe two are orthogonal: ``TopologicalSort`` and ``HandlerChainComposer`` are\nboth ``family=direct`` yet lower as ``DAG_LINEARIZATION`` vs\n``REGION_COMPOSITION``.\n\nNet-new and backend-neutral: this package must stay IDA-free at import time.\nThe mode is recorded as provenance on plan fragments (LS12 C4); it does NOT\ndrive planner scoring or arbitration, which key on ``fragment.family``.\n"
 from __future__ import annotations
 
 import enum

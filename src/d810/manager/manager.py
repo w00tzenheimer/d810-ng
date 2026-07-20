@@ -10,7 +10,10 @@ from d810.core import (
     MOP_TO_AST_CACHE,
     typing,
 )
-from d810.core.decompilation_session import DecompilationSessionEvent
+from d810.core.decompilation_session import (
+    DecompilationEvent,
+    DecompilationSessionEvent,
+)
 from d810.core.logging import getLogger
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.project import (
@@ -37,7 +40,7 @@ from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
-from d810.hexrays.lifecycle import DecompilationEvent, HEXRAYS_MICROCODE_PROVIDER
+from d810.hexrays.lifecycle import HEXRAYS_MICROCODE_PROVIDER
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
@@ -54,7 +57,6 @@ from d810.passes.pass_pipeline_factory import (
     pass_pipeline_spec_from_config,
 )
 from d810.passes.analysis_runtime_factory import (
-    build_preanalysis_phase,
     build_analysis_runtime_bundle,
 )
 from d810.passes.scheduler import PassScheduler
@@ -189,7 +191,7 @@ class D810Manager:
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
     hx_decompiler_hook: HexraysDecompilationHook = dataclasses.field(init=False)
     _started: bool = dataclasses.field(default=False, init=False)
-    _preanalysis_phase: typing.Any = dataclasses.field(default=None, init=False)
+    _preanalysis_runtime: typing.Any = dataclasses.field(default=None, init=False)
     _analysis_runtime: typing.Any = dataclasses.field(default=None, init=False)
     _analysis_bundle: typing.Any = dataclasses.field(default=None, init=False)
     decompilation_lifecycle: DecompilationLifecycleCoordinator = dataclasses.field(
@@ -238,12 +240,10 @@ class D810Manager:
             return 0
         function_ea = int(function_ea)
         try:
-            session, created = lifecycle.ensure_hexrays_session(
+            session, _created = lifecycle.ensure_hexrays_session(
                 function_ea=function_ea,
                 database_identity=self._database_identity,
             )
-            if created:
-                self.event_emitter.emit(DecompilationEvent.SESSION_STARTED, session.event)
 
             from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
                 _has_unresolved_computed_goto,
@@ -291,11 +291,11 @@ class D810Manager:
 
     @property
     def analysis_db(self) -> pathlib.Path | None:
-        """Path to the recon SQLite database, or None if recon is disabled."""
-        rt = getattr(self, "_analysis_runtime", None)
-        if rt is None:
+        """Path to the analysis SQLite database, or None when disabled."""
+        bundle = getattr(self, "_analysis_bundle", None)
+        if bundle is None:
             return None
-        return rt._store.db_path
+        return bundle.db_path
 
     def configure(self, **kwargs):
         self.config = kwargs
@@ -333,7 +333,7 @@ class D810Manager:
                 importlib.import_module(module_name)
             except Exception:
                 logger.exception(
-                    "Recon fact profile module load failed: %s",
+                    "Preanalysis fact profile module load failed: %s",
                     module_name,
                 )
 
@@ -425,7 +425,7 @@ class D810Manager:
     def _ensure_post_d810_runtime(self) -> HexRaysPostD810Runtime:
         if self._post_d810_runtime is None:
             self._post_d810_runtime = HexRaysPostD810Runtime(
-                analysis_runtime=self._analysis_runtime,
+                preanalysis_runtime=self._preanalysis_runtime,
                 block_optimizer=self.block_optimizer,
                 maturity_name_provider=_maturity_name,
                 handoff_detector=detect_post_d810_handoff_violations,
@@ -562,9 +562,9 @@ class D810Manager:
 
         # Build PreanalysisPhase when feature flag is enabled (default ON).
         # Passive collection with minimal overhead; disable with
-        # "enable_recon_pipeline": false in project config.
+        # "enable_analysis_pipeline": false in project config.
         self._analysis_bundle = None
-        self._preanalysis_phase = None
+        self._preanalysis_runtime = None
         self._analysis_runtime = None
         if self.config.get("enable_analysis_pipeline", True):
             self._analysis_bundle = build_analysis_runtime_bundle(
@@ -572,11 +572,13 @@ class D810Manager:
                 config=dict(self.config),
             )
             if self._analysis_bundle is not None:
-                self._preanalysis_phase = self._analysis_bundle.preanalysis_phase
+                self._preanalysis_runtime = (
+                    self._analysis_bundle.preanalysis_runtime
+                )
                 self._analysis_runtime = self._analysis_bundle.analysis_runtime
 
         self.decompilation_lifecycle = DecompilationLifecycleCoordinator(
-            preanalysis_phase=self._preanalysis_phase,
+            preanalysis_runtime=self._preanalysis_runtime,
             analysis_runtime=self._analysis_runtime,
             rule_scope_service=self.rule_scope_service,
             event_emitter=self.event_emitter,
@@ -594,7 +596,7 @@ class D810Manager:
         self.block_optimizer.configure(
             decompilation_lifecycle=self.decompilation_lifecycle,
         )
-        if self._analysis_runtime is not None:
+        if self._preanalysis_runtime is not None:
             # LS10: register the Hex-Rays live SourceLifter (import-time side
             # effect) before the induction collector runs, so a raw mba handed
             # directly to a collector can be lifted to a portable fact target.
@@ -612,11 +614,26 @@ class D810Manager:
                 logger.exception("Hex-Rays live SourceLifter registration failed")
             self._load_preanalysis_profile_modules()
             emit_preanalysis_fact_collector_registration(
-                runtime=self._analysis_runtime,
+                runtime=self._preanalysis_runtime,
                 project_config=dict(self.config),
             )
+        if self._analysis_runtime is not None:
             self.block_optimizer.configure(
-                analysis_runtime=self._analysis_runtime,
+                validated_fact_view_provider=(
+                    self._analysis_runtime.validated_fact_view
+                ),
+                fact_consumer_callback=(
+                    self._analysis_runtime.record_fact_consumers
+                ),
+                flow_context_summary_provider=(
+                    self._analysis_runtime.load_flow_context_summary
+                ),
+                planner_outcome_callback=(
+                    self._analysis_runtime.record_planner_outcome
+                ),
+                flow_gate_outcome_callback=(
+                    self._analysis_runtime.record_flow_gate_outcome
+                ),
             )
 
         # Wire PassPipeline into BlockOptimizerManager so it fires at
@@ -914,10 +931,6 @@ class D810Manager:
         )
         return pipeline
 
-    def _build_preanalysis_phase(self):
-        """Construct only the portable preanalysis collector phase."""
-        return build_preanalysis_phase(self.log_dir)
-
     def configure_instruction_optimizer(self, rules, **kwargs):
         self.instruction_optimizer_rules = list(rules)
         self.instruction_optimizer_config = kwargs
@@ -945,12 +958,7 @@ class D810Manager:
         if self._analysis_bundle is not None:
             self._analysis_bundle.close()
             self._analysis_bundle = None
-        elif self._preanalysis_phase is not None:
-            try:
-                self._preanalysis_phase._store.close()
-            except Exception:
-                pass
-        self._preanalysis_phase = None
+        self._preanalysis_runtime = None
         self._analysis_runtime = None
 
 

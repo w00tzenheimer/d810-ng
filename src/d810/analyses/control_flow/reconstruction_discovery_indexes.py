@@ -23,7 +23,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from d810.core.typing import Iterable
 
-from d810.analyses.control_flow.recon_dag_index import DagNodeMaps, build_dag_node_maps
+from d810.analyses.control_flow.preanalysis_dag_index import DagNodeMaps, build_dag_node_maps
 from d810.analyses.control_flow.linearized_state_dag import LinearizedStateDag
 from d810.analyses.control_flow.reconstruction_discovery import (
     collect_boundary_protected_shared_blocks,

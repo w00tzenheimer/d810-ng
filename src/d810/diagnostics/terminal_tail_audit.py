@@ -1,17 +1,4 @@
-"""Terminal-tail region audit -- post-hoc diag DB consumer.
-
-Reads ``TerminalByteEmitterFact`` rows from a captured diag SQLite and
-produces the byte_emit[k] timeline + first-loss report from
-:mod:`d810.transforms.terminal_tail_region_matcher` and
-:mod:`d810.transforms.terminal_tail_loss_localizer`.
-
-This module is the **post-hoc** side of the byte-cascade observability
-stack: the recon collector writes ``TerminalByteEmitterFact`` rows during
-decompile, and this module reads + summarises them after the fact. The
-core report logic lives in ``d810.cfg.*`` because it is also consumed
-during the in-flight reconstruction path; this module is the thin SQL
-layer that feeds those report functions.
-"""
+"Terminal-tail region audit -- post-hoc diag DB consumer.\n\nReads ``TerminalByteEmitterFact`` rows from a captured diag SQLite and\nproduces the byte_emit[k] timeline + first-loss report from\n:mod:`d810.transforms.terminal_tail_region_matcher` and\n:mod:`d810.transforms.terminal_tail_loss_localizer`.\n\nThis module is the **post-hoc** side of the byte-cascade observability\nstack: the preanalysis collector writes ``TerminalByteEmitterFact`` rows during\ndecompile, and this module reads + summarises them after the fact. The\ncore report logic lives in ``d810.cfg.*`` because it is also consumed\nduring the in-flight reconstruction path; this module is the thin SQL\nlayer that feeds those report functions.\n"
 from __future__ import annotations
 
 import json

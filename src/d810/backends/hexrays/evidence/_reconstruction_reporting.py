@@ -44,7 +44,7 @@ def snapshot_reconstruction_dag(
         )
     try:
         from d810.hexrays.observability import request_capture_mba_snapshot
-        from d810.core.observability_recon import (
+        from d810.core.observability_preanalysis import (
             DagEdge,
             DagNode,
             dag_node_diagnostic_state,
@@ -113,7 +113,7 @@ def snapshot_reconstruction_post_apply(
 ) -> None:
     try:
         from d810.hexrays.observability import request_capture_mba_snapshot
-        from d810.core.observability_recon import (
+        from d810.core.observability_preanalysis import (
             DagEdge,
             DagNode,
             Modification,

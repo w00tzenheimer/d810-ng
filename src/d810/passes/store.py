@@ -1,13 +1,4 @@
-"""SQLite persistence layer for ReconResults and DeobfuscationHints.
-
-Schema follows the existing pattern in ``core/persistence.py``:
-- ``INSERT OR REPLACE`` for upsert semantics
-- JSON columns for variable-length data (metrics, candidates, inferences)
-- Composite primary key ``(func_ea, maturity, collector_name)`` for results
-- Single primary key ``func_ea`` for hints
-
-No IDA imports - fully unit-testable.
-"""
+"SQLite persistence layer for PreanalysisResults and DeobfuscationHints.\n\nSchema follows the existing pattern in ``core/persistence.py``:\n- ``INSERT OR REPLACE`` for upsert semantics\n- JSON columns for variable-length data (metrics, candidates, inferences)\n- Composite primary key ``(func_ea, maturity, collector_name)`` for results\n- Single primary key ``func_ea`` for hints\n\nNo IDA imports - fully unit-testable.\n"
 from __future__ import annotations
 
 import atexit
@@ -116,7 +107,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             continue
         if column not in existing:
             stmt = "ALTER TABLE %s ADD COLUMN %s %s" % (table, column, col_def)
-            logger.info("recon store: migrating schema — %s", stmt)
+            logger.info("preanalysis store: migrating schema \u2014 %s", stmt)
             conn.execute(stmt)
     conn.commit()
 
@@ -128,16 +119,11 @@ def _delete_sqlite_database(db_path: Path) -> None:
         try:
             path.unlink(missing_ok=True)
         except OSError:
-            logger.warning("recon store: failed to delete %s", path, exc_info=True)
+            logger.warning("preanalysis store: failed to delete %s", path, exc_info=True)
 
 
 def _ensure_readable_database(db_path: Path) -> None:
-    """Discard generated recon DB state when SQLite reports corruption.
-
-    The recon DB is a generated runtime cache. Keeping a malformed file is worse
-    than losing cached observations because a read failure can suppress later
-    optimizer passes for the whole maturity.
-    """
+    "Discard generated preanalysis DB state when SQLite reports corruption.\n\n    The preanalysis DB is a generated runtime cache. Keeping a malformed file is worse\n    than losing cached observations because a read failure can suppress later\n    optimizer passes for the whole maturity.\n    "
     if not db_path.exists() or db_path.stat().st_size == 0:
         return
     try:
@@ -148,7 +134,7 @@ def _ensure_readable_database(db_path: Path) -> None:
             conn.close()
     except sqlite3.DatabaseError as exc:
         logger.warning(
-            "recon store: deleting unreadable DB %s before open: %s",
+            "preanalysis store: deleting unreadable DB %s before open: %s",
             db_path,
             exc,
         )
@@ -156,7 +142,7 @@ def _ensure_readable_database(db_path: Path) -> None:
         return
     if row is None or str(row[0]).lower() != "ok":
         logger.warning(
-            "recon store: deleting corrupt DB %s before open: %s",
+            "preanalysis store: deleting corrupt DB %s before open: %s",
             db_path,
             row[0] if row else "no quick_check row",
         )
@@ -182,14 +168,7 @@ def _candidate_from_dict(d: dict) -> CandidateFlag:
 
 
 class PreanalysisStore:
-    """SQLite-backed store for recon results and deobfuscation hints.
-
-    Example:
-        >>> store = ReconStore("/tmp/recon.db")
-        >>> store.save_recon_result(result)
-        >>> rows = store.load_recon_results(func_ea=0x401000, provider_level=5)
-        >>> store.close()
-    """
+    "SQLite-backed store for preanalysis results and deobfuscation hints.\n\n    Example:\n        >>> store = PreanalysisStore(\"/tmp/preanalysis.db\")\n        >>> store.save_preanalysis_result(result)\n        >>> rows = store.load_preanalysis_results(func_ea=0x401000, provider_level=5)\n        >>> store.close()\n    "
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
@@ -204,11 +183,11 @@ class PreanalysisStore:
         self._conn.commit()
 
     # ------------------------------------------------------------------
-    # ReconResult persistence
+    # PreanalysisResult persistence
     # ------------------------------------------------------------------
 
     def save_preanalysis_result(self, result: PreanalysisResult) -> None:
-        """Upsert a ReconResult (primary key: func_ea, maturity, collector_name)."""
+        "Upsert a PreanalysisResult (primary key: func_ea, maturity, collector_name)."
         self._conn.execute(
             """
             INSERT OR REPLACE INTO preanalysis_results
@@ -237,7 +216,7 @@ class PreanalysisStore:
         legacy_level = legacy_fields.pop("maturity", None)
         if legacy_fields:
             names = ", ".join(sorted(legacy_fields))
-            raise TypeError(f"Unexpected recon store field(s): {names}")
+            raise TypeError(f"Unexpected preanalysis store field(s): {names}")
         if provider_level is None:
             if legacy_level is None:
                 raise TypeError("provider_level is required")
@@ -290,7 +269,7 @@ class PreanalysisStore:
         legacy_level = legacy_fields.pop("maturity", None)
         if legacy_fields:
             names = ", ".join(sorted(legacy_fields))
-            raise TypeError(f"Unexpected recon store field(s): {names}")
+            raise TypeError(f"Unexpected preanalysis store field(s): {names}")
         if provider_level is None and legacy_level is not None:
             provider_level = int(legacy_level)
         if provider_level is None:
@@ -624,18 +603,13 @@ def _shutdown_writer(writer: "PreanalysisStoreWriter") -> None:
 
 
 class PreanalysisStoreWriter:
-    """Dedicated writer thread for serialized SQLite writes.
-
-    Owns a single ``ReconStore`` connection.  Callers submit write
-    callables via :meth:`submit` (fire-and-forget) or
-    :meth:`submit_sync` (blocking, returns result).
-    """
+    "Dedicated writer thread for serialized SQLite writes.\n\n    Owns a single ``PreanalysisStore`` connection.  Callers submit write\n    callables via :meth:`submit` (fire-and-forget) or\n    :meth:`submit_sync` (blocking, returns result).\n    "
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._queue: queue.Queue = queue.Queue()
         self._thread = threading.Thread(
-            target=self._run, daemon=True, name=f"recon-writer-{db_path.name}"
+            target=self._run, daemon=True, name=f"preanalysis-writer-{db_path.name}"
         )
         self._thread.start()
         atexit.register(_shutdown_writer, self)
@@ -650,7 +624,7 @@ class PreanalysisStoreWriter:
                 try:
                     item(store)
                 except Exception:
-                    logger.debug("ReconStoreWriter: write failed (non-critical)")
+                    logger.debug("PreanalysisStoreWriter: write failed (non-critical)")
         finally:
             store.close()
 
@@ -658,7 +632,7 @@ class PreanalysisStoreWriter:
         """Submit a write callable (fire-and-forget)."""
         self._queue.put(fn)
 
-    def submit_sync(self, fn: "Callable[[ReconStore], _T]") -> "_T":
+    def submit_sync(self, fn: "Callable[[PreanalysisStore], _T]") -> "_T":
         """Submit a callable and block until it completes, returning its result."""
         result_box: list = []
         exc_box: list[Exception] = []
