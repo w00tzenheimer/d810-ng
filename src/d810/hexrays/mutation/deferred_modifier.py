@@ -2535,19 +2535,76 @@ class DeferredGraphModifier:
     ) -> ida_hexrays.mblock_t | None:
         """Split one live block and publish its serial shift atomically."""
         old_qty = int(self.mba.qty)
+        original_serial = int(block.serial)
         self._begin_mutation_batch(
             serial_quantity=old_qty,
-            kind=StructuralMutationKind.BLOCK_INSERT,
+            kind=StructuralMutationKind.BLOCK_REPLACE,
             description="split live block",
         )
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise RuntimeError("block split requires a mutation gateway")
+        original_handle = gateway.identity_index.handle_for_serial(original_serial)
+        if original_handle is None:
+            self._finish_mutation_batch(0)
+            raise RuntimeError(
+                f"block split cannot bind original serial {original_serial}"
+            )
         try:
             new_block = self.mba.split_block(block, start_insn)
             if new_block is None:
                 self._finish_mutation_batch(0)
                 return None
-            self._record_serial_insertion(
-                int(new_block.serial),
-                old_qty,
+            returned_tail_serial = int(new_block.serial)
+            retained_block = self.mba.get_mblock(original_serial)
+            returned_tail = self.mba.get_mblock(returned_tail_serial)
+            if retained_block is None or returned_tail is None:
+                self._finish_mutation_batch(0)
+                raise RuntimeError("block split SDK result is not live in the MBA")
+
+            retained_handle = None
+            tail_handle = None
+            original_identity = original_handle.stable_identity
+            if original_identity is not None and original_identity.exact_instruction_eas:
+                retained_eas = frozenset(
+                    int(instruction.ea)
+                    for instruction in self._block_instructions(retained_block)
+                    if 0 <= int(getattr(instruction, "ea", -1)) < 0xFFFFFFFFFFFFFFFF
+                )
+                tail_eas = frozenset(
+                    int(instruction.ea)
+                    for instruction in self._block_instructions(returned_tail)
+                    if 0 <= int(getattr(instruction, "ea", -1)) < 0xFFFFFFFFFFFFFFFF
+                )
+                if (
+                    retained_eas
+                    and tail_eas
+                    and retained_eas.isdisjoint(tail_eas)
+                    and retained_eas | tail_eas
+                    == original_identity.exact_instruction_eas
+                ):
+                    retained_handle = gateway.identity_index.create_native_handle(
+                        StableBlockIdentity.from_instruction_eas(
+                            retained_eas,
+                            native_key=original_identity.native_key,
+                        ),
+                        provenance=original_handle.provenance,
+                    )
+                    tail_handle = gateway.identity_index.create_native_handle(
+                        StableBlockIdentity.from_instruction_eas(
+                            tail_eas,
+                            native_key=original_identity.native_key,
+                        ),
+                        provenance=original_handle.provenance,
+                    )
+            if retained_handle is None or tail_handle is None:
+                retained_handle = gateway.identity_index.create_synthetic_handle()
+                tail_handle = gateway.identity_index.create_synthetic_handle()
+            gateway.record_split(
+                original=original_handle,
+                retained=retained_handle,
+                created_tail=tail_handle,
+                returned_tail_serial=returned_tail_serial,
             )
             self._finish_mutation_batch(1)
             return new_block

@@ -309,6 +309,75 @@ def test_immediate_redirect_is_receipted_through_prewrite_gateway(monkeypatch) -
     assert gateway.receipts[0].kind is StructuralMutationKind.EDGE_REDIRECT
 
 
+def test_split_block_replaces_original_handle_and_receipts_one_split() -> None:
+    mba = _FakeMBA()
+    gateway = make_mutation_gateway(mba)
+    original = gateway.identity_index.handle_for_serial(0)
+    assert original is not None
+    source = mba.get_mblock(0)
+    split_point = object()
+
+    def split_block(block, start_insn):
+        assert gateway.active is True
+        assert block is source
+        assert start_insn is split_point
+        tail = _FakeBlock(1)
+        mba.blocks[1] = tail
+        mba.qty = 2
+        return tail
+
+    mba.split_block = split_block
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+
+    tail = modifier.split_block_now(source, split_point)
+
+    assert tail is mba.get_mblock(1)
+    assert gateway.identity_index.resolve(original) is None
+    retained = gateway.identity_index.handle_for_serial(0)
+    created_tail = gateway.identity_index.handle_for_serial(1)
+    assert retained is not None and retained is not original
+    assert created_tail is not None and created_tail is not original
+    assert retained is not created_tail
+    assert len(gateway.receipts) == 1
+    assert gateway.receipts[0].kind is StructuralMutationKind.BLOCK_REPLACE
+    assert gateway.receipts[0].operation_count == 1
+
+
+def test_split_block_partitions_exact_native_identity_when_provable() -> None:
+    mba = _FakeMBA()
+    source = mba.get_mblock(0)
+    first = SimpleNamespace(ea=0x401000, next=None)
+    second = SimpleNamespace(ea=0x401004, next=None)
+    first.next = second
+    source.head = first
+    source.tail = second
+    gateway = make_mutation_gateway(mba)
+
+    def split_block(block, start_insn):
+        assert block is source
+        assert start_insn is second
+        first.next = None
+        source.tail = first
+        tail = _FakeBlock(1)
+        tail.head = second
+        tail.tail = second
+        mba.blocks[1] = tail
+        mba.qty = 2
+        return tail
+
+    mba.split_block = split_block
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+
+    assert modifier.split_block_now(source, second) is mba.get_mblock(1)
+
+    retained = gateway.identity_index.handle_for_serial(0)
+    tail = gateway.identity_index.handle_for_serial(1)
+    assert retained is not None and retained.stable_identity is not None
+    assert tail is not None and tail.stable_identity is not None
+    assert retained.stable_identity.exact_instruction_eas == frozenset({0x401000})
+    assert tail.stable_identity.exact_instruction_eas == frozenset({0x401004})
+
+
 def test_zero_way_existing_goto_is_retargeted_without_appending(monkeypatch) -> None:
     class _Operand:
         def __init__(self) -> None:
