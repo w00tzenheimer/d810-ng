@@ -8,10 +8,12 @@ indirect dispatcher, set callee types, or invoke resolver internals directly.
 Run only against a disposable binary copy.  The computed-goto resolver may
 materialize native byte patches in the opened database.
 """
+
 from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from pathlib import Path
 import shutil
 
@@ -32,7 +34,9 @@ TRACE_BOOTSTRAP_STATE = os.environ.get("RHAD_TRANSFER_TRACE_BOOTSTRAP_STATE")
 TRACE_BOOTSTRAP_STATE_MREG = os.environ.get("RHAD_TRANSFER_TRACE_BOOTSTRAP_MREG")
 TRACE_BOOTSTRAP_HANDLER_EAS = frozenset(
     int(item.strip(), 0)
-    for item in os.environ.get("RHAD_TRANSFER_TRACE_BOOTSTRAP_HANDLER_EAS", "").split(",")
+    for item in os.environ.get("RHAD_TRANSFER_TRACE_BOOTSTRAP_HANDLER_EAS", "").split(
+        ","
+    )
     if item.strip()
 )
 OUTPUT = Path(
@@ -48,6 +52,7 @@ TRANSFER_OUTPUT = os.environ.get("RHAD_TRANSFER_TRANSFERS_OUTPUT") or os.environ
 )
 ORIGIN_OUTPUT = os.environ.get("RHAD_TRANSFER_ORIGINS_OUTPUT")
 TRACE_HANDLER_ROUTES = os.environ.get("RHAD_TRANSFER_TRACE_HANDLER_ROUTES") == "1"
+TRACE_ROUTE_BUILD = os.environ.get("RHAD_TRANSFER_TRACE_ROUTE_BUILD") == "1"
 TRACE_SESSION_STATE = os.environ.get("RHAD_TRANSFER_TRACE_SESSION_STATE") == "1"
 TRACE_HANDLER_EAS = frozenset(
     int(item.strip(), 0)
@@ -262,9 +267,7 @@ try:
     function = ida_funcs.get_func(FUNCTION_EA)
     if FUNCTION_END is not None and int(function.end_ea) != FUNCTION_END:
         ida_auto.plan_and_wait(FUNCTION_EA, FUNCTION_END)
-        function_extended = bool(
-            ida_funcs.set_func_end(FUNCTION_EA, FUNCTION_END)
-        )
+        function_extended = bool(ida_funcs.set_func_end(FUNCTION_EA, FUNCTION_END))
         idaapi.auto_wait()
         function = ida_funcs.get_func(FUNCTION_EA)
         if int(function.end_ea) != FUNCTION_END:
@@ -307,9 +310,226 @@ try:
 
         headless.configure(project="default_unflattening_ollvm.json")
         headless.start()
+        if TRACE_ROUTE_BUILD:
+            import d810.optimizers.microcode.flow.flattening.state_machine_cff_unflattener as unflat_module
+
+            original_build_materialized_state_routes = (
+                unflat_module._build_materialized_state_routes
+            )
+            original_project_materialized_state_routes = (
+                unflat_module._portable_materialized_state_route_evidence
+            )
+            original_rebind_materialized_state_routes = (
+                unflat_module._rebind_portable_materialized_state_routes
+            )
+
+            def identity_label(identity):
+                if identity is None:
+                    return None
+                intervals = identity.native_eas.intervals
+                return "+".join(
+                    f"0x{int(interval.start_ea):X}-0x{int(interval.end_ea):X}"
+                    for interval in intervals
+                )
+
+            def live_route_label(route, flow_graph):
+                def block_label(serial):
+                    block = flow_graph.get_block(int(serial))
+                    return (
+                        f"blk{int(serial)}@0x{int(block.start_ea):X}"
+                        if block is not None
+                        else f"terminal@0x{int(route.target_native_ea or 0):X}"
+                    )
+
+                return {
+                    "source": block_label(route.source_block_serial),
+                    "state": f"0x{int(route.state_constant):08X}",
+                    "target": block_label(route.target_handler_serial),
+                    "source_handler": (
+                        None
+                        if route.source_handler_serial is None
+                        else block_label(route.source_handler_serial)
+                    ),
+                    "source_native_ea": (
+                        None
+                        if route.source_native_ea is None
+                        else f"0x{int(route.source_native_ea):X}"
+                    ),
+                    "target_native_ea": (
+                        None
+                        if route.target_native_ea is None
+                        else f"0x{int(route.target_native_ea):X}"
+                    ),
+                    "proof_kind": route.proof_kind,
+                }
+
+            def portable_route_label(route):
+                return {
+                    "source": identity_label(route.source_identity),
+                    "state": f"0x{int(route.state_constant):08X}",
+                    "target": identity_label(route.target_identity),
+                    "source_handler": identity_label(
+                        route.source_handler_identity
+                    ),
+                    "source_handler_region": identity_label(
+                        route.source_handler_region_identity
+                    ),
+                    "source_native_ea": (
+                        None
+                        if route.source_native_ea is None
+                        else f"0x{int(route.source_native_ea):X}"
+                    ),
+                    "target_native_ea": (
+                        None
+                        if route.target_native_ea is None
+                        else f"0x{int(route.target_native_ea):X}"
+                    ),
+                    "proof_kind": route.proof_kind,
+                }
+
+            def trace_build_materialized_state_routes(flow_graph, *args, **kwargs):
+                handler_states = kwargs.get("handler_states") or {}
+                transfers = tuple(kwargs.get("transfers") or ())
+
+                def block_label(serial):
+                    block = flow_graph.get_block(int(serial))
+                    return (
+                        f"blk{int(serial)}@0x{int(block.start_ea):X}"
+                        if block is not None
+                        else f"blk{int(serial)}@?"
+                    )
+
+                print(
+                    "ROUTE_BUILD_INPUT",
+                    f"handler_state_sources={len(handler_states)}",
+                    f"handler_state_pairs={sum(len(states) for states in handler_states.values())}",
+                    "handler_state_fanout="
+                    + repr(
+                        [
+                            (block_label(serial), len(states))
+                            for serial, states in sorted(handler_states.items())
+                            if len(states) > 1
+                        ]
+                    ),
+                    "transfer_kinds="
+                    + repr(sorted(Counter(t.resolver_kind for t in transfers).items())),
+                    flush=True,
+                )
+                routes = original_build_materialized_state_routes(
+                    flow_graph,
+                    *args,
+                    **kwargs,
+                )
+                source_handler_counts = Counter(
+                    route.source_handler_serial
+                    for route in routes
+                    if route.source_handler_serial is not None
+                )
+                print(
+                    "ROUTE_BUILD_OUTPUT",
+                    f"routes={len(routes)}",
+                    "proof_kinds="
+                    + repr(sorted(Counter(route.proof_kind for route in routes).items())),
+                    "source_handler_routes="
+                    + repr(
+                        [
+                            (block_label(serial), count)
+                            for serial, count in sorted(source_handler_counts.items())
+                        ]
+                    ),
+                    flush=True,
+                )
+                return routes
+
+            unflat_module._build_materialized_state_routes = (
+                trace_build_materialized_state_routes
+            )
+
+            def trace_project_materialized_state_routes(
+                routes, identity_index, *args, **kwargs
+            ):
+                projected = original_project_materialized_state_routes(
+                    routes, identity_index, *args, **kwargs
+                )
+                terminal_routes = tuple(
+                    route
+                    for route in routes
+                    if route.proof_kind == "terminal_state_route"
+                )
+                if terminal_routes:
+                    print(
+                        "PORTABLE_TERMINAL_PROJECT",
+                        "live="
+                        + repr(
+                            [
+                                live_route_label(route, kwargs.get("flow_graph"))
+                                if kwargs.get("flow_graph") is not None
+                                else {
+                                    "source_identity": identity_label(
+                                        identity_index.identity_for_serial(
+                                            route.source_block_serial
+                                        )
+                                    ),
+                                    "state": f"0x{int(route.state_constant):08X}",
+                                    "source_native_ea": route.source_native_ea,
+                                    "target_native_ea": route.target_native_ea,
+                                }
+                                for route in terminal_routes
+                            ]
+                        ),
+                        "portable="
+                        + repr(
+                            [
+                                portable_route_label(route)
+                                for route in projected
+                                if route.proof_kind == "terminal_state_route"
+                            ]
+                        ),
+                        flush=True,
+                    )
+                return projected
+
+            def trace_rebind_materialized_state_routes(
+                evidence, identity_index, *args, **kwargs
+            ):
+                rebound = original_rebind_materialized_state_routes(
+                    evidence, identity_index, *args, **kwargs
+                )
+                terminal_evidence = tuple(
+                    route
+                    for route in evidence
+                    if route.proof_kind == "terminal_state_route"
+                )
+                if terminal_evidence:
+                    print(
+                        "PORTABLE_TERMINAL_REBIND",
+                        "portable="
+                        + repr(
+                            [portable_route_label(route) for route in terminal_evidence]
+                        ),
+                        "rebound="
+                        + repr(
+                            [
+                                live_route_label(route, kwargs["flow_graph"])
+                                for route in rebound
+                                if route.proof_kind == "terminal_state_route"
+                            ]
+                        ),
+                        flush=True,
+                    )
+                return rebound
+
+            unflat_module._portable_materialized_state_route_evidence = (
+                trace_project_materialized_state_routes
+            )
+            unflat_module._rebind_portable_materialized_state_routes = (
+                trace_rebind_materialized_state_routes
+            )
         if TRACE_SESSION_STATE:
             manager_lifecycle = headless._state.manager.decompilation_lifecycle
-            hook_lifecycle = headless._state.manager.hx_decompiler_hook._decompilation_lifecycle
+            hook_lifecycle = (
+                headless._state.manager.hx_decompiler_hook._decompilation_lifecycle
+            )
             print(
                 "RESOLVER_LIFECYCLE_PORTS",
                 f"manager_id={id(manager_lifecycle)}",
@@ -407,12 +627,9 @@ try:
                 graph = trace_context["flow_graph"]
                 for transition in resolved:
                     handler_block = graph.get_block(int(transition.handler))
-                    if (
-                        TRACE_HANDLER_EAS
-                        and (
-                            handler_block is None
-                            or int(handler_block.start_ea) not in TRACE_HANDLER_EAS
-                        )
+                    if TRACE_HANDLER_EAS and (
+                        handler_block is None
+                        or int(handler_block.start_ea) not in TRACE_HANDLER_EAS
                     ):
                         continue
                     for arm in transition.arms:
@@ -465,9 +682,7 @@ try:
                         )
                 return resolved
 
-            emit_module.recover_handler_transitions = (
-                trace_recover_handler_transitions
-            )
+            emit_module.recover_handler_transitions = trace_recover_handler_transitions
             emit_module.resolve_materialized_handler_exit_states = (
                 trace_resolve_exit_states
             )
@@ -499,7 +714,9 @@ try:
                 )
                 return original_prepare_detached_handler_snippets(state)
 
-            cg.prepare_detached_handler_snippets = trace_prepare_detached_handler_snippets
+            cg.prepare_detached_handler_snippets = (
+                trace_prepare_detached_handler_snippets
+            )
 
             def trace_static_native_handler_entry_eas(graph, dispatcher_blocks):
                 handler_eas = original_static_native_handler_entry_eas(
@@ -524,9 +741,11 @@ try:
                     (
                         int(serial),
                         int(graph.get_block(int(serial)).start_ea),
-                        None
-                        if graph.get_block(int(serial)).tail is None
-                        else int(graph.get_block(int(serial)).tail.ea),
+                        (
+                            None
+                            if graph.get_block(int(serial)).tail is None
+                            else int(graph.get_block(int(serial)).tail.ea)
+                        ),
                         len(graph.get_block(int(serial)).succs),
                     )
                     for serial in cg._native_entry_corridor_serials(graph)
@@ -605,7 +824,9 @@ try:
                 trace_discover_static_native_bootstrap_routes
             )
 
-        def observe_resolver_state(*, function_ea: int, mba: object, decision: dict) -> None:
+        def observe_resolver_state(
+            *, function_ea: int, mba: object, decision: dict
+        ) -> None:
             if int(function_ea) != FUNCTION_EA:
                 return
             session = decision.get("session")
@@ -664,14 +885,26 @@ try:
             if PREPARE_ONLY:
                 lifecycle = headless._state.manager.decompilation_lifecycle
                 session = lifecycle.current_session(FUNCTION_EA)
-                state = (
-                    None if session is None else resolver_session_state(session)
-                )
+                state = None if session is None else resolver_session_state(session)
             else:
                 ida_hexrays.clear_cached_cfuncs()
-                first = ida_hexrays.decompile(FUNCTION_EA)
+                first = headless.decompile(FUNCTION_EA)
                 final = first
                 state = observed_resolver_state[0] if observed_resolver_state else None
+                if TRACE_SESSION_STATE and state is not None:
+                    native_state = state.native_preanalysis
+                    lifecycle = headless._state.manager.decompilation_lifecycle
+                    active_session = lifecycle.current_session(FUNCTION_EA)
+                    print(
+                        "RESOLVER_SESSION_AFTER_DECOMPILE",
+                        f"session_active={active_session is not None}",
+                        f"evidence_generation={int(native_state.evidence_generation)}",
+                        f"bound_preopt_generation={native_state.bound_preopt_generation}",
+                        f"redo_generation={native_state.redo_generation}",
+                        "pending_generated_restart_generation="
+                        f"{native_state.pending_generated_restart_generation}",
+                        flush=True,
+                    )
             materialized = bool(getattr(state, "is_materialized", False))
             resolution = getattr(state, "resolution", None)
             _trace_static_bootstrap_route(state)
@@ -690,9 +923,7 @@ try:
                                 "native_ea": f"0x{int(native_ea):X}",
                             }
                             for imported_ea, native_ea in (
-                                imported_detached_snippet_instruction_origins(
-                                    final.mba
-                                )
+                                imported_detached_snippet_instruction_origins(final.mba)
                             )
                         ],
                         indent=2,
@@ -715,8 +946,7 @@ try:
                             "function_ea": int(resolution.function_ea),
                             "jmp_targets": {
                                 f"0x{int(jmp_ea):X}": [
-                                    f"0x{int(target_ea):X}"
-                                    for target_ea in target_eas
+                                    f"0x{int(target_ea):X}" for target_ea in target_eas
                                 ]
                                 for jmp_ea, target_eas in sorted(
                                     resolution.jmp_targets.items()
@@ -725,12 +955,8 @@ try:
                             "patch_plans": [
                                 {
                                     "jmp_ea": f"0x{int(plan.jmp_ea):X}",
-                                    "block_entry": (
-                                        f"0x{int(plan.block_entry):X}"
-                                    ),
-                                    "patch_start": (
-                                        f"0x{int(plan.patch_start):X}"
-                                    ),
+                                    "block_entry": (f"0x{int(plan.block_entry):X}"),
+                                    "patch_start": (f"0x{int(plan.patch_start):X}"),
                                     "target_eas": [
                                         f"0x{int(target_ea):X}"
                                         for target_ea in plan.target_eas
