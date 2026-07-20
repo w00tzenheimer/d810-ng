@@ -29,7 +29,7 @@ def load_return_sites_from_store(
     provider_level: int | None = None,
     **legacy_fields: object,
 ) -> tuple[ReturnSite, ...]:
-    "Load transition-report-derived Hodur return sites from the preanalysis store."
+    """Load transition-report-derived Hodur return sites from preanalysis storage."""
     site_provider = provider or HodurReturnSiteProvider()
     return _load_return_sites_from_store(
         func_ea=func_ea,

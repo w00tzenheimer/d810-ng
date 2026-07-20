@@ -1,4 +1,13 @@
-"SQLite persistence layer for PreanalysisResults and DeobfuscationHints.\n\nSchema follows the existing pattern in ``core/persistence.py``:\n- ``INSERT OR REPLACE`` for upsert semantics\n- JSON columns for variable-length data (metrics, candidates, inferences)\n- Composite primary key ``(func_ea, maturity, collector_name)`` for results\n- Single primary key ``func_ea`` for hints\n\nNo IDA imports - fully unit-testable.\n"
+"""SQLite persistence for PreanalysisResult and DeobfuscationHints.
+
+Schema follows the existing pattern in ``core/persistence.py``:
+- ``INSERT OR REPLACE`` for upsert semantics
+- JSON columns for variable-length data (metrics, candidates, inferences)
+- Composite primary key ``(func_ea, maturity, collector_name)`` for results
+- Single primary key ``func_ea`` for hints
+
+No IDA imports - fully unit-testable.
+"""
 from __future__ import annotations
 
 import atexit
@@ -107,7 +116,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             continue
         if column not in existing:
             stmt = "ALTER TABLE %s ADD COLUMN %s %s" % (table, column, col_def)
-            logger.info("preanalysis store: migrating schema \u2014 %s", stmt)
+            logger.info("preanalysis store: migrating schema - %s", stmt)
             conn.execute(stmt)
     conn.commit()
 
@@ -123,7 +132,12 @@ def _delete_sqlite_database(db_path: Path) -> None:
 
 
 def _ensure_readable_database(db_path: Path) -> None:
-    "Discard generated preanalysis DB state when SQLite reports corruption.\n\n    The preanalysis DB is a generated runtime cache. Keeping a malformed file is worse\n    than losing cached observations because a read failure can suppress later\n    optimizer passes for the whole maturity.\n    "
+    """Discard generated analysis DB state when SQLite reports corruption.
+
+    The analysis DB is generated runtime state. Keeping a malformed file is worse
+    than losing cached observations because a read failure can suppress later
+    optimizer passes for the whole maturity.
+    """
     if not db_path.exists() or db_path.stat().st_size == 0:
         return
     try:
@@ -168,7 +182,14 @@ def _candidate_from_dict(d: dict) -> CandidateFlag:
 
 
 class PreanalysisStore:
-    "SQLite-backed store for preanalysis results and deobfuscation hints.\n\n    Example:\n        >>> store = PreanalysisStore(\"/tmp/preanalysis.db\")\n        >>> store.save_preanalysis_result(result)\n        >>> rows = store.load_preanalysis_results(func_ea=0x401000, provider_level=5)\n        >>> store.close()\n    "
+    """SQLite-backed store for preanalysis results and deobfuscation hints.
+
+    Example:
+        >>> store = PreanalysisStore("/tmp/analysis.db")
+        >>> store.save_preanalysis_result(result)
+        >>> rows = store.load_preanalysis_results(func_ea=0x401000, provider_level=5)
+        >>> store.close()
+    """
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
@@ -187,7 +208,7 @@ class PreanalysisStore:
     # ------------------------------------------------------------------
 
     def save_preanalysis_result(self, result: PreanalysisResult) -> None:
-        "Upsert a PreanalysisResult (primary key: func_ea, maturity, collector_name)."
+        """Upsert one preanalysis result for a function and provider level."""
         self._conn.execute(
             """
             INSERT OR REPLACE INTO preanalysis_results
@@ -603,7 +624,12 @@ def _shutdown_writer(writer: "PreanalysisStoreWriter") -> None:
 
 
 class PreanalysisStoreWriter:
-    "Dedicated writer thread for serialized SQLite writes.\n\n    Owns a single ``PreanalysisStore`` connection.  Callers submit write\n    callables via :meth:`submit` (fire-and-forget) or\n    :meth:`submit_sync` (blocking, returns result).\n    "
+    """Dedicated writer thread for serialized SQLite writes.
+
+    Owns a single ``PreanalysisStore`` connection. Callers submit write
+    callables via :meth:`submit` (fire-and-forget) or
+    :meth:`submit_sync` (blocking, returns result).
+    """
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path

@@ -19,7 +19,7 @@ class TestReconPipelineCoverage:
         """Every function with hints must also have a session summary.
 
         This is the regression test for the 93/94 gap fixed by eager
-        session summary persistence in analyze_and_persist().
+        session summary persistence in analyze().
         """
         if analysis_store_session is None:
             pytest.skip("Preanalysis pipeline disabled")

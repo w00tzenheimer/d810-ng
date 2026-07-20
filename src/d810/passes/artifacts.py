@@ -156,7 +156,7 @@ def load_return_sites_from_store(
     provider_level: int | None = None,
     **legacy_fields: object,
 ) -> tuple[ReturnSite, ...]:
-    "Load transition-report-derived return sites from the preanalysis store."
+    """Load transition-report-derived return sites from preanalysis storage."""
     provider_level = _coerce_provider_level(provider_level, legacy_fields)
     report = load_transition_report_from_store(
         func_ea=func_ea,
