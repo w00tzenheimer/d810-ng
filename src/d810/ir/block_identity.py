@@ -234,11 +234,16 @@ def stable_block_identity_from_snapshot(
     instruction_eas = frozenset(
         int(insn.ea) for insn in block.insn_snapshots if 0 <= int(insn.ea) < _BADADDR
     )
-    if not instruction_eas:
+    native_anchors = set(instruction_eas)
+    start_ea = int(block.start_ea)
+    if 0 <= start_ea < _BADADDR:
+        native_anchors.add(start_ea)
+    if not native_anchors:
         return None
-    return StableBlockIdentity.from_instruction_eas(
-        instruction_eas,
+    return StableBlockIdentity.from_intervals(
+        (NativeEaInterval(ea, ea + 1) for ea in sorted(native_anchors)),
         native_key=native_key,
+        exact_instruction_eas=instruction_eas,
     )
 
 

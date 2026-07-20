@@ -6,6 +6,7 @@ from dataclasses import fields
 
 import d810.ir.block_identity as block_identity
 import pytest
+from d810.ir.flowgraph import BlockSnapshot, InsnSnapshot
 from tests.native_preanalysis import make_native_key
 
 
@@ -167,3 +168,25 @@ def test_same_native_ranges_from_different_inputs_are_distinct() -> None:
     )
 
     assert left != right
+
+
+def test_snapshot_identity_keeps_block_start_as_range_not_exact_instruction() -> None:
+    identity = block_identity.stable_block_identity_from_snapshot(
+        BlockSnapshot(
+            serial=7,
+            block_type=0,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x401000,
+            insn_snapshots=(
+                InsnSnapshot(opcode=0, ea=0x401005, operands=()),
+            ),
+        ),
+        native_key=make_native_key(),
+    )
+
+    assert identity is not None
+    assert identity.native_ranges.contains(0x401000)
+    assert identity.native_ranges.contains(0x401005)
+    assert identity.exact_instruction_eas == frozenset({0x401005})
