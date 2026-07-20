@@ -197,6 +197,19 @@ class NativePreanalysisSessionState:
     redo_generation: int | None = None
     pending_generated_restart_generation: int | None = None
 
+    def merge_facts(
+        self,
+        key: NativePreanalysisKey,
+        facts: NativePreanalysisFacts,
+    ) -> bool:
+        """Install changed normalized facts and advance their evidence epoch."""
+        facts.require_key(key)
+        if self.facts == facts:
+            return False
+        self.facts = facts
+        self.mark_evidence_changed()
+        return True
+
     def mark_evidence_changed(self) -> None:
         """Advance a bound epoch, or coalesce first-pass native evidence.
 

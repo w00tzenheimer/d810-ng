@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 import ida_hexrays
+from d810.analyses.control_flow.detached_handler_island import (
+    DetachedSnippetBoundaryPortOwner,
+    DetachedSnippetBoundaryPorts,
+    make_resolver_cut_boundary_port,
+)
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
@@ -48,19 +53,12 @@ class _MBA:
 
 
 @dataclass(frozen=True)
-class _Ports:
-    direct: tuple[object, ...] = ()
-    conditional: tuple[object, ...] = ()
-
-
-@dataclass(frozen=True)
 class _Preparation:
     prepared: bool
     published: bool = True
     primary_seed_ea: int | None = 0x2000
     seed_eas: tuple[int, ...] = (0x2000, 0x2100)
     imported_block_entry_eas: tuple[int, ...] = (0x2000, 0x2100)
-    boundary_ports: _Ports = _Ports()
 
 
 @dataclass(frozen=True)
@@ -197,9 +195,17 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
     session, state = _resolver_state()
     mba = SimpleNamespace(qty=1)
     imports: list[tuple[object, int, tuple[int, ...], dict[str, object]]] = []
-    preparation = _Preparation(
-        prepared=True,
-        boundary_ports=_Ports(direct=(object(),)),
+    preparation = _Preparation(prepared=True)
+    boundary_port = make_resolver_cut_boundary_port(
+        source_block_ea=0x2000,
+        source_instruction_ea=0x2004,
+        target_ea=0x1000,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        provenance="test_preopt_union",
+    )
+    state.merge_native_facts(
+        boundary_ports=DetachedSnippetBoundaryPorts((boundary_port,), ())
     )
 
     monkeypatch.setattr(island, "restore_terminal_return_carriers", lambda *_: 0)

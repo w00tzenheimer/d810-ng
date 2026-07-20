@@ -274,9 +274,6 @@ class PreoptUnionPreparationResult:
     seed_eas: tuple[int, ...] = ()
     native_ranges: tuple[tuple[int, int], ...] = ()
     imported_block_entry_eas: tuple[int, ...] = ()
-    boundary_ports: DetachedSnippetBoundaryPorts = field(
-        default_factory=lambda: DetachedSnippetBoundaryPorts((), ())
-    )
     abstention_reasons: tuple[str, ...] = ()
 
 
@@ -9757,7 +9754,7 @@ def _capture_prepatch_preopt_union_source(
     finally:
         state.finish_snippet_capture()
 
-    state.prepatch_preopt_union_source = _PrepatchPreoptUnionSource(
+    source = _PrepatchPreoptUnionSource(
         primary_seed_ea=int(region.primary_seed_ea),
         seed_eas=tuple(int(seed_ea) for seed_ea in region.seed_eas),
         seed_native_ranges=tuple(region.seed_native_ranges),
@@ -9766,6 +9763,12 @@ def _capture_prepatch_preopt_union_source(
         cfg=cfg_result.cfg,
         closure=closure,
     )
+    state.merge_native_facts(
+        native_cfg=source.cfg,
+        semantic_closure=source.closure,
+        transfers=enriched,
+    )
+    state.prepatch_preopt_union_source = source
     logger.info(
         "PREOPT prepatch source captured: func=0x%X primary=0x%X "
         "seeds=%s ranges=%s owned_entries=%s",
@@ -11769,7 +11772,6 @@ def prepare_preopt_union_closure(
         seed_eas=tuple(int(seed_ea) for seed_ea in region.seed_eas),
         native_ranges=normalized_ranges,
         imported_block_entry_eas=tuple(effective_closure.included_block_eas),
-        boundary_ports=boundary_ports,
     )
 
     def generate(maturity: int):
@@ -11852,6 +11854,12 @@ def prepare_preopt_union_closure(
         finally:
             state.finish_snippet_capture()
 
+    state.merge_native_facts(
+        native_cfg=native_cfg,
+        semantic_closure=effective_closure,
+        transfers=transfers,
+        boundary_ports=boundary_ports,
+    )
     state.preopt_union_preparation = result
     logger.info(
         "PREOPT union prepared: func=0x%X primary=0x%X seeds=%s "
@@ -11887,7 +11895,7 @@ def _refresh_preopt_union_from_calls_evidence(
         state,
         live_mba=mba,
         refresh_existing=True,
-        refresh_baseline_boundary_ports=previous.boundary_ports,
+        refresh_baseline_boundary_ports=state.boundary_ports,
     )
     if not refreshed.prepared:
         state.preopt_union_preparation = previous
