@@ -62,6 +62,7 @@ _SNAPSHOT_TYPES_REQUIRING_OWNED_MOP = {
 def _materialize_mop_for_tracking(
     mop: ida_hexrays.mop_t | MopSnapshot,
     context: str,
+    mba: ida_hexrays.mba_t | None = None,
 ) -> ida_hexrays.mop_t | None:
     """Return an owned ``mop_t`` suitable for IDA tracking APIs.
 
@@ -76,6 +77,11 @@ def _materialize_mop_for_tracking(
     if (
         mop.t in _SNAPSHOT_TYPES_REQUIRING_OWNED_MOP
         and getattr(mop, "owned_mop", None) is None
+        and not (
+            mop.t == ida_hexrays.mop_S
+            and getattr(mop, "stkoff", None) is not None
+            and mba is not None
+        )
     ):
         logger.debug(
             "%s: cannot materialize MopSnapshot type %s without owned_mop",
@@ -85,7 +91,7 @@ def _materialize_mop_for_tracking(
         return None
 
     try:
-        materialized = mop.to_mop()
+        materialized = mop.to_mop(mba=mba)
     except Exception as exc:
         logger.debug(
             "%s: failed to materialize MopSnapshot type %s: %s",
@@ -252,7 +258,11 @@ def find_def_in_block(
     Returns:
         The most-recent instruction in the block that writes to *mop*, or None.
     """
-    mop = _materialize_mop_for_tracking(mop, "find_def_in_block")
+    mop = _materialize_mop_for_tracking(
+        mop,
+        "find_def_in_block",
+        mba=getattr(blk, "mba", None),
+    )
     if mop is None:
         return None
 
@@ -293,7 +303,11 @@ def resolve_mop_via_predecessors(
     """
     if blk is None or mop is None:
         return None
-    mop = _materialize_mop_for_tracking(mop, "resolve_mop_via_predecessors")
+    mop = _materialize_mop_for_tracking(
+        mop,
+        "resolve_mop_via_predecessors",
+        mba=getattr(blk, "mba", None),
+    )
     if mop is None:
         return None
 
@@ -408,7 +422,11 @@ def resolve_mop_to_ast(
     Returns:
         The AST of the defining instruction's RHS, or None if not found
     """
-    mop = _materialize_mop_for_tracking(mop, "resolve_mop_to_ast")
+    mop = _materialize_mop_for_tracking(
+        mop,
+        "resolve_mop_to_ast",
+        mba=getattr(blk, "mba", None),
+    )
     if mop is None:
         return None
 

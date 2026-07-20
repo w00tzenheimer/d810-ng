@@ -277,7 +277,7 @@ cdef class MopSnapshot:
             self.helper_name, self.const_str,
         )
 
-    def to_mop(self):
+    def to_mop(self, mba=None):
         """Reconstruct a fresh (owned) mop_t from this snapshot.
 
         Used by AstLeaf.create_mop() to materialize a writeable operand
@@ -288,6 +288,14 @@ cdef class MopSnapshot:
             A new ida_hexrays.mop_t object
         """
         m = ida_hexrays.mop_t()
+        if (
+            self.t == ida_hexrays.mop_S
+            and self.stkoff is not None
+            and mba is not None
+        ):
+            m.make_stkvar(mba, self.stkoff)
+            m.size = self.size
+            return m
         if self.owned_mop is not None:
             try:
                 m.assign(self.owned_mop)

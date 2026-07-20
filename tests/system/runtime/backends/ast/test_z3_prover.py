@@ -1,4 +1,6 @@
 """Unit tests for Z3MopProver API surface."""
+from types import SimpleNamespace
+
 import pytest
 
 try:
@@ -68,6 +70,35 @@ class TestZ3MopProverAPI:
         from d810.backends.ast.z3 import Z3MopProver
         prover = Z3MopProver()
         assert prover.is_always_zero(None) is False
+
+    @pytest.mark.parametrize("method_name", ["is_always_zero", "is_always_nonzero"])
+    def test_stack_snapshot_materializes_against_context_mba(
+        self,
+        monkeypatch,
+        method_name,
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+
+        destination_mba = object()
+        materialized_with = []
+
+        class _FakeSnapshot:
+            def to_mop(self, mba=None):
+                materialized_with.append(mba)
+                return SimpleNamespace(t=ida_hexrays.mop_S, size=4)
+
+        monkeypatch.setattr(z3mod, "MopSnapshot", _FakeSnapshot)
+        monkeypatch.setattr(z3mod, "structural_mop_hash", lambda _mop, _depth: 1)
+        monkeypatch.setattr(z3mod, "mop_to_ast", lambda _mop: None)
+        monkeypatch.setattr(z3mod, "_resolve_mop_to_ast", lambda *_args: None)
+
+        prover = Z3MopProver(
+            blk=SimpleNamespace(mba=destination_mba),
+            ins=object(),
+        )
+        assert getattr(prover, method_name)(_FakeSnapshot()) is False
+        assert materialized_with == [destination_mba]
 
     def test_are_unequal_abstains_when_operand_fails_ast_conversion(self, monkeypatch):
         """``are_unequal`` MUST abstain (return ``False``) when an operand cannot be

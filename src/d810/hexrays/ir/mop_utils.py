@@ -22,6 +22,7 @@ from d810.hexrays.expr.ast import (
     get_mop_key,
 )
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
+from d810.hexrays.ir.mop_ownership import mop_mba_owner_scope
 from d810.hexrays.utils.hexrays_formatters import (
     format_mop_t,
     mop_tree,
@@ -54,6 +55,11 @@ class AstBuilderContext:
         # The fast lookup dictionary.
         # Maps a mop's unique key to its index in the unique_asts list.
         self.mop_key_to_index: dict[tuple[int, str], int] = {}
+
+
+def _mop_ast_cache_key(mop: object) -> tuple[object, tuple[int, ...]]:
+    """Scope structural AST templates by embedded native MBA ownership."""
+    return get_mop_key(mop), mop_mba_owner_scope(mop)
 
 
 def safe_make_number(mop, value, size):
@@ -439,7 +445,7 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
     """
 
     # 1. Create a stable, hashable key from the mop_t object.
-    cache_key = get_mop_key(mop)
+    cache_key = _mop_ast_cache_key(mop)
 
     # 2. Global template cache: return a proxy if we already know the template
     if cache_key in MOP_TO_AST_CACHE:
