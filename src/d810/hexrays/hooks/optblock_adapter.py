@@ -34,6 +34,14 @@ _PROJECT_CONFIG_KEYS = frozenset(
     }
 )
 
+
+def _current_mba_runtime_identity(mba: object) -> int:
+    """Name one live ``mba_t`` for adapter-local cache invalidation only."""
+    try:
+        return int(mba.this)
+    except (AttributeError, TypeError, ValueError):
+        return id(mba)
+
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
 
@@ -78,7 +86,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._max_passes_current = self._BASE_PASSES_PER_MATURITY
         self._generation: int = 0
         self._flow_context: FlowMaturityContext | None = None
-        self._flow_context_key: tuple[int, int] | None = None
+        self._flow_context_key: tuple[int, int, int, int, int] | None = None
         # Narrow manager-owned evidence and outcome ports.
         self._validated_fact_view_provider = None
         self._fact_consumer_callback = None
@@ -299,7 +307,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         )
 
     def func(self, blk: ida_hexrays.mblock_t):
-        self.log_info_on_input(blk)
+        if self.log_info_on_input(blk):
+            # PREOPT structural import invalidated the callback-local block.
+            # Report one change so Hex-Rays revisits the updated MBA before
+            # this adapter touches the stale pointer again.
+            return 1
 
         # Pipeline guard: after the PassPipeline fires and mutates the MBA,
         # all mop_t pointers held by block optimizer rules are stale. Running
@@ -376,6 +388,15 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     def log_info_on_input(self, blk: ida_hexrays.mblock_t):
         mba: ida_hexrays.mbl_array_t = blk.mba
 
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        consume_modified = getattr(
+            lifecycle,
+            "consume_current_preopt_microcode_modified",
+            None,
+        )
+        if callable(consume_modified) and consume_modified(consumer="block"):
+            return True
+
         if (mba is not None) and (mba.maturity != self.current_maturity):
             if main_logger.debug_on:
                 main_logger.debug(
@@ -433,7 +454,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # Axis-C end-state event (E1): mirror the
             # ``InstructionOptimizerManager`` site -- emit
             # ``FLOWGRAPH_READY`` so the cross-layer event lands at
-            # every existing preanalysis-collection lifecycle point.  When
+            # every existing preanalysis-collection lifecycle point. When
             # E4 swaps the live-mba ``run_microcode_collectors(...)``
             # path for ``FLOWGRAPH_READY`` subscribers, neither
             # manager silently drops out of the chain.
@@ -580,6 +601,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 # pointers after the pipeline mutates CFG.
                 self._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
 
+        return False
+
     # statistics are managed centrally via the stats object
 
     def _resolve_active_rules(
@@ -692,7 +715,30 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         mba = blk.mba
         if mba is None or mba.entry_ea is None or self.current_maturity is None:
             return None
-        key = (int(mba.entry_ea), int(self.current_maturity))
+        lifecycle = self._decompilation_lifecycle
+        generation_getter = getattr(lifecycle, "current_mba_generation", None)
+        current_mba_generation = (
+            int(generation_getter(function_ea=int(mba.entry_ea)))
+            if callable(generation_getter)
+            else 0
+        )
+        evidence_generation_getter = getattr(
+            lifecycle,
+            "current_evidence_generation",
+            None,
+        )
+        current_evidence_generation = (
+            int(evidence_generation_getter(function_ea=int(mba.entry_ea)))
+            if callable(evidence_generation_getter)
+            else 0
+        )
+        key = (
+            int(mba.entry_ea),
+            int(self.current_maturity),
+            current_mba_generation,
+            current_evidence_generation,
+            _current_mba_runtime_identity(mba),
+        )
         if self._flow_context is None or self._flow_context_key != key:
             self._flow_context = self._flow_context_type(
                 mba=mba,
@@ -1085,8 +1131,18 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
         return len(applied)
 
-    def _run_glbopt1_preanalysis_backed_extensions(self, mba: ida_hexrays.mba_t) -> None:
-        "Run whole-function GLBOPT1 rewrites that consume preanalysis evidence.\n\n        This is intentionally not a normal ``FlowOptimizationRule`` callback:\n        terminal-tail egress consumes whole-function facts emitted by\n        ``FLOWGRAPH_READY`` / ``analyze_and_persist`` above and then mutates\n        multiple blocks. Running it at the next maturity is too late because\n        IDA may already have collapsed the CFG shape that those facts describe.\n        "
+    def _run_glbopt1_preanalysis_backed_extensions(
+        self,
+        mba: ida_hexrays.mba_t,
+    ) -> None:
+        """Run whole-function GLBOPT1 rewrites consuming preanalysis evidence.
+
+        This is intentionally not a normal ``FlowOptimizationRule`` callback:
+        terminal-tail egress consumes whole-function facts emitted by
+        ``FLOWGRAPH_READY`` / ``analyze_and_persist`` above and then mutates
+        multiple blocks. Running it at the next maturity is too late because
+        IDA may already have collapsed the CFG shape that those facts describe.
+        """
         terminal_tail_patch_count = (
             self._maybe_run_terminal_tail_cascade_egress_lowering(mba)
         )

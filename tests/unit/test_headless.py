@@ -7,6 +7,7 @@ hook installation belongs in system/runtime tests.
 from __future__ import annotations
 
 import pathlib
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -36,7 +37,10 @@ class FakeProjectManager:
 
 class FakeState:
     def __init__(self, project_names: list[str] | None = None):
-        names = project_names or ["default_instruction_only.json", "default_unflattening_ollvm.json"]
+        names = project_names or [
+            "default_instruction_only.json",
+            "default_unflattening_ollvm.json",
+        ]
         self.project_manager = FakeProjectManager(names)
         self.manager = SimpleNamespace(started=False)
         self.current_project = FakeProject(names[0])
@@ -103,6 +107,32 @@ def test_start_requires_configure_first():
         headless.start()
 
 
+def test_decompile_routes_through_manager_owned_controller(monkeypatch):
+    from d810 import headless
+
+    calls = []
+    manager = SimpleNamespace(
+        decompile_with_native_preanalysis=lambda function_ea, decompile, invalidate: (
+            calls.append(("controller", function_ea)),
+            decompile(),
+        )[1]
+    )
+    headless._state = SimpleNamespace(manager=manager)
+    headless._configured = True
+    monkeypatch.setitem(
+        sys.modules,
+        "ida_hexrays",
+        SimpleNamespace(
+            decompile=lambda function_ea: calls.append(("decompile", function_ea))
+            or "cfunc",
+            clear_cached_cfuncs=lambda: calls.append(("invalidate", 0)),
+        ),
+    )
+
+    assert headless.decompile(0x401000) == "cfunc"
+    assert calls == [("controller", 0x401000), ("decompile", 0x401000)]
+
+
 def test_stop_without_state_is_noop():
     from d810 import headless
 
@@ -117,7 +147,9 @@ def test_configure_loads_state_without_gui_and_selects_project(monkeypatch, tmp_
 
     monkeypatch.setattr(headless, "_make_config", lambda **kwargs: FakeConfig(**kwargs))
     monkeypatch.setattr(headless, "_make_state", lambda: state)
-    monkeypatch.setattr(headless, "load_optimizer_registries", lambda: registry_loads.append("loaded"))
+    monkeypatch.setattr(
+        headless, "load_optimizer_registries", lambda: registry_loads.append("loaded")
+    )
 
     headless.configure(
         project="default_unflattening_ollvm.json",
@@ -227,7 +259,12 @@ def test_load_optimizer_registries_uses_reloader_with_ui_skipped(monkeypatch):
         (
             fake_package,
             {
-                "skip": ["d810.core.registry", "d810._vendor", "d810.headless", "d810.ui"],
+                "skip": [
+                    "d810.core.registry",
+                    "d810._vendor",
+                    "d810.headless",
+                    "d810.ui",
+                ],
                 "suppress_errors": True,
             },
         )

@@ -315,6 +315,74 @@ def test_lifecycle_releases_current_mba_identity_index_when_session_finishes() -
     assert session.current_mba_identity_index is None
 
 
+def test_flowchart_generation_resets_and_preopt_marks_duplicate_fallback_guard() -> None:
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+    session, _created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    coordinator.bind_current_mba_identity_index(
+        function_ea=0x401000,
+        index=object(),
+    )
+    coordinator.mark_preopt_ready_emitted(
+        function_ea=0x401000,
+        microcode_modified=True,
+    )
+
+    assert session.current_mba_identity_index is None
+    assert coordinator.preopt_ready_was_emitted(function_ea=0x401000)
+    assert coordinator.consume_preopt_microcode_modified(
+        function_ea=0x401000,
+        consumer="instruction",
+    )
+    assert not coordinator.consume_preopt_microcode_modified(
+        function_ea=0x401000,
+        consumer="instruction",
+    )
+    assert coordinator.consume_preopt_microcode_modified(
+        function_ea=0x401000,
+        consumer="block",
+    )
+    coordinator.mark_preopt_ready_emitted(
+        function_ea=0x401000,
+        microcode_modified=True,
+    )
+    assert coordinator.consume_current_preopt_microcode_modified(
+        consumer="instruction"
+    )
+    assert coordinator.consume_current_preopt_microcode_modified(consumer="block")
+    assert not coordinator.consume_current_preopt_microcode_modified(
+        consumer="instruction"
+    )
+
+    coordinator.begin_current_mba_generation(function_ea=0x401000)
+
+    assert session.current_mba_identity_index is None
+    assert coordinator.current_mba_generation(function_ea=0x401000) == 1
+    assert not coordinator.preopt_ready_was_emitted(function_ea=0x401000)
+
+    coordinator.mark_preopt_ready_emitted(
+        function_ea=0x401000,
+        microcode_modified=False,
+    )
+
+    assert coordinator.preopt_ready_was_emitted(function_ea=0x401000)
+    assert not coordinator.consume_preopt_microcode_modified(
+        function_ea=0x401000,
+        consumer="instruction",
+    )
+    assert not coordinator.consume_preopt_microcode_modified(
+        function_ea=0x401000,
+        consumer="block",
+    )
+
+    coordinator.begin_current_mba_generation(function_ea=0x401000)
+
+    assert coordinator.current_mba_generation(function_ea=0x401000) == 2
+
+
 def test_session_gateway_reuses_the_active_current_mba_identity_index() -> None:
     calls: list[tuple[str, object]] = []
     coordinator, _runtime = _coordinator(calls)
@@ -462,6 +530,59 @@ def test_native_preanalysis_reserves_the_owner_across_an_internal_callback() -> 
         ("preanalysis.finish", 0x401000),
         ("runtime.finish", None),
     ]
+
+
+def test_native_preanalysis_redo_reuses_the_active_callback_activation() -> None:
+    """MERR_REDO can emit a second prolog but only one structural finish."""
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+    session, _created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    coordinator.begin_native_preanalysis(session)
+    first, first_created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+        callback_entry_ea=0x401020,
+    )
+    restarted, restarted_created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+        callback_entry_ea=0x401000,
+    )
+
+    assert first is session
+    assert restarted is session
+    assert first_created is False
+    assert restarted_created is False
+    assert coordinator.finish_hexrays_session() is None
+    coordinator.finish_native_preanalysis(session)
+
+    assert coordinator.finish_hexrays_session() is None
+    assert coordinator.current_session(0x401000) is None
+
+
+def test_pending_generated_restart_retains_owner_until_flowchart_consumes_it() -> None:
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+    session, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    assert created is True
+    session.native_preanalysis.evidence_generation = 2
+    assert session.native_preanalysis.request_generated_restart()
+
+    assert coordinator.finish_hexrays_session() is None
+    assert coordinator.current_session(0x401000) is session
+    assert coordinator.has_pending_generated_restart(0x401000)
+
+    assert session.native_preanalysis.consume_generated_restart()
+    assert coordinator.finish_hexrays_session() is None
+    assert coordinator.current_session(0x401000) is None
 
 
 def test_analysis_without_hints_does_not_apply_or_record_rule_scope_outcome() -> None:

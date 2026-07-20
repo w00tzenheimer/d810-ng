@@ -2,6 +2,7 @@
 
 Decompile the current function with D810ng active (from disassembly view).
 """
+
 from __future__ import annotations
 
 from d810.core import typing
@@ -10,6 +11,7 @@ from d810.core.logging import getLogger
 from d810.ui.actions.base import D810ActionHandler
 
 logger = getLogger("D810.ui")
+
 
 class DecompileFunction(D810ActionHandler):
     """Decompile the current function with d810-ng active (from disassembly view)."""
@@ -47,14 +49,11 @@ class DecompileFunction(D810ActionHandler):
 
         # Trigger decompilation (D810ng hooks will run automatically)
         try:
-            prepared = self._state.manager.prepare_native_preanalysis(int(func_ea))
-            if prepared:
-                logger.info(
-                    "Prepared %d detached microcode snippet(s) for %s",
-                    int(prepared),
-                    hex(func_ea),
-                )
-            idaapi_shim.decompile(func_ea)
+            self._state.manager.decompile_with_native_preanalysis(
+                int(func_ea),
+                lambda: idaapi_shim.decompile(func_ea),
+                lambda: idaapi_shim.mark_cfunc_dirty(func_ea, False),
+            )
             # Open the pseudocode window
             idaapi_shim.open_pseudocode(func_ea, 0)
         except Exception as exc:

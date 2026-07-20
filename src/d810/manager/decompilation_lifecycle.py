@@ -32,7 +32,12 @@ class DecompilationSessionContext:
         default_factory=NativePreanalysisSessionState
     )
     native_preanalysis_depth: int = 0
+    current_mba_generation: int = 0
     current_mba_identity_index: object | None = None
+    preopt_ready_emitted_for_current_mba: bool = False
+    preopt_refresh_consumers_for_current_mba: set[str] = field(
+        default_factory=set
+    )
     extensions: dict[object, object] = field(default_factory=dict)
 
     @property
@@ -88,7 +93,9 @@ class DecompilationLifecycleCoordinator:
     analysis_runtime: typing.Any | None
     rule_scope_service: typing.Any | None
     event_emitter: typing.Any | None = None
-    current_mba_identity_index_builder: typing.Callable[..., object | None] | None = None
+    current_mba_identity_index_builder: typing.Callable[..., object | None] | None = (
+        None
+    )
     mba_mutation_gateway_factory: typing.Callable[..., object | None] | None = None
     session_extension_initializer: typing.Callable[[object], object] | None = None
     _active_sessions: list[_SessionActivation] = field(
@@ -136,6 +143,15 @@ class DecompilationLifecycleCoordinator:
                     current.native_preanalysis_depth > 0
                     or callback_entry_ea != function_ea
                 ):
+                    if (
+                        current.native_preanalysis_depth > 0
+                        and not self._active_sessions[-1].owns_session
+                    ):
+                        # MERR_REDO re-enters prolog for the same internal
+                        # preflight decompile, but Hex-Rays emits only one
+                        # matching structural completion.  Reuse the borrowed
+                        # activation already protecting the owner.
+                        return current, False
                     self._active_sessions.append(
                         _SessionActivation(session=current, owns_session=False)
                     )
@@ -222,6 +238,14 @@ class DecompilationLifecycleCoordinator:
                 return session
         return None
 
+    def has_pending_generated_restart(self, function_ea: int) -> bool:
+        """Return whether the active owner needs one controller follow-up."""
+        session = self.current_session(int(function_ea))
+        return bool(
+            session is not None
+            and session.native_preanalysis.has_pending_generated_restart
+        )
+
     def begin_native_preanalysis(self, session: DecompilationSessionContext) -> None:
         """Reserve a session while its manager-owned preflight uses Hex-Rays.
 
@@ -254,6 +278,100 @@ class DecompilationLifecycleCoordinator:
             return None
         session.current_mba_identity_index = index
         return index
+
+    def begin_current_mba_generation(self, *, function_ea: int) -> None:
+        """Invalidate live bindings and callback guards at flowchart entry."""
+        session = self.current_session(int(function_ea))
+        if session is None:
+            return
+        session.current_mba_generation += 1
+        session.current_mba_identity_index = None
+        session.preopt_ready_emitted_for_current_mba = False
+        session.preopt_refresh_consumers_for_current_mba.clear()
+
+    def current_mba_generation(self, *, function_ea: int) -> int:
+        """Return the active flowchart generation without exposing its session."""
+        session = self.current_session(int(function_ea))
+        return 0 if session is None else int(session.current_mba_generation)
+
+    def current_evidence_generation(self, *, function_ea: int) -> int:
+        """Return the portable evidence epoch owning the current MBA bindings."""
+        session = self.current_session(int(function_ea))
+        return (
+            0
+            if session is None
+            else int(session.native_preanalysis.evidence_generation)
+        )
+
+    def mark_preopt_ready_emitted(
+        self,
+        *,
+        function_ea: int,
+        microcode_modified: bool = False,
+        callback_pointer_refresh_required: bool = True,
+    ) -> None:
+        """Record that the supported PREOPT hook emitted for this MBA."""
+        session = self.current_session(int(function_ea))
+        if session is not None:
+            session.preopt_ready_emitted_for_current_mba = True
+            if microcode_modified:
+                session.current_mba_identity_index = None
+                for attachment in tuple(session.extensions.values()):
+                    invalidate = getattr(
+                        attachment,
+                        "invalidate_current_mba_binding",
+                        None,
+                    )
+                    if callable(invalidate):
+                        invalidate()
+            consumers = session.preopt_refresh_consumers_for_current_mba
+            consumers.clear()
+            if microcode_modified and callback_pointer_refresh_required:
+                consumers.update(("block", "instruction"))
+
+    def preopt_ready_was_emitted(self, *, function_ea: int) -> bool:
+        """Return whether an optinsn fallback would duplicate this MBA hook."""
+        session = self.current_session(int(function_ea))
+        return bool(
+            session is not None
+            and session.preopt_ready_emitted_for_current_mba
+        )
+
+    def consume_preopt_microcode_modified(
+        self,
+        *,
+        function_ea: int,
+        consumer: str,
+    ) -> bool:
+        """Consume the one-shot stale-operand guard after PREOPT mutation."""
+        session = self.current_session(int(function_ea))
+        return self._consume_preopt_microcode_modified(session, consumer)
+
+    def consume_current_preopt_microcode_modified(self, *, consumer: str) -> bool:
+        """Consume the guard for the innermost active callback session.
+
+        Optimizer callbacks can expose an internal MBA entry EA rather than
+        the containing function's session identity, so the adapter must not
+        derive ownership from ``mba.entry_ea``.
+        """
+        session = (
+            self._active_sessions[-1].session if self._active_sessions else None
+        )
+        return self._consume_preopt_microcode_modified(session, consumer)
+
+    @staticmethod
+    def _consume_preopt_microcode_modified(
+        session: DecompilationSessionContext | None,
+        consumer: str,
+    ) -> bool:
+        if session is None:
+            return False
+        consumer = str(consumer)
+        consumers = session.preopt_refresh_consumers_for_current_mba
+        if consumer not in consumers:
+            return False
+        consumers.remove(consumer)
+        return True
 
     def build_current_mba_identity_index(
         self,
@@ -450,20 +568,27 @@ class DecompilationLifecycleCoordinator:
                 source=source,
             )
         except Exception:
-            logger.exception("rule-scope hint application failed for func=0x%x", function_ea)
+            logger.exception(
+                "rule-scope hint application failed for func=0x%x", function_ea
+            )
 
     def finish_hexrays_session(self) -> None:
         """Finish the innermost session and publish its typed observer event."""
         if not self._active_sessions:
             return None
         activation = self._active_sessions[-1]
-        if (
-            activation.owns_session
-            and activation.session.native_preanalysis_depth > 0
-        ):
+        if activation.owns_session and activation.session.native_preanalysis_depth > 0:
             # A defensive guard for a preflight callback that did not receive
             # its borrowed activation. The manager releases the reservation
             # before the public top-level decompile can finish this owner.
+            return None
+        if (
+            activation.owns_session
+            and activation.session.native_preanalysis.has_pending_generated_restart
+        ):
+            # CALLS cannot restart generated/PREOPT microcode itself. Retain
+            # the evidence owner until a manager-controlled follow-up reaches
+            # flowchart and consumes the one staged MERR_REDO request.
             return None
         self._active_sessions.pop()
         if not activation.owns_session:
