@@ -295,6 +295,42 @@ happen to match.
   sidecar artifact, or both.  Do not make durable cache loading a prerequisite
   for fresh analysis; every cache miss or failed validation must fail open.
 
+### Foundation-closure amendment (2026-07-20)
+
+The current `diff/decomp-session-foundation` branch has already proved Rhad A0,
+but that vertical proof landed before the final B0/B0.2/B1 contracts were
+closed.  The remaining work is therefore foundation closure, not further Rhad
+semantic development.  The following order overrides the older Track A-first
+wording below:
+
+1. Reconcile this specification, `dsf-dnr9`, and the standalone execution plan.
+2. Make the B0 inventory recognize lifecycle names embedded in larger
+   identifiers, then remove every remaining lifecycle-era identifier without a
+   compatibility alias or temporary port.
+3. Define `NativePreanalysisKey` in `d810.core.native_preanalysis_key`, the
+   IDA-free layer below both `d810.ir` and `d810.analyses`.  This prerequisite
+   commit must land before `StableBlockIdentity` imports it.
+4. Complete portable `StableBlockIdentity`, then complete the live
+   `MbaBlockIdentityIndex`, as separate commits.
+5. Make the coordinator-created `MbaMutationGateway` the only production
+   structural-mutation executor and delete local fallback gateways and serial
+   maps in small green commits.
+6. Implement `NativePreanalysisFacts` and the coordinator-owned session
+   operations, then fold the A0 bootstrap route and resolver state into that
+   canonical aggregate.
+7. Re-run the fresh cache-disabled Rhad A0 bootstrap and semantic oracles plus
+   all protected-family gates.  Do not add A1/A2 semantics.
+
+This resolves the former dependency contradiction: `NativePreanalysisKey`
+cannot be defined in `d810.analyses.control_flow.native_preanalysis_session`
+because `d810.ir.block_identity` would then need an upward import.  The key is
+a core value object; native facts remain in the analysis layer, portable block
+identity remains in the IR layer, and live MBA binding remains in the Hex-Rays
+layer.
+
+The executable plan and per-commit verification matrix live at
+`docs/superpowers/plans/2026-07-20-decomp-session-foundation-closure.md`.
+
 # Rhad Native Preanalysis and Serialized PREOPT Templates Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
@@ -910,6 +946,10 @@ result; they never import a live MBA index. The coordinator owns the current
 index for the active decompilation context and rebuilds it at lifecycle
 boundaries. No module-global EA-to-serial cache is allowed.
 
+`NativePreanalysisKey` is defined first in
+`d810.core.native_preanalysis_key`.  `d810.ir.block_identity` may import that
+lower-layer value type; it must not import `d810.analyses` to obtain it.
+
 **Portable identity contract:**
 
 ```python
@@ -924,7 +964,7 @@ class NativeEaIntervalSet:
 
 @dataclass(frozen=True, slots=True)
 class StableBlockIdentity:
-    function_ea: int
+    native_key: NativePreanalysisKey
     exact_instruction_eas: frozenset[int]
     native_ranges: NativeEaIntervalSet
 
@@ -1072,6 +1112,8 @@ resolver-specific derived state without creating a reverse import from
 
 **Files:**
 
+- Create: `src/d810/core/native_preanalysis_key.py`
+- Create: `tests/unit/core/test_native_preanalysis_key.py`
 - Create: `src/d810/analyses/control_flow/native_preanalysis_session.py`
 - Create: `tests/unit/analyses/control_flow/test_native_preanalysis_session.py`
 - Modify: `src/d810/hexrays/lifecycle.py`
@@ -1079,6 +1121,10 @@ resolver-specific derived state without creating a reverse import from
 - Modify: `src/d810/optimizers/microcode/flow/jumps/computed_goto_resolver.py`
 
 **Portable types:**
+
+`NativePreanalysisKey` is a B1.0 prerequisite and lands before the B0.2
+identity changes.  It is defined in `d810.core`, not in this higher analysis
+module:
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -1122,10 +1168,17 @@ finish(key: NativePreanalysisKey) -> None
 `merge_facts()` returns `True` only when normalized semantic evidence changed.
 It must reject a key mismatch and must not use a block serial as a merge key.
 
+- [ ] Write pure B1.0 tests for key equality, deterministic serialization,
+  key mismatch rejection, and distinct input/profile/SDK identities.  Construct
+  every field from real loader/profile/SDK inputs; do not invent placeholder
+  fingerprints in production.
+- [ ] Land the IDA-free key in `d810.core.native_preanalysis_key` before
+  changing `StableBlockIdentity`.
 - [ ] Write pure unit tests for `ensure`, idempotent merge, changed merge,
   key mismatch rejection, exact-once PREOPT binding, and finish cleanup.
-- [ ] Implement these types in the analysis layer using only core/analysis
-  dependencies.  Do not import IDA, Hex-Rays, UI, or optimizer modules there.
+- [ ] Implement `NativePreanalysisFacts` and session state in the analysis
+  layer using only core/IR/analysis dependencies.  Do not import IDA,
+  Hex-Rays, UI, or optimizer modules there.
 - [ ] Implement these operations on `DecompilationLifecycleCoordinator`; do
   not add an independently subscribed registry for `STARTED`, `FINISHED`, or
   maturity events.
@@ -1356,28 +1409,35 @@ authority that an earlier item is supposed to remove.
    lifecycle consumers to the single coordinator and final preanalysis names.
    Delete the old events, direct adapter runtime calls, and terminology. There
    is no compatibility layer or import alias.
-3. **Commit B0.2 identity and mutation authority**: land portable identity,
-   live `MbaBlockIdentityIndex` rebinding, typed mutation receipts, and the sole
-   structural-mutation gateway. Delete adapter-local serial remaps and
+3. **Commit B1.0 portable native key**: define and test the deterministic,
+   serializable `NativePreanalysisKey` in `d810.core`.  Use real input,
+   processor, bitness, function, profile, and SDK identities.  This commit is a
+   prerequisite for portable block identity.
+4. **Commit B0.2 portable identity**: make `StableBlockIdentity` contain
+   `native_key`, `exact_instruction_eas`, and `native_ranges`; make
+   `MbaBlockHandle` expose `stable_identity`; then migrate the live index in a
+   separate green commit.
+5. **Commit B0.2 mutation authority**: land typed mutation receipts and make
+   the coordinator-owned gateway the sole structural-mutation executor. Delete
+   adapter-local serial remaps, fallback/local gateway construction, and
    cross-maturity EA-to-serial maps before the resolver relies on this path.
-4. **Commit B1 resolver session migration**: move resolver function-EA globals
+6. **Commit B1 resolver session migration**: move resolver function-EA globals
    into the coordinator-owned session, with generation-aware CALLS merges, one
    controlled `MERR_REDO`, and PREOPT rebinding against the newer generation.
    No live MBA or persisted serial survives the session boundary.
-5. **Commit A0** as the fresh PREOPT bootstrap proof. It consumes the final
+7. **Verify A0** as the fresh PREOPT bootstrap proof. It consumes the final
    B0.2/B1 authorities to preserve `0x40D348 -> 0x699BC698 -> 0x40EAA7` through
    the controlled redo. It must pass with caches disabled and without serialized
    snapshots, netnodes, or cache reuse.
-6. **Commit A1+A2** only after A0 makes the body reachable and establishes that
-   `0x40E20E` is the next actual semantic gap. This is the direct user-visible
-   Rhad work and must not create a second lifecycle, identity, or evidence path.
-7. **Commit B2** only where explicit preflight/fallback remains necessary after
+8. **Defer A1+A2** for the entire foundation-closure goal.  Do not add
+   `0x40E20E` or other Rhad semantics while architectural authority is changing.
+9. **Commit B2** only where explicit preflight/fallback remains necessary after
    the no-cache proof. It extends the established coordinator/session path; it
    does not introduce persistence or alter the no-cache oracle.
-8. **Commit B3+B4** as serialization, validation, and persistence primitives.
+10. **Commit B3+B4** as serialization, validation, and persistence primitives.
    They must have standalone unit/runtime proof but need not change production
    import selection yet.
-9. **Commit B5+C1+C2** only after cache-on and cache-off output are equivalent
+11. **Commit B5+C1+C2** only after cache-on and cache-off output are equivalent
    and all existing architecture gates pass. Replay the Rhad donor only after
    the protected Docker Rhad, Hodur/Sub7ffd, and Tigress gates are green.
 
