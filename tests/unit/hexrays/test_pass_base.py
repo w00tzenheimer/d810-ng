@@ -123,7 +123,7 @@ class TestInMemoryBackend:
             ConvertToGoto(block_serial=3, goto_target=4),
         ]
 
-        count = backend.lower(mods)
+        count = backend.lower(mods, mutation_gateway = object())
 
         assert count == 2
         assert len(backend.applied_modifications) == 2
@@ -273,7 +273,7 @@ class TestIntegration:
         assert len(modifications) == 2  # 2 terminal blocks
 
         # Lower modifications
-        count = backend.lower(modifications)
+        count = backend.lower(modifications, mutation_gateway = object())
         assert count == 2
 
         # Verify

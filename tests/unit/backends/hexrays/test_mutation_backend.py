@@ -5,6 +5,9 @@ from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
 from d810.transforms.plan import PatchConvertToGoto, PatchPlan, PatchRedirectGoto
 
 
+MUTATION_GATEWAY = object()
+
+
 def _make_block(
     serial: int,
     succs: tuple[int, ...],
@@ -62,7 +65,14 @@ class _FakeTranslator:
         self.lift_count += 1
         return self.cfg
 
-    def lower(self, rewrite_plan: PatchPlan, _live_source: object) -> int:
+    def lower(
+        self,
+        rewrite_plan: PatchPlan,
+        _live_source: object,
+        *,
+        mutation_gateway: object,
+    ) -> int:
+        assert mutation_gateway is MUTATION_GATEWAY
         self.lower_calls.append(rewrite_plan)
         return len(rewrite_plan.steps)
 
@@ -73,7 +83,10 @@ def test_apply_rejects_plan_that_orphans_reachable_terminal() -> None:
         stop_serials=(3,),
     )
     translator = _FakeTranslator(cfg)
-    backend = HexRaysMutationBackend(translator=translator)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=MUTATION_GATEWAY,
+        translator=translator,
+    )
     plan = PatchPlan(
         steps=(PatchRedirectGoto(from_serial=2, old_target=3, new_target=1),),
     )
@@ -88,7 +101,10 @@ def test_apply_rejects_plan_that_orphans_reachable_terminal() -> None:
 def test_apply_rejects_plan_that_collapses_entry_reachability() -> None:
     cfg = _make_cfg([(serial, serial + 1) for serial in range(24)])
     translator = _FakeTranslator(cfg)
-    backend = HexRaysMutationBackend(translator=translator)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=MUTATION_GATEWAY,
+        translator=translator,
+    )
     plan = PatchPlan(
         steps=(PatchRedirectGoto(from_serial=0, old_target=1, new_target=0),),
     )
@@ -106,7 +122,10 @@ def test_apply_lowers_plan_when_reachability_is_preserved() -> None:
         stop_serials=(3,),
     )
     translator = _FakeTranslator(cfg)
-    backend = HexRaysMutationBackend(translator=translator)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=MUTATION_GATEWAY,
+        translator=translator,
+    )
     plan = PatchPlan(
         steps=(PatchConvertToGoto(block_serial=0, goto_target=1),),
     )

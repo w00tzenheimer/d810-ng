@@ -58,7 +58,9 @@ class InMemoryBackend:
     def lower(
         self,
         lowering_input: LoweringInput,
-        state: dict[int, BlockSnapshot] | None = None
+        state: dict[int, BlockSnapshot] | None = None,
+        *,
+        mutation_gateway: object,
     ) -> int:
         """Record modifications and return count.
 

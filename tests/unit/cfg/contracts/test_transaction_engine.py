@@ -13,6 +13,9 @@ from d810.passes.transaction_engine import (
 )
 
 
+MUTATION_GATEWAY = object()
+
+
 def _make_violation(code: str = "TEST_001", phase: str = "pre") -> InvariantViolation:
     return InvariantViolation(code=code, message="test violation", phase=phase)
 
@@ -76,7 +79,7 @@ class TestCfgTransactionEngine:
         translator.lower.return_value = 5
         engine = CfgTransactionEngine(translator)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
 
         assert result.success is True
         assert result.applied_count == 5
@@ -89,7 +92,7 @@ class TestCfgTransactionEngine:
         contract.verify_projected.side_effect = _make_contract_error("projected")
         engine = CfgTransactionEngine(translator, contract=contract)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
 
         assert result.success is False
         assert result.failure_phase == "projected_contract"
@@ -105,7 +108,7 @@ class TestCfgTransactionEngine:
         contract.verify.side_effect = _make_contract_error("pre")
         engine = CfgTransactionEngine(translator, contract=contract)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
 
         assert result.success is False
         assert result.failure_phase == "live_pre_check"
@@ -122,7 +125,7 @@ class TestCfgTransactionEngine:
         translator.lower.side_effect = _make_contract_error("post")
         engine = CfgTransactionEngine(translator, contract=contract)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
 
         assert result.success is False
         assert result.failure_phase == "post_apply_contract"
@@ -138,7 +141,7 @@ class TestCfgTransactionEngine:
         del translator.last_lowering_phase
         engine = CfgTransactionEngine(translator)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
 
         assert result.success is False
         assert result.failure_phase == "backend_apply"
@@ -153,7 +156,7 @@ class TestCfgTransactionEngine:
         translator.last_lowering_phase = "lowering"
         engine = CfgTransactionEngine(translator)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
 
         assert result.success is False
         assert result.failure_phase == "lowering"
@@ -168,7 +171,7 @@ class TestCfgTransactionEngine:
         translator.last_lowering_phase = "native_verify"
         engine = CfgTransactionEngine(translator)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
 
         assert result.success is False
         assert result.failure_phase == "native_verify"
@@ -183,7 +186,7 @@ class TestCfgTransactionEngine:
         translator.last_lowering_subphase = "optimize_local"
         engine = CfgTransactionEngine(translator)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
 
         assert result.success is False
         assert result.failure_phase == "backend_apply"
@@ -197,7 +200,7 @@ class TestCfgTransactionEngine:
         translator.lower.return_value = 3
         engine = CfgTransactionEngine(translator, contract=None)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
 
         assert result == TransactionResult.ok(3)
         translator.lower.assert_called_once()
@@ -209,10 +212,13 @@ class TestCfgTransactionEngine:
         translator.lower.return_value = 2
         engine = CfgTransactionEngine(translator)
 
-        engine.apply(plan, pre_cfg=pre_cfg, mba=mba, post_apply_hook=hook)
+        engine.apply(plan, pre_cfg=pre_cfg, mba=mba, post_apply_hook=hook, mutation_gateway = MUTATION_GATEWAY)
 
         translator.lower.assert_called_once_with(
-            plan, mba, post_apply_hook=hook,
+            plan,
+            mba,
+            mutation_gateway=MUTATION_GATEWAY,
+            post_apply_hook=hook,
         )
 
     def test_apply_cumulative_pre_cfg_used_for_projected_check(
@@ -229,7 +235,7 @@ class TestCfgTransactionEngine:
 
         result = engine.apply(
             plan, pre_cfg=pre_cfg, mba=mba, cumulative_pre_cfg=cumulative,
-        )
+        mutation_gateway = MUTATION_GATEWAY)
 
         assert result.success is True
         # verify_projected should be called with cumulative CFG, not pre_cfg
@@ -245,7 +251,7 @@ class TestCfgTransactionEngine:
         translator.lower.return_value = 3
         engine = CfgTransactionEngine(translator, contract=contract)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
 
         assert result.success is True
         contract.verify_projected.assert_called_once_with(pre_cfg, plan)
@@ -261,7 +267,7 @@ class TestCfgTransactionEngine:
 
         result = engine.apply(
             plan, pre_cfg=pre_cfg, mba=mba, cumulative_pre_cfg=cumulative,
-        )
+        mutation_gateway = MUTATION_GATEWAY)
 
         assert result.success is False
         assert result.failure_phase == "projected_contract"

@@ -1393,7 +1393,21 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 ),
             )
             return 0
-        backend = HexRaysMutationBackend()
+        flow_context = self.flow_context
+        mutation_gateway = (
+            None
+            if flow_context is None
+            else flow_context.new_mba_mutation_gateway()
+        )
+        if mutation_gateway is None:
+            logger.info(
+                "unflat: deferring structural mutation without a "
+                "coordinator-owned gateway for func=0x%x at %s",
+                int(mba.entry_ea),
+                maturity_to_string(int(mba.maturity)),
+            )
+            return 0
+        backend = HexRaysMutationBackend(mutation_gateway=mutation_gateway)
         capabilities = self._build_capabilities(mba, prelim, range_evidence)
         project_config = self._project_config or (
             rule_config if isinstance(rule_config, dict) else {}

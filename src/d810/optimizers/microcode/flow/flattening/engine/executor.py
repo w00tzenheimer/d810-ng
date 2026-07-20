@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable
 
 import ida_hexrays
 
@@ -213,6 +214,7 @@ class TransactionalExecutor:
             contract=self.cfg_contract,
         )
         self._total_changes = 0
+        self._mutation_gateway_factory: Callable[[], object | None] | None = None
         self.validated_fact_view: object | None = None
         self.dispatcher_serial: int = -1
 
@@ -223,6 +225,13 @@ class TransactionalExecutor:
             self.dispatcher_serial = int(getattr(snapshot, "dispatcher_root_serial", -1))
         except (TypeError, ValueError):
             self.dispatcher_serial = -1
+
+    def set_mutation_gateway_factory(
+        self,
+        factory: Callable[[], object | None] | None,
+    ) -> None:
+        """Attach the coordinator-owned current-MBA gateway factory."""
+        self._mutation_gateway_factory = factory
 
     def execute_pipeline(
         self, pipeline: list[PlanFragment], total_handlers: int
@@ -646,10 +655,26 @@ class TransactionalExecutor:
         )
         engine = CfgTransactionEngine(translator=self.translator, contract=contract)
 
+        mutation_gateway = (
+            None
+            if self._mutation_gateway_factory is None
+            else self._mutation_gateway_factory()
+        )
+        if mutation_gateway is None:
+            result = StageResult(
+                strategy_name=fragment.strategy_name,
+                success=False,
+                error="coordinator-owned mutation gateway unavailable",
+                failure_phase="mutation_gateway",
+            )
+            result.metadata["gate_accounting"] = gate_accounting
+            return result
+
         tx_result = engine.apply(
             patch_plan,
             pre_cfg=pre_cfg,
             mba=self.mba,
+            mutation_gateway=mutation_gateway,
             cumulative_pre_cfg=cumulative_pre_cfg,
         )
 

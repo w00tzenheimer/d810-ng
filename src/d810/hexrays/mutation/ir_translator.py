@@ -83,6 +83,7 @@ from d810.hexrays.mutation.insn_snapshot_materializer import (
     validate_captured_block_body,
     validate_insn_snapshots,
 )
+from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 
 if TYPE_CHECKING:
     import ida_hexrays
@@ -864,7 +865,11 @@ class IDAIRTranslator:
         >>> backend = IDAIRTranslator()
         >>> cfg = backend.lift(mba)
         >>> modifications = [ConvertToGoto(block_serial=3, goto_target=5)]
-        >>> count = backend.lower(modifications, mba)
+        >>> count = backend.lower(
+        ...     modifications,
+        ...     mba,
+        ...     mutation_gateway=mutation_gateway,
+        ... )
         >>> backend.verify(mba)
         True
     """
@@ -919,6 +924,7 @@ class IDAIRTranslator:
         patch_plan: PatchPlan,
         mba: "ida_hexrays.mba_t",
         *,
+        mutation_gateway: MbaMutationGateway,
         post_apply_hook=None,
     ) -> int:
         """Apply a PatchPlan to mba via DeferredGraphModifier.
@@ -940,7 +946,11 @@ class IDAIRTranslator:
             >>> patch_plan = PatchPlan(
             ...     steps=(PatchRedirectGoto(from_serial=10, old_target=20, new_target=30),)
             ... )
-            >>> count = backend.lower(patch_plan, mba)
+            >>> count = backend.lower(
+            ...     patch_plan,
+            ...     mba,
+            ...     mutation_gateway=mutation_gateway,
+            ... )
             >>> count
             1
         """
@@ -1000,7 +1010,10 @@ class IDAIRTranslator:
                 self._last_lowering_phase = "lowering"
                 return 0
 
-        modifier = deferred_modifier.DeferredGraphModifier(mba)
+        modifier = deferred_modifier.DeferredGraphModifier(
+            mba,
+            mutation_gateway=mutation_gateway.new_transaction(),
+        )
 
         # Build effective post-apply hook: caller hook + contract check
         effective_hook: Callable[[], None] | None = None

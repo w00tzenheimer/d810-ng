@@ -245,7 +245,19 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 func_ea_hex,
                 phase_label,
             )
-            total = self._pass_pipeline.run(mba)
+            mutation_gateway = self._flow_context.new_mba_mutation_gateway()
+            if mutation_gateway is None:
+                optimizer_logger.warning(
+                    "PassPipeline: skipped function %s at %s without a "
+                    "coordinator-owned mutation gateway",
+                    func_ea_hex,
+                    phase_label,
+                )
+                return
+            total = self._pass_pipeline.run(
+                mba,
+                mutation_gateway=mutation_gateway,
+            )
             if total > 0:
                 optimizer_logger.info(
                     "PassPipeline: applied %d total modification(s) on function %s at %s",
