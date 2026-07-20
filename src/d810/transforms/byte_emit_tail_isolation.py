@@ -33,6 +33,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from d810.core.typing import Any, Iterable, Protocol
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+
+
+def _native_eas_identity(eas: Iterable[int]) -> StableBlockIdentity:
+    return StableBlockIdentity.from_intervals(
+        NativeEaInterval(int(ea), int(ea) + 1) for ea in eas
+    )
+
+
+def _native_point_identity(ea: int) -> StableBlockIdentity:
+    return _native_eas_identity((int(ea),))
 
 
 def parse_tail_distinct_byte_env(value: str | None) -> int | None:
@@ -302,7 +313,7 @@ class MicrocodeAdapter(Protocol):
     Tests: a fake adapter recording every call.
     """
 
-    def find_block_by_ea(self, ea: int) -> BlockView | None:
+    def find_block(self, identity: StableBlockIdentity) -> BlockView | None:
         ...
 
     def insert_trampoline_after(
@@ -377,7 +388,7 @@ class ConvergenceAdapter(Protocol):
     Tests: a fake adapter recording every call.
     """
 
-    def find_block_by_ea(self, ea: int) -> BlockView | None:
+    def find_block(self, identity: StableBlockIdentity) -> BlockView | None:
         ...
 
     def block_has_m_stx(self, block_serial: int) -> bool:
@@ -528,7 +539,8 @@ def isolate_byte_emit_tail(
             reason=f"malformed_ea:{target_ea_hex!r}",
         )
 
-    block = adapter.find_block_by_ea(target_ea)
+    target_identity = _native_point_identity(target_ea)
+    block = adapter.find_block(target_identity)
     if block is None:
         return ShapingReport(
             applied=False,
@@ -552,7 +564,7 @@ def isolate_byte_emit_tail(
                 byte_emit_serial=block.serial,
             )
         # Re-resolve the block by EA — should now be 1-way to split_serial.
-        block = adapter.find_block_by_ea(target_ea)
+        block = adapter.find_block(target_identity)
         if block is None:
             return ShapingReport(
                 applied=False,
@@ -659,7 +671,7 @@ def duplicate_convergence_for_byte_path(
             reason=f"malformed_ea:{target_ea_hex!r}",
         )
 
-    block = adapter.find_block_by_ea(target_ea)
+    block = adapter.find_block(_native_point_identity(target_ea))
     if block is None:
         return ConvergenceDuplicationReport(
             applied=False,

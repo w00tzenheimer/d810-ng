@@ -5,10 +5,12 @@ from collections import deque
 import ida_hexrays
 
 from d810.core import getLogger, typing
+from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.return_carrier_corruption import (
     CandidateSite,
     find_droppable_return_const_corruptions,
 )
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 
 main_logger = getLogger("D810")
 
@@ -82,7 +84,7 @@ def apply_return_const_corruption_cleanup(
         if insn is None:
             main_logger.warning(
                 "ReturnCarrierCorruption[glbopt]: proven site disappeared "
-                "before NOP: blk[%d] ea=%#x",
+                "before NOP: blk[%d]@%#x",
                 site.block_serial,
                 site.insn_ea,
             )
@@ -106,8 +108,8 @@ def prune_unreachable_condition_chain(
     """Diagnostic: identify condition-chain blocks proven unreachable by Hodur.
 
     Reads condition-chain block EAs persisted by HodurUnflattener during optblock pass
-    and re-maps them to current serials (IDA renumbers blocks between
-    maturities so GLBOPT1 serials are stale by hxe_glbopt time).
+    and rebinds them through the current-MBA identity index (IDA renumbers
+    blocks between maturities so GLBOPT1 serials are stale by hxe_glbopt time).
 
     Block removal is currently disabled; see BLOCKED comment near the end.
     Always returns 0.
@@ -150,31 +152,54 @@ def prune_unreachable_condition_chain(
         main_logger.info("PruneUnreachable: no pending condition-chain block EAs for %s", hex(mba.entry_ea))
         return 0
 
-    # Re-map EAs to current block serials
-    ea_to_serial: dict[int, int] = {}
-    for i in range(mba.qty):
-        blk = mba.get_mblock(i)
-        if blk is not None:
-            ea_to_serial[blk.start] = i
+    identity_index = MbaBlockIdentityIndex.from_mba(
+        mba,
+        generation=int(getattr(mba, "maturity", 0) or 0),
+        session_id=(
+            "glbopt:%X" % int(getattr(mba, "entry_ea", 0) or 0)
+        ),
+    )
 
-    current_condition_chain_serials: set[int] = {
-        ea_to_serial[ea] for ea in condition_chain_block_eas if ea in ea_to_serial
+    def rebind_native_ea(ea: int):
+        if int(ea) <= 0:
+            return None
+        identity = StableBlockIdentity.from_intervals(
+            (NativeEaInterval(int(ea), int(ea) + 1),)
+        )
+        return identity_index.rebind_identity(identity).block
+
+    current_condition_chain_blocks = tuple(
+        rebound
+        for ea in sorted(condition_chain_block_eas)
+        if (rebound := rebind_native_ea(int(ea))) is not None
+    )
+    current_condition_chain_serials = {
+        int(block.serial) for block in current_condition_chain_blocks
     }
-    current_dispatcher = ea_to_serial.get(dispatcher_ea, -1)
+    current_dispatcher_block = rebind_native_ea(dispatcher_ea)
+    current_dispatcher_label = (
+        "None"
+        if current_dispatcher_block is None
+        else "blk[%d]@0x%X"
+        % (
+            int(current_dispatcher_block.serial),
+            int(current_dispatcher_block.anchor_ea or dispatcher_ea),
+        )
+    )
 
     if not current_condition_chain_serials:
         main_logger.info(
-            "PruneUnreachable: EA re-mapping found 0 condition-chain blocks for %s",
+            "PruneUnreachable: identity rebinding found 0 condition-chain "
+            "blocks for %s (missing-or-ambiguous)",
             hex(mba.entry_ea),
         )
         return 0
 
     main_logger.info(
-        "PruneUnreachable[glbopt]: re-mapped %d/%d condition-chain block EAs to current serials, "
-        "dispatcher EA %s -> serial %s",
+        "PruneUnreachable[glbopt]: rebound %d/%d condition-chain block "
+        "identities, dispatcher=%s",
         len(current_condition_chain_serials), len(condition_chain_block_eas),
-        hex(dispatcher_ea) if dispatcher_ea else "None",
-        current_dispatcher if current_dispatcher >= 0 else "None",
+        current_dispatcher_label,
     )
 
     # NOTE: edge severing at hxe_glbopt corrupts IDA (decompilation fails).
@@ -204,7 +229,7 @@ def prune_unreachable_condition_chain(
         main_logger.info(
             "PruneUnreachable[glbopt]: no unreachable condition-chain blocks for %s (dispatcher=%s)",
             hex(mba.entry_ea),
-            hex(current_dispatcher) if current_dispatcher >= 0 else "None",
+            current_dispatcher_label,
         )
         return 0
 

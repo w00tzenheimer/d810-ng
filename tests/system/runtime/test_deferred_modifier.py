@@ -10,7 +10,13 @@ import pytest
 
 from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
 from d810.hexrays.mutation import cfg_mutations
+from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+from d810.ir.block_identity import (
+    BlockHandleProvenance,
+    NativeEaInterval,
+    StableBlockIdentity,
+)
 from d810.transforms.report import InvariantViolation
 from d810.ir.flowgraph import InsnSnapshot
 from d810.hexrays.mutation import deferred_modifier as dm
@@ -128,6 +134,55 @@ def test_modifier_uses_an_injected_session_mutation_gateway() -> None:
 
     assert modifier._mutation_gateway is gateway
     assert gateway.active is True
+
+
+def test_standalone_native_block_is_published_to_the_injected_identity_index(
+    monkeypatch,
+) -> None:
+    mba = _FakeMBA()
+    existing_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x180000000, 0x180000100),)
+    )
+    imported_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40EAA7, 0x40EAB0),)
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=0,
+        bindings=((existing_identity, 0),),
+        session_id="sample.i64:0x180000000:1",
+    )
+    gateway = MbaMutationGateway(
+        session_id=index.session_id,
+        function_ea=mba.entry_ea,
+        maturity=4,
+        identity_index=index,
+    )
+
+    def create_block(**_kwargs):
+        block = _FakeBlock(1, start=0x40EAA7)
+        mba.blocks[1] = block
+        mba.qty = 2
+        return block
+
+    monkeypatch.setattr(dm, "create_standalone_block", create_block)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+
+    serial = modifier.create_standalone_block(
+        ref_serial=0,
+        is_0_way=True,
+        verify=False,
+        stable_identity=imported_identity,
+        handle_provenance=BlockHandleProvenance.IMPORTED_NATIVE,
+    )
+    modifier.commit_immediate_mutations()
+
+    assert serial == 1
+    rebound = index.rebind_identity(imported_identity)
+    assert rebound.block is not None
+    assert rebound.block.serial == 1
+    assert rebound.block.handle.provenance is BlockHandleProvenance.IMPORTED_NATIVE
+    assert len(gateway.receipts) == 1
+    assert gateway.receipts[0].operation_count == 1
 
 
 def test_zero_way_existing_goto_is_retargeted_without_appending(monkeypatch) -> None:

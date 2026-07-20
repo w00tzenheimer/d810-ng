@@ -36,7 +36,8 @@ class _FakeBridgeAdapter:
 
     ea_to_live: dict[int, int] = field(default_factory=dict)
 
-    def find_block_by_ea(self, ea):
+    def find_block(self, identity):
+        ea = identity.native_eas.intervals[0].start_ea
         live = self.ea_to_live.get(int(ea))
         if live is None:
             return None
@@ -180,6 +181,18 @@ def test_source_byte_family_key_requires_structural_identity_not_dstr():
 @dataclass
 class _FakeLiveAdapter:
     _mba: _FakeLiveMba
+
+    def find_block(self, identity):
+        from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+
+        rebound = MbaBlockIdentityIndex.from_mba(
+            self._mba,
+            generation=0,
+            session_id="fake-live-adapter",
+        ).rebind_identity(identity)
+        if rebound.block is None:
+            return None
+        return _FakeBlockView(serial=int(rebound.block.serial))
 
 
 def test_bridge_plan_row_rejects_diag_bridge_inputs():
@@ -355,6 +368,51 @@ def test_load_planner_sites_remaps_stale_source_block_by_live_instruction_ea():
     assert len(sites) == 1
     assert sites[0].byte_index == 3
     assert sites[0].block_serial == 163
+
+
+def test_load_planner_sites_abstains_when_clones_share_the_native_evidence():
+    from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
+        _load_planner_sites_from_fact_view,
+    )
+    from d810.analyses.value_flow.model import FactObservation, ValidatedFactView
+
+    source_ea = 0x180016285
+    obs = FactObservation(
+        fact_id="terminal-byte-cloned",
+        kind="TerminalByteEmitterFact",
+        semantic_key="terminal:cloned",
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+        confidence=1.0,
+        source_block=164,
+        source_ea=source_ea,
+        payload={
+            "byte_index": 3,
+            "corridor_role": "terminal_tail",
+            "emitter_role": "memory_store",
+            "source_block": 164,
+            "block_ea": 0x180016252,
+        },
+    )
+    adapter = _FakeLiveAdapter(
+        _FakeLiveMba(
+            blocks={
+                163: _FakeLiveBlock(
+                    start=0x180016252,
+                    head=_FakeLiveInsn(ea=source_ea),
+                ),
+                164: _FakeLiveBlock(
+                    start=0x180016252,
+                    head=_FakeLiveInsn(ea=source_ea),
+                ),
+            }
+        )
+    )
+
+    assert _load_planner_sites_from_fact_view(
+        ValidatedFactView(maturity="MMAT_GLBOPT1", observations=(obs,)),
+        adapter=adapter,
+    ) == []
 
 
 def test_tail_distinct_uses_provider_fact_view_without_diag(monkeypatch):
@@ -1313,7 +1371,7 @@ def test_close_terminal_tail_entry_frontier_applies_when_entry_is_reachable(monk
         _mba: _FakeLiveMba
         redirects: list[tuple[int, int, int]] = field(default_factory=list)
 
-        def find_block_by_ea(self, ea):
+        def find_block(self, identity):
             return None
 
         def redirect_advance_edge(

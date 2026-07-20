@@ -35,6 +35,8 @@ from d810.transforms.byte_emit_live_use_anchor import (
 from d810.transforms.byte_emit_tail_isolation import (
     BlockView,
     FactRow,
+    _native_eas_identity,
+    _native_point_identity,
     duplicate_convergence_for_byte_path,
     execute_state_cascade,
     execute_terminal_tail_cascade_egress_lowering,
@@ -52,6 +54,8 @@ from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
     StructuralMutationKind,
 )
+from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.ir.block_identity import StableBlockIdentity
 from d810.hexrays.mutation.terminal_return_literals import (
     remember_terminal_zero_guard_literal_return_value,
     terminal_zero_guard_literal_return_values,
@@ -130,11 +134,23 @@ class LiveMbaAdapter:
         mutation_gateway: MbaMutationGateway | None = None,
     ) -> None:  # mba: ida_hexrays.mba_t
         self._mba = mba
-        self._mutation_gateway = mutation_gateway or MbaMutationGateway(
-            session_id=f"byte-tail-{id(self):x}",
-            function_ea=int(getattr(mba, "entry_ea", 0) or 0),
-            maturity=int(getattr(mba, "maturity", 0) or 0),
-        )
+        if mutation_gateway is None:
+            session_id = f"byte-tail-{id(self):x}"
+            maturity = int(getattr(mba, "maturity", 0) or 0)
+            identity_index = MbaBlockIdentityIndex.from_mba(
+                mba,
+                generation=0,
+                evidence_generation=maturity,
+                session_id=session_id,
+            )
+            mutation_gateway = MbaMutationGateway(
+                session_id=session_id,
+                function_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                maturity=maturity,
+                identity_index=identity_index,
+            )
+        self._mutation_gateway = mutation_gateway
+        self._identity_index = mutation_gateway.identity_index
         self._dispatcher_artifact_planner = dispatcher_artifact_planner
 
     def _new_deferred_modifier(self):
@@ -165,69 +181,62 @@ class LiveMbaAdapter:
         )
         gateway.commit()
 
-    def find_block_by_ea(self, ea: int) -> BlockView | None:
-        """Walk ``mba.blocks`` and return a pure ``BlockView`` for the
-        first block whose ``start`` equals ``ea``.
+    def find_block(self, identity: StableBlockIdentity) -> BlockView | None:
+        """Return a view only when native identity rebinds uniquely."""
+        import ida_hexrays
 
-        Returns ``None`` when no block matches.
-        """
-        import ida_hexrays  # noqa: F401  (kept for future tail-opcode logic)
+        rebound = self._identity_index.rebind_identity(identity)
+        if rebound.block is None:
+            return None
+        serial = int(rebound.block.serial)
+        blk = self._mba.get_mblock(serial)
+        if blk is None:
+            return None
 
-        mba = self._mba
-        qty = int(getattr(mba, "qty", 0) or 0)
-        for i in range(qty):
-            blk = mba.get_mblock(i)
-            if blk is None:
-                continue
-            blk_start = int(getattr(blk, "start", 0) or 0)
-            if blk_start != int(ea):
-                continue
+        nsucc = int(blk.nsucc()) if callable(getattr(blk, "nsucc", None)) else 0
+        succ_serial: int | None = None
+        succ_npred: int | None = None
+        if nsucc == 1 and callable(getattr(blk, "succ", None)):
+            succ_serial = int(blk.succ(0))
+            succ_blk = self._mba.get_mblock(succ_serial)
+            if succ_blk is not None and callable(
+                getattr(succ_blk, "npred", None)
+            ):
+                succ_npred = int(succ_blk.npred())
 
-            nsucc = int(blk.nsucc()) if callable(getattr(blk, "nsucc", None)) else 0
-            succ_serial: int | None = None
-            succ_npred: int | None = None
-            if nsucc == 1 and callable(getattr(blk, "succ", None)):
-                succ_serial = int(blk.succ(0))
-                succ_blk = mba.get_mblock(succ_serial)
-                if succ_blk is not None and callable(
-                    getattr(succ_blk, "npred", None)
-                ):
-                    succ_npred = int(succ_blk.npred())
+        tail_kind = "unknown"
+        tail = getattr(blk, "tail", None)
+        if tail is None:
+            tail_kind = "fallthrough"
+        else:
+            try:
+                if int(tail.opcode) == int(ida_hexrays.m_goto):
+                    tail_kind = "goto"
+                elif int(tail.opcode) in {
+                    int(ida_hexrays.m_jcnd),
+                    int(ida_hexrays.m_jz),
+                    int(ida_hexrays.m_jnz),
+                    int(ida_hexrays.m_jb),
+                    int(ida_hexrays.m_jae),
+                    int(ida_hexrays.m_jl),
+                    int(ida_hexrays.m_jg),
+                    int(ida_hexrays.m_jle),
+                    int(ida_hexrays.m_jge),
+                }:
+                    tail_kind = "cond_branch"
+                else:
+                    tail_kind = "fallthrough"
+            except AttributeError:
+                tail_kind = "unknown"
 
-            tail_kind = "unknown"
-            tail = getattr(blk, "tail", None)
-            if tail is None:
-                tail_kind = "fallthrough"
-            else:
-                try:
-                    if int(tail.opcode) == int(ida_hexrays.m_goto):
-                        tail_kind = "goto"
-                    elif int(tail.opcode) in {
-                        int(ida_hexrays.m_jcnd),
-                        int(ida_hexrays.m_jz),
-                        int(ida_hexrays.m_jnz),
-                        int(ida_hexrays.m_jb),
-                        int(ida_hexrays.m_jae),
-                        int(ida_hexrays.m_jl),
-                        int(ida_hexrays.m_jg),
-                        int(ida_hexrays.m_jle),
-                        int(ida_hexrays.m_jge),
-                    }:
-                        tail_kind = "cond_branch"
-                    else:
-                        tail_kind = "fallthrough"
-                except AttributeError:
-                    tail_kind = "unknown"
-
-            return BlockView(
-                serial=int(getattr(blk, "serial", i)),
-                start_ea=blk_start,
-                nsucc=nsucc,
-                succ_serial=succ_serial,
-                succ_npred=succ_npred,
-                tail_kind=tail_kind,
-            )
-        return None
+        return BlockView(
+            serial=int(getattr(blk, "serial", serial)),
+            start_ea=int(rebound.block.anchor_ea or getattr(blk, "start", 0) or 0),
+            nsucc=nsucc,
+            succ_serial=succ_serial,
+            succ_npred=succ_npred,
+            tail_kind=tail_kind,
+        )
 
     def insert_trampoline_after(
         self, *, predecessor_serial: int, successor_serial: int,
@@ -303,7 +312,7 @@ class LiveMbaAdapter:
         so we cannot import ``CONDITIONAL_JUMP_OPCODES`` from
         ``d810.hexrays.utils.hexrays_helpers`` nor the ``cfg_verify.n``
         helper.  The cond-opcode set is inlined here (mirroring the set
-        already used by ``find_block_by_ea`` on this same adapter), and
+        already used by ``find_block`` on this same adapter), and
         post-split verification is left to downstream stages.
 
         Returns the new tail block's serial.
@@ -1049,8 +1058,10 @@ class LiveMbaAdapter:
                     family,
                 )
                 if found is not None:
-                    return self.find_block_by_ea(
-                        int(getattr(blk, "start", 0) or 0),
+                    return self.find_block(
+                        _native_point_identity(
+                            int(getattr(blk, "start", 0) or 0)
+                        ),
                     )
                 insn = insn.next
         logger.info(
@@ -2167,15 +2178,15 @@ def _resolve_live_site_block_from_payload(
         return None
 
     if source_ea is not None:
-        containing = _live_blocks_containing_ea(adapter, (int(source_ea),))
-        if len(containing) == 1:
-            return int(containing[0])
+        block = adapter.find_block(_native_point_identity(int(source_ea)))
+        if block is not None:
+            return int(block.serial)
 
     block_ea = _int_from_payload(payload.get("block_ea"))
     if block_ea is not None:
-        starts = _live_blocks_with_start_ea(adapter, int(block_ea))
-        if len(starts) == 1:
-            return int(starts[0])
+        block = adapter.find_block(_native_point_identity(int(block_ea)))
+        if block is not None:
+            return int(block.serial)
 
     return None
 
@@ -2210,6 +2221,10 @@ def _load_planner_sites_from_fact_view(fact_view, *, adapter=None):
             source_ea=int(source_ea) if source_ea is not None else None,
             adapter=adapter,
         )
+        if adapter is not None and live_source_block is None:
+            # A stale fact-view serial is diagnostic only.  Ambiguous or
+            # missing native identity cannot authorize a live mutation.
+            continue
         if live_source_block is not None:
             payload["source_block"] = int(live_source_block)
             payload["block_serial"] = int(live_source_block)
@@ -2242,7 +2257,7 @@ def _bridge_plan_row_to_live_mba(
     live-mba and snap17 remaps serials, so we cannot pass snap17 serials
     straight to a live ``mba.get_mblock(serial)`` call. This helper
     bridges via the start-EA: snap17 serial -> snap17 ``start_ea_i64``
-    -> live MBA serial via ``adapter.find_block_by_ea``.
+    -> live MBA serial through the adapter's stable-identity binder.
 
     Returns ``(mapped_row, "ok")`` on success, or ``(None, reason)`` if
     any required field cannot map. The mapped row preserves all
@@ -2873,48 +2888,6 @@ def _snap_instruction_eas(
     snap_serial: int,
 ) -> tuple[int, ...]:
     return ()
-
-
-def _live_blocks_with_start_ea(adapter, ea: int) -> tuple[int, ...]:
-    mba = getattr(adapter, "_mba", None)
-    if mba is None:
-        return ()
-    out: list[int] = []
-    qty = int(getattr(mba, "qty", 0) or 0)
-    for i in range(qty):
-        blk = mba.get_mblock(i)
-        if blk is None:
-            continue
-        blk_start = int(getattr(blk, "start", 0) or 0) & ((1 << 64) - 1)
-        if blk_start == int(ea):
-            out.append(int(getattr(blk, "serial", i)))
-    return tuple(out)
-
-
-def _live_blocks_containing_ea(adapter, eas: Iterable[int]) -> tuple[int, ...]:
-    needles = {int(ea) & ((1 << 64) - 1) for ea in eas}
-    if not needles:
-        return ()
-    mba = getattr(adapter, "_mba", None)
-    if mba is None:
-        return ()
-    out: list[int] = []
-    qty = int(getattr(mba, "qty", 0) or 0)
-    for i in range(qty):
-        blk = mba.get_mblock(i)
-        if blk is None:
-            continue
-        cur = getattr(blk, "head", None)
-        while cur is not None:
-            try:
-                insn_ea = int(getattr(cur, "ea", 0) or 0) & ((1 << 64) - 1)
-            except Exception:
-                insn_ea = 0
-            if insn_ea in needles:
-                out.append(int(getattr(blk, "serial", i)))
-                break
-            cur = getattr(cur, "next", None)
-    return tuple(out)
 
 
 def _snap_serial_for_live_block(
@@ -3926,21 +3899,23 @@ def _select_terminal_tail_entry_live(
         target_snap=target_snap,
         snap_serial=int(entry_snap),
     )
-    if start_ea is not None:
-        view = adapter.find_block_by_ea(start_ea)
-        if view is not None:
-            candidate_set.add(int(getattr(view, "serial", -1)))
-        candidate_set.update(_live_blocks_with_start_ea(adapter, start_ea))
-    candidate_set.update(
-        _live_blocks_containing_ea(
-            adapter,
-            _snap_instruction_eas(
-                diag_conn=diag_conn,
-                target_snap=target_snap,
-                snap_serial=int(entry_snap),
-            ),
+    entry_instruction_eas = _snap_instruction_eas(
+        diag_conn=diag_conn,
+        target_snap=target_snap,
+        snap_serial=int(entry_snap),
+    )
+    entry_identity_eas = tuple(
+        dict.fromkeys(
+            (
+                *((start_ea,) if start_ea is not None else ()),
+                *entry_instruction_eas,
+            )
         )
     )
+    if entry_identity_eas:
+        view = adapter.find_block(_native_eas_identity(entry_identity_eas))
+        if view is not None:
+            candidate_set.add(int(getattr(view, "serial", -1)))
     if not candidate_set:
         return (
             None,
@@ -3959,21 +3934,25 @@ def _select_terminal_tail_entry_live(
             target_snap=target_snap,
             snap_serial=int(first_byte.source_block),
         )
-        if first_byte_ea is not None:
-            view = adapter.find_block_by_ea(first_byte_ea)
-            if view is not None:
-                first_byte_live.add(int(getattr(view, "serial", -1)))
-            first_byte_live.update(_live_blocks_with_start_ea(adapter, first_byte_ea))
-        first_byte_live.update(
-            _live_blocks_containing_ea(
-                adapter,
-                _snap_instruction_eas(
-                    diag_conn=diag_conn,
-                    target_snap=target_snap,
-                    snap_serial=int(first_byte.source_block),
-                ),
+        first_byte_instruction_eas = _snap_instruction_eas(
+            diag_conn=diag_conn,
+            target_snap=target_snap,
+            snap_serial=int(first_byte.source_block),
+        )
+        first_byte_identity_eas = tuple(
+            dict.fromkeys(
+                (
+                    *((first_byte_ea,) if first_byte_ea is not None else ()),
+                    *first_byte_instruction_eas,
+                )
             )
         )
+        if first_byte_identity_eas:
+            view = adapter.find_block(
+                _native_eas_identity(first_byte_identity_eas)
+            )
+            if view is not None:
+                first_byte_live.add(int(getattr(view, "serial", -1)))
 
     live_succs = _live_successor_map(adapter)
     scored: list[tuple[int, int, int]] = []
