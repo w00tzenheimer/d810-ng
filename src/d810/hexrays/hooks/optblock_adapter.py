@@ -748,6 +748,32 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             lambda: new_gateway(function_ea=function_ea, maturity=maturity)
         )
 
+    def _new_coordinator_mutation_gateway(
+        self,
+        mba: ida_hexrays.mbl_array_t,
+    ) -> object | None:
+        """Build a gateway without depending on a maturity flow context.
+
+        Whole-MBA GLBOPT1 extensions run before the per-maturity context is
+        created.  Their mutation authority therefore comes directly from the
+        lifecycle coordinator, which owns both the live identity index and the
+        gateway factory.
+        """
+        lifecycle = self._decompilation_lifecycle
+        if lifecycle is None:
+            return None
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        maturity = int(getattr(mba, "maturity", self.current_maturity) or 0)
+        build_index = getattr(lifecycle, "build_current_mba_identity_index", None)
+        if not callable(build_index):
+            return None
+        if build_index(function_ea=function_ea, mba=mba) is None:
+            return None
+        new_gateway = getattr(lifecycle, "new_current_mba_mutation_gateway", None)
+        if not callable(new_gateway):
+            return None
+        return new_gateway(function_ea=function_ea, maturity=maturity)
+
     def _bind_resolver_session_state(
         self,
         flow_context: FlowMaturityContext,
@@ -1158,9 +1184,17 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             dag = get_latest_reconstruction_dag(func_ea)
             if dag is None:
                 dag = get_persisted_preanalysis_dag(func_ea)
+            mutation_gateway = self._new_coordinator_mutation_gateway(mba)
+            if mutation_gateway is None:
+                optimizer_logger.warning(
+                    "terminal tail cascade egress skipped without a "
+                    "coordinator-owned mutation gateway for func=0x%x",
+                    func_ea,
+                )
+                return 0
             applied = maybe_run_terminal_tail_cascade_egress_lowering(
                 mba,
-                mutation_gateway=self._flow_context.new_mba_mutation_gateway(),
+                mutation_gateway=mutation_gateway,
                 fact_view=fact_view,
                 dag=dag,
                 cascade_priors=cascade_priors,
