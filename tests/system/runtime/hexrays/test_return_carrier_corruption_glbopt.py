@@ -90,7 +90,8 @@ def test_condition_chain_rebinding_has_no_local_ea_to_serial_authority(
 ) -> None:
     source = inspect.getsource(glbopt_module.prune_unreachable_condition_chain)
 
-    assert "MbaBlockIdentityIndex.from_mba" in source
+    assert "identity_index.native_key" in source
+    assert "MbaBlockIdentityIndex.from_mba" not in source
     assert "ea_to_serial" not in source
 
 

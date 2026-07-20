@@ -35,6 +35,9 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     _on_preopt_bootstrap_route,
     discover_static_native_bootstrap_routes,
 )
+from tests.native_preanalysis import make_native_key
+
+NATIVE_KEY = make_native_key()
 
 
 def test_resolver_session_state_has_a_dedicated_module() -> None:
@@ -49,12 +52,15 @@ def test_resolver_session_state_has_a_dedicated_module() -> None:
 def test_resolver_session_state_uses_a_reload_stable_extension_key() -> None:
     """A hot-reloaded resolver module must recover the preflight attachment."""
     native_preanalysis = NativePreanalysisSessionState()
-    original = ResolverSessionState(native_preanalysis=native_preanalysis)
+    original = ResolverSessionState(
+        native_preanalysis=native_preanalysis, native_key=NATIVE_KEY
+    )
     session = SimpleNamespace(
         native_preanalysis=native_preanalysis,
         extensions={
             "d810.optimizers.microcode.flow.jumps.resolver_session_state": original
         },
+        native_key=NATIVE_KEY,
     )
 
     assert resolver_session_state(session) is original
@@ -65,7 +71,7 @@ def test_resolver_session_state_uses_a_reload_stable_extension_key() -> None:
 
 def test_call_result_carriers_are_owned_and_released_by_the_session() -> None:
     state = ResolverSessionState(
-        native_preanalysis=NativePreanalysisSessionState(),
+        native_preanalysis=NativePreanalysisSessionState(), native_key=NATIVE_KEY
     )
     first = object()
     second = object()
@@ -79,13 +85,13 @@ def test_call_result_carriers_are_owned_and_released_by_the_session() -> None:
 
 def test_portable_dispatcher_region_merges_without_snapshot_serials() -> None:
     state = ResolverSessionState(
-        native_preanalysis=NativePreanalysisSessionState(),
+        native_preanalysis=NativePreanalysisSessionState(), native_key=NATIVE_KEY
     )
     first = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAA8),)
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
     )
     second = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAB1, 0x40EAB2),)
+        (NativeEaInterval(0x40EAB1, 0x40EAB2),), native_key=NATIVE_KEY
     )
 
     assert state.merge_portable_dispatcher_region_identity(first)
@@ -93,22 +99,29 @@ def test_portable_dispatcher_region_merges_without_snapshot_serials() -> None:
     assert not state.merge_portable_dispatcher_region_identity(first)
     assert state.merge_portable_dispatcher_region_identity(second)
     assert state.evidence_generation == 1
-    assert state.portable_dispatcher_region_identity == StableBlockIdentity.from_intervals(
-        (
-            NativeEaInterval(0x40EAA7, 0x40EAA8),
-            NativeEaInterval(0x40EAB1, 0x40EAB2),
+    assert (
+        state.portable_dispatcher_region_identity
+        == StableBlockIdentity.from_intervals(
+            (
+                NativeEaInterval(0x40EAA7, 0x40EAA8),
+                NativeEaInterval(0x40EAB1, 0x40EAB2),
+            ),
+            native_key=NATIVE_KEY,
         )
     )
 
 
 def test_session_evidence_rebinds_once_in_its_new_generation() -> None:
-    source = StableBlockIdentity.from_intervals((NativeEaInterval(0x40D348, 0x40D349),))
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
+    )
     handler = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAA8),)
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     evidence = BootstrapRouteEvidence(
@@ -127,8 +140,7 @@ def test_session_evidence_rebinds_once_in_its_new_generation() -> None:
 
     state.bind_current_mba(
         MbaBlockIdentityIndex.from_bindings(
-            generation=1,
-            bindings=((source, 17), (handler, 42)),
+            generation=1, bindings=((source, 17), (handler, 42)), native_key=NATIVE_KEY
         )
     )
     rebound = state.rebind_bootstrap_route(
@@ -160,6 +172,7 @@ def test_generated_restart_is_staged_once_then_consumed_by_flowchart(
             bound_preopt_generation=2,
         ),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     redo: list[tuple[str, dict[str, object]]] = []
@@ -206,6 +219,7 @@ def test_replaying_identical_conditional_bridge_is_an_evidence_noop() -> None:
             bound_preopt_generation=4,
         ),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     before = MaterializedIndirectTransfer(
@@ -242,6 +256,7 @@ def test_weaker_conditional_bridge_refresh_cannot_erase_arm_state_evidence() -> 
             bound_preopt_generation=4,
         ),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     exact = MaterializedIndirectTransfer(
@@ -277,7 +292,9 @@ def test_weaker_conditional_bridge_refresh_cannot_erase_arm_state_evidence() -> 
     assert state.evidence_generation == 4
 
 
-def test_weaker_conditional_bridge_refresh_cannot_inherit_states_across_sources() -> None:
+def test_weaker_conditional_bridge_refresh_cannot_inherit_states_across_sources() -> (
+    None
+):
     """A predicate anchor does not authorize transplanting proof provenance."""
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(
@@ -285,6 +302,7 @@ def test_weaker_conditional_bridge_refresh_cannot_inherit_states_across_sources(
             bound_preopt_generation=4,
         ),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     exact = MaterializedIndirectTransfer(
@@ -331,6 +349,7 @@ def test_calls_ignores_obsolete_mba_after_generated_restart_is_staged(
             bound_preopt_generation=4,
         ),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     state.materialized = True
@@ -361,12 +380,14 @@ def test_calls_ignores_obsolete_mba_after_generated_restart_is_staged(
 
 
 def test_bootstrap_route_is_published_only_after_current_preopt_rebind() -> None:
-    source = StableBlockIdentity.from_intervals((NativeEaInterval(0x40D348, 0x40D349),))
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
+    )
     handler = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAA8),)
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
     )
     state = ResolverSessionState(
-        native_preanalysis=NativePreanalysisSessionState(),
+        native_preanalysis=NativePreanalysisSessionState(), native_key=NATIVE_KEY
     )
     route = BootstrapRouteEvidence(
         source_identity=source,
@@ -385,6 +406,7 @@ def test_bootstrap_route_is_published_only_after_current_preopt_rebind() -> None
             generation=0,
             evidence_generation=1,
             bindings=((source, 17), (handler, 42)),
+            native_key=NATIVE_KEY,
         )
     )
     assert (
@@ -399,10 +421,10 @@ def test_bootstrap_route_is_published_only_after_current_preopt_rebind() -> None
     binding = BootstrapRouteBindingEvidence(
         route=route,
         source_identity=StableBlockIdentity.from_intervals(
-            (NativeEaInterval(0x40D313, 0x40D34A),)
+            (NativeEaInterval(0x40D313, 0x40D34A),), native_key=NATIVE_KEY
         ),
         handler_identity=StableBlockIdentity.from_intervals(
-            (NativeEaInterval(0x40EAA1, 0x40EAB7),)
+            (NativeEaInterval(0x40EAA1, 0x40EAB7),), native_key=NATIVE_KEY
         ),
         evidence_generation=1,
     )
@@ -423,14 +445,17 @@ def test_bootstrap_route_is_published_only_after_current_preopt_rebind() -> None
 
 def test_preflight_discovery_discards_pre_redo_serials() -> None:
     """Native preflight names anchors; only PREOPT provides live serials."""
-    source = StableBlockIdentity.from_intervals((NativeEaInterval(0x40D348, 0x40D349),))
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
+    )
     handler = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAA8),)
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
     )
     state = resolver_session_state(
         SimpleNamespace(
             native_preanalysis=NativePreanalysisSessionState(),
             extensions={},
+            native_key=NATIVE_KEY,
         )
     )
 
@@ -446,6 +471,7 @@ def test_preflight_discovery_discards_pre_redo_serials() -> None:
         MbaBlockIdentityIndex.from_bindings(
             generation=1,
             bindings=((source, 170), (handler, 420)),
+            native_key=NATIVE_KEY,
         )
     )
     rebound = state.rebind_bootstrap_route(
@@ -457,14 +483,17 @@ def test_preflight_discovery_discards_pre_redo_serials() -> None:
 
 
 def test_preflight_discovery_names_both_anchors_without_a_live_mba() -> None:
-    source = StableBlockIdentity.from_intervals((NativeEaInterval(0x401020, 0x401021),))
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401020, 0x401021),), native_key=NATIVE_KEY
+    )
     handler = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401100, 0x401101),)
+        (NativeEaInterval(0x401100, 0x401101),), native_key=NATIVE_KEY
     )
     state = resolver_session_state(
         SimpleNamespace(
             native_preanalysis=NativePreanalysisSessionState(),
             extensions={},
+            native_key=NATIVE_KEY,
         )
     )
 
@@ -480,6 +509,7 @@ def test_preflight_discovery_names_both_anchors_without_a_live_mba() -> None:
             generation=0,
             evidence_generation=1,
             bindings=((source, 170), (handler, 420)),
+            native_key=NATIVE_KEY,
         )
     )
     rebound = state.rebind_bootstrap_route(
@@ -492,13 +522,16 @@ def test_preflight_discovery_names_both_anchors_without_a_live_mba() -> None:
 
 
 def test_rebinding_survives_mutation_lineage_without_changing_evidence_epoch() -> None:
-    source = StableBlockIdentity.from_intervals((NativeEaInterval(0x40D348, 0x40D349),))
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
+    )
     handler = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAA8),)
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(evidence_generation=1),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     state.native_preanalysis.bootstrap_routes[(source, 0x699BC698)] = (
@@ -515,6 +548,7 @@ def test_rebinding_survives_mutation_lineage_without_changing_evidence_epoch() -
         generation=0,
         evidence_generation=1,
         bindings=((source, 17), (handler, 42)),
+        native_key=NATIVE_KEY,
     )
     state.bind_current_mba(index)
 
@@ -522,6 +556,7 @@ def test_rebinding_survives_mutation_lineage_without_changing_evidence_epoch() -
         generation=0,
         session_id="identity-index",
         identity_index=index,
+        native_key=NATIVE_KEY,
     )
     gateway.record(StructuralMutationKind.EDGE_REDIRECT)
     rebound = state.rebind_bootstrap_route(
@@ -536,14 +571,15 @@ def test_rebinding_survives_mutation_lineage_without_changing_evidence_epoch() -
 
 def test_bootstrap_rebind_can_select_the_unique_imported_handler_clone() -> None:
     source = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D348, 0x40D349),)
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
     )
     handler = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAA8),)
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(evidence_generation=1),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     route = BootstrapRouteEvidence(
@@ -559,6 +595,7 @@ def test_bootstrap_rebind_can_select_the_unique_imported_handler_clone() -> None
         generation=0,
         evidence_generation=1,
         bindings=((source, 7), (handler, 9)),
+        native_key=NATIVE_KEY,
     )
     index.begin_transaction(10)
     imported = index.create_imported_native_handle(handler)
@@ -569,10 +606,13 @@ def test_bootstrap_rebind_can_select_the_unique_imported_handler_clone() -> None
     )
     state.bind_current_mba(index)
 
-    assert state.rebind_bootstrap_route(
-        source_identity=source,
-        state=0x699BC698,
-    ) is None
+    assert (
+        state.rebind_bootstrap_route(
+            source_identity=source,
+            state=0x699BC698,
+        )
+        is None
+    )
     rebound = state.rebind_bootstrap_route(
         source_identity=source,
         state=0x699BC698,
@@ -591,13 +631,16 @@ def test_preopt_route_consumption_uses_the_injected_mutation_gateway(
     import ida_hexrays
     import d810.hexrays.mutation.deferred_modifier as modifier_module
 
-    source = StableBlockIdentity.from_intervals((NativeEaInterval(0x401020, 0x401021),))
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401020, 0x401021),), native_key=NATIVE_KEY
+    )
     handler = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401100, 0x401101),)
+        (NativeEaInterval(0x401100, 0x401101),), native_key=NATIVE_KEY
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     route = BootstrapRouteEvidence(
@@ -614,6 +657,7 @@ def test_preopt_route_consumption_uses_the_injected_mutation_gateway(
             generation=0,
             evidence_generation=1,
             bindings=((source, 7), (handler, 9)),
+            native_key=NATIVE_KEY,
         )
     )
 
@@ -699,13 +743,16 @@ def test_preopt_route_consumption_materializes_a_zero_way_goto(monkeypatch) -> N
     import ida_hexrays
     import d810.hexrays.mutation.deferred_modifier as modifier_module
 
-    source = StableBlockIdentity.from_intervals((NativeEaInterval(0x40D348, 0x40D349),))
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
+    )
     handler = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAA8),)
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     route = BootstrapRouteEvidence(
@@ -722,6 +769,7 @@ def test_preopt_route_consumption_materializes_a_zero_way_goto(monkeypatch) -> N
             generation=0,
             evidence_generation=1,
             bindings=((source, 29), (handler, 42)),
+            native_key=NATIVE_KEY,
         )
     )
 
@@ -794,17 +842,18 @@ def test_preopt_routes_static_conditional_taken_arm_through_gateway(
     predicate_ea = 0x40E20E
     true_target_ea = 0x40F12D
     source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(predicate_ea, predicate_ea + 1),)
+        (NativeEaInterval(predicate_ea, predicate_ea + 1),), native_key=NATIVE_KEY
     )
     target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(true_target_ea, true_target_ea + 1),)
+        (NativeEaInterval(true_target_ea, true_target_ea + 1),), native_key=NATIVE_KEY
     )
     false_target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40DC04, 0x40DC05),)
+        (NativeEaInterval(0x40DC04, 0x40DC05),), native_key=NATIVE_KEY
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     assert state.merge_materialized_transfers(
@@ -835,6 +884,7 @@ def test_preopt_routes_static_conditional_taken_arm_through_gateway(
                 (target_identity, 9),
                 (false_target_identity, 11),
             ),
+            native_key=NATIVE_KEY,
         )
     )
 
@@ -917,17 +967,19 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
     taken_target_ea = 0x40F12D
     fallthrough_target_ea = 0x40DC04
     source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(predicate_ea, predicate_ea + 1),)
+        (NativeEaInterval(predicate_ea, predicate_ea + 1),), native_key=NATIVE_KEY
     )
     taken_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(taken_target_ea, taken_target_ea + 1),)
+        (NativeEaInterval(taken_target_ea, taken_target_ea + 1),), native_key=NATIVE_KEY
     )
     fallthrough_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(fallthrough_target_ea, fallthrough_target_ea + 1),)
+        (NativeEaInterval(fallthrough_target_ea, fallthrough_target_ea + 1),),
+        native_key=NATIVE_KEY,
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     assert state.merge_materialized_transfers(
@@ -958,6 +1010,7 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
                 (taken_identity, 9),
                 (fallthrough_identity, 11),
             ),
+            native_key=NATIVE_KEY,
         )
     )
 
@@ -1081,6 +1134,7 @@ def test_materialization_and_transfer_accumulation_are_session_owned() -> None:
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     resolution = object()
@@ -1131,7 +1185,9 @@ def test_preflight_bootstrap_discovery_uses_the_portable_selector(
     import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as resolver
 
     session = SimpleNamespace(
-        native_preanalysis=NativePreanalysisSessionState(), extensions={}
+        native_preanalysis=NativePreanalysisSessionState(),
+        extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     state.begin_materialization(
@@ -1186,6 +1242,7 @@ def test_calls_done_uses_serial_free_native_discovery_as_fallback(monkeypatch) -
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     state.begin_materialization(object())
@@ -1257,6 +1314,7 @@ def test_calls_done_refreshes_completed_preopt_union_before_requesting_redo(
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     choice = MaterializedIndirectTransfer(
@@ -1339,6 +1397,7 @@ def test_terminal_requests_and_live_bindings_are_released_with_the_session() -> 
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     request = TerminalReturnCarrierRequest(

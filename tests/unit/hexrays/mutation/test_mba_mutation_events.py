@@ -1,4 +1,5 @@
 """Structural mutation receipt gateway contract."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -12,16 +13,25 @@ from d810.hexrays.mutation.mba_mutation_events import (
     StructuralMutationKind,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from tests.native_preanalysis import make_native_key
+
+NATIVE_KEY = make_native_key()
+
 
 def test_mutation_receipts_have_a_dedicated_module() -> None:
-    assert importlib.util.find_spec("d810.hexrays.mutation.mba_mutation_events") is not None
-
-
-def test_structural_receipts_advance_one_generation_and_deduplicate_identities() -> None:
-    identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D348, 0x40D349),)
+    assert (
+        importlib.util.find_spec("d810.hexrays.mutation.mba_mutation_events")
+        is not None
     )
-    gateway = MbaMutationGateway(generation=7)
+
+
+def test_structural_receipts_advance_one_generation_and_deduplicate_identities() -> (
+    None
+):
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
+    )
+    gateway = MbaMutationGateway(generation=7, native_key=NATIVE_KEY)
 
     receipt = gateway.record(
         StructuralMutationKind.EDGE_REDIRECT,
@@ -38,15 +48,16 @@ def test_structural_receipts_advance_one_generation_and_deduplicate_identities()
 
 def test_gateway_shifts_live_bindings_before_emitting_its_commit_receipt() -> None:
     source = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D348, 0x40D349),)
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
     )
     target = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAA8),)
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         session_id="mutation-session",
         generation=7,
         bindings=((source, 5), (target, 9)),
+        native_key=NATIVE_KEY,
     )
     events: list[MbaMutationCommitted] = []
     emitter = EventEmitter()
@@ -58,6 +69,7 @@ def test_gateway_shifts_live_bindings_before_emitting_its_commit_receipt() -> No
         maturity=4,
         identity_index=index,
         event_emitter=emitter,
+        native_key=NATIVE_KEY,
     )
 
     gateway.begin_batch(StructuralMutationKind.BLOCK_INSERT, serial_quantity=10)
@@ -84,12 +96,13 @@ def test_gateway_shifts_live_bindings_before_emitting_its_commit_receipt() -> No
 
 def test_gateway_creates_independent_transactions_over_the_same_live_index() -> None:
     identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D348, 0x40D349),)
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         session_id="mutation-session",
         generation=2,
         bindings=((identity, 5),),
+        native_key=NATIVE_KEY,
     )
     gateway = MbaMutationGateway(
         generation=2,
@@ -97,6 +110,7 @@ def test_gateway_creates_independent_transactions_over_the_same_live_index() -> 
         function_ea=0x40D200,
         maturity=4,
         identity_index=index,
+        native_key=NATIVE_KEY,
     )
 
     transaction = gateway.new_transaction()
@@ -112,19 +126,19 @@ def test_gateway_creates_independent_transactions_over_the_same_live_index() -> 
 
 def test_new_transaction_rebases_planned_coordinates_to_current_serials() -> None:
     first = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D348, 0x40D349),)
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
     )
     second = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAA8),)
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         session_id="mutation-session",
         generation=0,
         bindings=((first, 4), (second, 5)),
+        native_key=NATIVE_KEY,
     )
     gateway = MbaMutationGateway(
-        session_id="mutation-session",
-        identity_index=index,
+        session_id="mutation-session", identity_index=index, native_key=NATIVE_KEY
     )
 
     gateway.begin_batch(StructuralMutationKind.BLOCK_INSERT, serial_quantity=6)
@@ -145,19 +159,19 @@ def test_new_transaction_rebases_planned_coordinates_to_current_serials() -> Non
 
 def test_inactive_transaction_treats_serials_as_current_live_coordinates() -> None:
     first = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D348, 0x40D349),)
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
     )
     second = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAA8),)
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         session_id="mutation-session",
         generation=0,
         bindings=((first, 4), (second, 5)),
+        native_key=NATIVE_KEY,
     )
     gateway = MbaMutationGateway(
-        session_id="mutation-session",
-        identity_index=index,
+        session_id="mutation-session", identity_index=index, native_key=NATIVE_KEY
     )
 
     gateway.begin_batch(StructuralMutationKind.BLOCK_INSERT, serial_quantity=6)
@@ -173,12 +187,13 @@ def test_inactive_transaction_treats_serials_as_current_live_coordinates() -> No
 
 def test_index_keeps_clone_and_split_handles_transaction_local() -> None:
     identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D348, 0x40D349),)
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         session_id="mutation-session",
         generation=3,
         bindings=((identity, 8),),
+        native_key=NATIVE_KEY,
     )
     original = index.handle_for_serial(8)
     assert original is not None
@@ -204,15 +219,16 @@ def test_index_keeps_clone_and_split_handles_transaction_local() -> None:
 
 def test_gateway_delete_stales_removed_handle_and_shifts_later_bindings() -> None:
     removed_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401000, 0x401001),)
+        (NativeEaInterval(0x401000, 0x401001),), native_key=NATIVE_KEY
     )
     later_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x402000, 0x402001),)
+        (NativeEaInterval(0x402000, 0x402001),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         session_id="mutation-session",
         generation=4,
         bindings=((removed_identity, 3), (later_identity, 7)),
+        native_key=NATIVE_KEY,
     )
     removed = index.handle_for_serial(3)
     assert removed is not None
@@ -220,6 +236,7 @@ def test_gateway_delete_stales_removed_handle_and_shifts_later_bindings() -> Non
         generation=4,
         session_id="mutation-session",
         identity_index=index,
+        native_key=NATIVE_KEY,
     )
 
     gateway.begin_batch(StructuralMutationKind.BLOCK_REMOVE)
@@ -234,26 +251,26 @@ def test_gateway_delete_stales_removed_handle_and_shifts_later_bindings() -> Non
 
 def test_gateway_is_the_receipted_path_for_split_and_clone_bindings() -> None:
     original_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401000, 0x401010),)
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
     )
     retained_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401000, 0x401008),)
+        (NativeEaInterval(0x401000, 0x401008),), native_key=NATIVE_KEY
     )
     tail_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401008, 0x401010),)
+        (NativeEaInterval(0x401008, 0x401010),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         session_id="mutation-session",
         generation=0,
         bindings=((original_identity, 2),),
+        native_key=NATIVE_KEY,
     )
     original = index.handle_for_serial(2)
     assert original is not None
     retained = index.create_native_handle(retained_identity)
     tail = index.create_native_handle(tail_identity)
     gateway = MbaMutationGateway(
-        session_id="mutation-session",
-        identity_index=index,
+        session_id="mutation-session", identity_index=index, native_key=NATIVE_KEY
     )
 
     gateway.begin_batch(StructuralMutationKind.BLOCK_REPLACE)
@@ -278,7 +295,9 @@ def test_gateway_is_the_receipted_path_for_split_and_clone_bindings() -> None:
     }
 
 
-def test_unknown_sdk_effect_refreshes_before_commit_and_stales_synthetic_handles() -> None:
+def test_unknown_sdk_effect_refreshes_before_commit_and_stales_synthetic_handles() -> (
+    None
+):
     @dataclass
     class Insn:
         ea: int
@@ -291,12 +310,13 @@ def test_unknown_sdk_effect_refreshes_before_commit_and_stales_synthetic_handles
         head: object | None
 
     identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401000, 0x401001),)
+        (NativeEaInterval(0x401000, 0x401001),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         session_id="mutation-session",
         generation=8,
         bindings=((identity, 5),),
+        native_key=NATIVE_KEY,
     )
     original = index.handle_for_serial(5)
     assert original is not None
@@ -333,6 +353,7 @@ def test_unknown_sdk_effect_refreshes_before_commit_and_stales_synthetic_handles
         session_id="mutation-session",
         identity_index=index,
         event_emitter=emitter,
+        native_key=NATIVE_KEY,
     )
 
     gateway.begin_batch(StructuralMutationKind.BLOCK_REPLACE)

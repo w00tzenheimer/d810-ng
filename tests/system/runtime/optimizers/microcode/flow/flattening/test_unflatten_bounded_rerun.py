@@ -11,6 +11,7 @@ These exercise the pure gate (``_should_run_unflatten_round`` / ``_mark_ea_conve
 test lives under ``tests/system`` where the conftest boots IDA headlessly (Test
 Placement Rule: never mock IDA in unit tests).
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -45,6 +46,9 @@ from d810.passes.unflatten.state_machine import LOWER_STATE_MACHINE_PLAN_METADAT
 from d810.transforms.minimal_unflatten_emit import (
     TERMINAL_CARRIER_CONVERGENCE_METADATA,
 )
+from tests.native_preanalysis import make_native_key
+
+NATIVE_KEY = make_native_key()
 
 
 _EA = 0x1800017F0
@@ -103,9 +107,7 @@ _MAT2 = ida_hexrays.MMAT_CALLS
                 "materialized_dispatcher_entry_serial": 37,
                 "materialized_handler_by_state": {0x699BC698: 40},
                 "portable_materialized_handler_identity_misses": (),
-                "unmapped_materialized_handler_targets": (
-                    (0x12345678, 0x40E242),
-                ),
+                "unmapped_materialized_handler_targets": ((0x12345678, 0x40E242),),
             },
             False,
         ),
@@ -158,7 +160,9 @@ def test_incomplete_materialized_identity_defers_only_non_tigress_profiles() -> 
 
 def test_materialized_mutation_waits_for_current_preopt_evidence_generation() -> None:
     native = NativePreanalysisSessionState(evidence_generation=1)
-    state = ResolverSessionState(native_preanalysis=native, materialized=True)
+    state = ResolverSessionState(
+        native_preanalysis=native, materialized=True, native_key=NATIVE_KEY
+    )
 
     assert _should_defer_unbound_materialized_preopt(state)
 
@@ -178,14 +182,15 @@ def test_materialized_state_route_round_trips_through_portable_identity() -> Non
 
     state = 0x699BC698
     source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAC0, 0x40EAD0),)
+        (NativeEaInterval(0x40EAC0, 0x40EAD0),), native_key=NATIVE_KEY
     )
     target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAB7),)
+        (NativeEaInterval(0x40EAA7, 0x40EAB7),), native_key=NATIVE_KEY
     )
     native_index = MbaBlockIdentityIndex.from_bindings(
         generation=1,
         bindings=((source_identity, 3), (target_identity, 7)),
+        native_key=NATIVE_KEY,
     )
     evidence = _portable_materialized_state_route_evidence(
         (
@@ -207,6 +212,7 @@ def test_materialized_state_route_round_trips_through_portable_identity() -> Non
     regenerated_index = MbaBlockIdentityIndex.from_bindings(
         generation=2,
         bindings=((source_identity, 41), (target_identity, 58)),
+        native_key=NATIVE_KEY,
     )
     blocks = {
         41: SimpleNamespace(serial=41),
@@ -234,14 +240,15 @@ def test_portable_state_route_same_mba_round_trip_preserves_route_identity() -> 
 
     state = 0x699BC698
     source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAC0, 0x40EAD0),)
+        (NativeEaInterval(0x40EAC0, 0x40EAD0),), native_key=NATIVE_KEY
     )
     target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAB7),)
+        (NativeEaInterval(0x40EAA7, 0x40EAB7),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         generation=1,
         bindings=((source_identity, 3), (target_identity, 7)),
+        native_key=NATIVE_KEY,
     )
     route = MaterializedStateRoute(
         source_block_serial=3,
@@ -271,14 +278,15 @@ def test_portable_terminal_route_round_trip_preserves_native_source_anchor() -> 
 
     state = 0x81F82C5E
     source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D350, 0x40D351),)
+        (NativeEaInterval(0x40D350, 0x40D351),), native_key=NATIVE_KEY
     )
     target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40F821, 0x40F822),)
+        (NativeEaInterval(0x40F821, 0x40F822),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         generation=1,
         bindings=((source_identity, 369), (target_identity, 395)),
+        native_key=NATIVE_KEY,
     )
     route = MaterializedStateRoute(
         source_block_serial=369,
@@ -298,9 +306,7 @@ def test_portable_terminal_route_round_trip_preserves_native_source_anchor() -> 
         handler_by_state={state: 369},
         flow_graph=SimpleNamespace(
             get_block=lambda serial: (
-                SimpleNamespace(serial=serial)
-                if serial in {369, 395}
-                else None
+                SimpleNamespace(serial=serial) if serial in {369, 395} else None
             )
         ),
     )
@@ -316,14 +322,15 @@ def test_portable_state_route_rebind_uses_current_authoritative_handler_map() ->
 
     state = 0x699BC698
     source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAC0, 0x40EAD0),)
+        (NativeEaInterval(0x40EAC0, 0x40EAD0),), native_key=NATIVE_KEY
     )
     target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAB7),)
+        (NativeEaInterval(0x40EAA7, 0x40EAB7),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         generation=1,
         bindings=((source_identity, 3), (target_identity, 7)),
+        native_key=NATIVE_KEY,
     )
     evidence = _portable_materialized_state_route_evidence(
         (
@@ -359,13 +366,13 @@ def test_portable_state_route_rebinds_missing_exit_through_handler_region() -> N
 
     state = 0x699BC698
     source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40E27F, 0x40E280),)
+        (NativeEaInterval(0x40E27F, 0x40E280),), native_key=NATIVE_KEY
     )
     source_region = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40E242, 0x40E280),)
+        (NativeEaInterval(0x40E242, 0x40E280),), native_key=NATIVE_KEY
     )
     target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAA7, 0x40EAB7),)
+        (NativeEaInterval(0x40EAA7, 0x40EAB7),), native_key=NATIVE_KEY
     )
     blocks = {
         serial: BlockSnapshot(
@@ -392,6 +399,7 @@ def test_portable_state_route_rebinds_missing_exit_through_handler_region() -> N
             43: (0x40E27A,),
             58: (0x40EAA7,),
         },
+        native_key=NATIVE_KEY,
     )
     evidence = (
         PortableMaterializedStateRoute(
@@ -440,16 +448,16 @@ def test_portable_handler_exit_prefers_region_boundaries_over_stale_splits() -> 
 
     state = 0x6EA4D36E
     source_region = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D524, 0x40D5F9),)
+        (NativeEaInterval(0x40D524, 0x40D5F9),), native_key=NATIVE_KEY
     )
     stale_source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D560, 0x40D561),)
+        (NativeEaInterval(0x40D560, 0x40D561),), native_key=NATIVE_KEY
     )
     stale_handler_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D550, 0x40D551),)
+        (NativeEaInterval(0x40D550, 0x40D551),), native_key=NATIVE_KEY
     )
     target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40F4D4, 0x40F4D5),)
+        (NativeEaInterval(0x40F4D4, 0x40F4D5),), native_key=NATIVE_KEY
     )
     blocks = {
         serial: BlockSnapshot(
@@ -474,6 +482,7 @@ def test_portable_handler_exit_prefers_region_boundaries_over_stale_splits() -> 
             44: (0x40D550,),
             58: (0x40F4D4,),
         },
+        native_key=NATIVE_KEY,
     )
     evidence = (
         PortableMaterializedStateRoute(
@@ -508,17 +517,18 @@ def test_portable_state_route_infers_unique_enclosing_handler_region() -> None:
 
     state = 0x4A67CB8A
     source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D72C, 0x40D72D),)
+        (NativeEaInterval(0x40D72C, 0x40D72D),), native_key=NATIVE_KEY
     )
     source_region = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D700, 0x40D74E),)
+        (NativeEaInterval(0x40D700, 0x40D74E),), native_key=NATIVE_KEY
     )
     target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40E700, 0x40E701),)
+        (NativeEaInterval(0x40E700, 0x40E701),), native_key=NATIVE_KEY
     )
     native_index = MbaBlockIdentityIndex.from_bindings(
         generation=1,
         bindings=((source_identity, 17), (target_identity, 33)),
+        native_key=NATIVE_KEY,
     )
 
     evidence = _portable_materialized_state_route_evidence(
@@ -546,14 +556,15 @@ def test_portable_state_route_does_not_guess_between_enclosing_regions() -> None
 
     state = 0x4A67CB8A
     source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D72C, 0x40D72D),)
+        (NativeEaInterval(0x40D72C, 0x40D72D),), native_key=NATIVE_KEY
     )
     target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40E700, 0x40E701),)
+        (NativeEaInterval(0x40E700, 0x40E701),), native_key=NATIVE_KEY
     )
     native_index = MbaBlockIdentityIndex.from_bindings(
         generation=1,
         bindings=((source_identity, 17), (target_identity, 33)),
+        native_key=NATIVE_KEY,
     )
 
     evidence = _portable_materialized_state_route_evidence(
@@ -567,10 +578,10 @@ def test_portable_state_route_does_not_guess_between_enclosing_regions() -> None
         native_index,
         source_handler_regions_by_serial={
             12: StableBlockIdentity.from_intervals(
-                (NativeEaInterval(0x40D700, 0x40D74E),)
+                (NativeEaInterval(0x40D700, 0x40D74E),), native_key=NATIVE_KEY
             ),
             13: StableBlockIdentity.from_intervals(
-                (NativeEaInterval(0x40D720, 0x40D760),)
+                (NativeEaInterval(0x40D720, 0x40D760),), native_key=NATIVE_KEY
             ),
         },
     )
@@ -579,7 +590,9 @@ def test_portable_state_route_does_not_guess_between_enclosing_regions() -> None
     assert evidence[0].source_handler_region_identity is None
 
 
-def test_portable_state_route_uses_unique_region_exit_when_receipts_are_ambiguous() -> None:
+def test_portable_state_route_uses_unique_region_exit_when_receipts_are_ambiguous() -> (
+    None
+):
     from d810.analyses.control_flow.materialized_indirect_transfer import (
         PortableMaterializedStateRoute,
     )
@@ -588,13 +601,13 @@ def test_portable_state_route_uses_unique_region_exit_when_receipts_are_ambiguou
 
     state = 0x4A67CB8A
     missing_source = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D72C, 0x40D72D),)
+        (NativeEaInterval(0x40D72C, 0x40D72D),), native_key=NATIVE_KEY
     )
     source_region = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D700, 0x40D74E),)
+        (NativeEaInterval(0x40D700, 0x40D74E),), native_key=NATIVE_KEY
     )
     target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40E700, 0x40E701),)
+        (NativeEaInterval(0x40E700, 0x40E701),), native_key=NATIVE_KEY
     )
     blocks = {
         serial: BlockSnapshot(
@@ -617,6 +630,7 @@ def test_portable_state_route_uses_unique_region_exit_when_receipts_are_ambiguou
             42: (0x40D740,),
             58: (0x40E700,),
         },
+        native_key=NATIVE_KEY,
     )
     evidence = (
         PortableMaterializedStateRoute(
@@ -655,7 +669,9 @@ def test_portable_state_route_uses_unique_region_exit_when_receipts_are_ambiguou
     assert rebound[0].target_handler_serial == 58
 
 
-def test_handlerless_portable_route_rebinds_through_unique_state_target_receipt() -> None:
+def test_handlerless_portable_route_rebinds_through_unique_state_target_receipt() -> (
+    None
+):
     from d810.analyses.control_flow.materialized_indirect_transfer import (
         PortableMaterializedStateRoute,
     )
@@ -664,10 +680,10 @@ def test_handlerless_portable_route_rebinds_through_unique_state_target_receipt(
 
     state = 0x244AC7CD
     missing_source = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D482, 0x40D483),)
+        (NativeEaInterval(0x40D482, 0x40D483),), native_key=NATIVE_KEY
     )
     target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D48E, 0x40D48F),)
+        (NativeEaInterval(0x40D48E, 0x40D48F),), native_key=NATIVE_KEY
     )
     blocks = {
         serial: BlockSnapshot(
@@ -689,6 +705,7 @@ def test_handlerless_portable_route_rebinds_through_unique_state_target_receipt(
             41: (0x40D4A2,),
             58: (0x40D48E,),
         },
+        native_key=NATIVE_KEY,
     )
     evidence = (
         PortableMaterializedStateRoute(
@@ -730,10 +747,10 @@ def test_handlerless_portable_route_receipt_join_requires_exact_native_target() 
 
     state = 0x244AC7CD
     missing_source = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D482, 0x40D483),)
+        (NativeEaInterval(0x40D482, 0x40D483),), native_key=NATIVE_KEY
     )
     target_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40D48E, 0x40D48F),)
+        (NativeEaInterval(0x40D48E, 0x40D48F),), native_key=NATIVE_KEY
     )
     blocks = {
         serial: BlockSnapshot(
@@ -756,6 +773,7 @@ def test_handlerless_portable_route_receipt_join_requires_exact_native_target() 
             42: (0x40F000,),
             58: (0x40D48E,),
         },
+        native_key=NATIVE_KEY,
     )
     evidence = (
         PortableMaterializedStateRoute(
@@ -806,14 +824,16 @@ def test_portable_dispatcher_region_rebinds_every_split_imported_descendant() ->
         (
             NativeEaInterval(0x40EAA7, 0x40EAA8),
             NativeEaInterval(0x40EAB1, 0x40EAB2),
-        )
+        ),
+        native_key=NATIVE_KEY,
     )
     second_router = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40EAB7, 0x40EAB8),)
+        (NativeEaInterval(0x40EAB7, 0x40EAB8),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         generation=1,
         bindings=((first_router, 20), (second_router, 21)),
+        native_key=NATIVE_KEY,
     )
 
     portable_region = unflattener._portable_materialized_dispatcher_region_identity(
@@ -837,7 +857,8 @@ def test_portable_dispatcher_region_rebinds_every_split_imported_descendant() ->
             NativeEaInterval(0x40EAA7, 0x40EAA8),
             NativeEaInterval(0x40EAB1, 0x40EAB2),
             NativeEaInterval(0x40EAB7, 0x40EAB8),
-        )
+        ),
+        native_key=NATIVE_KEY,
     )
     assert rebound == frozenset({70, 71, 72})
 
@@ -850,30 +871,39 @@ def test_stack_homed_state_can_join_one_portable_native_selector() -> None:
         SimpleNamespace(selector_state_var_reg=None),
     )
 
-    assert _resolver_native_state_register(
-        prelim,
-        transfers,
-        materialized_computed_goto_profile=True,
-    ) == 28
+    assert (
+        _resolver_native_state_register(
+            prelim,
+            transfers,
+            materialized_computed_goto_profile=True,
+        )
+        == 28
+    )
     assert prelim.state_var_reg is None
 
 
 def test_native_selector_join_abstains_outside_profile_or_on_conflict() -> None:
     prelim = SimpleNamespace(state_var_stkoff=0x9C, state_var_reg=None)
 
-    assert _resolver_native_state_register(
-        prelim,
-        (SimpleNamespace(selector_state_var_reg=28),),
-        materialized_computed_goto_profile=False,
-    ) is None
-    assert _resolver_native_state_register(
-        prelim,
-        (
-            SimpleNamespace(selector_state_var_reg=28),
-            SimpleNamespace(selector_state_var_reg=36),
-        ),
-        materialized_computed_goto_profile=True,
-    ) is None
+    assert (
+        _resolver_native_state_register(
+            prelim,
+            (SimpleNamespace(selector_state_var_reg=28),),
+            materialized_computed_goto_profile=False,
+        )
+        is None
+    )
+    assert (
+        _resolver_native_state_register(
+            prelim,
+            (
+                SimpleNamespace(selector_state_var_reg=28),
+                SimpleNamespace(selector_state_var_reg=36),
+            ),
+            materialized_computed_goto_profile=True,
+        )
+        is None
+    )
 
 
 def test_exact_materialized_selector_survives_without_legacy_recovery() -> None:
@@ -890,26 +920,35 @@ def test_exact_materialized_selector_survives_without_legacy_recovery() -> None:
         ),
     )
 
-    assert _resolver_native_state_register(
-        None,
-        transfers,
-        materialized_computed_goto_profile=True,
-    ) == 28
-    assert _resolver_native_state_register(
-        SimpleNamespace(
-            dispatcher_block_serial=None,
-            dispatch_map=None,
-            state_var_reg=None,
-            state_var_stkoff=None,
-        ),
-        transfers,
-        materialized_computed_goto_profile=True,
-    ) == 28
-    assert _resolver_native_state_register(
-        None,
-        transfers,
-        materialized_computed_goto_profile=False,
-    ) is None
+    assert (
+        _resolver_native_state_register(
+            None,
+            transfers,
+            materialized_computed_goto_profile=True,
+        )
+        == 28
+    )
+    assert (
+        _resolver_native_state_register(
+            SimpleNamespace(
+                dispatcher_block_serial=None,
+                dispatch_map=None,
+                state_var_reg=None,
+                state_var_stkoff=None,
+            ),
+            transfers,
+            materialized_computed_goto_profile=True,
+        )
+        == 28
+    )
+    assert (
+        _resolver_native_state_register(
+            None,
+            transfers,
+            materialized_computed_goto_profile=False,
+        )
+        is None
+    )
 
 
 def test_materialized_handler_targets_rebind_to_current_mba_blocks() -> None:
@@ -1014,12 +1053,14 @@ def test_materialized_handler_region_identity_survives_missing_entry_ea() -> Non
     assert _unique_materialized_handler_region_identities(
         transfers,
         {state: 0x40E242},
+        native_key=NATIVE_KEY,
     ) == {
         state: StableBlockIdentity.from_intervals(
             (
                 NativeEaInterval(0x40E242, 0x40E280),
                 NativeEaInterval(0x40E290, 0x40E2A0),
-            )
+            ),
+            native_key=NATIVE_KEY,
         )
     }
 
@@ -1041,16 +1082,20 @@ def test_materialized_handler_region_identity_rejects_conflicting_ranges() -> No
         ),
     )
 
-    assert _unique_materialized_handler_region_identities(
-        transfers,
-        {state: 0x40E242},
-    ) == {}
+    assert (
+        _unique_materialized_handler_region_identities(
+            transfers,
+            {state: 0x40E242},
+            native_key=NATIVE_KEY,
+        )
+        == {}
+    )
 
 
 def test_materialized_handler_target_rebinds_through_owned_native_region() -> None:
     state = 0x08DF7433
     region = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x40E242, 0x40E280),)
+        (NativeEaInterval(0x40E242, 0x40E280),), native_key=NATIVE_KEY
     )
     blocks = {44: SimpleNamespace(insn_snapshots=(object(),))}
     flow_graph = SimpleNamespace(get_block=blocks.get)
@@ -1291,14 +1336,20 @@ def test_preopt_bound_epoch_ignores_mba_address_churn_from_own_mutations() -> No
 
 
 def test_recovery_epoch_uses_generation_bound_into_preopt_without_import() -> None:
-    assert _unflatten_recovery_epoch_generation(
-        current_evidence_generation=7,
-        bound_preopt_generation=3,
-    ) == 3
-    assert _unflatten_recovery_epoch_generation(
-        current_evidence_generation=7,
-        bound_preopt_generation=None,
-    ) == 7
+    assert (
+        _unflatten_recovery_epoch_generation(
+            current_evidence_generation=7,
+            bound_preopt_generation=3,
+        )
+        == 3
+    )
+    assert (
+        _unflatten_recovery_epoch_generation(
+            current_evidence_generation=7,
+            bound_preopt_generation=None,
+        )
+        == 7
+    )
 
 
 class TestUnflattenBoundedRerunGate:
@@ -1307,18 +1358,33 @@ class TestUnflattenBoundedRerunGate:
         rule = _fresh_rule()
         # First two rounds proceed (each emits the spine then the residual-dispatcher
         # redirect on the re-lifted graph).
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is True
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is True
+        assert (
+            rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT)
+            is True
+        )
+        assert (
+            rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT)
+            is True
+        )
         # Recovery finds no dispatcher -> converged -> terminal (every maturity).
         rule._mark_ea_converged(_EA)
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is False
+        assert (
+            rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT)
+            is False
+        )
 
     def test_indirect_is_one_shot(self) -> None:
         """The TABLE/indirect_jump_table profile runs exactly once (no re-run, no body drop)."""
         rule = _fresh_rule()
-        assert rule._should_run_unflatten_round(_EA, is_indirect=True, maturity=_MAT) is True
+        assert (
+            rule._should_run_unflatten_round(_EA, is_indirect=True, maturity=_MAT)
+            is True
+        )
         # Second invocation is refused even though the ea was never marked converged.
-        assert rule._should_run_unflatten_round(_EA, is_indirect=True, maturity=_MAT) is False
+        assert (
+            rule._should_run_unflatten_round(_EA, is_indirect=True, maturity=_MAT)
+            is False
+        )
 
     def test_non_indirect_round_cap_stops_only_that_maturity(self) -> None:
         """The hard round cap stops a single (ea, maturity) -- not the whole function.
@@ -1331,20 +1397,38 @@ class TestUnflattenBoundedRerunGate:
         rule = _fresh_rule()
         cap = StateMachineCffUnflattener._MAX_UNFLATTEN_ROUNDS
         for _ in range(cap):
-            assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is True
+            assert (
+                rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT)
+                is True
+            )
         # Cap reached for _MAT -> refused there, but the ea is NOT globally terminal.
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is False
+        assert (
+            rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT)
+            is False
+        )
         assert _EA not in rule._unflat_done_eas
         # A DIFFERENT maturity still gets its own full budget.
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT2) is True
+        assert (
+            rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT2)
+            is True
+        )
 
     def test_converged_ea_stays_terminal_across_maturities(self) -> None:
         """Once marked converged, an ea never runs again at ANY maturity (idempotent)."""
         rule = _fresh_rule()
         rule._mark_ea_converged(_EA)
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is False
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT2) is False
-        assert rule._should_run_unflatten_round(_EA, is_indirect=True, maturity=_MAT) is False
+        assert (
+            rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT)
+            is False
+        )
+        assert (
+            rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT2)
+            is False
+        )
+        assert (
+            rule._should_run_unflatten_round(_EA, is_indirect=True, maturity=_MAT)
+            is False
+        )
 
     def test_distinct_eas_are_independent(self) -> None:
         """Re-run bookkeeping is per function ea, not global."""
@@ -1352,8 +1436,14 @@ class TestUnflattenBoundedRerunGate:
         other = _EA + 0x1000
         rule._mark_ea_converged(_EA)
         # The converged ea is terminal but a different function still runs.
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is False
-        assert rule._should_run_unflatten_round(other, is_indirect=False, maturity=_MAT) is True
+        assert (
+            rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT)
+            is False
+        )
+        assert (
+            rule._should_run_unflatten_round(other, is_indirect=False, maturity=_MAT)
+            is True
+        )
 
     def test_terminal_carrier_plan_metadata_requests_convergence(self) -> None:
         """A terminal stack-alias guard split is a scoped early-convergence signal."""
@@ -1368,7 +1458,9 @@ class TestUnflattenBoundedRerunGate:
 
         assert rule._lower_plan_requested_terminal_convergence(facts) is True
 
-    def test_live_pipeline_receives_ir_maturity_and_input_facts(self, monkeypatch) -> None:
+    def test_live_pipeline_receives_ir_maturity_and_input_facts(
+        self, monkeypatch
+    ) -> None:
         """The live optimizer adapter must route through FunctionPassManager."""
         from d810.hexrays.preanalysis import indirect_jump_labels
         from d810.optimizers.microcode.flow.flattening import (
@@ -1467,9 +1559,13 @@ class TestUnflattenBoundedRerunGate:
                 dispatch_map=None,
             ),
         )
-        monkeypatch.setattr(unflat_mod, "select_family", lambda *_args, **_kwargs: family)
+        monkeypatch.setattr(
+            unflat_mod, "select_family", lambda *_args, **_kwargs: family
+        )
         monkeypatch.setattr(unflat_mod, "HexRaysMutationBackend", _Backend)
-        monkeypatch.setattr(unflat_mod, "HexRaysValRangeCapability", lambda _mba: object())
+        monkeypatch.setattr(
+            unflat_mod, "HexRaysValRangeCapability", lambda _mba: object()
+        )
         monkeypatch.setattr(unflat_mod, "HexRaysUseDefSafetyBackend", lambda: object())
         monkeypatch.setattr(
             unflat_mod,
@@ -1481,6 +1577,10 @@ class TestUnflattenBoundedRerunGate:
         rule.config = {}
         rule.flow_context = SimpleNamespace(
             validated_fact_view=lambda _maturity: fact_view
+        )
+        rule.current_resolver_session_state = lambda: ResolverSessionState(
+            native_preanalysis=NativePreanalysisSessionState(),
+            native_key=NATIVE_KEY,
         )
         rule.set_pass_scheduler(scheduler)
         rule._union_maturities_cache = frozenset({ida_hexrays.MMAT_GLBOPT1})
@@ -1613,13 +1713,13 @@ class TestUnflattenBoundedRerunGate:
         )
         monkeypatch.setattr(unflat_mod, "FunctionPassManager", _FunctionPassManager)
         monkeypatch.setattr(
-        unflat_mod,
-        "lift_function",
-        lambda mba, maturity: SimpleNamespace(
-            flow_graph=SimpleNamespace(blocks={}),
-            func_ea=int(mba.entry_ea),
-            live_source=mba,
-        ),
+            unflat_mod,
+            "lift_function",
+            lambda mba, maturity: SimpleNamespace(
+                flow_graph=SimpleNamespace(blocks={}),
+                func_ea=int(mba.entry_ea),
+                live_source=mba,
+            ),
         )
         monkeypatch.setattr(
             unflat_mod,
@@ -1636,9 +1736,13 @@ class TestUnflattenBoundedRerunGate:
                 dispatch_map=None,
             ),
         )
-        monkeypatch.setattr(unflat_mod, "select_family", lambda *_args, **_kwargs: family)
+        monkeypatch.setattr(
+            unflat_mod, "select_family", lambda *_args, **_kwargs: family
+        )
         monkeypatch.setattr(unflat_mod, "HexRaysMutationBackend", _Backend)
-        monkeypatch.setattr(unflat_mod, "HexRaysValRangeCapability", lambda _mba: object())
+        monkeypatch.setattr(
+            unflat_mod, "HexRaysValRangeCapability", lambda _mba: object()
+        )
         monkeypatch.setattr(unflat_mod, "HexRaysUseDefSafetyBackend", lambda: object())
         monkeypatch.setattr(
             unflat_mod,
@@ -1706,23 +1810,21 @@ class TestUnflattenBoundedRerunGate:
         manager.add_rule(rule)
         manager.configure(
             pipeline_v2_mode="config-v2",
-            pipeline_v2=(
-                {"pass": "recover_dispatcher"},
-            ),
+            pipeline_v2=({"pass": "recover_dispatcher"},),
         )
 
         assert rule.project_configs[-1] == {
             "pipeline_v2_mode": "config-v2",
-            "pipeline_v2": (
-                {"pass": "recover_dispatcher"},
-            ),
+            "pipeline_v2": ({"pass": "recover_dispatcher"},),
         }
         manager.configure(project_name="legacy.json")
         assert rule.project_configs[-1] == {}
 
 
 class TestTigressIndirectMaterializationConfig:
-    def test_non_tigress_profile_does_not_register_materialization(self, monkeypatch) -> None:
+    def test_non_tigress_profile_does_not_register_materialization(
+        self, monkeypatch
+    ) -> None:
         """OLLVM/state-map configs must not arm Tigress indirect materialization."""
         calls: list[str] = []
 
@@ -1794,7 +1896,9 @@ class TestTigressIndirectMaterializationConfig:
             ("register", {}),
         ]
 
-    def test_tigress_profile_preserves_configured_goto_table_info(self, monkeypatch) -> None:
+    def test_tigress_profile_preserves_configured_goto_table_info(
+        self, monkeypatch
+    ) -> None:
         """Configured layout remains supported as the precise override path."""
         registered: list[dict] = []
 

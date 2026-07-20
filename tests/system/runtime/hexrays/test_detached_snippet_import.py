@@ -18,6 +18,9 @@ from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
 )
+from tests.native_preanalysis import make_native_key
+
+NATIVE_KEY = make_native_key()
 
 
 class _Operand:
@@ -547,7 +550,9 @@ def test_recursively_rebases_all_stack_operand_shapes(monkeypatch) -> None:
     )
 
 
-def test_local_variable_operand_abstains_before_destination_mutation(monkeypatch) -> None:
+def test_local_variable_operand_abstains_before_destination_mutation(
+    monkeypatch,
+) -> None:
     _install_runtime_fakes(monkeypatch)
     function_ea = 0x40A560
     target_ea = 0x40C4F6
@@ -979,9 +984,7 @@ def test_capture_keeps_nonnegative_fragment_identity_over_stale_native_spd(
         detached_handler_island.ida_funcs,
         "get_func",
         lambda ea: (
-            SimpleNamespace(frsize=20, frregs=0)
-            if int(ea) == function_ea
-            else None
+            SimpleNamespace(frsize=20, frregs=0) if int(ea) == function_ea else None
         ),
     )
     monkeypatch.setattr(
@@ -1026,9 +1029,7 @@ def test_capture_keeps_nonnegative_fragment_identity_over_stale_native_spd(
     ]
     assert template.stack_vd_to_ida == ((source_vd, 28),)
     assert template.stable_stack_vd_to_ida == ((source_vd, 28),)
-    assert template.instruction_stack_vd_to_ida == (
-        (target_ea, source_vd, 28),
-    )
+    assert template.instruction_stack_vd_to_ida == ((target_ea, source_vd, 28),)
 
 
 def test_capture_prefers_authoritative_carrier_over_nonnegative_fragment_basis(
@@ -1076,9 +1077,7 @@ def test_capture_prefers_authoritative_carrier_over_nonnegative_fragment_basis(
     ]
     assert template.stack_vd_to_ida == ((source_vd, 68),)
     assert template.stable_stack_vd_to_ida == ((source_vd, 84),)
-    assert template.instruction_stack_vd_to_ida == (
-        (target_ea, source_vd, 84),
-    )
+    assert template.instruction_stack_vd_to_ida == ((target_ea, source_vd, 84),)
 
 
 def test_capture_prefers_pre_generation_native_stack_identity(
@@ -1124,9 +1123,7 @@ def test_capture_prefers_pre_generation_native_stack_identity(
         (function_ea, target_ea)
     ]
     assert template.stable_stack_vd_to_ida == ((source_vd, 88),)
-    assert template.instruction_stack_vd_to_ida == (
-        (target_ea, source_vd, 88),
-    )
+    assert template.instruction_stack_vd_to_ida == ((target_ea, source_vd, 88),)
 
 
 @pytest.mark.parametrize("annotated", (False, True))
@@ -1153,7 +1150,9 @@ def test_native_stack_identity_prefers_esp_displacement_and_spd(
     monkeypatch.setattr(
         detached_handler_island.ida_ua,
         "decode_insn",
-        lambda decoded, ea: 2 if decoded is instruction and int(ea) == instruction_ea else 0,
+        lambda decoded, ea: (
+            2 if decoded is instruction and int(ea) == instruction_ea else 0
+        ),
     )
     monkeypatch.setattr(detached_handler_island.ida_bytes, "get_flags", lambda _ea: 0)
     monkeypatch.setattr(
@@ -1170,9 +1169,7 @@ def test_native_stack_identity_prefers_esp_displacement_and_spd(
         detached_handler_island.ida_funcs,
         "get_func",
         lambda ea: (
-            SimpleNamespace(frsize=0x88, frregs=0)
-            if int(ea) == function_ea
-            else None
+            SimpleNamespace(frsize=0x88, frregs=0) if int(ea) == function_ea else None
         ),
     )
     monkeypatch.setattr(
@@ -3221,9 +3218,9 @@ def test_preopt_capture_records_direct_call_relative_push_delta(
         ((target_ea, call_ea + 1),),
     )
 
-    assert detached_handler_island.detached_preopt_call_stack_points(
-        function_ea
-    ) == ((call_ea, -4),)
+    assert detached_handler_island.detached_preopt_call_stack_points(function_ea) == (
+        (call_ea, -4),
+    )
 
 
 def test_imported_callinfo_defers_to_unique_live_native_authority(
@@ -3598,9 +3595,7 @@ def _direct_boundary_port(
         delivery_mode=delivery_mode,
         resolver_kind="runtime_test",
         old_successor_owners=old_successor_owners,
-        source_replaces_dispatcher_envelope=(
-            source_replaces_dispatcher_envelope
-        ),
+        source_replaces_dispatcher_envelope=(source_replaces_dispatcher_envelope),
     )
 
 
@@ -4838,10 +4833,13 @@ def test_preopt_import_preserves_inverted_signed_live_predicate(
         native_ea=source_block_ea,
         live_block=live_source,
     )
-    assert detached_handler_island._exact_live_predicate_true_is_taken(
-        port,
-        source,
-    ) is False
+    assert (
+        detached_handler_island._exact_live_predicate_true_is_taken(
+            port,
+            source,
+        )
+        is False
+    )
     assert destination.get_mblock(0) is live_source
 
 
@@ -4894,10 +4892,13 @@ def test_preopt_import_orients_exact_opaque_live_predicate_by_native_jcc(
         live_block=live_source,
     )
 
-    assert detached_handler_island._exact_live_predicate_true_is_taken(
-        port,
-        binding,
-    ) is True
+    assert (
+        detached_handler_island._exact_live_predicate_true_is_taken(
+            port,
+            binding,
+        )
+        is True
+    )
     assert destination.get_mblock(0) is live_source
 
 
@@ -4955,10 +4956,13 @@ def test_preopt_import_orients_cmov_conditional_skip_predicate(monkeypatch) -> N
         native_ea=0x40D200,
         live_block=source,
     )
-    assert detached_handler_island._exact_live_predicate_true_is_taken(
-        port,
-        binding,
-    ) is False
+    assert (
+        detached_handler_island._exact_live_predicate_true_is_taken(
+            port,
+            binding,
+        )
+        is False
+    )
     assert destination.get_mblock(1) is copy_block
 
 
@@ -5024,9 +5028,7 @@ def test_imported_boundary_binding_keeps_template_owner_over_live_overlap() -> N
                 source_serial=template_serial,
                 native_entry_ea=native_entry_ea,
                 native_end_ea=native_instruction_ea + 1,
-                instructions=(
-                    _Instruction(ida_hexrays.m_mov, native_instruction_ea),
-                ),
+                instructions=(_Instruction(ida_hexrays.m_mov, native_instruction_ea),),
                 block_type=int(ida_hexrays.BLT_1WAY),
                 block_flags=0,
                 successor_serials=(),
@@ -5322,9 +5324,7 @@ def test_resolver_conditional_cut_accepts_fictitious_synthetic_return_ea(
         apply_lowering,
     )
 
-    assert DeferredGraphModifier(
-        mba
-    ).lower_proven_indirect_transfer_to_conditional_now(
+    assert DeferredGraphModifier(mba).lower_proven_indirect_transfer_to_conditional_now(
         source,
         taken,
         fallthrough,
@@ -7064,9 +7064,9 @@ def test_materialized_handler_lookup_abstains_on_range_only_competitor(
     )
     destination = _MBA((exact, range_only))
     identity = detached_handler_island.stable_mba_identity(destination)
-    detached_handler_island._IMPORTED_INSTRUCTION_ORIGINS[
-        (identity, imported_ea)
-    ] = native_ea
+    detached_handler_island._IMPORTED_INSTRUCTION_ORIGINS[(identity, imported_ea)] = (
+        native_ea
+    )
     detached_handler_island._IMPORTED_NATIVE_BLOCK_RANGES[
         (identity, native_ea - 4, native_ea + 4)
     ] = detached_handler_island._ImportedSnippetRoot(
@@ -7101,9 +7101,9 @@ def test_materialized_handler_lookup_uses_unique_native_owner_after_clone_folds(
     )
     destination = _MBA((live, range_only))
     identity = detached_handler_island.stable_mba_identity(destination)
-    detached_handler_island._IMPORTED_INSTRUCTION_ORIGINS[
-        (identity, imported_ea)
-    ] = native_ea + 6
+    detached_handler_island._IMPORTED_INSTRUCTION_ORIGINS[(identity, imported_ea)] = (
+        native_ea + 6
+    )
     detached_handler_island._IMPORTED_NATIVE_BLOCK_RANGES[
         (identity, native_ea, native_ea + 0x26)
     ] = detached_handler_island._ImportedSnippetRoot(
@@ -7203,9 +7203,9 @@ def test_native_lookup_uses_range_owner_over_empty_external_placeholder(
     )
     destination = _MBA((external, imported))
     identity = detached_handler_island.stable_mba_identity(destination)
-    detached_handler_island._IMPORTED_INSTRUCTION_ORIGINS[
-        (identity, imported_ea)
-    ] = native_instruction_ea
+    detached_handler_island._IMPORTED_INSTRUCTION_ORIGINS[(identity, imported_ea)] = (
+        native_instruction_ea
+    )
     detached_handler_island._IMPORTED_NATIVE_BLOCK_RANGES[
         (identity, native_entry_ea, native_end_ea)
     ] = detached_handler_island._ImportedSnippetRoot(
@@ -7237,9 +7237,9 @@ def test_native_lookup_uses_imported_block_range_for_empty_entry(
     )
     destination = _MBA((imported,))
     identity = detached_handler_island.stable_mba_identity(destination)
-    detached_handler_island._IMPORTED_INSTRUCTION_ORIGINS[
-        (identity, imported_ea)
-    ] = native_instruction_ea
+    detached_handler_island._IMPORTED_INSTRUCTION_ORIGINS[(identity, imported_ea)] = (
+        native_instruction_ea
+    )
     detached_handler_island._IMPORTED_NATIVE_BLOCK_RANGES[
         (identity, native_entry_ea, native_end_ea)
     ] = detached_handler_island._ImportedSnippetRoot(
@@ -8149,20 +8149,18 @@ def test_preopt_union_template_does_not_replace_legacy_fallback(monkeypatch) -> 
         function_ea,
         (target_ea,),
     )
-    union_roots = (
-        detached_handler_island.materialize_preopt_union_snippet_templates(
-            union_destination,
-            function_ea,
-            (target_ea,),
-        )
+    union_roots = detached_handler_island.materialize_preopt_union_snippet_templates(
+        union_destination,
+        function_ea,
+        (target_ea,),
     )
 
     assert int(
         legacy_destination.get_mblock(legacy_roots[target_ea]).head.opcode
     ) == int(ida_hexrays.m_mov)
-    assert int(
-        union_destination.get_mblock(union_roots[target_ea]).head.opcode
-    ) == int(ida_hexrays.m_xor)
+    assert int(union_destination.get_mblock(union_roots[target_ea]).head.opcode) == int(
+        ida_hexrays.m_xor
+    )
 
 
 def test_preopt_union_capture_owns_instruction_backed_range_splits(
@@ -8265,21 +8263,23 @@ def test_preopt_union_import_publishes_native_blocks_to_session_identity_index(
     )
     session_id = "rhad.i64:0xB000:1"
     entry_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(function_ea, function_ea + 1),)
+        (NativeEaInterval(function_ea, function_ea + 1),), native_key=NATIVE_KEY
     )
     imported_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(target_ea, target_ea + 1),)
+        (NativeEaInterval(target_ea, target_ea + 1),), native_key=NATIVE_KEY
     )
     index = MbaBlockIdentityIndex.from_bindings(
         generation=0,
         bindings=((entry_identity, 0),),
         session_id=session_id,
+        native_key=NATIVE_KEY,
     )
     gateway = MbaMutationGateway(
         session_id=session_id,
         function_ea=function_ea,
         maturity=ida_hexrays.MMAT_PREOPTIMIZED,
         identity_index=index,
+        native_key=NATIVE_KEY,
     )
 
     roots = detached_handler_island.materialize_preopt_union_snippet_templates(
@@ -8302,9 +8302,7 @@ def test_preopt_union_import_barrier_rejects_same_mba_reentry(monkeypatch) -> No
     observed: list[bool] = []
 
     def materialize(*_args, **_kwargs):
-        observed.append(
-            detached_handler_island.preopt_union_import_in_progress(mba)
-        )
+        observed.append(detached_handler_island.preopt_union_import_in_progress(mba))
         assert (
             detached_handler_island.materialize_preopt_union_snippet_templates(
                 mba,
@@ -8495,8 +8493,7 @@ def test_preopt_union_template_can_bind_boundary_ports_after_source_capture(
         ((source_ea, source_ea + 1),),
     )
     assert (
-        detached_handler_island.detached_snippet_template_generation(function_ea)
-        == 1
+        detached_handler_island.detached_snippet_template_generation(function_ea) == 1
     )
     port = _direct_boundary_port(
         source_block_ea=source_ea,
@@ -8515,8 +8512,7 @@ def test_preopt_union_template_can_bind_boundary_ports_after_source_capture(
         DetachedSnippetBoundaryPorts((port,), ()),
     )
     assert (
-        detached_handler_island.detached_snippet_template_generation(function_ea)
-        == 2
+        detached_handler_island.detached_snippet_template_generation(function_ea) == 2
     )
     assert detached_handler_island.bind_preopt_union_snippet_boundary_ports(
         function_ea,
@@ -8524,8 +8520,7 @@ def test_preopt_union_template_can_bind_boundary_ports_after_source_capture(
         DetachedSnippetBoundaryPorts((port,), ()),
     )
     assert (
-        detached_handler_island.detached_snippet_template_generation(function_ea)
-        == 2
+        detached_handler_island.detached_snippet_template_generation(function_ea) == 2
     )
     template = detached_handler_island._PREOPT_UNION_SNIPPET_TEMPLATES[
         (function_ea, source_ea)

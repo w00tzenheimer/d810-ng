@@ -5,7 +5,6 @@ from collections import deque
 import ida_hexrays
 
 from d810.core import getLogger, typing
-from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.return_carrier_corruption import (
     CandidateSite,
     find_droppable_return_const_corruptions,
@@ -104,6 +103,8 @@ def apply_return_const_corruption_cleanup(
 def prune_unreachable_condition_chain(
     mba: ida_hexrays.mbl_array_t,
     block_optimizer: typing.Any,
+    *,
+    identity_index: typing.Any | None,
 ) -> int:
     """Diagnostic: identify condition-chain blocks proven unreachable by Hodur.
 
@@ -122,24 +123,24 @@ def prune_unreachable_condition_chain(
     condition_chain_block_eas: set[int] = set()
     dispatcher_ea: int = 0
     for rule in block_optimizer.cfg_rules:
-        has_attr = hasattr(rule, '_last_condition_chain_block_eas')
+        has_attr = hasattr(rule, "_last_condition_chain_block_eas")
         if has_attr:
             main_logger.info(
                 "PruneUnreachable: found rule %s, _last_condition_chain_block_eas=%d, "
                 "_last_func_ea=%s, mba.entry_ea=%s",
                 type(rule).__name__,
-                len(getattr(rule, '_last_condition_chain_block_eas', set())),
-                hex(getattr(rule, '_last_func_ea', 0)),
+                len(getattr(rule, "_last_condition_chain_block_eas", set())),
+                hex(getattr(rule, "_last_func_ea", 0)),
                 hex(mba.entry_ea),
             )
         if (
             has_attr
-            and getattr(rule, '_last_condition_chain_block_eas', set())
-            and hasattr(rule, '_last_func_ea')
+            and getattr(rule, "_last_condition_chain_block_eas", set())
+            and hasattr(rule, "_last_func_ea")
             and rule._last_func_ea == mba.entry_ea
         ):
             condition_chain_block_eas = rule._last_condition_chain_block_eas
-            dispatcher_ea = getattr(rule, '_last_dispatcher_ea', 0)
+            dispatcher_ea = getattr(rule, "_last_dispatcher_ea", 0)
             # Clear after use (one-shot)
             rule._last_condition_chain_block_eas = set()
             rule._last_dispatcher_ea = 0
@@ -149,22 +150,22 @@ def prune_unreachable_condition_chain(
             break
 
     if not condition_chain_block_eas:
-        main_logger.info("PruneUnreachable: no pending condition-chain block EAs for %s", hex(mba.entry_ea))
+        main_logger.info(
+            "PruneUnreachable: no pending condition-chain block EAs for %s",
+            hex(mba.entry_ea),
+        )
         return 0
 
-    identity_index = MbaBlockIdentityIndex.from_mba(
-        mba,
-        generation=int(getattr(mba, "maturity", 0) or 0),
-        session_id=(
-            "glbopt:%X" % int(getattr(mba, "entry_ea", 0) or 0)
-        ),
-    )
+    if identity_index is None:
+        main_logger.info("PruneUnreachable: no lifecycle-owned identity index")
+        return 0
 
     def rebind_native_ea(ea: int):
         if int(ea) <= 0:
             return None
         identity = StableBlockIdentity.from_intervals(
-            (NativeEaInterval(int(ea), int(ea) + 1),)
+            (NativeEaInterval(int(ea), int(ea) + 1),),
+            native_key=identity_index.native_key,
         )
         return identity_index.rebind_identity(identity).block
 
@@ -198,7 +199,8 @@ def prune_unreachable_condition_chain(
     main_logger.info(
         "PruneUnreachable[glbopt]: rebound %d/%d condition-chain block "
         "identities, dispatcher=%s",
-        len(current_condition_chain_serials), len(condition_chain_block_eas),
+        len(current_condition_chain_serials),
+        len(condition_chain_block_eas),
         current_dispatcher_label,
     )
 
@@ -223,7 +225,9 @@ def prune_unreachable_condition_chain(
 
     # Intersect unreachable with current condition-chain serials
     all_serials = set(range(mba.qty))
-    unreachable_condition_chain = (all_serials - visited) & current_condition_chain_serials
+    unreachable_condition_chain = (
+        all_serials - visited
+    ) & current_condition_chain_serials
 
     if not unreachable_condition_chain:
         main_logger.info(
@@ -236,7 +240,10 @@ def prune_unreachable_condition_chain(
     main_logger.info(
         "PruneUnreachable[glbopt]: %d/%d blocks reachable, "
         "%d unreachable condition-chain blocks to prune for %s",
-        len(visited), mba.qty, len(unreachable_condition_chain), hex(mba.entry_ea),
+        len(visited),
+        mba.qty,
+        len(unreachable_condition_chain),
+        hex(mba.entry_ea),
     )
 
     # BLOCKED: remove_block requires zero instruction-level references to target

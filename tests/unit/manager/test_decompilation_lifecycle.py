@@ -12,6 +12,9 @@ from d810.manager.decompilation_lifecycle import (
     DecompilationLifecycleCoordinator,
     FlowgraphReadyPayload,
 )
+from tests.native_preanalysis import make_native_key
+
+NATIVE_KEY = make_native_key()
 
 
 class _PreanalysisRuntime:
@@ -119,6 +122,7 @@ def _coordinator(
             preanalysis_runtime=_PreanalysisRuntime(calls),
             analysis_runtime=runtime,
             rule_scope_service=_RuleScopeService(calls),
+            native_preanalysis_key_provider=lambda _function_ea: NATIVE_KEY,
             mba_mutation_gateway_factory=lambda **kwargs: kwargs,
         ),
         runtime,
@@ -259,9 +263,11 @@ def test_rebound_bootstrap_fact_is_published_once_on_a_real_snapshot(
         function_ea=0x401000,
         database_identity="sample.i64",
     )
-    source = StableBlockIdentity.from_intervals((NativeEaInterval(0x401020, 0x401021),))
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401020, 0x401021),), native_key=NATIVE_KEY
+    )
     handler = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x401100, 0x401101),)
+        (NativeEaInterval(0x401100, 0x401101),), native_key=NATIVE_KEY
     )
     route = BootstrapRouteEvidence(
         source_identity=source,
@@ -315,7 +321,9 @@ def test_lifecycle_releases_current_mba_identity_index_when_session_finishes() -
     assert session.current_mba_identity_index is None
 
 
-def test_flowchart_generation_resets_and_preopt_marks_duplicate_fallback_guard() -> None:
+def test_flowchart_generation_resets_and_preopt_marks_duplicate_fallback_guard() -> (
+    None
+):
     calls: list[tuple[str, object]] = []
     coordinator, _runtime = _coordinator(calls)
     session, _created = coordinator.ensure_hexrays_session(
@@ -349,9 +357,7 @@ def test_flowchart_generation_resets_and_preopt_marks_duplicate_fallback_guard()
         function_ea=0x401000,
         microcode_modified=True,
     )
-    assert coordinator.consume_current_preopt_microcode_modified(
-        consumer="instruction"
-    )
+    assert coordinator.consume_current_preopt_microcode_modified(consumer="instruction")
     assert coordinator.consume_current_preopt_microcode_modified(consumer="block")
     assert not coordinator.consume_current_preopt_microcode_modified(
         consumer="instruction"

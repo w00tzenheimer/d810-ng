@@ -10465,11 +10465,7 @@ def _preopt_live_conditional_bridge_boundary_ports(
                 fallthrough_target_ea,
             )
         candidates.setdefault((source_block_ea, predicate_ea), set()).add(port)
-    conflicting = {
-        key: ports
-        for key, ports in candidates.items()
-        if len(ports) != 1
-    }
+    conflicting = {key: ports for key, ports in candidates.items() if len(ports) != 1}
     if conflicting:
         for (source_block_ea, predicate_ea), ports in sorted(conflicting.items()):
             logger.info(
@@ -12756,6 +12752,7 @@ def _discover_static_native_bootstrap_routes(
     session_id = str(getattr(session, "identity_key", "resolver-bootstrap"))
     index = MbaBlockIdentityIndex.from_flow_graph(
         generation=0,
+        native_key=state.native_key,
         evidence_generation=state.evidence_generation,
         flow_graph=graph,
         session_id=session_id,
@@ -12793,9 +12790,7 @@ def _on_preopt_bootstrap_route(
         state.snippet_capture_active
         or state.preopt_union_import_active
         or preopt_union_import_in_progress(mba)
-        or int(
-        getattr(mba, "entry_ea", int(function_ea)) or int(function_ea)
-        )
+        or int(getattr(mba, "entry_ea", int(function_ea)) or int(function_ea))
         != int(function_ea)
     ):
         return
@@ -12851,13 +12846,17 @@ def _on_preopt_bootstrap_route(
         and int(details.get("preopt_union_root_ea", -1))
         == int(preparation.primary_seed_ea)
     )
+
     def live_range_identity(block, anchor_ea: int):
         start_ea = int(getattr(block, "start", 0) or 0)
         end_ea = int(getattr(block, "end", 0) or 0)
         anchor = int(anchor_ea)
         if start_ea <= 0 or end_ea <= start_ea or not start_ea <= anchor < end_ea:
             return None
-        return StableBlockIdentity.from_intervals((NativeEaInterval(start_ea, end_ea),))
+        return StableBlockIdentity.from_intervals(
+            (NativeEaInterval(start_ea, end_ea),),
+            native_key=state.native_key,
+        )
 
     for evidence in sorted(
         state.native_preanalysis.bootstrap_routes.values(),
@@ -12874,16 +12873,9 @@ def _on_preopt_bootstrap_route(
         )
         if rebound is None:
             source_result = index.rebind_identity(evidence.source_identity)
-            handler_result = index.rebind_imported_identity(
-                evidence.handler_identity
-            )
-            if (
-                not union_imported
-                or handler_result.status is RebindStatus.MISSING
-            ):
-                handler_result = index.rebind_identity(
-                    evidence.handler_identity
-                )
+            handler_result = index.rebind_imported_identity(evidence.handler_identity)
+            if not union_imported or handler_result.status is RebindStatus.MISSING:
+                handler_result = index.rebind_identity(evidence.handler_identity)
             logger.debug(
                 "PREOPT bootstrap rebind abstain: func=0x%X source=0x%X "
                 "state=0x%X handler=0x%X source_status=%s handler_status=%s "
@@ -13007,10 +12999,12 @@ def _on_preopt_bootstrap_route(
             continue
         taken_target_ea, fallthrough_target_ea, true_is_taken = next(iter(proofs))
         source_identity = StableBlockIdentity.from_intervals(
-            (NativeEaInterval(int(source_ea), int(source_ea) + 1),)
+            (NativeEaInterval(int(source_ea), int(source_ea) + 1),),
+            native_key=index.native_key,
         )
         taken_identity = StableBlockIdentity.from_intervals(
-            (NativeEaInterval(int(taken_target_ea), int(taken_target_ea) + 1),)
+            (NativeEaInterval(int(taken_target_ea), int(taken_target_ea) + 1),),
+            native_key=index.native_key,
         )
         fallthrough_identity = StableBlockIdentity.from_intervals(
             (
@@ -13018,7 +13012,8 @@ def _on_preopt_bootstrap_route(
                     int(fallthrough_target_ea),
                     int(fallthrough_target_ea) + 1,
                 ),
-            )
+            ),
+            native_key=index.native_key,
         )
         source_result = index.rebind_identity(source_identity)
         taken_result = index.rebind_identity(taken_identity)
@@ -13202,9 +13197,11 @@ def _on_preopt_bootstrap_route(
                 ),
                 rule_priority=100,
             )
-        deferred_applied = modifier.apply(transactional=True, staged_atomic=True) if (
-            redirect_routes or conditional_pending or conditional_materialize
-        ) else 0
+        deferred_applied = (
+            modifier.apply(transactional=True, staged_atomic=True)
+            if (redirect_routes or conditional_pending or conditional_materialize)
+            else 0
+        )
         expected_applied = (
             len(redirect_routes)
             + len(conditional_pending)

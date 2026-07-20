@@ -14,6 +14,9 @@ from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.optimizers.microcode.flow.jumps import (
     materialized_computed_goto_island as island,
 )
+from tests.native_preanalysis import make_native_key
+
+NATIVE_KEY = make_native_key()
 
 
 class _Instruction:
@@ -263,16 +266,17 @@ def test_preopt_handler_skips_union_when_bootstrap_route_is_live(monkeypatch) ->
         handler_anchor_ea=handler_ea,
     )
     source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(source_ea, source_ea + 1),)
+        (NativeEaInterval(source_ea, source_ea + 1),), native_key=NATIVE_KEY
     )
     handler_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(handler_ea, handler_ea + 1),)
+        (NativeEaInterval(handler_ea, handler_ea + 1),), native_key=NATIVE_KEY
     )
     state.bind_current_mba(
         MbaBlockIdentityIndex.from_bindings(
             generation=0,
             evidence_generation=state.evidence_generation,
             bindings=((source_identity, 0), (handler_identity, 1)),
+            native_key=NATIVE_KEY,
         )
     )
     source = SimpleNamespace(
@@ -416,9 +420,7 @@ def test_changed_template_generation_reenables_import_but_preserves_ownership(
         lambda _function_ea: generation[0],
     )
 
-    state.preopt_union_imported_mbas.add(
-        island._preopt_union_import_key(0x1000, mba)
-    )
+    state.preopt_union_imported_mbas.add(island._preopt_union_import_key(0x1000, mba))
     assert island._preopt_union_generation_was_processed(state, 0x1000, mba)
     assert island._preopt_union_owns_mba(state, 0x1000, mba)
 
@@ -611,7 +613,9 @@ def test_applied_preopt_boundary_prevents_legacy_residual_route_overwrite(
     state = 0x255387B6
     source = SimpleNamespace(serial=3, succset=(41,), nsucc=lambda: 1)
     external_target = SimpleNamespace(serial=58)
-    mba = SimpleNamespace(get_mblock=lambda serial: source if int(serial) == 3 else None)
+    mba = SimpleNamespace(
+        get_mblock=lambda serial: source if int(serial) == 3 else None
+    )
     transfer = MaterializedIndirectTransfer(
         source_jmp_ea=source_write_ea,
         source_block_ea=0x40CDB7,
@@ -770,8 +774,10 @@ def test_live_resolver_cut_counterpart_routes_through_atomic_gateway(
     monkeypatch.setattr(
         island,
         "find_unique_live_block_by_ea",
-        lambda _mba, ea: source if int(ea) == source_ea else (
-            target if int(ea) == target_ea else None
+        lambda _mba, ea: (
+            source
+            if int(ea) == source_ea
+            else (target if int(ea) == target_ea else None)
         ),
     )
 
