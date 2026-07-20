@@ -106,13 +106,6 @@ def _terminal_zero_guard_literal_return_values(mba: Any) -> tuple[int, ...]:
     return terminal_zero_guard_literal_return_values(mba)
 
 
-def _copy_block_keep(mba, ref_blk, dest_serial):
-    """``mba.copy_block`` + ``MBL_KEEP`` so the clone survives optimize_global."""
-    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
-
-    return DeferredGraphModifier(mba).copy_block_keep_now(ref_blk, dest_serial)
-
-
 class LiveMbaAdapter:
     """MicrocodeAdapter backed by a live ``mba_t``.
 
@@ -568,7 +561,8 @@ class LiveMbaAdapter:
             if int(getattr(cur, "opcode", -1)) != int(ida_hexrays.m_goto):
                 insns.append(cur)
             cur = cur.next
-        clone_serial = self._new_deferred_modifier().create_standalone_block(
+        modifier = self._new_deferred_modifier()
+        clone_serial = modifier.create_standalone_block(
             ref_serial=int(template_serial),
             blk_ins=insns,
             target_serial=int(tail_goto_target),
@@ -579,6 +573,7 @@ class LiveMbaAdapter:
                 "clone_state_write_block: DGM create_standalone failed for "
                 f"template={template_serial}"
             )
+        modifier.commit_immediate_mutations()
         return int(clone_serial)
 
     def redirect_advance_edge(
@@ -2797,6 +2792,7 @@ def _clone_terminal_return_block_for_source(
     )
     if clone_serial is None:
         return None
+    creator.commit_immediate_mutations()
     redirect = adapter._new_deferred_modifier()
     redirect.queue_conditional_target_change(
         int(source_serial),
