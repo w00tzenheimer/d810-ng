@@ -42,6 +42,8 @@ class InMemoryBackend:
         self,
         lowering_input: LoweringInput,
         state: dict[int, BlockSnapshot] | None = None,
+        *,
+        mutation_gateway: object,
     ) -> int:
         patch_plan = ensure_patch_plan(lowering_input)
         self.applied_patch_plans.append(patch_plan)

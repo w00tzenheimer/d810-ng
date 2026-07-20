@@ -87,6 +87,7 @@ class CfgTransactionEngine:
         *,
         pre_cfg: FlowGraph,
         mba,
+        mutation_gateway: object,
         post_apply_hook=None,
         cumulative_pre_cfg: FlowGraph | None = None,
     ) -> TransactionResult:
@@ -138,7 +139,10 @@ class CfgTransactionEngine:
         # All handled inside translator.lower() -> deferred_modifier.apply()
         try:
             count = self._translator.lower(
-                plan, mba, post_apply_hook=post_apply_hook,
+                plan,
+                mba,
+                mutation_gateway=mutation_gateway,
+                post_apply_hook=post_apply_hook,
             )
         except CfgContractViolationError as exc:
             # Post-apply contract failure propagated as exception

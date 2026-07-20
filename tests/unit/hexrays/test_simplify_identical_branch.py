@@ -198,7 +198,7 @@ class TestSimplifyIdenticalBranchPassIntegration:
 
         # Run through PassPipeline
         pipeline = FlowGraphTransformPipeline(backend, [SimplifyIdenticalBranchPass()])
-        total_mods = pipeline.run(blocks)
+        total_mods = pipeline.run(blocks, mutation_gateway = object())
 
         assert total_mods == 1
         assert len(backend.applied_modifications) == 1
@@ -227,7 +227,7 @@ class TestSimplifyIdenticalBranchPassIntegration:
 
         # Run through PassPipeline
         pipeline = FlowGraphTransformPipeline(backend, [SimplifyIdenticalBranchPass()])
-        total_mods = pipeline.run(blocks)
+        total_mods = pipeline.run(blocks, mutation_gateway = object())
 
         assert total_mods == 0
         assert len(backend.applied_modifications) == 0
@@ -257,7 +257,7 @@ class TestSimplifyIdenticalBranchPassIntegration:
 
         # Run through PassPipeline
         pipeline = FlowGraphTransformPipeline(backend, [SimplifyIdenticalBranchPass()])
-        total_mods = pipeline.run(blocks)
+        total_mods = pipeline.run(blocks, mutation_gateway = object())
 
         assert total_mods == 2
         assert len(backend.applied_modifications) == 2

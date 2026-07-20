@@ -22,14 +22,17 @@ class FlowGraphTransformPipeline:
 
     Usage:
         pipeline = PassPipeline(backend, [pass1, pass2, pass3])
-        total_changes = pipeline.run(backend_state)
+        total_changes = pipeline.run(
+            backend_state,
+            mutation_gateway=mutation_gateway,
+        )
     """
 
     def __init__(self, backend: IRTranslator, passes: list[FlowGraphTransform]) -> None:
         self.backend = backend
         self.passes = list(passes)  # defensive copy
 
-    def run(self, backend_state: Any) -> int:
+    def run(self, backend_state: Any, *, mutation_gateway: object) -> int:
         """Execute all transform against backend_state.
 
         Returns total count of applied modifications across all transform.
@@ -48,7 +51,11 @@ class FlowGraphTransformPipeline:
                 continue
 
             patch_plan = compile_patch_plan(mods, cfg)
-            count = self.backend.lower(patch_plan, backend_state)
+            count = self.backend.lower(
+                patch_plan,
+                backend_state,
+                mutation_gateway=mutation_gateway,
+            )
             if count <= 0:
                 logger.debug("Pass %s: lower returned %d, skipping verify", pass_.name, count)
                 continue

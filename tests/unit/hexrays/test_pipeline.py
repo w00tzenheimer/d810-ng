@@ -20,6 +20,9 @@ from d810.transforms.plan import LoweringInput
 from tests.unit.hexrays.conftest import InMemoryBackend
 
 
+MUTATION_GATEWAY = object()
+
+
 # ============================================================================
 # Mock Backends for Testing
 # ============================================================================
@@ -39,10 +42,16 @@ class ZeroLowerBackend(InMemoryBackend):
     def lower(
         self,
         lowering_input: LoweringInput,
-        state: dict[int, BlockSnapshot] | None = None
+        state: dict[int, BlockSnapshot] | None = None,
+        *,
+        mutation_gateway: object,
     ) -> int:
         """Record modifications but return 0 to simulate no-op lowering."""
-        super().lower(lowering_input, state)
+        super().lower(
+            lowering_input,
+            state,
+            mutation_gateway=mutation_gateway,
+        )
         return 0
 
 
@@ -56,10 +65,16 @@ class MutatingBackend(InMemoryBackend):
     def lower(
         self,
         lowering_input: LoweringInput,
-        state: dict[int, BlockSnapshot] | None = None
+        state: dict[int, BlockSnapshot] | None = None,
+        *,
+        mutation_gateway: object,
     ) -> int:
         """Mutate backend state and return count."""
-        count = super().lower(lowering_input, state)
+        count = super().lower(
+            lowering_input,
+            state,
+            mutation_gateway=mutation_gateway,
+        )
         if count > 0:
             # Add a new block to simulate state mutation
             self.mutation_count += 1
@@ -150,7 +165,7 @@ class TestPassPipeline:
         backend = InMemoryBackend()
         pipeline = FlowGraphTransformPipeline(backend, [])
 
-        total = pipeline.run({})
+        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
 
         assert total == 0
         assert len(backend.applied_modifications) == 0
@@ -160,7 +175,7 @@ class TestPassPipeline:
         backend = InMemoryBackend()
         pipeline = FlowGraphTransformPipeline(backend, [NoOpPass()])
 
-        total = pipeline.run({})
+        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
 
         assert total == 0
         assert len(backend.applied_modifications) == 0
@@ -170,7 +185,7 @@ class TestPassPipeline:
         backend = InMemoryBackend()
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
-        total = pipeline.run({})
+        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
 
         assert total == 1
         assert len(backend.applied_modifications) == 1
@@ -183,7 +198,7 @@ class TestPassPipeline:
         backend = InMemoryBackend()
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass(), DoubleModPass()])
 
-        total = pipeline.run({})
+        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
 
         assert total == 3  # 1 from SingleModPass + 2 from DoubleModPass
         assert len(backend.applied_modifications) == 3
@@ -204,7 +219,7 @@ class TestPassPipeline:
         backend = InMemoryBackend(blocks)
         pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass()])
 
-        total = pipeline.run(blocks)
+        total = pipeline.run(blocks, mutation_gateway = MUTATION_GATEWAY)
 
         # ConditionalPass requires >2 blocks, so should be skipped
         assert total == 0
@@ -230,7 +245,7 @@ class TestPassPipeline:
         backend = InMemoryBackend(blocks)
         pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass()])
 
-        total = pipeline.run(blocks)
+        total = pipeline.run(blocks, mutation_gateway = MUTATION_GATEWAY)
 
         # ConditionalPass requires >2 blocks, so should run
         assert total == 1
@@ -241,7 +256,7 @@ class TestPassPipeline:
         backend = ZeroLowerBackend()
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
-        total = pipeline.run({})
+        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
 
         # Lower returned 0, so verify should not be called and total should be 0
         assert total == 0
@@ -253,7 +268,7 @@ class TestPassPipeline:
         backend = FailingVerificationBackend()
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
-        total = pipeline.run({})
+        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
 
         # Verify failed, so modifications should not be counted
         assert total == 0
@@ -266,7 +281,7 @@ class TestPassPipeline:
         # Use CountingPass which returns mods based on block count
         pipeline = FlowGraphTransformPipeline(backend, [CountingPass(), CountingPass()])
 
-        total = pipeline.run({})
+        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
 
         # First pass: 0 blocks -> 0 mods
         # Second pass: should see mutated state from first pass if re-lift happened
@@ -293,7 +308,7 @@ class TestPassPipeline:
         # Second pass should see 3 blocks (original 2 + 1 added)
         pipeline = FlowGraphTransformPipeline(backend, [CountingPass(), CountingPass()])
 
-        total = pipeline.run(blocks)
+        total = pipeline.run(blocks, mutation_gateway = MUTATION_GATEWAY)
 
         # First pass: 2 blocks -> 2 mods -> backend adds 1 block
         # Second pass: 3 blocks -> 3 mods
@@ -346,7 +361,7 @@ class TestPassPipeline:
         # NoOpPass always applies but returns no mods
         pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass(), SingleModPass(), NoOpPass()])
 
-        total = pipeline.run(blocks)
+        total = pipeline.run(blocks, mutation_gateway = MUTATION_GATEWAY)
 
         # Only SingleModPass should contribute
         assert total == 1
@@ -362,7 +377,7 @@ class TestPassPipelineLogging:
         pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass()])
 
         with caplog.at_level("DEBUG"):
-            pipeline.run({})
+            pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
 
         assert any("not applicable" in record.message for record in caplog.records)
 
@@ -372,7 +387,7 @@ class TestPassPipelineLogging:
         pipeline = FlowGraphTransformPipeline(backend, [NoOpPass()])
 
         with caplog.at_level("DEBUG"):
-            pipeline.run({})
+            pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
 
         assert any("produced no modifications" in record.message for record in caplog.records)
 
@@ -382,7 +397,7 @@ class TestPassPipelineLogging:
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
         with caplog.at_level("WARNING"):
-            pipeline.run({})
+            pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
 
         assert any("failed verification" in record.message for record in caplog.records)
 
@@ -392,7 +407,7 @@ class TestPassPipelineLogging:
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
         with caplog.at_level("DEBUG"):
-            pipeline.run({})
+            pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
 
         assert any("applied" in record.message and "modifications" in record.message
                    for record in caplog.records)

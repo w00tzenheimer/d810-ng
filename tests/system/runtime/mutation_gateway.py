@@ -7,9 +7,10 @@ from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 from tests.native_preanalysis import make_native_key
 
 
-def make_mutation_gateway(mba, *, generation: int = 0) -> MbaMutationGateway:
+def make_mutation_gateway(mba=None, *, generation: int = 0) -> MbaMutationGateway:
     """Build an explicit gateway for a fake or live runtime-test MBA."""
     native_key = make_native_key()
+    mba = object() if mba is None else mba
     session_id = f"test-mutation:{id(mba):x}"
     if callable(getattr(mba, "get_mblock", None)):
         index = MbaBlockIdentityIndex.from_mba(

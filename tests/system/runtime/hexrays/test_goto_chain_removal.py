@@ -642,7 +642,7 @@ class TestGotoChainRemovalPassIntegration:
         backend = InMemoryBackend(blocks)
 
         pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
-        total_mods = pipeline.run(blocks)
+        total_mods = pipeline.run(blocks, mutation_gateway = object())
 
         assert total_mods == 1
         assert len(backend.applied_modifications) == 1
@@ -669,7 +669,7 @@ class TestGotoChainRemovalPassIntegration:
         backend = InMemoryBackend(blocks)
 
         pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
-        total_mods = pipeline.run(blocks)
+        total_mods = pipeline.run(blocks, mutation_gateway = object())
 
         assert total_mods == 0
         assert len(backend.applied_modifications) == 0
@@ -697,7 +697,7 @@ class TestGotoChainRemovalPassIntegration:
         backend = InMemoryBackend(blocks)
 
         pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
-        total_mods = pipeline.run(blocks)
+        total_mods = pipeline.run(blocks, mutation_gateway = object())
 
         assert total_mods == 1
         assert len(backend.applied_modifications) == 1
@@ -735,7 +735,7 @@ class TestGotoChainRemovalPassIntegration:
         backend = InMemoryBackend(blocks)
 
         pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
-        total_mods = pipeline.run(blocks)
+        total_mods = pipeline.run(blocks, mutation_gateway = object())
 
         assert total_mods == 2
         assert len(backend.applied_modifications) == 2

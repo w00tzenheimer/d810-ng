@@ -455,10 +455,15 @@ def test_execute_family_pipeline_runs_executor_and_reports_outcome() -> None:
     )
     snapshot = SimpleNamespace(mba="mba", handler_count=7)
     outcomes: list[object] = []
+    mutation_gateway = object()
+    attached_gateway_factories: list[object] = []
 
     class _Executor:
         def __init__(self):
             self.total_changes = 2
+
+        def set_mutation_gateway_factory(self, factory):
+            attached_gateway_factories.append(factory)
 
         def execute_pipeline(self, pipeline, total_handlers):
             assert pipeline == [fragment]
@@ -478,7 +483,8 @@ def test_execute_family_pipeline_runs_executor_and_reports_outcome() -> None:
         flow_context=SimpleNamespace(
             report_outcome=lambda provenance, source: outcomes.append(
                 (provenance, source)
-            )
+            ),
+            new_mba_mutation_gateway=lambda: mutation_gateway,
         ),
     )
 
@@ -486,3 +492,5 @@ def test_execute_family_pipeline_runs_executor_and_reports_outcome() -> None:
     assert executed.results[0].strategy_name == "executed"
     assert executed.provenance.rows[0].phase == DecisionPhase.APPLIED
     assert outcomes == [(executed.provenance, "planner")]
+    assert len(attached_gateway_factories) == 1
+    assert attached_gateway_factories[0]() is mutation_gateway

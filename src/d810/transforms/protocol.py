@@ -11,7 +11,11 @@ Example:
     >>> backend = HexRaysBackend()
     >>> cfg = backend.lift(mba)
     >>> modifications = some_pass.transform(cfg)
-    >>> count = backend.lower(modifications, mba)
+    >>> count = backend.lower(
+    ...     modifications,
+    ...     mba,
+    ...     mutation_gateway=mutation_gateway,
+    ... )
     >>> backend.verify(mba)
     True
 """
@@ -74,7 +78,13 @@ class IRTranslator(Protocol):
         """
         ...
 
-    def lower(self, lowering_input: LoweringInput, state: Any) -> int:
+    def lower(
+        self,
+        lowering_input: LoweringInput,
+        state: Any,
+        *,
+        mutation_gateway: object,
+    ) -> int:
         """Apply a finalized PatchPlan to backend state.
 
         New callers should pass :class:`~d810.transforms.plan.PatchPlan`.
@@ -93,7 +103,11 @@ class IRTranslator(Protocol):
 
         Example:
             >>> mods = [ConvertToGoto(serial=3), RemoveBlock(serial=5)]
-            >>> count = backend.lower(mods, mba)
+            >>> count = backend.lower(
+            ...     mods,
+            ...     mba,
+            ...     mutation_gateway=mutation_gateway,
+            ... )
             >>> count
             2
         """

@@ -336,6 +336,14 @@ def execute_family_pipeline(
         )
 
     executor = executor_factory(snapshot.mba)
+    attach_gateway_factory = getattr(
+        executor,
+        "set_mutation_gateway_factory",
+        None,
+    )
+    new_gateway = getattr(flow_context, "new_mba_mutation_gateway", None)
+    if callable(attach_gateway_factory):
+        attach_gateway_factory(new_gateway if callable(new_gateway) else None)
     attach_snapshot = getattr(executor, "set_analysis_snapshot", None)
     if callable(attach_snapshot):
         attach_snapshot(snapshot)

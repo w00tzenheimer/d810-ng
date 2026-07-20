@@ -197,7 +197,7 @@ class TestFakeJumpFixerPass:
         pipeline = FlowGraphTransformPipeline(backend, [pass_instance])
 
         # Run pipeline
-        total_mods = pipeline.run(blocks)
+        total_mods = pipeline.run(blocks, mutation_gateway = object())
 
         # Verify result
         assert total_mods == 1
@@ -240,7 +240,7 @@ class TestFakeJumpFixerPass:
         pipeline = FlowGraphTransformPipeline(backend, [pass1, pass2])
 
         # Run pipeline
-        total_mods = pipeline.run(blocks)
+        total_mods = pipeline.run(blocks, mutation_gateway = object())
 
         # Verify both transform applied
         assert total_mods == 2

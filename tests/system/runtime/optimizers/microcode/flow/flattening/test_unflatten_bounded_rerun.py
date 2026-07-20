@@ -1472,6 +1472,9 @@ class TestUnflattenBoundedRerunGate:
             recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
 
         class _Backend:
+            def __init__(self, *, mutation_gateway):
+                assert mutation_gateway is not None
+
             def capabilities(self):
                 return frozenset()
 
@@ -1576,7 +1579,8 @@ class TestUnflattenBoundedRerunGate:
         rule = StateMachineCffUnflattener()
         rule.config = {}
         rule.flow_context = SimpleNamespace(
-            validated_fact_view=lambda _maturity: fact_view
+            validated_fact_view=lambda _maturity: fact_view,
+            new_mba_mutation_gateway=lambda: object(),
         )
         rule.current_resolver_session_state = lambda: ResolverSessionState(
             native_preanalysis=NativePreanalysisSessionState(),
@@ -1638,6 +1642,9 @@ class TestUnflattenBoundedRerunGate:
             recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
 
         class _Backend:
+            def __init__(self, *, mutation_gateway):
+                assert mutation_gateway is not None
+
             def capabilities(self):
                 return frozenset()
 
@@ -1756,7 +1763,8 @@ class TestUnflattenBoundedRerunGate:
         rule.flow_context = SimpleNamespace(
             validated_fact_view=lambda _maturity: SimpleNamespace(
                 active_observations=()
-            )
+            ),
+            new_mba_mutation_gateway=lambda: object(),
         )
         rule._union_maturities_cache = frozenset({ida_hexrays.MMAT_GLBOPT1})
 

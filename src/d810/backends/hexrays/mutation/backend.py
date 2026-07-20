@@ -27,17 +27,24 @@ logger = getLogger(__name__)
 
 if TYPE_CHECKING:
     from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+    from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 
 
 class HexRaysMutationBackend:
     """Apply unflatten PatchPlans to a live ``mba`` and return the re-lifted FlowGraph."""
 
-    def __init__(self, translator: "IDAIRTranslator | None" = None) -> None:
+    def __init__(
+        self,
+        *,
+        mutation_gateway: "MbaMutationGateway",
+        translator: "IDAIRTranslator | None" = None,
+    ) -> None:
         if translator is None:
             from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 
             translator = IDAIRTranslator()
         self._translator = translator
+        self._mutation_gateway = mutation_gateway
 
     def capabilities(self) -> frozenset[str]:
         # "emulation" advertises the concolic block-emulator the unflatten entry registers as
@@ -84,5 +91,9 @@ class HexRaysMutationBackend:
             )
             return pre_cfg
 
-        self._translator.lower(rewrite_plan, live_source)
+        self._translator.lower(
+            rewrite_plan,
+            live_source,
+            mutation_gateway=self._mutation_gateway,
+        )
         return self._translator.lift(live_source)

@@ -221,10 +221,10 @@ class TestBlockOptimizerManagerPipelineIntegration:
         )
 
     def test_block_optimizer_calls_pipeline_run(self):
-        """BlockOptimizerManager source must call _pass_pipeline.run(mba)."""
+        """BlockOptimizerManager must pass its coordinator gateway to the pipeline."""
         src = self._read_block_adapter_source()
-        assert "self._pass_pipeline.run(mba)" in src, (
-            "BlockOptimizerManager must call self._pass_pipeline.run(mba)"
+        assert "mutation_gateway=mutation_gateway" in src, (
+            "BlockOptimizerManager must pass the coordinator mutation gateway"
         )
 
     def test_glbopt_does_not_run_pipeline(self):

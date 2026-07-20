@@ -43,6 +43,10 @@ GATEWAY_REQUIRED_ENTRYPOINTS = {
             "apply_unreachable_region_cleanup_plan",
         }
     ),
+    "hexrays/mutation/ir_translator.py": frozenset({"lower"}),
+    "passes/pipeline.py": frozenset({"run"}),
+    "passes/transaction_engine.py": frozenset({"apply"}),
+    "backends/hexrays/mutation/backend.py": frozenset({"__init__"}),
     "hexrays/mutation/detached_handler_island.py": frozenset(
         {
             "_apply_boundary_port_batch",

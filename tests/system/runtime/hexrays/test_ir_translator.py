@@ -60,6 +60,7 @@ from d810.hexrays.mutation.ir_translator import (
     _operand_kind_from_hexrays,
     capture_mop_snapshot,
 )
+from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 
 _DEFAULT_TEST_BINARY = "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
@@ -477,7 +478,7 @@ class TestIDAIRTranslatorBasics:
             backend.lower(  # type: ignore[arg-type]
                 [RedirectGoto(from_serial=1, old_target=2, new_target=3)],
                 object(),
-            )
+            mutation_gateway = make_mutation_gateway())
 
 
 class _FakeDeferredGraphModifier:
@@ -747,7 +748,7 @@ class TestIDAIntegration:
             step for step in patch_plan.steps if isinstance(step, PatchInsertBlock)
         )
 
-        count = backend.lower(patch_plan, mba)
+        count = backend.lower(patch_plan, mba, mutation_gateway = make_mutation_gateway(mba))
 
         assert count == 1
         mba.verify(True)
@@ -784,7 +785,7 @@ class TestIDAIntegration:
             step for step in patch_plan.steps if isinstance(step, PatchDuplicateBlock)
         )
 
-        count = backend.lower(patch_plan, mba)
+        count = backend.lower(patch_plan, mba, mutation_gateway = make_mutation_gateway(mba))
 
         assert count == 1
         mba.verify(True)
@@ -824,7 +825,7 @@ class TestIDAIntegration:
 
         assert duplicate_step.fallthrough_serial is not None
 
-        count = backend.lower(patch_plan, mba)
+        count = backend.lower(patch_plan, mba, mutation_gateway = make_mutation_gateway(mba))
 
         assert count == 1
         mba.verify(True)
@@ -846,7 +847,7 @@ class TestIDAIntegration:
     def test_lower_applies_concrete_patch_plan(self, monkeypatch: pytest.MonkeyPatch):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -865,7 +866,7 @@ class TestIDAIntegration:
             steps=(PatchRedirectGoto(from_serial=7, old_target=8, new_target=9),)
         )
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 1
         assert len(created) == 1
@@ -878,7 +879,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -897,7 +898,7 @@ class TestIDAIntegration:
             steps=(PatchRedirectBranch(from_serial=15, old_target=16, new_target=66),)
         )
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 1
         assert len(created) == 1
@@ -915,7 +916,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -943,7 +944,7 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 1
         assert len(created) == 1
@@ -956,7 +957,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -985,7 +986,7 @@ class TestIDAIntegration:
             _corridor_cfg(),
         )
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 1
         assert len(created) == 1
@@ -998,7 +999,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1023,7 +1024,7 @@ class TestIDAIntegration:
             ]
         )
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 0
         assert created == []
@@ -1034,7 +1035,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1064,7 +1065,7 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 1
         assert len(created) == 1
@@ -1086,7 +1087,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1112,7 +1113,7 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000))
+        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000), mutation_gateway = make_mutation_gateway())
 
         assert count == 1
         assert len(created) == 1
@@ -1125,7 +1126,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1151,7 +1152,7 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 1
         assert len(created) == 1
@@ -1164,7 +1165,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1202,7 +1203,7 @@ class TestIDAIntegration:
         )
 
         assert isinstance(patch_plan.steps[0], PatchDuplicateReplayAndRedirect)
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 1
         assert len(created) == 1
@@ -1219,7 +1220,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1259,7 +1260,7 @@ class TestIDAIntegration:
             )
         )
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 0
         assert created == []
@@ -1270,7 +1271,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1296,7 +1297,7 @@ class TestIDAIntegration:
             _conditional_duplicate_cfg(),
         )
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 1
         assert len(created) == 1
@@ -1309,7 +1310,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1337,7 +1338,7 @@ class TestIDAIntegration:
             _conditional_duplicate_cfg(),
         )
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 1
         assert len(created) == 1
@@ -1350,7 +1351,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1377,7 +1378,7 @@ class TestIDAIntegration:
             _conditional_duplicate_cfg(),
         )
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 1
         assert len(created) == 1
@@ -1391,7 +1392,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1416,7 +1417,7 @@ class TestIDAIntegration:
             ]
         )
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 0
         assert created == []
@@ -1427,7 +1428,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1453,7 +1454,7 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000))
+        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000), mutation_gateway = make_mutation_gateway())
 
         assert count == 0
         assert created == []
@@ -1464,7 +1465,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1492,7 +1493,7 @@ class TestIDAIntegration:
 
         assert isinstance(patch_plan.steps[0], PatchInsertBlock)
 
-        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000))
+        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000), mutation_gateway = make_mutation_gateway())
 
         assert count == 0
         assert created == []
@@ -1503,7 +1504,7 @@ class TestIDAIntegration:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1520,7 +1521,7 @@ class TestIDAIntegration:
         backend = IDAIRTranslator()
         patch_plan = compile_patch_plan([RemoveEdge(from_serial=45, to_serial=2)])
 
-        count = backend.lower(patch_plan, object())
+        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert len(created) == 1
         modifier = created[0]
@@ -1556,7 +1557,7 @@ class TestExecutionPolicyGuard:
         """
         created: list = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1571,7 +1572,7 @@ class TestExecutionPolicyGuard:
             [RedirectGoto(from_serial=10, old_target=20, new_target=30)],
             execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
         )
-        count = backend.lower(plan, object())
+        count = backend.lower(plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert count == 0, "CFG-edit plan must be rejected when policy is NOP_CLEANUP_RELAXED"
         assert created == [], "Modifier must not be created when guard rejects the plan"
@@ -1587,7 +1588,7 @@ class TestExecutionPolicyGuard:
         """
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1602,7 +1603,7 @@ class TestExecutionPolicyGuard:
             steps=(PatchNopInstructions(block_serial=7, insn_eas=(0xDEAD,)),),
             execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
         )
-        backend.lower(nop_plan, object())
+        backend.lower(nop_plan, object(), mutation_gateway = make_mutation_gateway())
 
         assert len(created) == 1, (
             "NOP-only plan must not be rejected by the step-type guard; "
@@ -1616,7 +1617,7 @@ class TestExecutionPolicyGuard:
         """NOP cleanup must reach optimize_local before live post-contract checks."""
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1636,7 +1637,7 @@ class TestExecutionPolicyGuard:
             execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
         )
 
-        assert backend.lower(nop_plan, object()) == 1
+        assert backend.lower(nop_plan, object(), mutation_gateway = make_mutation_gateway()) == 1
         assert len(created) == 1
         apply_calls = [call for call in created[0].calls if call[0] == "apply"]
         assert len(apply_calls) == 1
@@ -1649,7 +1650,7 @@ class TestExecutionPolicyGuard:
     ):
         created: list[_FakeDeferredGraphModifier] = []
 
-        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
             modifier = _FakeDeferredGraphModifier(mba)
             created.append(modifier)
             return modifier
@@ -1665,7 +1666,7 @@ class TestExecutionPolicyGuard:
             execution_policy=ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED,
         )
 
-        assert backend.lower(nop_plan, object()) == 1
+        assert backend.lower(nop_plan, object(), mutation_gateway = make_mutation_gateway()) == 1
         apply_calls = [call for call in created[0].calls if call[0] == "apply"]
         assert len(apply_calls) == 1
         assert apply_calls[0][1]["run_deep_cleaning"] is True
