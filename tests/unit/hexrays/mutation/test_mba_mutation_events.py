@@ -269,10 +269,13 @@ def test_gateway_is_the_receipted_path_for_split_and_clone_bindings() -> None:
     tail_identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x401008, 0x401010),), native_key=NATIVE_KEY
     )
+    later_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x402000, 0x402010),), native_key=NATIVE_KEY
+    )
     index = MbaBlockIdentityIndex.from_bindings(
         session_id="mutation-session",
         generation=0,
-        bindings=((original_identity, 2),),
+        bindings=((original_identity, 2), (later_identity, 5)),
         native_key=NATIVE_KEY,
     )
     original = index.handle_for_serial(2)
@@ -296,6 +299,7 @@ def test_gateway_is_the_receipted_path_for_split_and_clone_bindings() -> None:
     assert index.resolve(original) is None
     assert index.resolve(retained).serial == 2
     assert index.resolve(tail).serial == 3
+    assert index.rebind_identity(later_identity).block.serial == 6
     assert index.rebind_identity(tail_identity).status.name == "AMBIGUOUS"
     assert receipt.operation_count == 2
     assert set(receipt.affected_identities) == {
