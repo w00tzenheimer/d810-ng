@@ -30,7 +30,7 @@ class TestCandidateFlag:
             CandidateFlag(kind="x", block_serial=0, confidence=-0.1, detail="")
 
 
-class TestReconResult:
+class TestPreanalysisResult:
     def test_construction(self):
         flag = CandidateFlag(kind="flattened_switch", block_serial=2, confidence=0.9, detail="d")
         result = PreanalysisResult(

@@ -50,7 +50,7 @@ class ConsumerOutcomeReport(Protocol):
         ...
 
 
-class _ReconOutcomeLike(Protocol):
+class _AnalysisOutcomeLike(Protocol):
     func_ea: int
     hints: object | None
     apply_result: object | None
@@ -70,7 +70,7 @@ class _FlowGateDecisionLike(Protocol):
 class RuleScopeOutcomeAdapter:
     "Adapter exposing :class:`AnalysisOutcome` as a :class:`ConsumerOutcomeReport`.\n\n    Wraps the rule-scope consumer's outcome without modifying it.\n    "
 
-    def __init__(self, outcome: _ReconOutcomeLike) -> None:
+    def __init__(self, outcome: _AnalysisOutcomeLike) -> None:
         self._outcome = outcome
 
     @property

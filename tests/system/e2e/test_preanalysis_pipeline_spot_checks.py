@@ -30,7 +30,7 @@ KNOWN_FLATTENED = [
 
 @pytest.mark.e2e
 @pytest.mark.usefixtures("ida_database", "configure_hexrays", "setup_libobfuscated_funcs")
-class TestReconPipelineSpotChecks:
+class TestAnalysisPipelineSpotChecks:
     """Per-function pipeline assertions for known cases."""
 
     binary_name = _get_default_binary()

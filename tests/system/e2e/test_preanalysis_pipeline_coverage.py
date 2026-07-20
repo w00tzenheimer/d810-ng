@@ -3,7 +3,7 @@ import pytest
 
 
 @pytest.mark.e2e
-class TestReconPipelineCoverage:
+class TestAnalysisPipelineCoverage:
     "Aggregate pipeline coverage assertions.\n\n    The analysis_store_session fixture triggers at least one decompilation\n    (e.g., _hodur_func) to populate the preanalysis DB, making these tests\n    self-contained.\n    "
 
     def test_hints_produced(self, analysis_store_session):

@@ -50,7 +50,7 @@ def store(tmp_path):
     s.close()
 
 
-class TestReconPhaseRegistration:
+class TestPreanalysisPhaseRegistration:
     def test_register_collector(self, store):
         phase = PreanalysisPhase(store=store)
         collector = FakeCollector()
@@ -69,7 +69,7 @@ class TestReconPhaseRegistration:
         assert phase.collector_count == 0
 
 
-class TestReconPhaseRunIfNeeded:
+class TestPreanalysisPhaseRunIfNeeded:
     def test_dispatches_collector_at_matching_maturity(self, store):
         phase = PreanalysisPhase(store=store)
         collector = FakeCollector()

@@ -38,7 +38,7 @@ def sample_hints() -> DeobfuscationHints:
     )
 
 
-class TestReconStoreSaveLoad:
+class TestPreanalysisStoreSaveLoad:
     def test_save_and_load_preanalysis_result(self, store, sample_result):
         store.save_preanalysis_result(sample_result)
         loaded = store.load_preanalysis_results(func_ea=0x401000, maturity=5)
@@ -161,7 +161,7 @@ class TestReconStoreSaveLoad:
         assert loaded.metrics["handlers_total"] == 3
 
 
-class TestReconStoreHints:
+class TestPreanalysisStoreHints:
     def test_save_and_load_hints(self, store, sample_hints):
         store.save_hints(sample_hints)
         loaded = store.load_hints(func_ea=0x401000)
