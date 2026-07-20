@@ -310,6 +310,7 @@ try:
         from session_probe_evidence import (
             capture_preopt_union_preparation,
             latest_preopt_union_preparation,
+            native_preanalysis_boundary_port_count,
         )
 
         headless.configure(project="default_unflattening_ollvm.json")
@@ -931,8 +932,7 @@ try:
                 (
                     "ports=0"
                     if union_preparation is None
-                    else "ports="
-                    f"{len(union_preparation.boundary_ports.direct) + len(union_preparation.boundary_ports.conditional)}"
+                    else f"ports={native_preanalysis_boundary_port_count(state)}"
                 ),
                 flush=True,
             )
