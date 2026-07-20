@@ -101,11 +101,24 @@ def test_fresh_preopt_rebinds_the_bootstrap_route_without_cache(
         "source_ea": f"0x{_BOOTSTRAP_SOURCE_EA:X}",
         "state": f"0x{_BOOTSTRAP_STATE:X}",
         "handler_ea": f"0x{_BOOTSTRAP_HANDLER_EA:X}",
-        # Generation 1 publishes the materialized native-transfer inventory;
-        # this newly discovered route is the next changed fact in the same
-        # coordinator-owned session.
-        "generation": 2,
+        # Static transfer and bootstrap facts discovered before the first
+        # PREOPT bind coalesce into one evidence epoch. Facts learned after
+        # that bind advance the generation and may request the controlled redo.
+        "generation": 1,
         "proof_kind": "static_native",
         "rebound": True,
-    }
+    }, "\n".join(
+        line
+        for line in log_text.splitlines()
+        if any(
+            marker in line
+            for marker in (
+                "BOOTSTRAP",
+                "evidence_generation",
+                "MERR_REDO",
+                "request_redo",
+                "preopt_generation",
+            )
+        )
+    )
     assert "PREOPT_BOOTSTRAP_ROUTE" in log_text

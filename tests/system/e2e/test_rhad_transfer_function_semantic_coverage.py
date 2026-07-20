@@ -72,6 +72,7 @@ def test_second_real_loader_fully_unflattens_beyond_native_range_oracle(
             "RHAD_TRANSFER_TRANSFERS_OUTPUT": str(transfer_path),
             "RHAD_TRANSFER_DIAG_OUTPUT": str(diag_path),
             "D810_DIAG_SNAPSHOT": "1",
+            "PYTHONFAULTHANDLER": "1",
         }
     )
     with log_path.open("w", encoding="utf-8") as log_file:

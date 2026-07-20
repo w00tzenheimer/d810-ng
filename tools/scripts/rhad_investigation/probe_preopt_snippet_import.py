@@ -5703,7 +5703,6 @@ try:
                         prepared = cg.prepare_detached_handler_snippets(
                             resolver_state,
                             live_mba=cfunc.mba,
-                            template_maturity=ida_hexrays.MMAT_PREOPTIMIZED,
                         )
                 print(
                     "DECOMPILE",
