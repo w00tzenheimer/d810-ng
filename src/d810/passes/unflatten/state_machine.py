@@ -29,6 +29,10 @@ from d810.analyses.control_flow.dispatcher_recovery import (
     min_state_constant_from_config,
     recover_dispatcher,
 )
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
 from d810.analyses.control_flow.reachability import reachable_from
 from d810.analyses.machine import recover_machine
 from d810.analyses.control_flow.comparison_dispatcher_model import (
@@ -339,6 +343,77 @@ def _recovery_from_machine(machine, graph, min_state_constant: int) -> Dispatche
     )
 
 
+def _materialized_dispatcher_recovery(
+    context: FunctionPipelineContext,
+    recovery: DispatcherRecovery,
+) -> DispatcherRecovery:
+    """Build an exact current-snapshot dispatcher view from portable evidence.
+
+    PREOPT import can remove the legacy comparison dispatcher while retaining
+    exact state-to-native-handler routes.  The live adapter has already rebound
+    those native EAs to this FlowGraph; this pass packages that ephemeral view
+    into the ordinary portable dispatcher contract.  Missing, conflicting, or
+    non-live identities abstain rather than inventing serials.
+    """
+    if recovery.dispatch_map is not None or not bool(
+        _analysis(context, "materialized_computed_goto_profile", False)
+    ):
+        return recovery
+    state_var_reg = _analysis(context, "materialized_state_var_reg")
+    entry_serial = _analysis(context, "materialized_dispatcher_entry_serial")
+    handlers = {
+        int(state) & 0xFFFFFFFF: int(serial)
+        for state, serial in (
+            _analysis(context, "materialized_handler_by_state", {}) or {}
+        ).items()
+    }
+    router_serials = frozenset(
+        int(serial)
+        for serial in (
+            _analysis(context, "materialized_dispatcher_router_serials", ())
+            or ()
+        )
+    )
+    if state_var_reg is None or entry_serial is None or not handlers:
+        return recovery
+    entry_serial = int(entry_serial)
+    if context.graph.get_block(entry_serial) is None:
+        return recovery
+    if any(context.graph.get_block(serial) is None for serial in handlers.values()):
+        return recovery
+    dispatcher_blocks = frozenset({entry_serial, *router_serials})
+    if any(context.graph.get_block(serial) is None for serial in dispatcher_blocks):
+        return recovery
+    rows = tuple(
+        StateDispatcherRow(
+            state_const=int(state),
+            target_block=int(target),
+            dispatcher_block=entry_serial,
+            compare_block=None,
+            branch_kind="materialized_exact",
+            router_kind=RouterKind.CONDITION_CHAIN,
+        )
+        for state, target in sorted(handlers.items())
+    )
+    dispatch_map = StateDispatcherMap(
+        rows=rows,
+        dispatcher_entry_block=entry_serial,
+        dispatcher_blocks=dispatcher_blocks,
+        state_var_stkoff=None,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+        state_var_reg=int(state_var_reg),
+    )
+    return DispatcherRecovery(
+        reachable_block_serials=recovery.reachable_block_serials,
+        dispatcher_block_serial=entry_serial,
+        condition_chain_block_serials=tuple(sorted(dispatcher_blocks)),
+        state_var_stkoff=None,
+        state_var_reg=int(state_var_reg),
+        dispatch_map=dispatch_map,
+    )
+
+
 class RecoverDispatcher(PipelinePass):
     name = "recover_dispatcher"
 
@@ -396,6 +471,7 @@ class RecoverDispatcher(PipelinePass):
                 ),
             )
             analysis_outputs = {}
+        recovery = _materialized_dispatcher_recovery(context, recovery)
         _publish(context, self.name, recovery)
         analysis_outputs[self.name] = recovery
         dispatch_map = getattr(recovery, "dispatch_map", None)
@@ -602,6 +678,20 @@ class LowerStateMachine(PipelinePass):
         # already-computed ``out_reg_maps``.
         live_function = getattr(context.source, "live_source", None)
         range_evidence = _analysis(context, "range_evidence")
+        current_block_identity_index = _analysis(
+            context,
+            "current_block_identity_index",
+        )
+
+        def block_serial_for_native_identity(identity) -> int | None:
+            if current_block_identity_index is None:
+                return None
+            rebound = current_block_identity_index.rebind_identity(identity)
+            return (
+                None
+                if rebound.block is None
+                else int(rebound.block.serial)
+            )
 
         # Direct interval-set unflatten (epic d81-jfg2): the interval-set
         # dispatcher (state -> handler) + per-handler next-state recovery IS the
@@ -886,6 +976,9 @@ class LowerStateMachine(PipelinePass):
                 dispatcher_region_serials=dispatcher_region_serials,
                 entry_bridge_evidence=entry_bridge_evidence,
                 bound_bootstrap_routes=bound_bootstrap_routes,
+                block_serial_for_native_identity=(
+                    block_serial_for_native_identity
+                ),
             )
             plan_metadata = plan.metadata_dict()
             _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan_metadata)

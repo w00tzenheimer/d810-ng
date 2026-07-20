@@ -1059,6 +1059,7 @@ def test_folded_loop_guard_evidence_builds_conditional_transition_candidate() ->
         transitions,
         _FactView((_folded_loop_guard_fact(guard_block=30, body_state=0xBB, exit_state=0xCC),)),
         dispatcher_entry_serial=2,
+        block_serial_for_native_identity=lambda _identity: 30,
     )
 
     assert len(candidates) == 1
@@ -1078,6 +1079,65 @@ def test_folded_loop_guard_evidence_builds_conditional_transition_candidate() ->
     assert isinstance(lowering.condition_operand, SyntheticCounterBoundCondition)
     assert lowering.condition_operand.bound == 0x64
     assert lowering.condition_operand.signed is False
+
+
+def test_folded_loop_guard_abstains_when_current_identity_is_ambiguous() -> None:
+    fg = FlowGraph(
+        blocks={
+            2: _b(2, (30, 40, 50), (30, 40, 50)),
+            30: _b(
+                30,
+                (2,),
+                (2,),
+                (
+                    _setb_counter(
+                        0x3000,
+                        0xA0,
+                        "setb [ds:%var_398.8].4, #0x64.4, %var_3A1.1",
+                    ),
+                    _mov_state(0x3004, 0xAA),
+                ),
+            ),
+            40: _b(40, (2,), (2,), (_mov_state(0x4000, 0xBB),)),
+            50: _b(50, (2,), (2,), (_mov_state(0x5000, 0xCC),)),
+        },
+        entry_serial=30,
+        func_ea=0x1000,
+    )
+    disp = _disp({0xBB: 40, 0xCC: 50}, exit_block=99)
+    transitions = (
+        StateWriteTransition(
+            write_block=30,
+            next_state=0xAA,
+            target_handler=30,
+            is_return=False,
+            branch_arm=None,
+        ),
+    )
+    identities = []
+
+    candidates = build_folded_loop_guard_transitions(
+        fg,
+        disp,
+        transitions,
+        _FactView(
+            (
+                _folded_loop_guard_fact(
+                    guard_block=30,
+                    body_state=0xBB,
+                    exit_state=0xCC,
+                ),
+            )
+        ),
+        dispatcher_entry_serial=2,
+        block_serial_for_native_identity=lambda identity: (
+            identities.append(identity) or None
+        ),
+    )
+
+    assert len(identities) == 1
+    assert identities[0].native_eas.contains(0x1780)
+    assert candidates == []
 
 
 def test_ollvm_payload_latch_redirects_to_predicate_producer() -> None:

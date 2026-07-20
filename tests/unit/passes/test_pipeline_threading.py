@@ -176,6 +176,33 @@ def test_map_threads_from_pass1_to_pass2_and_resolves():
     assert resolutions[0].resolution_reason == "resolved_exact_state"
 
 
+def test_recover_dispatcher_builds_exact_map_from_materialized_identities():
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (1,), ()),
+            1: _blk(1, (), (0,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    am = AnalysisManager(graph)
+    am.put_analysis("materialized_computed_goto_profile", True)
+    am.put_analysis("materialized_state_var_reg", 28)
+    am.put_analysis("materialized_handler_by_state", {C1: 1})
+    am.put_analysis("materialized_dispatcher_entry_serial", 0)
+    am.put_analysis("materialized_dispatcher_router_serials", frozenset({0}))
+    ctx = _ctx(graph, am.view())
+
+    result = RecoverDispatcher().run(ctx)
+    recovery = result.analysis_outputs["recover_dispatcher"]
+
+    assert recovery.dispatcher_block_serial == 0
+    assert recovery.state_var_stkoff is None
+    assert recovery.state_var_reg == 28
+    assert recovery.dispatch_map is not None
+    assert recovery.dispatch_map.state_to_handler() == {C1: 1}
+
+
 def test_recover_dispatcher_publishes_branch_target_evidence():
     am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
     ctx = _ctx(am.graph, am.view())

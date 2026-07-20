@@ -32,10 +32,13 @@ from d810.analyses.control_flow.linearized_state_dag import (
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
+    MaterializedStateRoute,
+    PortableMaterializedStateRoute,
     exact_materialized_handler_override_serial,
     instruction_backed_materialized_handler_owners,
     materialized_state_register_candidates,
     materialized_dispatcher_router_native_ranges,
+    mutation_authoritative_materialized_transfers,
     merge_materialized_handler_maps,
     missing_materialized_handler_targets,
     native_origin_blocks_in_ranges,
@@ -50,8 +53,10 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteBindingEvidence,
 )
 from d810.analyses.control_flow.read_state_cfg import read_dag_from
-from d810.analyses.control_flow.semantic_transition import \
-    facts_from_validated_view
+from d810.analyses.control_flow.semantic_transition import (
+    facts_from_validated_view,
+    rebind_state_write_anchors,
+)
 from d810.analyses.control_flow.state_machine_analysis import (
     run_snapshot_constant_fixpoint,
 )
@@ -128,7 +133,14 @@ from d810.evaluator.hexrays_microcode.value_range_capability import (
     HexRaysValRangeCapability,
 )
 from d810.families.registry import registered_families, select_family
+from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.ir_maturity import ida_maturity_to_ir, ir_maturity_to_ida
+from d810.ir.block_identity import (
+    BlockHandleProvenance,
+    NativeEaInterval,
+    StableBlockIdentity,
+)
+from d810.ir.flowgraph import BlockKind
 from d810.ir.maturity import IRMaturity
 from d810.hexrays.observability import (
     diagnostics_enabled as _capture_diagnostics_enabled,
@@ -156,6 +168,7 @@ from d810.hexrays.mutation.detached_handler_island import (
     imported_detached_snippet_direct_boundary_evidence,
     imported_detached_snippet_instruction_origins,
     imported_detached_snippet_target_eas,
+    stable_mba_identity,
 )
 from d810.passes.function_pass_manager import FunctionPassManager
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
@@ -180,8 +193,474 @@ from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 logger = logging.getLogger("D810.unflat", logging.DEBUG)
 
 
+def _unflatten_recovery_epoch_generation(
+    *,
+    current_evidence_generation: int,
+    bound_preopt_generation: int | None,
+) -> int:
+    """Select the evidence epoch actually represented by the live MBA.
+
+    Recovery can discover and merge newer portable facts while operating on an
+    MBA generated from an older PREOPT evidence generation.  Those newer facts
+    do not describe a new live recovery epoch until PREOPT binds them.  Using
+    the session's current generation here would let recovery reopen its own
+    one-shot gate after every fact merge and repeatedly mutate stale microcode.
+    """
+    if bound_preopt_generation is not None:
+        return int(bound_preopt_generation)
+    return int(current_evidence_generation)
+
+
+def _should_defer_unbound_materialized_preopt(
+    state: ResolverSessionState | None,
+) -> bool:
+    """Keep structural recovery off an MBA built from stale resolver evidence."""
+    return bool(
+        isinstance(state, ResolverSessionState)
+        and is_computed_goto_materialized(state)
+        and state.native_preanalysis.needs_preopt_binding()
+    )
+
+
+def _materialized_identity_evidence_ready(
+    analysis_seeds: ABCMapping[str, object],
+) -> bool:
+    """Return true only when every mutation-time identity is live and portable.
+
+    Materialized native routes are recovered before their detached handlers are
+    necessarily visible in the current MBA.  Rewriting that disposable graph
+    with a partial state-to-block binding contaminates the graph later used for
+    the controlled redo.  The mutation gate therefore requires the selector,
+    dispatcher entry, at least one handler, and zero unresolved native targets
+    in the *final* post-override/post-terminal inventory.  The preliminary
+    portable binding misses remain diagnostic: exact imported-root ownership or
+    a proven terminal route can legitimately discharge them later in the same
+    evidence build.
+    """
+    return bool(
+        analysis_seeds.get("materialized_state_var_reg") is not None
+        and analysis_seeds.get("materialized_dispatcher_entry_serial") is not None
+        and analysis_seeds.get("materialized_handler_by_state")
+        and not analysis_seeds.get("unmapped_materialized_handler_targets")
+    )
+
+
+def _should_defer_incomplete_materialized_identity(
+    *,
+    materialized_computed_goto_profile: bool,
+    materialized_evidence_ready: bool,
+    uses_tigress_indirect_materialization: bool,
+) -> bool:
+    """Keep partial imported identity read-only until the controlled redo.
+
+    Tigress owns a separate direct, one-shot materialization contract and must
+    not inherit the Rhad/native-evidence mutation gate.
+    """
+    return bool(
+        materialized_computed_goto_profile
+        and not materialized_evidence_ready
+        and not uses_tigress_indirect_materialization
+    )
+
+
+def _portable_materialized_dispatcher_region_identity(
+    dispatcher_region_serials: frozenset[int],
+    identity_index,
+) -> StableBlockIdentity | None:
+    """Project a complete current dispatcher region onto native identity."""
+    identities = tuple(
+        identity_index.identity_for_serial(int(serial))
+        for serial in sorted(int(serial) for serial in dispatcher_region_serials)
+    )
+    if not identities or any(identity is None for identity in identities):
+        return None
+    return StableBlockIdentity.from_intervals(
+        interval
+        for identity in identities
+        if identity is not None
+        for interval in identity.native_eas.intervals
+    )
+
+
+def _rebind_portable_materialized_dispatcher_region(
+    identity: StableBlockIdentity | None,
+    *,
+    imported_native_eas_by_serial: ABCMapping[int, frozenset[int]],
+    excluded_serials: frozenset[int] = frozenset(),
+) -> frozenset[int]:
+    """Expand one portable dispatcher region across imported block splits."""
+    if identity is None:
+        return frozenset()
+    return frozenset(
+        int(serial)
+        for serial, native_eas in imported_native_eas_by_serial.items()
+        if int(serial) not in excluded_serials
+        and any(identity.native_eas.contains(int(ea)) for ea in native_eas)
+    )
+
+
+def _portable_materialized_state_route_evidence(
+    routes: tuple[MaterializedStateRoute, ...],
+    identity_index,
+    *,
+    source_handler_regions_by_serial: ABCMapping[
+        int, StableBlockIdentity
+    ] | None = None,
+) -> tuple[PortableMaterializedStateRoute, ...]:
+    """Project mutation-time serial routes onto serial-free native identity."""
+    evidence: list[PortableMaterializedStateRoute] = []
+    source_handler_regions_by_serial = source_handler_regions_by_serial or {}
+
+    def unique_enclosing_handler_region(
+        source_identity: StableBlockIdentity,
+    ) -> StableBlockIdentity | None:
+        candidates = {
+            region
+            for region in source_handler_regions_by_serial.values()
+            if all(
+                region.native_eas.contains(int(interval.start_ea))
+                and region.native_eas.contains(int(interval.end_ea) - 1)
+                for interval in source_identity.native_eas.intervals
+            )
+        }
+        return next(iter(candidates)) if len(candidates) == 1 else None
+
+    for route in routes:
+        source_identity = identity_index.identity_for_serial(
+            int(route.source_block_serial)
+        )
+        target_identity = identity_index.identity_for_serial(
+            int(route.target_handler_serial)
+        )
+        source_handler_identity = None
+        if route.source_handler_serial is not None:
+            source_handler_identity = identity_index.identity_for_serial(
+                int(route.source_handler_serial)
+            )
+            if source_handler_identity is None:
+                continue
+        if source_identity is None or (
+            target_identity is None and route.target_native_ea is None
+        ):
+            continue
+        source_handler_region_identity = (
+            None
+            if route.source_handler_serial is None
+            else source_handler_regions_by_serial.get(
+                int(route.source_handler_serial)
+            )
+        )
+        if source_handler_region_identity is None:
+            source_handler_region_identity = unique_enclosing_handler_region(
+                source_identity
+            )
+        evidence.append(
+            PortableMaterializedStateRoute(
+                source_identity=source_identity,
+                state_constant=int(route.state_constant) & 0xFFFFFFFF,
+                target_identity=target_identity,
+                source_handler_identity=source_handler_identity,
+                source_handler_region_identity=(
+                    source_handler_region_identity
+                ),
+                handler_exit_proven=bool(route.handler_exit_proven),
+                proof_kind=str(route.proof_kind),
+                source_native_ea=(
+                    None
+                    if route.source_native_ea is None
+                    else int(route.source_native_ea)
+                ),
+                target_native_ea=(
+                    None
+                    if route.target_native_ea is None
+                    else int(route.target_native_ea)
+                ),
+            )
+        )
+    return tuple(dict.fromkeys(evidence))
+
+
+def _rebind_portable_materialized_state_routes(
+    evidence: tuple[PortableMaterializedStateRoute, ...],
+    identity_index,
+    *,
+    handler_by_state: ABCMapping[int, int],
+    flow_graph: object,
+    imported_direct_boundary_evidence: tuple[object, ...] = (),
+    imported_instruction_origins: ABCMapping[int, int] | None = None,
+) -> tuple[MaterializedStateRoute, ...]:
+    """Rebind portable routes only when live handler identity still agrees."""
+    imported_instruction_origins = imported_instruction_origins or {}
+    rejection_reasons: dict[
+        str,
+        list[tuple[int, int, int | None, int | None, str]],
+    ] = {}
+
+    def reject(
+        reason: str,
+        portable: PortableMaterializedStateRoute,
+    ) -> None:
+        intervals = portable.source_identity.native_eas.intervals
+        handler_intervals = (
+            ()
+            if portable.source_handler_region_identity is None
+            else portable.source_handler_region_identity.native_eas.intervals
+        )
+        rejection_reasons.setdefault(reason, []).append(
+            (
+                int(portable.state_constant) & 0xFFFFFFFF,
+                int(intervals[0].start_ea) if intervals else 0,
+                (
+                    None
+                    if portable.target_native_ea is None
+                    else int(portable.target_native_ea)
+                ),
+                (
+                    None
+                    if not handler_intervals
+                    else int(handler_intervals[0].start_ea)
+                ),
+                str(portable.proof_kind),
+            )
+        )
+
+    def receipt_source_identity(
+        portable: PortableMaterializedStateRoute,
+    ) -> tuple[StableBlockIdentity | None, bool]:
+        region = portable.source_handler_region_identity
+
+        def target_matches(port: object) -> bool:
+            target_ea = getattr(port, "target_ea", None)
+            if target_ea is None:
+                return region is not None
+            target_ea = int(target_ea)
+            if portable.target_native_ea is not None:
+                return target_ea == int(portable.target_native_ea)
+            return bool(
+                portable.target_identity is not None
+                and portable.target_identity.native_eas.contains(target_ea)
+            )
+
+        exact: set[StableBlockIdentity] = set()
+        regional: set[StableBlockIdentity] = set()
+        for applied in imported_direct_boundary_evidence:
+            port = getattr(applied, "port", None)
+            if (
+                port is None
+                or getattr(port, "state_constant", None) is None
+                or (
+                    int(port.state_constant) & 0xFFFFFFFF
+                    != int(portable.state_constant) & 0xFFFFFFFF
+                )
+                or not target_matches(port)
+            ):
+                continue
+            source_eas = tuple(
+                int(ea)
+                for ea in (
+                    getattr(port, "source_block_ea", 0),
+                    getattr(port, "source_instruction_ea", 0),
+                    getattr(port, "endpoint_block_ea", 0),
+                )
+                if int(ea) > 0
+            )
+            if region is not None and not any(
+                region.native_eas.contains(ea) for ea in source_eas
+            ):
+                continue
+            endpoint_native_eas = tuple(
+                dict.fromkeys(
+                    int(imported_instruction_origins.get(int(anchor), int(anchor)))
+                    for anchor in getattr(applied, "endpoint_anchor_eas", ())
+                    if int(anchor) > 0
+                )
+            )
+            if not endpoint_native_eas:
+                continue
+            identity = StableBlockIdentity.from_intervals(
+                NativeEaInterval(ea, ea + 1) for ea in endpoint_native_eas
+            )
+            regional.add(identity)
+            if any(
+                portable.source_identity.native_eas.contains(ea)
+                for ea in source_eas
+            ):
+                exact.add(identity)
+        candidates = exact or regional
+        if len(candidates) == 1:
+            return next(iter(candidates)), True
+        return None, bool(candidates)
+
+    routes: list[MaterializedStateRoute] = []
+    for portable in evidence:
+        receipt_identity, receipt_candidates = receipt_source_identity(portable)
+        source = (
+            None
+            if receipt_identity is None
+            else identity_index.rebind_imported_identity(
+                receipt_identity
+            ).block
+        )
+        if (
+            source is None
+            and portable.handler_exit_proven
+            and portable.source_handler_region_identity is not None
+        ):
+            # A replay-proven handler exit is a region-boundary fact.  The
+            # mutation-time split identity can still rebind uniquely after a
+            # rebuild, but to an interior block that no longer owns the exit.
+            # Prefer the last surviving imported anchor in the owned handler
+            # region; an exact applied boundary receipt remains stronger.
+            source = identity_index.rebind_imported_region_exit(
+                portable.source_handler_region_identity
+            ).block
+        if source is None:
+            source = identity_index.rebind_identity(
+                portable.source_identity
+            ).block
+        if (
+            source is None
+            and portable.source_handler_region_identity is not None
+        ):
+            source = identity_index.rebind_imported_region_exit(
+                portable.source_handler_region_identity
+            ).block
+        if source is None and receipt_candidates:
+            reject("ambiguous_receipt_source", portable)
+            continue
+        state = int(portable.state_constant) & 0xFFFFFFFF
+        expected_target = handler_by_state.get(state)
+        rebound_target = (
+            None
+            if portable.target_identity is None
+            else identity_index.rebind_identity(portable.target_identity).block
+        )
+        if portable.proof_kind == "terminal_state_route":
+            if rebound_target is not None:
+                target_serial = int(rebound_target.serial)
+            elif portable.target_native_ea is not None:
+                stop_serials = tuple(
+                    int(block.serial)
+                    for block in getattr(flow_graph, "blocks", {}).values()
+                    if block.kind is BlockKind.STOP
+                )
+                target_serial = (
+                    stop_serials[0] if len(stop_serials) == 1 else None
+                )
+            else:
+                target_serial = None
+        else:
+            target_serial = (
+                int(expected_target)
+                if expected_target is not None
+                else (
+                    None
+                    if rebound_target is None
+                    else int(rebound_target.serial)
+                )
+            )
+        source_handler = None
+        if portable.source_handler_region_identity is not None:
+            # Handler ownership is defined by the region entry, not by the
+            # particular split block that happened to carry the old replay
+            # object.  Across LOCOPT/CALLS that split can survive as a unique
+            # but interior identity and misattribute the route to a sibling.
+            source_handler = identity_index.rebind_imported_region_entry(
+                portable.source_handler_region_identity
+            ).block
+        if source_handler is None and portable.source_handler_identity is not None:
+            source_handler = identity_index.rebind_identity(
+                portable.source_handler_identity
+            ).block
+        if (
+            portable.source_handler_identity is not None
+            and source_handler is None
+        ):
+            reject("missing_source_handler", portable)
+            continue
+        if source is None or target_serial is None:
+            reject(
+                "missing_source" if source is None else "missing_target",
+                portable,
+            )
+            continue
+        if (
+            flow_graph.get_block(int(source.serial)) is None
+            or flow_graph.get_block(target_serial) is None
+        ):
+            reject("missing_flow_graph_block", portable)
+            continue
+        source_handle = identity_index.handle_for_serial(int(source.serial))
+        source_is_imported = bool(
+            source_handle is not None
+            and source_handle.provenance is BlockHandleProvenance.IMPORTED_NATIVE
+        )
+        routes.append(
+            MaterializedStateRoute(
+                source_block_serial=int(source.serial),
+                state_constant=state,
+                target_handler_serial=target_serial,
+                source_handler_serial=(
+                    None
+                    if source_handler is None
+                    else int(source_handler.serial)
+                ),
+                handler_exit_proven=bool(portable.handler_exit_proven),
+                proof_kind=str(portable.proof_kind),
+                source_native_ea=(
+                    int(portable.source_native_ea)
+                    if portable.source_native_ea is not None
+                    else (
+                        portable.source_identity.native_eas.intervals[
+                            0
+                        ].start_ea
+                        if source_is_imported
+                        and portable.source_identity.native_eas.intervals
+                        else None
+                    )
+                ),
+                target_native_ea=portable.target_native_ea,
+            )
+        )
+    result = tuple(
+        sorted(
+            set(routes),
+            key=lambda route: (
+                int(route.source_block_serial),
+                int(route.state_constant),
+                int(route.target_handler_serial),
+            ),
+        )
+    )
+    if rejection_reasons:
+        logger.info(
+            "portable materialized state-route rebind rejections: %s",
+            {
+                reason: {
+                    "count": len(rows),
+                    "samples": [
+                        (
+                            "0x%08X" % state,
+                            "0x%X" % source_ea,
+                            None if target_ea is None else "0x%X" % target_ea,
+                            (
+                                None
+                                if handler_ea is None
+                                else "0x%X" % handler_ea
+                            ),
+                            proof_kind,
+                        )
+                        for state, source_ea, target_ea, handler_ea, proof_kind in rows
+                    ],
+                }
+                for reason, rows in sorted(rejection_reasons.items())
+            },
+        )
+    return result
+
+
 def _resolver_native_state_register(
-    prelim: object,
+    prelim: object | None,
     transfers: tuple[object, ...],
     *,
     materialized_computed_goto_profile: bool,
@@ -191,25 +670,235 @@ def _resolver_native_state_register(
     ``recover_dispatcher`` owns the current MBA identity and therefore remains
     stack-based when Hex-Rays homes the state variable.  Resolver transfers
     describe native replay and retain the original selector register.  The two
-    identities may be joined only for the materialized computed-goto profile,
-    with a proven live stack slot and one unanimous native selector.  The live
+    identities may be joined only for the materialized computed-goto profile.
+    With a live recovery model, that additionally requires a proven stack slot
+    and one unanimous native selector.  A regenerated imported graph may no
+    longer contain the legacy dispatcher at all; in that case, accept only the
+    one register named by exact state-bearing materialized routes.  The live
     recovery object is never rewritten or relabeled as register-resident.
     """
     live_register = getattr(prelim, "state_var_reg", None)
     if live_register is not None:
         return int(live_register)
-    if (
-        not materialized_computed_goto_profile
-        or getattr(prelim, "state_var_stkoff", None) is None
-    ):
+    if not materialized_computed_goto_profile:
         return None
-    candidates = {
-        int(register)
-        for transfer in transfers
-        for register in (getattr(transfer, "selector_state_var_reg", None),)
-        if register is not None
+    live_stack = getattr(prelim, "state_var_stkoff", None)
+    if live_stack is not None:
+        candidates = {
+            int(register)
+            for transfer in transfers
+            for register in (getattr(transfer, "selector_state_var_reg", None),)
+            if register is not None
+        }
+        return next(iter(candidates)) if len(candidates) == 1 else None
+    if (
+        prelim is None
+        or getattr(prelim, "dispatcher_block_serial", None) is None
+    ):
+        return unique_materialized_state_register(transfers)
+    return None
+
+
+def _bind_materialized_handler_targets(
+    flow_graph: object,
+    equality_target_eas: ABCMapping[int, int],
+    *,
+    live_block_for_ea,
+    entry_route_source_eas: ABCMapping[int, int] | None = None,
+    entry_route_region_identities: ABCMapping[int, StableBlockIdentity] | None = None,
+    live_block_for_region_identity=None,
+) -> tuple[dict[int, int], dict[int, int], tuple[tuple[int, int], ...]]:
+    """Rebind serial-free state routes to blocks in the current MBA.
+
+    Resolver evidence carries native handler EAs across maturities.  Block
+    serials do not cross that boundary: resolve every EA against the live MBA,
+    validate that its lifted block owns instructions, and return only an
+    ephemeral state-to-serial view for the current pass.  Multiple native entry
+    EAs may legitimately land in one split/merged block; in that case the block
+    remains a handler target but has no unique entry anchor.
+    """
+    handler_targets: dict[int, int] = {}
+    handler_entry_eas: dict[int, int] = {}
+    ambiguous_entry_serials: set[int] = set()
+    missing: list[tuple[int, int]] = []
+    get_block = getattr(flow_graph, "get_block", None)
+    for state_constant, target_ea in sorted(equality_target_eas.items()):
+        state_constant = int(state_constant) & 0xFFFFFFFF
+        target_ea = int(target_ea)
+        live_block = live_block_for_ea(target_ea)
+        if (
+            live_block is None
+            and entry_route_region_identities is not None
+            and callable(live_block_for_region_identity)
+        ):
+            region_identity = entry_route_region_identities.get(state_constant)
+            if region_identity is not None:
+                live_block = live_block_for_region_identity(region_identity)
+        if live_block is None and entry_route_source_eas is not None:
+            source_ea = entry_route_source_eas.get(state_constant)
+            if source_ea is not None:
+                live_block = live_block_for_ea(int(source_ea))
+        target_serial = (
+            int(live_block.serial) if live_block is not None else None
+        )
+        graph_block = (
+            get_block(target_serial)
+            if callable(get_block) and target_serial is not None
+            else None
+        )
+        if graph_block is None or not getattr(graph_block, "insn_snapshots", ()):
+            missing.append((state_constant, target_ea))
+            continue
+        handler_targets[state_constant] = target_serial
+        if target_serial in ambiguous_entry_serials:
+            continue
+        existing_entry_ea = handler_entry_eas.get(target_serial)
+        if existing_entry_ea is None:
+            handler_entry_eas[target_serial] = target_ea
+        elif int(existing_entry_ea) != target_ea:
+            handler_entry_eas.pop(target_serial, None)
+            ambiguous_entry_serials.add(target_serial)
+    return handler_targets, handler_entry_eas, tuple(missing)
+
+
+def _unique_materialized_handler_entry_route_source_eas(
+    transfers: tuple[object, ...],
+    equality_target_eas: ABCMapping[int, int],
+) -> dict[int, int]:
+    """Project exact native entry routes to one source EA per handler state.
+
+    LOCOPT may fold a short handler entry into the state-writing block that
+    immediately precedes it, eliminating every instruction at the handler EA.
+    ``static_handler_entry_route`` retains that native relation without
+    persisting a block serial.  A source used for more than one state/target
+    pair (notably the Rhad bootstrap) is navigation evidence, not an identity
+    alias, and is rejected before selecting a unique source for each state.
+    """
+    expected_targets = {
+        int(state) & 0xFFFFFFFF: int(target_ea)
+        for state, target_ea in equality_target_eas.items()
     }
-    return next(iter(candidates)) if len(candidates) == 1 else None
+    routes_by_source: dict[int, set[tuple[int, int]]] = {}
+    for transfer in transfers:
+        if getattr(transfer, "resolver_kind", None) != "static_handler_entry_route":
+            continue
+        state = getattr(transfer, "selector_state_constant", None)
+        target_eas = tuple(int(ea) for ea in getattr(transfer, "target_eas", ()))
+        source_ea = int(getattr(transfer, "source_block_ea", 0) or 0)
+        if state is None or len(target_eas) != 1 or source_ea <= 0:
+            continue
+        normalized_state = int(state) & 0xFFFFFFFF
+        target_ea = target_eas[0]
+        if (
+            expected_targets.get(normalized_state) != target_ea
+            or source_ea == target_ea
+        ):
+            continue
+        routes_by_source.setdefault(source_ea, set()).add(
+            (normalized_state, target_ea)
+        )
+
+    sources_by_state: dict[int, set[int]] = {}
+    for source_ea, routes in routes_by_source.items():
+        if len(routes) != 1:
+            continue
+        state, _target_ea = next(iter(routes))
+        sources_by_state.setdefault(state, set()).add(source_ea)
+    return {
+        state: next(iter(source_eas))
+        for state, source_eas in sorted(sources_by_state.items())
+        if len(source_eas) == 1
+    }
+
+
+def _unique_materialized_handler_region_identities(
+    transfers: tuple[object, ...],
+    equality_target_eas: ABCMapping[int, int],
+) -> dict[int, StableBlockIdentity]:
+    """Project exact handler routes to one portable owned-region identity.
+
+    The exact entry EA can be folded out of a regenerated MBA.  Resolver-owned
+    native ranges retain the complete identity corridor, so a current imported
+    block can be rebound by the first surviving origin anchor.  Conflicting or
+    malformed range claims abstain instead of selecting by current serial.
+    """
+    expected_targets = {
+        int(state) & 0xFFFFFFFF: int(target_ea)
+        for state, target_ea in equality_target_eas.items()
+    }
+    identities_by_state: dict[int, set[StableBlockIdentity]] = {}
+    for transfer in transfers:
+        if getattr(transfer, "resolver_kind", None) != "static_handler_entry_route":
+            continue
+        state = getattr(transfer, "selector_state_constant", None)
+        target_eas = tuple(int(ea) for ea in getattr(transfer, "target_eas", ()))
+        ranges = tuple(getattr(transfer, "owned_native_ranges", ()))
+        if state is None or len(target_eas) != 1 or not ranges:
+            continue
+        normalized_state = int(state) & 0xFFFFFFFF
+        target_ea = target_eas[0]
+        if expected_targets.get(normalized_state) != target_ea:
+            continue
+        try:
+            identity = StableBlockIdentity.from_intervals(
+                NativeEaInterval(int(start_ea), int(end_ea))
+                for start_ea, end_ea in ranges
+            )
+        except (TypeError, ValueError):
+            continue
+        if not identity.native_eas.contains(target_ea):
+            continue
+        identities_by_state.setdefault(normalized_state, set()).add(identity)
+    return {
+        state: next(iter(identities))
+        for state, identities in sorted(identities_by_state.items())
+        if len(identities) == 1
+    }
+
+
+def _bind_materialized_dispatcher_identity(
+    imported_native_eas_by_serial: ABCMapping[int, frozenset[int]],
+    transfers: tuple[object, ...],
+    *,
+    handler_serials: frozenset[int],
+    live_block_for_entry_ea=None,
+) -> tuple[int | None, frozenset[int]]:
+    """Rebind stable dispatcher EAs to one current-MBA entry and region."""
+    entry_eas = {
+        int(entry_ea)
+        for transfer in transfers
+        for entry_ea in (getattr(transfer, "dispatcher_entry_ea", None),)
+        if entry_ea is not None and int(entry_ea) > 0
+    }
+    router_eas = {
+        int(router_ea)
+        for transfer in transfers
+        for router_ea in getattr(transfer, "dispatcher_router_eas", ())
+        if int(router_ea) > 0
+    }
+    if callable(live_block_for_entry_ea):
+        entry_candidates = {
+            int(block.serial)
+            for entry_ea in entry_eas
+            for block in (live_block_for_entry_ea(int(entry_ea)),)
+            if block is not None
+        }
+    else:
+        entry_candidates = {
+            int(serial)
+            for serial, native_eas in imported_native_eas_by_serial.items()
+            if native_eas.intersection(entry_eas)
+        }
+    router_serials = frozenset(
+        int(serial)
+        for serial, native_eas in imported_native_eas_by_serial.items()
+        if int(serial) not in handler_serials
+        and native_eas.intersection(router_eas)
+    )
+    entry_serial = (
+        next(iter(entry_candidates)) if len(entry_candidates) == 1 else None
+    )
+    return entry_serial, router_serials
 
 
 def _bound_bootstrap_route_bindings(
@@ -260,6 +949,26 @@ class _ReducedProductBypassFamily:
         """Run the canonical five-pass spine -- ``RecoverDispatcher`` takes the
         reduced-product branch (recover_machine -> concolic) because the project config
         sets ``recovery_engine == "reduced_product"``."""
+        return standard_state_machine_passes()
+
+
+class _MaterializedComputedGotoContinuationFamily:
+    """Resume the canonical spine from complete portable resolver evidence.
+
+    A first unflattening round can remove the static dispatcher shape before a
+    regenerated MBA contains every imported handler.  Once the live identity
+    index proves the dispatcher entry and every handler with no missing target,
+    static family detection is no longer the authority: the portable evidence
+    itself is the exact current-snapshot dispatcher contract.
+    """
+
+    name = "materialized_computed_goto_continuation"
+    recovery_maturities = (IRMaturity.CALL_MODELED,)
+
+    def detect(self, graph, capabilities, context=None):
+        return self
+
+    def pipeline_for(self, match, context):
         return standard_state_machine_passes()
 
 
@@ -336,7 +1045,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self._last_config_v2_pass_ids: tuple[str, ...] = ()
         self._pass_scheduler = None
         self._pass_manager = FunctionPassManager()
-        self._pass_manager_session_by_func: dict[int, int] = {}
+        self._pass_manager_session_by_func: dict[int, tuple[int, int, bool]] = {}
 
     def set_project_config(self, config: object | None) -> None:
         """Attach project-level config-v2 options without changing rule options."""
@@ -352,15 +1061,41 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self._unflat_round_count.clear()
         self._unflat_done_eas.clear()
 
-    def _reset_pass_manager_if_new_session(self, mba: object) -> None:
+    def _reset_pass_manager_if_new_session(
+        self,
+        mba: object,
+        *,
+        evidence_generation: int = 0,
+        stable_preopt_epoch: bool = False,
+    ) -> None:
         func_ea = int(getattr(mba, "entry_ea", 0) or 0)
         if func_ea == 0:
             return
-        session_id = id(mba)
-        if self._pass_manager_session_by_func.get(func_ea) == session_id:
+        preopt_epoch_is_stable = bool(stable_preopt_epoch)
+        # Before PREOPT binds portable evidence, an underlying mba_t change
+        # identifies a fresh native decompilation and must reset manager-local
+        # state.  Once PREOPT has bound either imported identities or a narrow
+        # bootstrap route, our own structural mutations can relocate mba_t
+        # repeatedly; the stable epoch is then the bound evidence generation,
+        # not the disposable address.
+        mba_session_identity = (
+            0 if preopt_epoch_is_stable else stable_mba_identity(mba)
+        )
+        session_signature = (
+            mba_session_identity,
+            int(evidence_generation),
+            preopt_epoch_is_stable,
+        )
+        if self._pass_manager_session_by_func.get(func_ea) == session_signature:
             return
         self._pass_manager.reset_func(func_ea)
-        self._pass_manager_session_by_func[func_ea] = session_id
+        self._pass_manager_session_by_func[func_ea] = session_signature
+        self._unflat_round_count = {
+            key: rounds
+            for key, rounds in self._unflat_round_count.items()
+            if int(key[0]) != func_ea
+        }
+        self._unflat_done_eas.discard(func_ea)
 
     def _should_run_unflatten_round(
         self, func_ea: int, *, is_indirect: bool, maturity: int
@@ -627,6 +1362,14 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         resolver_state = self.current_resolver_session_state()
         if not isinstance(resolver_state, ResolverSessionState):
             resolver_state = None
+        if _should_defer_unbound_materialized_preopt(resolver_state):
+            logger.debug(
+                "unflat: deferring materialized mutation until PREOPT binds "
+                "evidence generation %d for func=0x%x",
+                int(resolver_state.evidence_generation),
+                int(getattr(mba, "entry_ea", 0) or 0),
+            )
+            return 0
         proceed, _is_indirect = self._should_recover(mba)
         if not proceed:
             return 0
@@ -634,6 +1377,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
 
         source = lift_function(mba, maturity=mba.maturity)
         self._register_dispatcher_resolvers(mba)
+        materialized_computed_goto_profile = bool(
+            _is_indirect
+            or (
+                resolver_state is not None
+                and is_computed_goto_materialized(resolver_state)
+            )
+        )
         (
             fact_view,
             prelim,
@@ -644,20 +1394,53 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             mba,
             source,
             materialized_computed_goto_profile=(
-                _is_indirect
-                or (
-                    resolver_state is not None
-                    and is_computed_goto_materialized(resolver_state)
-                )
+                materialized_computed_goto_profile
             ),
         )
+        rule_config = getattr(self, "config", None)
+        materialized_evidence_ready = bool(
+            materialized_computed_goto_profile
+            and _materialized_identity_evidence_ready(analysis_seeds)
+        )
+        if _should_defer_incomplete_materialized_identity(
+            materialized_computed_goto_profile=(
+                materialized_computed_goto_profile
+            ),
+            materialized_evidence_ready=materialized_evidence_ready,
+            uses_tigress_indirect_materialization=(
+                self._uses_tigress_indirect_materialization(rule_config)
+            ),
+        ):
+            logger.info(
+                "unflat: deferring structural mutation until portable "
+                "materialized identity is complete for func=0x%x at %s "
+                "(handlers=%d missing=%d)",
+                int(mba.entry_ea),
+                maturity_to_string(int(mba.maturity)),
+                len(analysis_seeds.get("materialized_handler_by_state") or {}),
+                len(
+                    analysis_seeds.get(
+                        "portable_materialized_handler_identity_misses"
+                    )
+                    or analysis_seeds.get(
+                        "unmapped_materialized_handler_targets"
+                    )
+                    or ()
+                ),
+            )
+            return 0
         backend = HexRaysMutationBackend()
         capabilities = self._build_capabilities(mba, prelim, range_evidence)
-        rule_config = getattr(self, "config", None)
         project_config = self._project_config or (
             rule_config if isinstance(rule_config, dict) else {}
         )
-        family = self._select_family(mba, source, rule_config, backend)
+        family = self._select_family(
+            mba,
+            source,
+            rule_config,
+            backend,
+            materialized_evidence_ready=materialized_evidence_ready,
+        )
         if self._family_defers(mba, family, is_indirect=_is_indirect):
             return 0
         if family is not None:
@@ -815,7 +1598,30 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             # llr-a93i). The fine per-family gate below still defers a profile that wants a
             # DIFFERENT stage within the union/override.
             return (False, is_indirect)
-        self._reset_pass_manager_if_new_session(mba)
+        has_imported_identity = bool(
+            imported_detached_snippet_target_eas(mba)
+        )
+        current_evidence_generation = (
+            int(resolver_state.evidence_generation)
+            if isinstance(resolver_state, ResolverSessionState)
+            else 0
+        )
+        bound_preopt_generation = (
+            resolver_state.native_preanalysis.bound_preopt_generation
+            if isinstance(resolver_state, ResolverSessionState)
+            else None
+        )
+        stable_preopt_epoch = bool(
+            has_imported_identity or bound_preopt_generation is not None
+        )
+        self._reset_pass_manager_if_new_session(
+            mba,
+            evidence_generation=_unflatten_recovery_epoch_generation(
+                current_evidence_generation=current_evidence_generation,
+                bound_preopt_generation=bound_preopt_generation,
+            ),
+            stable_preopt_epoch=stable_preopt_epoch,
+        )
         # Bounded re-run (ticket llr-3gn4): re-running the unflatten on the re-lifted
         # post-redirect graph discovers + redirects a residual dispatcher a single pass
         # leaves behind, so IDA's optimize_global converges to the dispatcher-free graph.
@@ -938,6 +1744,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # while the portable five-pass spine consumes only the immutable proof
         # tuple through AnalysisManager. This keeps d810.passes hexrays-agnostic.
         resolver_state = self.current_resolver_session_state()
+        current_identity_index = (
+            resolver_state.identity_index
+            if isinstance(resolver_state, ResolverSessionState)
+            else None
+        )
         materialized_indirect_transfers = (
             resolver_state.materialized_transfers
             if isinstance(resolver_state, ResolverSessionState)
@@ -956,16 +1767,17 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 materialized_indirect_transfers = (
                     resolver_state.materialized_transfers
                 )
-        materialized_state_var_reg = (
-            _resolver_native_state_register(
-                prelim,
-                materialized_indirect_transfers,
-                materialized_computed_goto_profile=(
-                    materialized_computed_goto_profile
-                ),
+        mutation_materialized_indirect_transfers = (
+            mutation_authoritative_materialized_transfers(
+                materialized_indirect_transfers
             )
-            if prelim is not None
-            else None
+        )
+        materialized_state_var_reg = _resolver_native_state_register(
+            prelim,
+            materialized_indirect_transfers,
+            materialized_computed_goto_profile=(
+                materialized_computed_goto_profile
+            ),
         )
         state_register_candidates = materialized_state_register_candidates(
             materialized_indirect_transfers
@@ -991,12 +1803,20 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             logger.warning(
                 "materialized state-register conflict: resolver_candidates=%s",
                 sorted(state_register_candidates),
-            )
+        )
         materialized_state_routes = ()
         legacy_handler_by_state: dict[int, int] = {}
+        handler_targets: dict[int, int] = {}
         materialized_handler_entry_eas: dict[int, int] = {}
         authoritative_handler_serials: frozenset[int] = frozenset()
         unmapped_materialized_handler_targets: tuple[tuple[int, int], ...] = ()
+        portable_materialized_handler_identity_misses: tuple[
+            tuple[int, int], ...
+        ] = ()
+        entry_route_region_identities: dict[
+            int, StableBlockIdentity
+        ] = {}
+        materialized_dispatcher_entry_serial: int | None = None
         materialized_dispatcher_router_serials: frozenset[int] = frozenset()
         imported_instruction_origins = (
             dict(imported_detached_snippet_instruction_origins(mba))
@@ -1015,6 +1835,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 for instruction in block.insn_snapshots
             )
         }
+        if current_identity_index is None:
+            current_generation = int(getattr(mba, "maturity", 0) or 0)
+            current_identity_index = MbaBlockIdentityIndex.from_flow_graph(
+                generation=current_generation,
+                evidence_generation=current_generation,
+                flow_graph=source.flow_graph,
+                session_id=(
+                    f"callback:{int(getattr(mba, 'entry_ea', 0) or 0):X}:"
+                    f"{current_generation}"
+                ),
+                imported_native_eas_by_serial=imported_native_eas_by_serial,
+            )
         native_origin_eas_by_serial = {
             int(block.serial): frozenset(
                 int(
@@ -1049,13 +1881,169 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 continue
             native_carrier_consumer_serials_by_load_ea[load_ea] = consumer_serial
         if (
+            materialized_computed_goto_profile
+            and materialized_state_var_reg is not None
+            and materialized_indirect_transfers
+        ):
+            equality_target_eas = unique_materialized_equality_target_eas(
+                materialized_indirect_transfers,
+                materialized_state_var_reg,
+                validated_candidate_target_eas=frozenset(
+                    imported_detached_snippet_target_eas(mba)
+                ),
+            )
+            entry_route_source_eas = (
+                _unique_materialized_handler_entry_route_source_eas(
+                    materialized_indirect_transfers,
+                    equality_target_eas,
+                )
+            )
+            entry_route_region_identities = (
+                _unique_materialized_handler_region_identities(
+                    materialized_indirect_transfers,
+                    equality_target_eas,
+                )
+            )
+            (
+                handler_targets,
+                materialized_handler_entry_eas,
+                unmapped_materialized_handler_targets,
+            ) = _bind_materialized_handler_targets(
+                source.flow_graph,
+                equality_target_eas,
+                live_block_for_ea=lambda target_ea: (
+                    find_unique_live_block_by_ea(mba, int(target_ea))
+                    or find_materialized_handler_block_by_native_ea(
+                        mba, int(target_ea)
+                    )
+                    or find_unique_live_block_by_native_ea(
+                        mba, int(target_ea)
+                    )
+                ),
+                entry_route_source_eas=entry_route_source_eas,
+                entry_route_region_identities=entry_route_region_identities,
+                live_block_for_region_identity=(
+                    None
+                    if current_identity_index is None
+                    else lambda identity: current_identity_index.rebind_imported_region_entry(
+                        identity
+                    ).block
+                ),
+            )
+            authoritative_handler_serials = frozenset(
+                int(serial) for serial in handler_targets.values()
+            )
+            (
+                materialized_dispatcher_entry_serial,
+                materialized_dispatcher_router_serials,
+            ) = _bind_materialized_dispatcher_identity(
+                imported_native_eas_by_serial,
+                materialized_indirect_transfers,
+                handler_serials=authoritative_handler_serials,
+                live_block_for_entry_ea=lambda entry_ea: (
+                    find_unique_live_block_by_ea(mba, int(entry_ea))
+                    or find_unique_live_block_by_native_ea(
+                        mba, int(entry_ea)
+                    )
+                ),
+            )
+            logger.info(
+                "materialized portable identity rebind: state_reg=%d "
+                "handlers=%d entry=%s routers=%d missing=%d",
+                int(materialized_state_var_reg),
+                len(handler_targets),
+                (
+                    None
+                    if materialized_dispatcher_entry_serial is None
+                    else "blk%d"
+                    % int(materialized_dispatcher_entry_serial)
+                ),
+                len(materialized_dispatcher_router_serials),
+                len(unmapped_materialized_handler_targets),
+            )
+            portable_materialized_handler_identity_misses = tuple(
+                unmapped_materialized_handler_targets
+            )
+            if unmapped_materialized_handler_targets:
+                logger.info(
+                    "materialized portable identity missing targets: %s",
+                    tuple(
+                        "state=0x%08X@0x%X" % (int(state), int(target_ea))
+                        for state, target_ea in (
+                            unmapped_materialized_handler_targets
+                        )
+                    ),
+                )
+        if (
             prelim is not None
             and prelim.dispatch_map is not None
             and prelim.dispatcher_block_serial is not None
             and materialized_state_var_reg is not None
             and materialized_indirect_transfers
         ):
-            _, state_write_anchors = facts_from_validated_view(fact_view)
+            materialized_dispatcher_entry_serial = int(
+                prelim.dispatcher_block_serial
+            )
+            _, observed_state_write_anchors = facts_from_validated_view(
+                fact_view
+            )
+
+            def current_block_serial_for_instruction_ea(
+                instruction_ea: int,
+            ) -> int | None:
+                if current_identity_index is None:
+                    return None
+                identity = StableBlockIdentity.from_intervals(
+                    (
+                        NativeEaInterval(
+                            int(instruction_ea),
+                            int(instruction_ea) + 1,
+                        ),
+                    )
+                )
+                rebound = current_identity_index.rebind_identity(identity)
+                return (
+                    None
+                    if rebound.block is None
+                    else int(rebound.block.serial)
+                )
+
+            state_write_anchors = rebind_state_write_anchors(
+                observed_state_write_anchors,
+                block_serial_for_instruction_ea=(
+                    current_block_serial_for_instruction_ea
+                ),
+            )
+            if len(state_write_anchors) != len(observed_state_write_anchors):
+                rebound_instruction_eas = frozenset(
+                    int(anchor.instruction_ea)
+                    for anchor in state_write_anchors
+                    if anchor.instruction_ea is not None
+                )
+                abstained_labels = tuple(
+                    (
+                        "state=0x%08X@missing-ea"
+                        % (int(anchor.state_const) & 0xFFFFFFFF)
+                        if anchor.instruction_ea is None
+                        else "state=0x%08X@0x%X"
+                        % (
+                            int(anchor.state_const) & 0xFFFFFFFF,
+                            int(anchor.instruction_ea),
+                        )
+                    )
+                    for anchor in observed_state_write_anchors
+                    if anchor.instruction_ea is None
+                    or int(anchor.instruction_ea)
+                    not in rebound_instruction_eas
+                )
+                logger.info(
+                    "portable state-write anchor rebind: observed=%d "
+                    "rebound=%d abstained=%d examples=%s",
+                    len(observed_state_write_anchors),
+                    len(state_write_anchors),
+                    len(abstained_labels),
+                    abstained_labels[:8],
+                )
             register_fixpoint = run_snapshot_constant_fixpoint(
                 source.flow_graph,
                 -1,
@@ -1300,7 +2288,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         ),
                     }
                 ),
-                transfers=materialized_indirect_transfers,
+                transfers=mutation_materialized_indirect_transfers,
                 handler_states=handler_states,
                 handler_targets=handler_targets,
                 replacement_handler_serials=frozenset(
@@ -1454,7 +2442,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
 
             conditional_handler_routes = _build_conditional_handler_state_routes(
                 source.flow_graph,
-                materialized_indirect_transfers,
+                mutation_materialized_indirect_transfers,
                 exact_handler_by_state=handler_targets,
                 target_serial_resolver=resolve_live_target_serial,
                 arm_source_serial_resolver=resolve_conditional_arm_sources,
@@ -1503,11 +2491,205 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     resolver_state.merge_materialized_transfers(
                         conditional_bridges
                     )
-                materialized_indirect_transfers = tuple(
-                    dict.fromkeys(
-                        (*materialized_indirect_transfers, *conditional_bridges)
+                    materialized_indirect_transfers = (
+                        resolver_state.materialized_transfers
+                    )
+                else:
+                    materialized_indirect_transfers = tuple(
+                        dict.fromkeys(
+                            (*materialized_indirect_transfers, *conditional_bridges)
+                        )
+                    )
+                mutation_materialized_indirect_transfers = (
+                    mutation_authoritative_materialized_transfers(
+                        materialized_indirect_transfers
                     )
                 )
+        imported_direct_boundary_evidence = (
+            imported_detached_snippet_direct_boundary_evidence(mba)
+            if materialized_computed_goto_profile
+            else ()
+        )
+        portable_state_route_evidence = ()
+        if (
+            materialized_computed_goto_profile
+            and isinstance(resolver_state, ResolverSessionState)
+            and current_identity_index is not None
+        ):
+            if (
+                not imported_instruction_origins
+                and prelim is not None
+                and prelim.dispatch_map is not None
+                and prelim.dispatcher_block_serial is not None
+            ):
+                native_dispatcher_region_serials = frozenset(
+                    {
+                        int(prelim.dispatcher_block_serial),
+                        *(
+                            int(serial)
+                            for serial in prelim.dispatch_map.dispatcher_blocks
+                        ),
+                        *(
+                            int(serial)
+                            for serial in (
+                                getattr(
+                                    range_evidence,
+                                    "condition_chain_blocks",
+                                    (),
+                                )
+                                if range_evidence is not None
+                                else ()
+                            )
+                        ),
+                        *(
+                            int(serial)
+                            for serial in (
+                                getattr(
+                                    getattr(range_evidence, "decision_dag", None),
+                                    "nodes",
+                                    (),
+                                )
+                                if range_evidence is not None
+                                else ()
+                            )
+                        ),
+                    }
+                )
+                portable_dispatcher_region = (
+                    _portable_materialized_dispatcher_region_identity(
+                        native_dispatcher_region_serials,
+                        current_identity_index,
+                    )
+                )
+                if portable_dispatcher_region is not None:
+                    changed = (
+                        resolver_state.merge_portable_dispatcher_region_identity(
+                            portable_dispatcher_region
+                        )
+                    )
+                    logger.info(
+                        "portable materialized dispatcher-region evidence: "
+                        "blocks=%d intervals=%d changed=%s",
+                        len(native_dispatcher_region_serials),
+                        len(portable_dispatcher_region.native_eas.intervals),
+                        changed,
+                    )
+            if not imported_instruction_origins and materialized_state_routes:
+                region_candidates_by_handler: dict[
+                    int, set[StableBlockIdentity]
+                ] = {}
+                for state, region_identity in (
+                    entry_route_region_identities.items()
+                ):
+                    handler_serial = handler_targets.get(
+                        int(state) & 0xFFFFFFFF
+                    )
+                    if handler_serial is None:
+                        continue
+                    region_candidates_by_handler.setdefault(
+                        int(handler_serial), set()
+                    ).add(region_identity)
+                source_handler_regions_by_serial = {
+                    serial: next(iter(regions))
+                    for serial, regions in region_candidates_by_handler.items()
+                    if len(regions) == 1
+                }
+                portable_state_route_evidence = (
+                    _portable_materialized_state_route_evidence(
+                        materialized_state_routes,
+                        current_identity_index,
+                        source_handler_regions_by_serial=(
+                            source_handler_regions_by_serial
+                        ),
+                    )
+                )
+                if portable_state_route_evidence:
+                    changed = resolver_state.merge_portable_state_routes(
+                        portable_state_route_evidence
+                    )
+                    logger.info(
+                        "portable materialized state-route evidence: "
+                        "published=%d total=%d changed=%s",
+                        len(portable_state_route_evidence),
+                        len(resolver_state.portable_state_routes),
+                        changed,
+                    )
+            rebound_portable_routes = (
+                _rebind_portable_materialized_state_routes(
+                    resolver_state.portable_state_routes,
+                    current_identity_index,
+                    handler_by_state=handler_targets,
+                    flow_graph=source.flow_graph,
+                    imported_direct_boundary_evidence=(
+                        imported_direct_boundary_evidence
+                    ),
+                    imported_instruction_origins=(
+                        imported_instruction_origins
+                    ),
+                )
+            )
+            if rebound_portable_routes:
+                materialized_state_routes = tuple(
+                    dict.fromkeys(
+                        (*materialized_state_routes, *rebound_portable_routes)
+                    )
+                )
+            logger.info(
+                "portable materialized state-route rebind: stored=%d rebound=%d "
+                "live=%d",
+                len(resolver_state.portable_state_routes),
+                len(rebound_portable_routes),
+                len(materialized_state_routes),
+            )
+            unfiltered_rebound_dispatcher_region = (
+                _rebind_portable_materialized_dispatcher_region(
+                    resolver_state.portable_dispatcher_region_identity,
+                    imported_native_eas_by_serial=imported_native_eas_by_serial,
+                )
+            )
+            dispatcher_handler_overlap = frozenset(
+                unfiltered_rebound_dispatcher_region
+                & authoritative_handler_serials
+            )
+            if dispatcher_handler_overlap:
+                logger.info(
+                    "portable dispatcher/handler overlap: %s",
+                    [
+                        {
+                            "block": (
+                                f"blk{int(serial)}@"
+                                f"0x{int(source.flow_graph.get_block(int(serial)).start_ea):X}"
+                            ),
+                            "native_eas": [
+                                f"0x{int(ea):X}"
+                                for ea in sorted(
+                                    imported_native_eas_by_serial.get(
+                                        int(serial), frozenset()
+                                    )
+                                )
+                            ],
+                        }
+                        for serial in sorted(dispatcher_handler_overlap)
+                    ],
+                )
+            rebound_dispatcher_region = frozenset(
+                unfiltered_rebound_dispatcher_region
+                - authoritative_handler_serials
+            )
+            if rebound_dispatcher_region:
+                materialized_dispatcher_router_serials = frozenset(
+                    {
+                        *materialized_dispatcher_router_serials,
+                        *rebound_dispatcher_region,
+                    }
+                )
+            logger.info(
+                "portable materialized dispatcher-region rebind: stored=%s "
+                "rebound=%d live=%d",
+                resolver_state.portable_dispatcher_region_identity is not None,
+                len(rebound_dispatcher_region),
+                len(materialized_dispatcher_router_serials),
+            )
         residual_entry_bridge_evidence = (
             recognize_residual_entry_bridge(mba)
             if materialized_computed_goto_profile
@@ -1515,11 +2697,6 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         )
         imported_conditional_boundary_evidence = (
             imported_detached_snippet_conditional_boundary_evidence(mba)
-            if materialized_computed_goto_profile
-            else ()
-        )
-        imported_direct_boundary_evidence = (
-            imported_detached_snippet_direct_boundary_evidence(mba)
             if materialized_computed_goto_profile
             else ()
         )
@@ -1631,7 +2808,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         )
         analysis_seeds = {
             "range_evidence": range_evidence,
-            "materialized_indirect_transfers": materialized_indirect_transfers,
+            "materialized_indirect_transfers": (
+                mutation_materialized_indirect_transfers
+            ),
             "imported_direct_boundary_evidence": (
                 imported_direct_boundary_evidence
             ),
@@ -1639,6 +2818,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 imported_conditional_boundary_evidence
             ),
             "imported_native_eas_by_serial": imported_native_eas_by_serial,
+            "current_block_identity_index": current_identity_index,
             "native_carrier_consumer_serials_by_load_ea": (
                 native_carrier_consumer_serials_by_load_ea
             ),
@@ -1651,8 +2831,14 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             "materialized_state_var_reg": materialized_state_var_reg,
             "materialized_handler_entry_eas": materialized_handler_entry_eas,
             "authoritative_handler_serials": authoritative_handler_serials,
+            "portable_materialized_handler_identity_misses": (
+                portable_materialized_handler_identity_misses
+            ),
             "unmapped_materialized_handler_targets": (
                 unmapped_materialized_handler_targets
+            ),
+            "materialized_dispatcher_entry_serial": (
+                materialized_dispatcher_entry_serial
             ),
             "materialized_dispatcher_router_serials": (
                 materialized_dispatcher_router_serials
@@ -1730,7 +2916,15 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         )
         return CapabilitySet(cap_instances)
 
-    def _select_family(self, mba: "ida_hexrays.mba_t", source, rule_config, backend):
+    def _select_family(
+        self,
+        mba: "ida_hexrays.mba_t",
+        source,
+        rule_config,
+        backend,
+        *,
+        materialized_evidence_ready: bool = False,
+    ):
         """Poll the family registry (reduced-product bypass on opt-in). Returns family|None."""
         # Route through the registered profiles (llr-ibpi): select_family polls the
         # StateMachineCffFamily registry (HodurFamily=equality-chain, ApproovFamily/
@@ -1766,6 +2960,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     maturity_to_string(int(mba.maturity)),
                 )
             family = _ReducedProductBypassFamily()
+        if (
+            family is None
+            and materialized_evidence_ready
+            and not self._uses_tigress_indirect_materialization(rule_config)
+        ):
+            logger.info(
+                "unflat: complete materialized identity evidence resumes "
+                "canonical pipeline for func=0x%x at %s",
+                int(mba.entry_ea),
+                maturity_to_string(int(mba.maturity)),
+            )
+            family = _MaterializedComputedGotoContinuationFamily()
         return family
 
     def _family_defers(

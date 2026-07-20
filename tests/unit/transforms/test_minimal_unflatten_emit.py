@@ -6032,6 +6032,55 @@ def test_register_conditional_entry_bridges_leaf_arms(_seam) -> None:
     assert (2, 3, 22) in edges, f"a2==0 arm not bridged to its handler: {sorted(edges)}"
 
 
+def test_exact_entry_bridge_suppresses_generic_register_entry_scan(_seam) -> None:
+    """An already-proven exact entry route owns entry-path mutation."""
+    state_reg = 99
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2, 3), (0,), (_mov_reg(0x1100, 0x10, state_reg),)),
+            2: _b(2, (3,), (1,), (_mov_reg(0x1200, 0x20, state_reg),)),
+            3: _b(3, (4,), (1, 2), (_mov_state(0x1300, 0xDEAD),)),
+            4: _b(4, (21, 22), (3, 21, 22)),
+            21: _b(21, (4,), (4,)),
+            22: _b(22, (4,), (4,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dispatcher = _disp({0x10: 21, 0x20: 22}, exit_block=99)
+    transitions = recover_state_write_transitions(
+        flow_graph,
+        dispatcher,
+        _STATE,
+        dispatcher_entry_serial=4,
+    )
+
+    modifications = build_state_write_redirects(
+        flow_graph,
+        dispatcher,
+        transitions,
+        dispatcher_entry_serial=4,
+        pre_header_serial=None,
+        initial_state=None,
+        state_var_stkoff=_STATE,
+        state_var_reg=state_reg,
+        exact_entry_bridge_present=True,
+    )
+
+    entry_edges = {
+        (
+            modification.from_serial,
+            modification.old_target,
+            modification.new_target,
+        )
+        for modification in modifications
+        if isinstance(modification, (RedirectGoto, RedirectBranch))
+        and modification.from_serial in {1, 2, 3}
+    }
+    assert entry_edges == set()
+
+
 def test_stack_carried_state_selector_lowers_at_handler_consumer(_seam) -> None:
     state_reg = 28
     carrier_reg = 7
@@ -6231,6 +6280,187 @@ def test_stack_carried_state_selector_lowers_at_handler_consumer(_seam) -> None:
         state_carrier_vd_stkoffs_by_store_ea={predicate_ea + 3: carrier_stkoff},
         native_carrier_consumer_serials_by_load_ea={consumer_ea: 10},
     ) == portable_expected
+
+    # PREOPT can lower the terminal computed jump to an exact conditional
+    # after importing the native pointer-selection envelope.  The original
+    # stack selector then has two pure arms which converge on that applied
+    # resolver-cut predicate instead of entering the router directly.  The
+    # applied receipt plus both exact router arms must authorize bypassing the
+    # redundant envelope; topology alone must not.
+    cut_predicate_ea = 0x40EABA
+    taken_anchor_ea = 0xF1C02028
+    fallthrough_anchor_ea = 0xF1C0202C
+    envelope_blocks = dict(detached_graph.blocks)
+    envelope_blocks[10] = _b(
+        10,
+        (11, 12),
+        (21,),
+        (
+            _mov_reg_from_stack(0xF1C02004, state_reg, detached_stkoff),
+            replace(
+                consumer_tail,
+                ea=0xF1C02020,
+                l=MopSnapshot(kind=OperandKind.SUBINSN),
+                r=None,
+                d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=12),
+            ),
+        ),
+    )
+    envelope_blocks[11] = _b(
+        11,
+        (12,),
+        (10,),
+        (
+            InsnSnapshot(
+                opcode=_OP_MOV,
+                ea=0xF1C02024,
+                operands=(),
+                l=MopSnapshot(kind=OperandKind.GLOBAL, value=0x48BB98),
+                d=MopSnapshot(
+                    t=_T_REG,
+                    size=4,
+                    reg=8,
+                    kind=OperandKind.REGISTER,
+                ),
+                kind=InsnKind.MOV,
+            ),
+        ),
+    )
+    envelope_blocks[12] = _b(
+        12,
+        (4, 5),
+        (10, 11),
+        (
+            replace(
+                consumer_tail,
+                ea=cut_predicate_ea,
+                d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+            ),
+        ),
+    )
+    envelope_blocks[4] = _b(
+        4,
+        (21,),
+        (12,),
+        (InsnSnapshot(opcode=0, ea=taken_anchor_ea, operands=(), kind=InsnKind.NOP),),
+    )
+    envelope_blocks[5] = _b(
+        5,
+        (22,),
+        (12,),
+        (
+            InsnSnapshot(
+                opcode=0,
+                ea=fallthrough_anchor_ea,
+                operands=(),
+                kind=InsnKind.NOP,
+            ),
+        ),
+    )
+    envelope_graph = FlowGraph(
+        blocks=envelope_blocks,
+        entry_serial=10,
+        func_ea=fg.func_ea,
+    )
+    resolver_cut_conditional_evidence = (
+        AppliedDetachedSnippetConditionalBoundaryPort(
+            port=DetachedSnippetConditionalBoundaryPort(
+                source_block_ea=consumer_ea,
+                predicate_ea=cut_predicate_ea,
+                old_taken_target_ea=None,
+                old_fallthrough_target_ea=None,
+                taken_target_ea=0x2100,
+                fallthrough_target_ea=0x2200,
+                state_register=None,
+                taken_state=None,
+                fallthrough_state=None,
+                source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                resolver_kind="resolver_proven_register_compare_cut",
+            ),
+            taken_target_anchor_eas=(taken_anchor_ea,),
+            fallthrough_target_anchor_eas=(fallthrough_anchor_ea,),
+        ),
+    )
+    envelope_expected = [
+        replace(
+            portable_expected[0],
+            old_dispatcher_serial=11,
+            rewrite_from_ea=0xF1C02020,
+        )
+    ]
+    assert build_stack_carried_state_selector_lowerings(
+        envelope_graph,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+        materialized_indirect_transfers=(portable_choice,),
+        handler_entry_eas_by_serial={21: 0x2100, 22: 0x2200},
+        state_carrier_vd_stkoffs_by_store_ea={predicate_ea + 3: carrier_stkoff},
+        native_carrier_consumer_serials_by_load_ea={consumer_ea: 10},
+    ) == []
+    assert build_stack_carried_state_selector_lowerings(
+        envelope_graph,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+        materialized_indirect_transfers=(portable_choice,),
+        imported_conditional_boundary_evidence=(
+            resolver_cut_conditional_evidence
+        ),
+        handler_entry_eas_by_serial={21: 0x2100, 22: 0x2200},
+        state_carrier_vd_stkoffs_by_store_ea={predicate_ea + 3: carrier_stkoff},
+        native_carrier_consumer_serials_by_load_ea={consumer_ea: 10},
+    ) == envelope_expected
+
+    side_effect_blocks = dict(envelope_blocks)
+    side_effect_blocks[11] = _b(
+        11,
+        (12,),
+        (10,),
+        (
+            InsnSnapshot(
+                opcode=0x7F,
+                ea=0xF1C02024,
+                operands=(),
+                l=MopSnapshot(
+                    t=_T_REG,
+                    size=4,
+                    reg=8,
+                    kind=OperandKind.REGISTER,
+                ),
+                d=MopSnapshot(
+                    t=_T_STK,
+                    size=4,
+                    stkoff=carrier_stkoff + 8,
+                    kind=OperandKind.STACK,
+                ),
+                kind=InsnKind.STORE,
+            ),
+        ),
+    )
+    side_effect_graph = FlowGraph(
+        blocks=side_effect_blocks,
+        entry_serial=10,
+        func_ea=fg.func_ea,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        side_effect_graph,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+        materialized_indirect_transfers=(portable_choice,),
+        imported_conditional_boundary_evidence=(
+            resolver_cut_conditional_evidence
+        ),
+        handler_entry_eas_by_serial={21: 0x2100, 22: 0x2200},
+        state_carrier_vd_stkoffs_by_store_ea={predicate_ea + 3: carrier_stkoff},
+        native_carrier_consumer_serials_by_load_ea={consumer_ea: 10},
+    ) == []
 
     # Resolver-proven imported handlers must not replace a still-live
     # dispatcher frontier while the choice itself is owned by a detached
