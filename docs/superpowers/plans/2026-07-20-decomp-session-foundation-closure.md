@@ -158,7 +158,7 @@ netnodes, cache reuse, B2-B5, and replaying or merging the Rhad donor.
 Run from the exact foundation worktree:
 
 ```bash
-python tools/scripts/codemod_consolidate_decompilation_lifecycle.py
+pyenv exec python tools/scripts/codemod_consolidate_decompilation_lifecycle.py
 sg scan --config sgconfig.yml --report-style short
 PYTHONPATH=src lint-imports --config .importlinter
 graphify update .
