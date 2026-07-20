@@ -5710,6 +5710,7 @@ def _apply_boundary_port_batch(
                     direct_applied,
                 )
                 return None
+        modifier.commit_immediate_mutations()
         applied.extend(_boundary_port_result(record) for record in mutation.records)
 
     for mutation in batch.conditional:
@@ -6088,6 +6089,7 @@ def _apply_boundary_port_batch(
             and int(modifier.apply(defer_post_apply_maintenance=True)) != expected
         ):
             return None
+        modifier.commit_immediate_mutations()
         applied.append(_boundary_port_result(mutation.record))
     return tuple(applied)
 
@@ -7206,6 +7208,7 @@ def redirect_live_target_predecessors(
             )
     modifier.mark_blocks_dirty_now(*(predecessor for predecessor, _new_serial in rows))
     mba.verify(True)
+    modifier.commit_immediate_mutations()
     return len(rows)
 
 
@@ -8149,6 +8152,7 @@ def materialize_detached_handler_island(
         true_block,
     )
     mba.verify(True)
+    modifier.commit_immediate_mutations()
     return True
 
 

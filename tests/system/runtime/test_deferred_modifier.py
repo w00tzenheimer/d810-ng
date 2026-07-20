@@ -11,7 +11,10 @@ import pytest
 from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
 from d810.hexrays.mutation import cfg_mutations
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
-from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+from d810.hexrays.mutation.mba_mutation_events import (
+    MbaMutationGateway,
+    StructuralMutationKind,
+)
 from d810.ir.block_identity import (
     BlockHandleProvenance,
     NativeEaInterval,
@@ -165,6 +168,7 @@ def test_standalone_native_block_is_published_to_the_injected_identity_index(
     )
 
     def create_block(**_kwargs):
+        assert gateway.active is True
         block = _FakeBlock(1, start=0x40EAA7)
         mba.blocks[1] = block
         mba.qty = 2
@@ -189,6 +193,120 @@ def test_standalone_native_block_is_published_to_the_injected_identity_index(
     assert rebound.block.handle.provenance is BlockHandleProvenance.IMPORTED_NATIVE
     assert len(gateway.receipts) == 1
     assert gateway.receipts[0].operation_count == 1
+
+
+def test_standalone_block_fails_closed_before_sdk_write_without_gateway(
+    monkeypatch,
+) -> None:
+    mba = _FakeMBA()
+    sdk_calls = 0
+
+    def create_block(**_kwargs):
+        nonlocal sdk_calls
+        sdk_calls += 1
+        return _FakeBlock(1)
+
+    monkeypatch.setattr(dm, "create_standalone_block", create_block)
+
+    with pytest.raises(
+        RuntimeError,
+        match="structural mutation requires a coordinator-owned gateway",
+    ):
+        dm.DeferredGraphModifier(mba).create_standalone_block(
+            ref_serial=0,
+            is_0_way=True,
+            verify=False,
+        )
+
+    assert sdk_calls == 0
+
+
+def test_failed_standalone_block_aborts_the_prewrite_gateway_batch(monkeypatch) -> None:
+    mba = _FakeMBA()
+    gateway = make_mutation_gateway(mba)
+
+    def create_block(**_kwargs):
+        assert gateway.active is True
+        return None
+
+    monkeypatch.setattr(dm, "create_standalone_block", create_block)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+
+    assert (
+        modifier.create_standalone_block(
+            ref_serial=0,
+            is_0_way=True,
+            verify=False,
+        )
+        is None
+    )
+    assert gateway.active is False
+    assert gateway.receipts == ()
+
+
+def test_insert_nop_block_opens_gateway_batch_before_sdk_write(monkeypatch) -> None:
+    mba = _FakeMBA()
+    gateway = make_mutation_gateway(mba)
+
+    def insert_block(_source, *, force_adjacent):
+        assert gateway.active is True
+        assert force_adjacent is True
+        block = _FakeBlock(1)
+        mba.blocks[1] = block
+        mba.qty = 2
+        return block
+
+    monkeypatch.setattr(dm, "insert_nop_blk", insert_block)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+
+    assert modifier.insert_nop_block_now(0, force_adjacent=True) == 1
+    modifier.commit_immediate_mutations()
+
+    assert len(gateway.receipts) == 1
+    assert gateway.receipts[0].operation_count == 1
+
+
+def test_insert_nop_block_fails_closed_before_sdk_write_without_gateway(
+    monkeypatch,
+) -> None:
+    mba = _FakeMBA()
+    sdk_calls = 0
+
+    def insert_block(_source, *, force_adjacent):
+        nonlocal sdk_calls
+        sdk_calls += 1
+        return _FakeBlock(1)
+
+    monkeypatch.setattr(dm, "insert_nop_blk", insert_block)
+
+    with pytest.raises(
+        RuntimeError,
+        match="structural mutation requires a coordinator-owned gateway",
+    ):
+        dm.DeferredGraphModifier(mba).insert_nop_block_now(0)
+
+    assert sdk_calls == 0
+
+
+def test_immediate_redirect_is_receipted_through_prewrite_gateway(monkeypatch) -> None:
+    mba = _FakeMBA()
+    gateway = make_mutation_gateway(mba)
+
+    def redirect(_source, target_serial, *, verify):
+        assert gateway.active is True
+        assert target_serial == 0
+        assert verify is False
+        return True
+
+    monkeypatch.setattr(dm, "change_1way_block_successor", redirect)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+
+    assert modifier.redirect_one_way_now(0, 0, verify=False) is True
+    modifier.commit_immediate_mutations()
+
+    assert len(gateway.receipts) == 1
+    assert gateway.receipts[0].operation_count == 1
+    assert gateway.receipts[0].kind is StructuralMutationKind.EDGE_REDIRECT
 
 
 def test_zero_way_existing_goto_is_retargeted_without_appending(monkeypatch) -> None:
