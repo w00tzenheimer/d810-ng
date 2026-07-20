@@ -11,6 +11,7 @@ from d810.hexrays.mutation.deferred_modifier import (
     DeferredGraphModifier,
     GraphModification,
 )
+from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +26,7 @@ class DispatcherMaterializationResult:
 def apply_scheduled_deferred_modifications(
     *,
     mba: object,
+    mutation_gateway: MbaMutationGateway,
     modifications: tuple[GraphModification, ...] | list[GraphModification],
     verify_each_mod: bool,
     rollback_on_verify_failure: bool,
@@ -34,7 +36,10 @@ def apply_scheduled_deferred_modifications(
 
     if not modifications:
         return DispatcherMaterializationResult()
-    modifier = DeferredGraphModifier(mba)
+    modifier = DeferredGraphModifier(
+        mba,
+        mutation_gateway=mutation_gateway.new_transaction(),
+    )
     modifier.modifications = list(modifications)
     applied = modifier.apply(
         run_optimize_local=True,
@@ -53,6 +58,7 @@ def apply_dispatcher_deferred_modifier(
     *,
     mba: object,
     modifier: DeferredGraphModifier,
+    mutation_gateway: MbaMutationGateway,
     logger: object,
     case_overlap_edges: tuple[object, ...] = (),
     canonicalize_case_overlaps: Callable[[], int] | None = None,
@@ -62,7 +68,11 @@ def apply_dispatcher_deferred_modifier(
     if not modifier.has_modifications():
         return DispatcherMaterializationResult()
 
-    _downgrade_nway_goto_blocks(mba, logger)
+    _downgrade_nway_goto_blocks(
+        mba,
+        logger,
+        mutation_gateway=mutation_gateway,
+    )
     _log_info(
         logger,
         "Applying %d deferred CFG modifications from resolve_dispatcher_father",
@@ -101,7 +111,10 @@ def apply_dispatcher_deferred_modifier(
                 "after jtbl cross-case overlap canonicalization",
                 logger_func=getattr(logger, "error", None),
             )
-            DeferredGraphModifier(mba).run_deep_cleaning(
+            DeferredGraphModifier(
+                mba,
+                mutation_gateway=mutation_gateway.new_transaction(),
+            ).run_deep_cleaning(
                 call_mba_combine_block=True,
             )
             safe_verify(
@@ -124,7 +137,12 @@ def apply_dispatcher_deferred_modifier(
     )
 
 
-def _downgrade_nway_goto_blocks(mba: object, logger: object) -> None:
+def _downgrade_nway_goto_blocks(
+    mba: object,
+    logger: object,
+    *,
+    mutation_gateway: MbaMutationGateway,
+) -> None:
     qty = int(getattr(mba, "qty", 0) or 0)
     for blk_serial in range(qty):
         blk = mba.get_mblock(blk_serial)
@@ -139,7 +157,10 @@ def _downgrade_nway_goto_blocks(mba: object, logger: object) -> None:
             "(pre-apply sweep)",
             blk_serial,
         )
-        modifier = DeferredGraphModifier(mba)
+        modifier = DeferredGraphModifier(
+            mba,
+            mutation_gateway=mutation_gateway.new_transaction(),
+        )
         modifier.queue_nway_goto_type_downgrade(
             int(blk_serial),
             description="dispatcher materialization nway goto pre-apply sweep",

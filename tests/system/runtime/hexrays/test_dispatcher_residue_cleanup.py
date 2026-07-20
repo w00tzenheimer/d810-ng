@@ -14,6 +14,7 @@ from d810.transforms.dispatcher_residue_cleanup_planning import (
     UnreachableRegionForwardRedirect,
 )
 from d810.hexrays.mutation import dispatcher_residue_cleanup as cleanup
+from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 
 class _Insn:
@@ -70,8 +71,9 @@ class _Mba:
 class _FakeDeferredGraphModifier:
     instances: list["_FakeDeferredGraphModifier"] = []
 
-    def __init__(self, mba: _Mba) -> None:
+    def __init__(self, mba: _Mba, *, mutation_gateway) -> None:
         self.mba = mba
+        self.mutation_gateway = mutation_gateway
         self.modifications: list[tuple[str, int, int]] = []
         self.apply_kwargs: dict | None = None
         self.__class__.instances.append(self)
@@ -195,6 +197,7 @@ def test_dispatcher_residue_cleanup_queues_deferred_edge_and_branch_edits() -> N
         mba,  # type: ignore[arg-type]
         plan,
         logger=_logger(),
+        mutation_gateway=make_mutation_gateway(mba),
     )
 
     assert result.severed_1way == 1
@@ -248,6 +251,7 @@ def test_unreachable_region_cleanup_queues_deferred_nops_conversions_and_redirec
         mba,  # type: ignore[arg-type]
         plan,
         logger=_logger(),
+        mutation_gateway=make_mutation_gateway(mba),
     )
 
     assert result.gutted == 2
@@ -290,6 +294,7 @@ def test_unreachable_region_cleanup_rejects_unsupported_multi_successor_blocks()
         mba,  # type: ignore[arg-type]
         plan,
         logger=_logger(),
+        mutation_gateway=make_mutation_gateway(mba),
     )
 
     assert result.gutted == 0
@@ -329,6 +334,7 @@ def test_unreachable_region_cleanup_rejects_redirect_source_outside_cleanup_set(
         mba,  # type: ignore[arg-type]
         plan,
         logger=_logger(),
+        mutation_gateway=make_mutation_gateway(mba),
     )
 
     assert result.gutted == 1
@@ -370,6 +376,7 @@ def test_unreachable_region_cleanup_applies_redirect_only_dead_zone_shells() -> 
         mba,  # type: ignore[arg-type]
         plan,
         logger=_logger(),
+        mutation_gateway=make_mutation_gateway(mba),
     )
 
     assert result.gutted == 2

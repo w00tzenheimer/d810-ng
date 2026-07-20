@@ -30,6 +30,19 @@ GATEWAY_CONSTRUCTORS = frozenset(
     }
 )
 GATEWAY_REQUIRED_ENTRYPOINTS = {
+    "hexrays/mutation/dispatcher_materialization.py": frozenset(
+        {
+            "apply_scheduled_deferred_modifications",
+            "apply_dispatcher_deferred_modifier",
+            "_downgrade_nway_goto_blocks",
+        }
+    ),
+    "hexrays/mutation/dispatcher_residue_cleanup.py": frozenset(
+        {
+            "apply_dispatcher_residue_cleanup_plan",
+            "apply_unreachable_region_cleanup_plan",
+        }
+    ),
     "hexrays/mutation/detached_handler_island.py": frozenset(
         {
             "_apply_boundary_port_batch",

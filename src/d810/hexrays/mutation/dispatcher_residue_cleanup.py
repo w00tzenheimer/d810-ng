@@ -10,6 +10,7 @@ from d810.transforms.dispatcher_residue_cleanup_planning import (
     UnreachableRegionCleanupPlan,
 )
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ def apply_dispatcher_residue_cleanup_plan(
     plan: DispatcherResidueCleanupPlan,
     *,
     logger,
+    mutation_gateway: MbaMutationGateway,
 ) -> DispatcherResidueCleanupApplyResult:
     """Materialize dispatcher-residue cleanup through DeferredGraphModifier."""
 
@@ -106,7 +108,10 @@ def apply_dispatcher_residue_cleanup_plan(
     if disp_blk is None:
         return DispatcherResidueCleanupApplyResult()
 
-    first_batch = DeferredGraphModifier(mba)
+    first_batch = DeferredGraphModifier(
+        mba,
+        mutation_gateway=mutation_gateway.new_transaction(),
+    )
     sever_candidates: list[int] = []
     for serial in plan.one_way_edge_severs:
         blk = mba.get_mblock(int(serial))
@@ -193,7 +198,10 @@ def apply_dispatcher_residue_cleanup_plan(
             if planned_succs
             else tuple(int(disp_blk.succ(i)) for i in range(disp_blk.nsucc()))
         )
-        outgoing_batch = DeferredGraphModifier(mba)
+        outgoing_batch = DeferredGraphModifier(
+            mba,
+            mutation_gateway=mutation_gateway.new_transaction(),
+        )
         for succ_serial in succ_serials:
             if not any(
                 int(disp_blk.succ(i)) == succ_serial
@@ -240,10 +248,14 @@ def apply_unreachable_region_cleanup_plan(
     plan: UnreachableRegionCleanupPlan,
     *,
     logger,
+    mutation_gateway: MbaMutationGateway,
 ) -> UnreachableRegionCleanupApplyResult:
     """Materialize unreachable-region cleanup via DeferredGraphModifier."""
 
-    cleanup_modifier = DeferredGraphModifier(mba)
+    cleanup_modifier = DeferredGraphModifier(
+        mba,
+        mutation_gateway=mutation_gateway.new_transaction(),
+    )
     accepted_cleanup_blocks: set[int] = set()
     gutted = 0
     for block in plan.blocks:
@@ -305,7 +317,10 @@ def apply_unreachable_region_cleanup_plan(
         description="UnreachableRegionCleanup cleanup batch",
     )
 
-    redirect_modifier = DeferredGraphModifier(mba)
+    redirect_modifier = DeferredGraphModifier(
+        mba,
+        mutation_gateway=mutation_gateway.new_transaction(),
+    )
     redirect_candidates = 0
     for redirect in plan.forward_redirects:
         serial = int(redirect.block_serial)
