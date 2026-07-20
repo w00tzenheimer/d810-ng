@@ -307,6 +307,10 @@ try:
         from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
             resolver_session_state,
         )
+        from tools.scripts.rhad_investigation.session_probe_evidence import (
+            capture_preopt_union_preparation,
+            latest_preopt_union_preparation,
+        )
 
         headless.configure(project="default_unflattening_ollvm.json")
         headless.start()
@@ -687,6 +691,7 @@ try:
                 trace_resolve_exit_states
             )
         observed_resolver_state: list[object] = []
+        observed_preopt_union_preparation: list[object] = []
         observed_session_states: set[int] = set()
 
         if TRACE_SESSION_STATE:
@@ -833,6 +838,10 @@ try:
             if session is not None:
                 state = resolver_session_state(session)
                 observed_resolver_state[:] = [state]
+                capture_preopt_union_preparation(
+                    state,
+                    observed_preopt_union_preparation,
+                )
                 if TRACE_SESSION_STATE and id(state) not in observed_session_states:
                     observed_session_states.add(id(state))
                     materialization = getattr(state, "materialization", None)
@@ -905,7 +914,10 @@ try:
                         f"{native_state.pending_generated_restart_generation}",
                         flush=True,
                     )
-            union_preparation = getattr(state, "preopt_union_preparation", None)
+            union_preparation = latest_preopt_union_preparation(
+                state,
+                observed_preopt_union_preparation,
+            )
             print(
                 "PREOPT_UNION_RESULT",
                 "prepared="
