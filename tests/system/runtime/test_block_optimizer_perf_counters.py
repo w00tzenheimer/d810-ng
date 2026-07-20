@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import ida_hexrays
+import pytest
 
 from d810.core.stats import OptimizationStatistics
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
@@ -181,6 +182,17 @@ def test_flow_rule_constructs_a_modifier_from_its_injected_gateway_port() -> Non
     modifier = rule.new_deferred_modifier(context.mba)
 
     assert modifier.mutation_gateway is gateway
+
+
+def test_flow_rule_fails_closed_without_an_injected_gateway_port() -> None:
+    rule = _GatewayRule()
+    mba = SimpleNamespace(entry_ea=0x401000, qty=1)
+
+    with pytest.raises(
+        RuntimeError,
+        match="flow rule requires a coordinator-owned mutation gateway",
+    ):
+        rule.new_deferred_modifier(mba)
 
 
 def test_block_optimizer_runs_scheduled_rule_at_later_maturity():

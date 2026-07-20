@@ -128,18 +128,16 @@ class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):
         self.flow_context = flow_context
 
     def new_deferred_modifier(self, mba):
-        """Build a modifier through the manager-injected mutation port.
-
-        The fallback remains useful for isolated tools and unit fixtures, but
-        an installed flow rule always receives the lifecycle-owned gateway.
-        """
+        """Build a modifier through the required manager-injected mutation port."""
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
-        gateway = None
         flow_context = self.flow_context
         new_gateway = getattr(flow_context, "new_mba_mutation_gateway", None)
-        if callable(new_gateway):
-            gateway = new_gateway()
+        gateway = new_gateway() if callable(new_gateway) else None
+        if gateway is None:
+            raise RuntimeError(
+                "flow rule requires a coordinator-owned mutation gateway"
+            )
         return DeferredGraphModifier(mba, mutation_gateway=gateway)
 
     def current_resolver_session_state(self) -> object | None:
