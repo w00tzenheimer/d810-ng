@@ -165,13 +165,8 @@ class DecompilationLifecycleCoordinator:
             raise KeyError("native preanalysis session is not active")
         if not isinstance(facts, NativePreanalysisFacts):
             raise TypeError("fact merge requires NativePreanalysisFacts")
-        facts.require_key(key)
         state = session.native_preanalysis
-        if state.facts == facts:
-            return False
-        state.facts = facts
-        state.mark_evidence_changed()
-        return True
+        return state.merge_facts(key, facts)
 
     def mark_preopt_bound(
         self,

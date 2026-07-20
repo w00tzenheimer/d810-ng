@@ -401,6 +401,10 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from tests.native_preanalysis import make_native_key
+
+
+NATIVE_KEY = make_native_key()
 
 
 def _resolver_session(
@@ -409,6 +413,7 @@ def _resolver_session(
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     state = computed_goto_resolver.resolver_session_state(session)
     state.resolution = resolution
@@ -3151,7 +3156,7 @@ def test_prepare_detached_snippets_enriches_session_before_union_gate(
     planned = []
 
     _session, state = _resolver_session(resolution)
-    state.materialized_transfers = (leaf,)
+    assert state.merge_materialized_transfers((leaf,))
     monkeypatch.setattr(
         computed_goto_resolver,
         "_recover_static_handler_entry_route_transfers",
@@ -7639,7 +7644,7 @@ def _install_preopt_union_success_harness(
     )
     _session, state = _resolver_session(resolution)
     state.materialized = True
-    state.materialized_transfers = (route, cut)
+    assert state.merge_materialized_transfers((route, cut))
     monkeypatch.setattr(
         computed_goto_resolver,
         "_recover_static_handler_entry_route_transfers",
@@ -7793,6 +7798,15 @@ def test_prepare_preopt_union_closure_publishes_one_idempotent_union(
         computed_goto_resolver.get_prepared_preopt_union_closure(harness["state"])
         == first
     )
+    facts = harness["state"].native_preanalysis.facts
+    assert facts is not None
+    assert facts.semantic_closure is not None
+    assert facts.semantic_closure.included_block_eas == (harness["seed_ea"],)
+    assert facts.native_cfg.blocks_by_ea[harness["seed_ea"]].start_ea == harness[
+        "seed_ea"
+    ]
+    assert len(facts.boundary_ports.direct) == 1
+    assert facts.boundary_ports.conditional == ()
     assert len(harness["captures"]) == 1
 
 
@@ -7872,16 +7886,17 @@ def test_prepare_preopt_union_binds_matching_prepatch_source_without_regeneratio
         closure=pristine_closure,
         )
     )
-    harness["state"].materialized_transfers = (
-        *harness["state"].materialized_transfers,
-        MaterializedIndirectTransfer(
-            source_jmp_ea=0x1900,
-            source_block_ea=0x1900,
-            materialized_anchor_eas=(),
-            target_eas=(seed_ea,),
-            resolver_kind="static_handler_entry_route",
-            owned_native_ranges=((seed_ea, 0x2040),),
-        ),
+    assert harness["state"].merge_materialized_transfers(
+        (
+            MaterializedIndirectTransfer(
+                source_jmp_ea=0x1900,
+                source_block_ea=0x1900,
+                materialized_anchor_eas=(),
+                target_eas=(seed_ea,),
+                resolver_kind="static_handler_entry_route",
+                owned_native_ranges=((seed_ea, 0x2040),),
+            ),
+        )
     )
     bound: list[tuple[int, int, object]] = []
     monkeypatch.setattr(
@@ -10420,7 +10435,7 @@ def test_prepare_detached_snippets_union_failure_has_no_fallback(
         seeds_run=0,
     )
     _session, state = _resolver_session(resolution)
-    state.materialized_transfers = (transfer,)
+    assert state.merge_materialized_transfers((transfer,))
     events: list[object] = []
 
     def prepare_union(_state: object, *, live_mba: object):

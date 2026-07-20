@@ -6,13 +6,18 @@ import importlib.util
 from dataclasses import replace
 from types import SimpleNamespace
 
-from d810.analyses.control_flow.native_preanalysis_session import (
-    NativePreanalysisSessionState,
+from d810.analyses.control_flow.detached_handler_island import (
+    DetachedSnippetBoundaryPorts,
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     TerminalReturnCarrierRequest,
 )
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativePreanalysisFacts,
+    NativePreanalysisSessionState,
+)
+from d810.analyses.control_flow.native_semantic_closure import NativeCfg
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
@@ -38,6 +43,18 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
 from tests.native_preanalysis import make_native_key
 
 NATIVE_KEY = make_native_key()
+
+
+def _native_facts(
+    transfers: tuple[MaterializedIndirectTransfer, ...] = (),
+) -> NativePreanalysisFacts:
+    return NativePreanalysisFacts(
+        key=NATIVE_KEY,
+        native_cfg=NativeCfg({}),
+        semantic_closure=None,
+        transfers=transfers,
+        boundary_ports=DetachedSnippetBoundaryPorts((), ()),
+    )
 
 
 def test_resolver_session_state_has_a_dedicated_module() -> None:
@@ -241,10 +258,10 @@ def test_replaying_identical_conditional_bridge_is_an_evidence_noop() -> None:
         materialized_anchor_eas=(),
         target_eas=(0x404000,),
     )
-    state.materialized_transfers = (before, bridge, after)
+    state.native_preanalysis.facts = _native_facts((before, bridge, after))
 
     assert not state.merge_materialized_transfers((bridge,))
-    assert state.materialized_transfers == (before, bridge, after)
+    assert frozenset(state.materialized_transfers) == {before, bridge, after}
     assert state.evidence_generation == 4
 
 
@@ -285,7 +302,7 @@ def test_weaker_conditional_bridge_refresh_cannot_erase_arm_state_evidence() -> 
         selector_state_var_reg=28,
         resolver_kind="conditional_handler_bridge",
     )
-    state.materialized_transfers = (exact,)
+    state.native_preanalysis.facts = _native_facts((exact,))
 
     assert not state.merge_materialized_transfers((weaker_refresh,))
     assert state.materialized_transfers == (exact,)
@@ -328,12 +345,17 @@ def test_weaker_conditional_bridge_refresh_cannot_inherit_states_across_sources(
         predicate_true_is_taken=None,
         predicate_preserve_live=False,
     )
-    state.materialized_transfers = (exact,)
+    state.native_preanalysis.facts = _native_facts((exact,))
 
     assert state.merge_materialized_transfers((regenerated,))
-    assert state.materialized_transfers == (exact, regenerated)
-    assert state.materialized_transfers[1].predicate_true_state is None
-    assert state.materialized_transfers[1].predicate_false_state is None
+    assert frozenset(state.materialized_transfers) == {exact, regenerated}
+    refreshed = next(
+        transfer
+        for transfer in state.materialized_transfers
+        if transfer.source_block_ea == 0x40D200
+    )
+    assert refreshed.predicate_true_state is None
+    assert refreshed.predicate_false_state is None
     assert state.evidence_generation == 5
 
 
@@ -709,7 +731,6 @@ def test_preopt_route_consumption_uses_the_injected_mutation_gateway(
         prepared=True,
         published=True,
         primary_seed_ea=0x401080,
-        boundary_ports=SimpleNamespace(direct=(), conditional=()),
     )
     decision = {
         "session": session,
@@ -1092,16 +1113,6 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
         prepared=True,
         published=True,
         primary_seed_ea=taken_target_ea,
-        boundary_ports=SimpleNamespace(
-            direct=(),
-            conditional=(
-                SimpleNamespace(
-                    predicate_ea=predicate_ea,
-                    taken_target_ea=taken_target_ea,
-                    fallthrough_target_ea=fallthrough_target_ea,
-                ),
-            ),
-        ),
     )
     state.native_preanalysis.mark_evidence_changed()
     _on_preopt_bootstrap_route(
@@ -1138,8 +1149,18 @@ def test_materialization_and_transfer_accumulation_are_session_owned() -> None:
     )
     state = resolver_session_state(session)
     resolution = object()
-    first_transfer = object()
-    second_transfer = object()
+    first_transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x401010,
+        source_block_ea=0x401000,
+        materialized_anchor_eas=(0x401010,),
+        target_eas=(0x401100,),
+    )
+    second_transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x401020,
+        source_block_ea=0x401018,
+        materialized_anchor_eas=(0x401020,),
+        target_eas=(0x401200,),
+    )
 
     state.begin_materialization(resolution)
     assert state.materialization is not None
@@ -1151,6 +1172,23 @@ def test_materialization_and_transfer_accumulation_are_session_owned() -> None:
     assert state.materialized is True
     assert state.materialization is None
     assert state.materialized_transfers == (first_transfer, second_transfer)
+    assert state.native_preanalysis.facts is not None
+    assert state.native_preanalysis.facts.transfers == (
+        first_transfer,
+        second_transfer,
+    )
+    assert "materialized_transfers" not in ResolverSessionState.__dataclass_fields__
+
+
+def test_native_cfg_and_boundary_ports_have_one_session_owned_authority() -> None:
+    native = NativePreanalysisSessionState()
+    state = ResolverSessionState(native_preanalysis=native, native_key=NATIVE_KEY)
+    ports = DetachedSnippetBoundaryPorts((), ())
+
+    assert state.merge_native_facts(native_cfg=NativeCfg({}), boundary_ports=ports)
+    assert isinstance(native.facts, NativePreanalysisFacts)
+    assert state.boundary_ports is native.facts.boundary_ports
+    assert "boundary_ports" not in PreoptUnionPreparationResult.__dataclass_fields__
 
 
 def test_native_entry_corridor_crosses_a_same_ea_split_without_following_a_loop() -> (
@@ -1343,7 +1381,7 @@ def test_calls_done_refreshes_completed_preopt_union_before_requesting_redo(
         target_eas=(0x40F12D, 0x40DC04),
         resolver_kind="static_conditional_state_choice_bridge",
     )
-    state.materialized_transfers = (choice,)
+    state.native_preanalysis.facts = _native_facts((choice,))
     state.materialized = True
     state.native_preanalysis.evidence_generation = 1
     state.native_preanalysis.bound_preopt_generation = 1
@@ -1382,7 +1420,7 @@ def test_calls_done_refreshes_completed_preopt_union_before_requesting_redo(
         decision=decision,
     )
 
-    assert state.materialized_transfers == (choice, handler, bridge)
+    assert frozenset(state.materialized_transfers) == {choice, handler, bridge}
     assert decision["defer_generated_restart"] is True
     assert state.native_preanalysis.has_pending_generated_restart
     assert redo == [

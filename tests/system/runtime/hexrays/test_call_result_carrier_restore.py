@@ -8,12 +8,32 @@ from types import SimpleNamespace
 import ida_hexrays
 import pytest
 
+from d810.analyses.control_flow.materialized_indirect_transfer import (
+    MaterializedIndirectTransfer,
+)
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from tests.native_preanalysis import make_native_key
 from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 
 NATIVE_KEY = make_native_key()
+
+
+def _portable_transfer(
+    source_ea: int,
+    *,
+    target_ea: int | None = None,
+    resolver_kind: str = "static_fixpoint",
+    selector_state_var_reg: int | None = None,
+) -> MaterializedIndirectTransfer:
+    return MaterializedIndirectTransfer(
+        source_jmp_ea=int(source_ea),
+        source_block_ea=int(source_ea),
+        materialized_anchor_eas=(int(source_ea),),
+        target_eas=(() if target_ea is None else (int(target_ea),)),
+        resolver_kind=resolver_kind,
+        selector_state_var_reg=selector_state_var_reg,
+    )
 
 
 def test_calls_done_defers_generated_restart_to_the_flowchart_owner() -> None:
@@ -52,17 +72,30 @@ def _session_resolver_state(
 ):
     """Build the final session-owned resolver attachment used by flow rules."""
     from d810.analyses.control_flow.native_preanalysis_session import (
+        NativePreanalysisFacts,
         NativePreanalysisSessionState,
     )
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPorts,
+    )
+    from d810.analyses.control_flow.native_semantic_closure import NativeCfg
     from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
         ResolverSessionState,
     )
 
+    native_preanalysis = NativePreanalysisSessionState(
+        facts=NativePreanalysisFacts(
+            key=NATIVE_KEY,
+            native_cfg=NativeCfg({}),
+            semantic_closure=None,
+            transfers=transfers,
+            boundary_ports=DetachedSnippetBoundaryPorts((), ()),
+        )
+    )
     state = ResolverSessionState(
-        native_preanalysis=NativePreanalysisSessionState(),
+        native_preanalysis=native_preanalysis,
         native_key=NATIVE_KEY,
         materialized=materialized,
-        materialized_transfers=transfers,
     )
     return state
 
@@ -1537,8 +1570,8 @@ def test_calls_imports_live_handler_replacement_before_terminal_routes(
     )
 
     events: list[str] = []
-    initial_transfers = (object(),)
-    bridged_transfers = initial_transfers + (object(),)
+    initial_transfers = (_portable_transfer(0x40A570),)
+    bridged_transfers = initial_transfers + (_portable_transfer(0x40A580),)
     monkeypatch.setattr(
         island_rule,
         "_materialize_live_handler_replacements",
@@ -1564,7 +1597,7 @@ def test_calls_imports_live_handler_replacement_before_terminal_routes(
         "_recover_imported_conditional_bridge_transfers",
         lambda _mba, transfers, *, state: (
             events.append("recover") or bridged_transfers
-            if transfers is initial_transfers and state is resolver_state
+            if transfers == initial_transfers and state is resolver_state
             else pytest.fail("replacement evidence recovery got stale transfers")
         ),
         raising=False,
@@ -1574,7 +1607,7 @@ def test_calls_imports_live_handler_replacement_before_terminal_routes(
         "_apply_detached_snippet_terminal_routes",
         lambda _mba, transfers, **_kwargs: (
             events.append("terminal") or 1
-            if transfers is bridged_transfers
+            if transfers == bridged_transfers
             else pytest.fail("terminal routing did not receive bridge evidence")
         ),
     )
@@ -1634,8 +1667,8 @@ def test_calls_recovers_bridges_for_snippets_imported_before_calls(
     )
 
     events: list[str] = []
-    initial_transfers = (object(),)
-    bridged_transfers = initial_transfers + (object(),)
+    initial_transfers = (_portable_transfer(0x40A590),)
+    bridged_transfers = initial_transfers + (_portable_transfer(0x40A5A0),)
     monkeypatch.setattr(
         island_rule,
         "_materialize_live_handler_replacements",
@@ -1655,7 +1688,7 @@ def test_calls_recovers_bridges_for_snippets_imported_before_calls(
         "_recover_imported_conditional_bridge_transfers",
         lambda _mba, transfers, *, state: (
             events.append("recover") or bridged_transfers
-            if transfers is initial_transfers and state is resolver_state
+            if transfers == initial_transfers and state is resolver_state
             else pytest.fail("CALLS bridge recovery got stale transfers")
         ),
     )
@@ -1664,7 +1697,7 @@ def test_calls_recovers_bridges_for_snippets_imported_before_calls(
         "_apply_detached_snippet_terminal_routes",
         lambda _mba, transfers, **_kwargs: (
             events.append("terminal") or 1
-            if transfers is bridged_transfers
+            if transfers == bridged_transfers
             else pytest.fail("terminal routing missed imported bridge evidence")
         ),
     )
@@ -1853,7 +1886,9 @@ def test_live_handler_replacement_releases_unreachable_native_keep_roots(
     for block in (native_root, native_exit, unrelated_keep, imported_root):
         block.flags |= int(ida_hexrays.MBL_KEEP)
     mba = _MBA((entry, live, native_root, native_exit, unrelated_keep, imported_root))
-    transfer = SimpleNamespace(
+    transfer = _portable_transfer(
+        0x40A7EF,
+        target_ea=0x40A7AE,
         resolver_kind="static_equality_fixpoint",
         selector_state_var_reg=20,
     )
@@ -1946,7 +1981,7 @@ def test_locopt_preanalysis_imports_before_call_analysis_without_requesting_redo
         materialized_computed_goto_island as island_rule,
     )
 
-    transfers = (object(),)
+    transfers = (_portable_transfer(0x40A5B0),)
     mba = object()
     resolver_state = _session_resolver_state(transfers=transfers)
     session = SimpleNamespace(
@@ -1964,7 +1999,7 @@ def test_locopt_preanalysis_imports_before_call_analysis_without_requesting_redo
         lambda candidate_mba, candidate_transfers, *, mutation_gateway, require_live_residual_source, expected_template_maturity: (
             3
             if candidate_mba is mba
-            and candidate_transfers is transfers
+            and candidate_transfers == transfers
             and require_live_residual_source is False
             and expected_template_maturity == int(ida_hexrays.MMAT_LOCOPT)
             else 0

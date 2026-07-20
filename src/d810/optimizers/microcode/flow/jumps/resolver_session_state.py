@@ -10,14 +10,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import MISSING, dataclass, field, fields, replace
-from d810.core import getLogger
-from d810.core.native_preanalysis_key import NativePreanalysisKey
-from d810.analyses.control_flow.native_preanalysis_session import (
-    BootstrapRouteBindingEvidence,
-    BootstrapRouteEvidence,
-    BootstrapRouteProofKind,
-    NativePreanalysisSessionState,
-    RESOLVER_SESSION_STATE_EXTENSION_KEY,
+from d810.analyses.control_flow.detached_handler_island import (
+    DetachedSnippetBoundaryPorts,
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
@@ -25,6 +19,20 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     TerminalReturnCarrierRequest,
     is_conditional_handler_bridge_kind,
 )
+from d810.analyses.control_flow.native_preanalysis_session import (
+    BootstrapRouteBindingEvidence,
+    BootstrapRouteEvidence,
+    BootstrapRouteProofKind,
+    NativePreanalysisFacts,
+    NativePreanalysisSessionState,
+    RESOLVER_SESSION_STATE_EXTENSION_KEY,
+)
+from d810.analyses.control_flow.native_semantic_closure import (
+    NativeCfg,
+    NativeSemanticClosure,
+)
+from d810.core import getLogger
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.ir.block_identity import (
     BoundBlock,
@@ -116,7 +124,6 @@ class ResolverSessionState:
     resolution: object | None = None
     materialization: ResolverMaterializationState | None = None
     materialized: bool = False
-    materialized_transfers: tuple[MaterializedIndirectTransfer, ...] = ()
     portable_state_routes: tuple[PortableMaterializedStateRoute, ...] = ()
     portable_dispatcher_region_identity: StableBlockIdentity | None = None
     terminal_return_carrier_requests: tuple[TerminalReturnCarrierRequest, ...] = ()
@@ -142,6 +149,64 @@ class ResolverSessionState:
     def evidence_generation(self) -> int:
         """Read the first-class context generation; never duplicate it here."""
         return self.native_preanalysis.evidence_generation
+
+    @property
+    def materialized_transfers(self) -> tuple[MaterializedIndirectTransfer, ...]:
+        """Read transfers from the canonical portable fact aggregate."""
+        facts = self.native_preanalysis.facts
+        return () if facts is None else facts.transfers
+
+    @property
+    def boundary_ports(self) -> DetachedSnippetBoundaryPorts:
+        """Read resolver boundary ports from the canonical fact aggregate."""
+        facts = self.native_preanalysis.facts
+        return (
+            DetachedSnippetBoundaryPorts((), ())
+            if facts is None
+            else facts.boundary_ports
+        )
+
+    def merge_native_facts(
+        self,
+        *,
+        native_cfg: NativeCfg | None = None,
+        semantic_closure: NativeSemanticClosure | None = None,
+        transfers: tuple[MaterializedIndirectTransfer, ...] | None = None,
+        boundary_ports: DetachedSnippetBoundaryPorts | None = None,
+    ) -> bool:
+        """Merge one complete portable view through the lifecycle authority."""
+        current = self.native_preanalysis.facts
+        facts = NativePreanalysisFacts(
+            key=self.native_key,
+            native_cfg=(
+                native_cfg
+                if native_cfg is not None
+                else NativeCfg({}) if current is None else current.native_cfg
+            ),
+            semantic_closure=(
+                semantic_closure
+                if semantic_closure is not None
+                else None if current is None else current.semantic_closure
+            ),
+            transfers=(
+                transfers
+                if transfers is not None
+                else () if current is None else current.transfers
+            ),
+            boundary_ports=(
+                boundary_ports
+                if boundary_ports is not None
+                else (
+                    DetachedSnippetBoundaryPorts((), ())
+                    if current is None
+                    else current.boundary_ports
+                )
+            ),
+        )
+        changed = self.native_preanalysis.merge_facts(self.native_key, facts)
+        if changed:
+            self.identity_index = None
+        return changed
 
     def merge_bootstrap_route(self, evidence: BootstrapRouteEvidence) -> bool:
         """Delegate portable evidence ownership to the lifecycle context."""
@@ -252,10 +317,7 @@ class ResolverSessionState:
         merged = tuple(merged)
         if merged == self.materialized_transfers:
             return False
-        self.materialized_transfers = merged
-        self.native_preanalysis.mark_evidence_changed()
-        self.identity_index = None
-        return True
+        return self.merge_native_facts(transfers=merged)
 
     def merge_terminal_return_carrier_requests(
         self,

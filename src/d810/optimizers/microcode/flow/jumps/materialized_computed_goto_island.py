@@ -406,8 +406,8 @@ def _restore_preopt_terminal_return_carriers(
         state.preopt_union_import_active = False
     qty_after_import = int(mba.qty)
     requested_roots = {primary_seed_ea}
-    expected_boundary_ports = len(preparation.boundary_ports.direct) + len(
-        preparation.boundary_ports.conditional
+    expected_boundary_ports = len(state.boundary_ports.direct) + len(
+        state.boundary_ports.conditional
     )
     seed_eas = preparation.seed_eas or (primary_seed_ea,)
     missing_instruction_backed_seed_eas = tuple(
