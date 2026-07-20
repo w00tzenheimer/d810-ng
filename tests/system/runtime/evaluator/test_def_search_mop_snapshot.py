@@ -15,9 +15,30 @@ class FakeSnapshot:
         self.r = reg
         self.stkoff = stkoff
         self.owned_mop = owned_mop
+        self.materialized_mba = None
 
-    def to_mop(self):
+    def to_mop(self, mba=None):
+        self.materialized_mba = mba
         return SimpleNamespace(t=self.t, size=self.size, r=self.reg)
+
+
+def test_materialize_stack_snapshot_rebinds_to_destination_mba(monkeypatch):
+    monkeypatch.setattr(def_search, "MopSnapshot", FakeSnapshot)
+    destination_mba = object()
+    snapshot = FakeSnapshot(
+        t=ida_hexrays.mop_S,
+        size=4,
+        stkoff=0xA4,
+    )
+
+    materialized = def_search._materialize_mop_for_tracking(
+        snapshot,
+        "test",
+        mba=destination_mba,
+    )
+
+    assert materialized is not None
+    assert snapshot.materialized_mba is destination_mba
 
 
 def test_resolve_mop_to_ast_materializes_snapshot_before_tracker(monkeypatch):
@@ -81,3 +102,30 @@ def test_resolve_mop_to_ast_fails_closed_for_unowned_stack_snapshot(monkeypatch)
     )
 
     assert result is None
+
+
+def test_find_def_in_block_uses_destination_owned_stack_operand(monkeypatch):
+    calls = []
+
+    class ImportedBlock:
+        mba = object()
+        tail = None
+
+        def append_use_list(self, _ml, mop, _access):
+            calls.append(mop)
+
+    monkeypatch.setattr(
+        def_search.ida_hexrays,
+        "mlist_t",
+        lambda: SimpleNamespace(empty=lambda: True),
+    )
+
+    assert (
+        def_search.find_def_in_block(
+            SimpleNamespace(t=ida_hexrays.mop_r),
+            ImportedBlock(),
+            None,
+        )
+        is None
+    )
+    assert len(calls) == 1

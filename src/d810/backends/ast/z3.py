@@ -452,11 +452,13 @@ class Z3MopProver:
         """Prove mop1 == mop2 for all inputs. Replaces z3_check_mop_equality."""
         if mop1 is None or mop2 is None:
             return False
+        blk, ins = self._resolve_context(blk, ins)
+        destination_mba = getattr(blk, "mba", None)
         # Convert MopSnapshot to mop_t at boundary
         if isinstance(mop1, MopSnapshot):
-            mop1 = mop1.to_mop()
+            mop1 = mop1.to_mop(destination_mba)
         if isinstance(mop2, MopSnapshot):
-            mop2 = mop2.to_mop()
+            mop2 = mop2.to_mop(destination_mba)
         # Validate SWIG objects before accessing their attributes
         if not hasattr(mop1, "t") or not hasattr(mop1, "size"):
             logger.warning("are_equal: mop1 is invalid or freed SWIG object")
@@ -522,11 +524,13 @@ class Z3MopProver:
         """Prove mop1 != mop2 for all inputs. Replaces z3_check_mop_inequality."""
         if mop1 is None or mop2 is None:
             return True
+        blk, ins = self._resolve_context(blk, ins)
+        destination_mba = getattr(blk, "mba", None)
         # Convert MopSnapshot to mop_t at boundary
         if isinstance(mop1, MopSnapshot):
-            mop1 = mop1.to_mop()
+            mop1 = mop1.to_mop(destination_mba)
         if isinstance(mop2, MopSnapshot):
-            mop2 = mop2.to_mop()
+            mop2 = mop2.to_mop(destination_mba)
         # Validate SWIG objects
         if not hasattr(mop1, "t") or not hasattr(mop1, "size"):
             logger.warning("are_unequal: mop1 is invalid or freed SWIG object")
@@ -603,7 +607,7 @@ class Z3MopProver:
         blk, ins = self._resolve_context(blk, ins)
         # Convert MopSnapshot to mop_t at boundary
         if isinstance(mop, MopSnapshot):
-            mop = mop.to_mop()
+            mop = mop.to_mop(getattr(blk, "mba", None))
         # Validate SWIG object
         if not hasattr(mop, "t") or not hasattr(mop, "size"):
             logger.warning("is_always_zero: mop is invalid or freed SWIG object")
@@ -702,7 +706,7 @@ class Z3MopProver:
         blk, ins = self._resolve_context(blk, ins)
         # Convert MopSnapshot to mop_t at boundary
         if isinstance(mop, MopSnapshot):
-            mop = mop.to_mop()
+            mop = mop.to_mop(getattr(blk, "mba", None))
         # Validate SWIG object
         if not hasattr(mop, "t") or not hasattr(mop, "size"):
             logger.warning("is_always_nonzero: mop is invalid or freed SWIG object")

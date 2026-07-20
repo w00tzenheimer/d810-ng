@@ -226,14 +226,27 @@ class MopSnapshot:
             self.const_str,
         )
 
-    def to_mop(self) -> ida_hexrays.mop_t:
+    def to_mop(self, mba: ida_hexrays.mba_t | None = None) -> ida_hexrays.mop_t:
         """Reconstruct a fresh (owned) mop_t from this snapshot.
 
         Used by AstLeaf.create_mop() to materialize a writeable operand
         from a cached snapshot.  The returned mop_t is owned by the caller
         and safe to pass to assign() or other IDA APIs.
+
+        ``mop_S`` embeds an MBA-owned ``stkvar_ref_t``.  When a destination
+        MBA is available, rebuild that reference through ``make_stkvar``
+        before considering the cached clone; assigning the clone preserves
+        its source MBA and can fault in native def/use APIs.
         """
         m = ida_hexrays.mop_t()
+        if (
+            self.t == ida_hexrays.mop_S
+            and self.stkoff is not None
+            and mba is not None
+        ):
+            m.make_stkvar(mba, self.stkoff)
+            m.size = self.size
+            return m
         # Prefer the owned clone when available. This preserves complex
         # operands (e.g., mop_d) and stack/local refs exactly.
         if self.owned_mop is not None:

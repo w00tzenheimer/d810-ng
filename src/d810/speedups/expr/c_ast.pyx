@@ -38,6 +38,7 @@ from d810.hexrays.utils.hexrays_helpers import (
     structural_mop_hash,
 )
 from d810.core import NOT_GIVEN
+from d810.hexrays.ir.mop_ownership import mop_mba_owner_scope
 
 logger = getLogger(__name__)
 
@@ -1396,6 +1397,11 @@ def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
             return (t, sz, id(mop))
 
 
+def _mop_ast_cache_key(mop: object) -> tuple:
+    """Scope structural AST templates by embedded native MBA ownership."""
+    return get_mop_key(mop), mop_mba_owner_scope(mop)
+
+
 # def get_mop_key_cy(mop):
 #     """
 #     Generates a fast, hashable key from a mop_t's essential attributes.
@@ -1917,7 +1923,7 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
     """
 
     # 1. Create a stable, hashable key from the mop_t object.
-    cache_key = get_mop_key(mop)
+    cache_key = _mop_ast_cache_key(mop)
 
     # 2. Global template cache: return a proxy if we already know the template
     if cache_key in MOP_TO_AST_CACHE:
