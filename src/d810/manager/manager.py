@@ -98,7 +98,6 @@ def _initialize_resolver_session_extension(session):
 def _build_current_mba_identity_index(*, session, mba):
     """Hex-Rays-owned live-index port injected into the lifecycle coordinator."""
     from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
-    from d810.hexrays.mutation.ir_translator import lift
     from d810.hexrays.mutation.detached_handler_island import (
         imported_detached_snippet_instruction_origins,
     )
@@ -110,29 +109,16 @@ def _build_current_mba_identity_index(*, session, mba):
     if state.preopt_union_import_active and state.identity_index is not None:
         return state.identity_index
 
-    flow_graph = lift(mba)
     imported_instruction_origins = dict(
         imported_detached_snippet_instruction_origins(mba)
     )
-    imported_native_eas_by_serial = {
-        int(block.serial): frozenset(
-            int(imported_instruction_origins[int(instruction.ea)])
-            for instruction in block.insn_snapshots
-            if int(instruction.ea) in imported_instruction_origins
-        )
-        for block in flow_graph.blocks.values()
-        if any(
-            int(instruction.ea) in imported_instruction_origins
-            for instruction in block.insn_snapshots
-        )
-    }
-    index = MbaBlockIdentityIndex.from_flow_graph(
+    index = MbaBlockIdentityIndex.from_mba(
+        mba,
         generation=0,
         native_key=session.native_key,
         evidence_generation=session.native_preanalysis.evidence_generation,
-        flow_graph=flow_graph,
         session_id=session.identity_key,
-        imported_native_eas_by_serial=imported_native_eas_by_serial,
+        imported_instruction_origins=imported_instruction_origins,
     )
     state.bind_current_mba(index)
     return index

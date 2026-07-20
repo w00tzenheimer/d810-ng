@@ -176,6 +176,51 @@ def test_builds_from_live_mba_without_retaining_it_and_abstains_on_cloned_eas() 
     assert not hasattr(index, "mba")
 
 
+def test_live_mba_identity_scan_uses_imported_eas_without_reading_operands() -> None:
+    class Insn:
+        def __init__(self, ea: int, next_insn=None) -> None:
+            self.ea = ea
+            self.next = next_insn
+
+        @property
+        def l(self):
+            raise AssertionError("identity indexing must not inspect operands")
+
+        r = l
+        d = l
+
+    block = type(
+        "Block",
+        (),
+        {
+            "serial": 0,
+            "head": Insn(0xFFFFFFFFFFFFFF01, Insn(0x401005)),
+        },
+    )()
+    mba = type(
+        "Mba",
+        (),
+        {"qty": 1, "get_mblock": lambda self, serial: block},
+    )()
+
+    index = MbaBlockIdentityIndex.from_mba(
+        mba,
+        generation=3,
+        native_key=NATIVE_KEY,
+        imported_instruction_origins={0xFFFFFFFFFFFFFF01: 0x40E245},
+    )
+
+    identity = index.identity_for_serial(0)
+    assert identity == StableBlockIdentity.from_instruction_eas(
+        (0x40E245,),
+        native_key=NATIVE_KEY,
+    )
+    assert (
+        index.handle_for_serial(0).provenance
+        is BlockHandleProvenance.IMPORTED_NATIVE
+    )
+
+
 def test_imported_native_origins_replace_synthetic_snapshot_identity() -> None:
     synthetic_block = BlockSnapshot(
         serial=40,
