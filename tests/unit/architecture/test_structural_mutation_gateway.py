@@ -71,6 +71,22 @@ GATEWAY_REQUIRED_ENTRYPOINTS = {
         )
     ),
 }
+GATEWAYLESS_NONSTRUCTURAL_ENTRYPOINTS = {
+    "hexrays/mutation/detached_handler_island.py": frozenset(
+        {
+            "reconcile_imported_callinfo_with_live_native_calls",
+            "restore_terminal_return_carriers",
+            "restore_call_result_carriers",
+            "restore_detached_call_result_definitions",
+        }
+    ),
+    "hexrays/mutation/byte_emit_tail_isolation_runtime.py": frozenset(
+        {"_rewrite_terminal_return_block_to_literal"}
+    ),
+    "optimizers/microcode/flow/flattening/engine/executor.py": frozenset(
+        {"_filter_backend_unsupported_modifications"}
+    ),
+}
 
 
 def _production_calls():
@@ -80,6 +96,32 @@ def _production_calls():
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 yield relative, node
+
+
+def _production_calls_in_functions():
+    for path in SRC_ROOT.rglob("*.py"):
+        relative = path.relative_to(SRC_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+        class FunctionCallVisitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.function_names: list[str] = []
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                self.function_names.append(node.name)
+                self.generic_visit(node)
+                self.function_names.pop()
+
+            visit_AsyncFunctionDef = visit_FunctionDef
+
+            def visit_Call(self, node: ast.Call) -> None:
+                function_name = self.function_names[-1] if self.function_names else None
+                calls.append((relative, function_name, node))
+                self.generic_visit(node)
+
+        calls: list[tuple[str, str | None, ast.Call]] = []
+        FunctionCallVisitor().visit(tree)
+        yield from calls
 
 
 def test_sdk_structural_writes_stay_in_the_gateway_backend() -> None:
@@ -117,6 +159,45 @@ def test_only_manager_and_gateway_create_mutation_gateways() -> None:
     assert violations == []
 
 
+def test_only_nonstructural_probes_construct_gatewayless_modifiers() -> None:
+    violations = []
+    for relative, function_name, call in _production_calls_in_functions():
+        constructor = call.func
+        constructor_name = (
+            constructor.id
+            if isinstance(constructor, ast.Name)
+            else constructor.attr
+            if isinstance(constructor, ast.Attribute)
+            else None
+        )
+        if constructor_name != "DeferredGraphModifier":
+            continue
+        if any(keyword.arg == "mutation_gateway" for keyword in call.keywords):
+            continue
+        if function_name in GATEWAYLESS_NONSTRUCTURAL_ENTRYPOINTS.get(
+            relative,
+            (),
+        ):
+            continue
+        violations.append(f"{relative}:{call.lineno}:{function_name}")
+    assert violations == []
+
+
+def test_low_level_cfg_mutation_helpers_are_private_to_the_gateway_backend() -> None:
+    violations = []
+    for path in SRC_ROOT.rglob("*.py"):
+        relative = path.relative_to(SRC_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module == "d810.hexrays.mutation.cfg_mutations"
+                and relative != "hexrays/mutation/deferred_modifier.py"
+            ):
+                violations.append(f"{relative}:{node.lineno}")
+    assert violations == []
+
+
 def test_production_has_no_adapter_local_serial_maps() -> None:
     forbidden = {"serial_map", "serial_remap", "ea_to_serial"}
     violations = []
@@ -124,8 +205,15 @@ def test_production_has_no_adapter_local_serial_maps() -> None:
         relative = path.relative_to(SRC_ROOT).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and node.id in forbidden:
-                violations.append(f"{relative}:{node.lineno}:{node.id}")
+            name = (
+                node.id
+                if isinstance(node, ast.Name)
+                else node.attr
+                if isinstance(node, ast.Attribute)
+                else None
+            )
+            if name is not None and name.lstrip("_") in forbidden:
+                violations.append(f"{relative}:{node.lineno}:{name}")
     assert violations == []
 
 
