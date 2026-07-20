@@ -182,6 +182,21 @@ EVENT_SUBSCRIBER_METHODS = frozenset({"on", "subscribe", "emit"})
 CLI_DECLARATION_METHODS = frozenset({"add_argument", "add_parser"})
 TEMPORARY_INTERNAL_PORTS: frozenset[str] = frozenset()
 _RECON_API_NAME = re.compile(r"^_?recon(?:_|$)|^Recon(?:_|[A-Z]|$)")
+_EMBEDDED_CAMEL_IDENTIFIER_RENAMES = tuple(
+    sorted(
+        {
+            **{
+                original: replacement
+                for original, replacement in NAME_RENAMES.items()
+                if "Recon" in original
+            },
+            "ReconPipeline": "AnalysisPipeline",
+            "NORMALIZED_RECON_CFG_SCOPE": "NORMALIZED_PREANALYSIS_CFG_SCOPE",
+        }.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+)
 _RECON_TEXT_TERM = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
     r"D810\.recon(?:\.[A-Za-z0-9_]+)*"
@@ -293,6 +308,8 @@ def _rewrite_identifier(value: str) -> str:
     direct = NAME_RENAMES.get(value)
     if direct is not None:
         return direct
+    for original, replacement in _EMBEDDED_CAMEL_IDENTIFIER_RENAMES:
+        value = value.replace(original, replacement)
     if "_recon_" in value:
         value = value.replace("_recon_", "_preanalysis_")
     if value.endswith("_recon"):
@@ -592,6 +609,13 @@ class _CandidateVisitor(ast.NodeVisitor):
                 detail=node.id,
                 rewriteable=True,
             )
+        elif _rewrite_identifier(node.id) != node.id:
+            self._add(
+                node,
+                kind="residual-recon-api",
+                detail=node.id,
+                rewriteable=True,
+            )
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         event_name = _event_name(node)
@@ -623,6 +647,13 @@ class _CandidateVisitor(ast.NodeVisitor):
                 detail=node.attr,
                 rewriteable=True,
             )
+        elif _rewrite_identifier(node.attr) != node.attr:
+            self._add(
+                node,
+                kind="residual-recon-api",
+                detail=node.attr,
+                rewriteable=True,
+            )
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -634,6 +665,13 @@ class _CandidateVisitor(ast.NodeVisitor):
                 rewriteable=True,
             )
         elif _RECON_API_NAME.match(node.name):
+            self._add(
+                node,
+                kind="residual-recon-api",
+                detail=node.name,
+                rewriteable=True,
+            )
+        elif _rewrite_identifier(node.name) != node.name:
             self._add(
                 node,
                 kind="residual-recon-api",
@@ -666,6 +704,13 @@ class _CandidateVisitor(ast.NodeVisitor):
                 rewriteable=True,
             )
         elif _RECON_API_NAME.match(node.name):
+            self._add(
+                node,
+                kind="residual-recon-api",
+                detail=node.name,
+                rewriteable=True,
+            )
+        elif _rewrite_identifier(node.name) != node.name:
             self._add(
                 node,
                 kind="residual-recon-api",
