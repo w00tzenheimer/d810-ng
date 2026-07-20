@@ -164,11 +164,19 @@ class MbaBlockIdentityIndex:
             instruction_eas = tuple(
                 ea for ea in sorted(anchors) if 0 <= ea < 0xFFFFFFFFFFFFFFFF
             )
-            if instruction_eas:
+            native_anchors = set(instruction_eas)
+            start_ea = int(getattr(block, "start", -1))
+            if 0 <= start_ea < 0xFFFFFFFFFFFFFFFF:
+                native_anchors.add(start_ea)
+            if native_anchors:
                 index._bind_new_native(
-                    StableBlockIdentity.from_instruction_eas(
-                        instruction_eas,
+                    StableBlockIdentity.from_intervals(
+                        (
+                            NativeEaInterval(ea, ea + 1)
+                            for ea in sorted(native_anchors)
+                        ),
                         native_key=native_key,
+                        exact_instruction_eas=instruction_eas,
                     ),
                     serial,
                 )

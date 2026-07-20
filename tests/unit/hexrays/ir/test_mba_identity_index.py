@@ -170,8 +170,13 @@ def test_builds_from_live_mba_without_retaining_it_and_abstains_on_cloned_eas() 
     unique_identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x402003, 0x402004),), native_key=NATIVE_KEY
     )
+    unique_start_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x402000, 0x402001),), native_key=NATIVE_KEY
+    )
     assert index.rebind_identity(cloned_identity).status is RebindStatus.AMBIGUOUS
     assert index.rebind_identity(unique_identity).block.serial == 2
+    assert index.rebind_identity(unique_start_identity).block.serial == 2
+    assert index.identity_for_serial(2).exact_instruction_eas == frozenset({0x402003})
     assert index.identity_for_serial(3) is None
     assert not hasattr(index, "mba")
 
