@@ -139,7 +139,8 @@ class _FakeAdapter:
     block_after_split: dict[int, BlockView] = field(default_factory=dict)
     split_should_raise: bool = False
 
-    def find_block_by_ea(self, ea):
+    def find_block(self, identity):
+        ea = identity.native_eas.intervals[0].start_ea
         # If a split has been recorded, prefer the post-split mapping.
         if self.split_calls and ea in self.block_after_split:
             return self.block_after_split[ea]

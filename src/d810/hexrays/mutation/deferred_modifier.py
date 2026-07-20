@@ -263,6 +263,11 @@ from d810.hexrays.mutation.insn_snapshot_materializer import (
 )
 from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
 from d810.hexrays.mutation.ir_translator import lift
+from d810.ir.block_identity import (
+    BlockHandleProvenance,
+    MbaBlockHandle,
+    StableBlockIdentity,
+)
 
 if TYPE_CHECKING:
     pass
@@ -2448,12 +2453,18 @@ class DeferredGraphModifier:
         target_serial: int | None = None,
         is_0_way: bool = False,
         verify: bool = True,
+        stable_identity: StableBlockIdentity | None = None,
+        handle_provenance: BlockHandleProvenance = BlockHandleProvenance.NATIVE,
     ) -> int | None:
         """Create a standalone block and return its live serial."""
-        ref_blk = self.mba.get_mblock(int(ref_serial))
+        resolved_ref_serial = self._resolve_serial(int(ref_serial))
+        if resolved_ref_serial is None:
+            return None
+        ref_blk = self.mba.get_mblock(int(resolved_ref_serial))
         if ref_blk is None:
             logger.warning("create_standalone_block: ref block %d not found", ref_serial)
             return None
+        old_qty = int(self.mba.qty)
         new_blk = create_standalone_block(
             ref_blk=ref_blk,
             blk_ins=list(blk_ins or ()),
@@ -2463,7 +2474,34 @@ class DeferredGraphModifier:
         )
         if new_blk is None:
             return None
+        created_handle = None
+        if stable_identity is not None:
+            gateway = self._mutation_gateway
+            if gateway is None:
+                self._begin_mutation_batch(
+                    serial_quantity=old_qty,
+                    kind=StructuralMutationKind.BLOCK_INSERT,
+                    description="create standalone native block",
+                )
+                gateway = self._mutation_gateway
+            if gateway is None:
+                raise RuntimeError("native block creation requires a mutation gateway")
+            created_handle = gateway.identity_index.create_native_handle(
+                stable_identity,
+                provenance=handle_provenance,
+            )
+        self._record_serial_insertion(
+            int(new_blk.serial),
+            old_qty,
+            created=created_handle,
+        )
         return int(new_blk.serial)
+
+    def commit_immediate_mutations(self) -> None:
+        """Commit structural writes performed by the immediate helper methods."""
+        gateway = self._mutation_gateway
+        if gateway is not None and gateway.active:
+            gateway.commit()
 
     def copy_block_keep_now(
         self,
@@ -2593,15 +2631,19 @@ class DeferredGraphModifier:
         force_adjacent: bool = False,
     ) -> int:
         """Insert an owned NOP block after a source block."""
-        source = self.mba.get_mblock(int(source_serial))
+        resolved_source_serial = self._resolve_serial(int(source_serial))
+        if resolved_source_serial is None:
+            raise RuntimeError(f"insert_nop_block: missing source {source_serial}")
+        source = self.mba.get_mblock(int(resolved_source_serial))
         if source is None:
             raise RuntimeError(f"insert_nop_block: missing source {source_serial}")
-        return int(
-            insert_nop_blk(
-                source,
-                force_adjacent=bool(force_adjacent),
-            ).serial
+        old_qty = int(self.mba.qty)
+        inserted = insert_nop_blk(
+            source,
+            force_adjacent=bool(force_adjacent),
         )
+        self._record_serial_insertion(int(inserted.serial), old_qty)
+        return int(inserted.serial)
 
     def redirect_one_way_now(
         self,
@@ -2766,6 +2808,13 @@ class DeferredGraphModifier:
                 }
             )
         )
+        started_batch = self._mutation_gateway is None or not self._mutation_gateway.active
+        if started_batch:
+            self._begin_mutation_batch(
+                serial_quantity=int(self.mba.qty),
+                kind=StructuralMutationKind.EDGE_REDIRECT,
+                description="restore pruned direct edge",
+            )
         insert_goto_instruction(
             source,
             int(target.serial),
@@ -2777,6 +2826,15 @@ class DeferredGraphModifier:
         if int(source.serial) not in {int(pred) for pred in target.predset}:
             target.predset.push_back(int(source.serial))
         self.mark_blocks_dirty_now(source, target)
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise RuntimeError("direct edge restoration requires a mutation gateway")
+        gateway.record_edge_redirect(
+            source=gateway.identity_index.handle_for_serial(int(source.serial)),
+            target=gateway.identity_index.handle_for_serial(int(target.serial)),
+        )
+        if started_batch:
+            gateway.commit()
         return True
 
     def collapse_proven_dispatcher_envelope_now(
@@ -6515,7 +6573,13 @@ class DeferredGraphModifier:
             raise RuntimeError(f"planned block serial {serial} is no longer bound")
         return int(resolved)
 
-    def _begin_mutation_batch(self, *, serial_quantity: int | None = None) -> None:
+    def _begin_mutation_batch(
+        self,
+        *,
+        serial_quantity: int | None = None,
+        kind: StructuralMutationKind = StructuralMutationKind.BLOCK_REPLACE,
+        description: str = "deferred graph modifier apply",
+    ) -> None:
         """Create the sole serial-binding authority for this apply batch."""
         if self._mutation_gateway is not None and self._mutation_gateway.active:
             return
@@ -6532,13 +6596,13 @@ class DeferredGraphModifier:
                 )
                 self._mutation_gateway = gateway
             gateway.begin_batch(
-                StructuralMutationKind.BLOCK_REPLACE,
+                kind,
                 serial_quantity=(
                     int(self.mba.qty)
                     if serial_quantity is None
                     else int(serial_quantity)
                 ),
-                description="deferred graph modifier apply",
+                description=description,
             )
         except Exception:
             logger.exception("failed to start mutation receipt batch")
@@ -6558,16 +6622,23 @@ class DeferredGraphModifier:
         self,
         insertion_serial: int,
         old_qty: int,
+        *,
+        created: MbaBlockHandle | None = None,
     ) -> None:
         """Synchronously publish the +1 insertion shift to the gateway."""
         if self._mutation_gateway is None or not self._mutation_gateway.active:
-            self._begin_mutation_batch(serial_quantity=int(old_qty))
+            self._begin_mutation_batch(
+                serial_quantity=int(old_qty),
+                kind=StructuralMutationKind.BLOCK_INSERT,
+                description="immediate block insertion",
+            )
         gateway = self._mutation_gateway
         if gateway is None:
             raise RuntimeError("serial insertion could not start mutation gateway")
         gateway.record_insert(
             insertion_serial=int(insertion_serial),
             returned_serial=int(insertion_serial),
+            created=created,
         )
 
     def _record_realized_serial(
