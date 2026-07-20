@@ -153,6 +153,7 @@ class BlockHandleProvenance(Enum):
     """Whether a generation-local block handle has native identity."""
 
     NATIVE = "native"
+    IMPORTED_NATIVE = "imported_native"
     SYNTHETIC = "synthetic"
 
 
@@ -175,7 +176,14 @@ class MbaBlockHandle:
         token = str(self.token)
         if not session_id or not token:
             raise ValueError("MBA handle requires non-empty session and token")
-        if self.provenance is BlockHandleProvenance.NATIVE and self.identity is None:
+        if (
+            self.provenance
+            in {
+                BlockHandleProvenance.NATIVE,
+                BlockHandleProvenance.IMPORTED_NATIVE,
+            }
+            and self.identity is None
+        ):
             raise ValueError("native MBA handle requires stable identity")
         if self.provenance is BlockHandleProvenance.SYNTHETIC and self.identity is not None:
             raise ValueError("synthetic MBA handle must not claim stable identity")
@@ -209,6 +217,22 @@ class MbaBlockHandle:
             token=token,
             identity=None,
             provenance=BlockHandleProvenance.SYNTHETIC,
+        )
+
+    @classmethod
+    def imported_native(
+        cls,
+        identity: StableBlockIdentity,
+        *,
+        session_id: str,
+        token: str,
+    ) -> MbaBlockHandle:
+        """Create a live handle for an imported translation of native code."""
+        return cls(
+            session_id=session_id,
+            token=token,
+            identity=identity,
+            provenance=BlockHandleProvenance.IMPORTED_NATIVE,
         )
 
 

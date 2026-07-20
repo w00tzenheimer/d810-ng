@@ -10,11 +10,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from d810.core.typing import Iterable
+from d810.core.typing import Iterable, Mapping
 from d810.ir.block_identity import (
     BlockHandleProvenance,
     BoundBlock,
     MbaBlockHandle,
+    NativeEaInterval,
     RebindResult,
     StableBlockIdentity,
     stable_block_identity_from_snapshot,
@@ -94,6 +95,53 @@ class MbaBlockIdentityIndex:
         return index
 
     @classmethod
+    def from_mba(
+        cls,
+        mba: object,
+        *,
+        generation: int,
+        evidence_generation: int | None = None,
+        session_id: str = "live-mba",
+    ) -> MbaBlockIdentityIndex:
+        """Build current bindings directly from a callback-local live MBA.
+
+        Only integer coordinates and serial-free identities are retained.  A
+        cloned native block produces a second binding for the same identity,
+        so later rebinding reports ``AMBIGUOUS`` instead of selecting the first
+        matching serial.
+        """
+        index = cls(
+            session_id=session_id,
+            generation=generation,
+            evidence_generation=evidence_generation,
+        )
+        quantity = int(getattr(mba, "qty", 0) or 0)
+        for serial in range(quantity):
+            block = mba.get_mblock(serial)
+            if block is None:
+                continue
+            anchors = {int(getattr(block, "start", -1) or -1)}
+            instruction = getattr(block, "head", None)
+            visited: set[int] = set()
+            while instruction is not None and id(instruction) not in visited:
+                visited.add(id(instruction))
+                anchors.add(int(getattr(instruction, "ea", -1) or -1))
+                instruction = getattr(instruction, "next", None)
+            identity_intervals = tuple(
+                NativeEaInterval(ea, ea + 1)
+                for ea in sorted(anchors)
+                if 0 <= ea < 0xFFFFFFFFFFFFFFFF
+            )
+            if identity_intervals:
+                index._bind_new_native(
+                    StableBlockIdentity.from_intervals(identity_intervals),
+                    serial,
+                )
+            else:
+                index._bind_new_synthetic(serial)
+        return index
+
+    @classmethod
     def from_flow_graph(
         cls,
         *,
@@ -101,14 +149,43 @@ class MbaBlockIdentityIndex:
         evidence_generation: int | None = None,
         flow_graph: FlowGraph,
         session_id: str | None = None,
+        imported_native_eas_by_serial: Mapping[int, Iterable[int]] | None = None,
     ) -> MbaBlockIdentityIndex:
-        """Build bindings from a callback-local MBA lift without retaining it."""
+        """Build callback-local bindings without retaining the MBA lift.
+
+        Imported instructions often carry synthetic current-MBA EAs after a
+        maturity transition.  Their importer-published native origins are the
+        portable identity authority and deliberately replace, rather than
+        merge with, the synthetic snapshot coordinates.
+        """
         index = cls(
             session_id=session_id or f"flowgraph:{int(flow_graph.func_ea):X}",
             generation=generation,
             evidence_generation=evidence_generation,
         )
+        imported_native_eas_by_serial = imported_native_eas_by_serial or {}
         for serial, block in flow_graph.blocks.items():
+            imported_anchors = tuple(
+                sorted(
+                    {
+                        int(ea)
+                        for ea in imported_native_eas_by_serial.get(
+                            int(serial), ()
+                        )
+                        if 0 <= int(ea) < 0xFFFFFFFFFFFFFFFF
+                    }
+                )
+            )
+            if imported_anchors:
+                identity = StableBlockIdentity.from_intervals(
+                    NativeEaInterval(ea, ea + 1) for ea in imported_anchors
+                )
+                index._bind_new_native(
+                    identity,
+                    int(serial),
+                    provenance=BlockHandleProvenance.IMPORTED_NATIVE,
+                )
+                continue
             identity = stable_block_identity_from_snapshot(block)
             if identity is None:
                 index._bind_new_synthetic(int(serial))
@@ -148,6 +225,7 @@ class MbaBlockIdentityIndex:
         identity: StableBlockIdentity | None,
         *,
         token: str | None = None,
+        provenance: BlockHandleProvenance = BlockHandleProvenance.NATIVE,
     ) -> MbaBlockHandle:
         token = token or self._new_token(
             "native" if identity is not None else "synthetic"
@@ -159,12 +237,21 @@ class MbaBlockIdentityIndex:
                 session_id=self.session_id,
                 token=token,
             )
+        elif provenance is BlockHandleProvenance.IMPORTED_NATIVE:
+            handle = MbaBlockHandle.imported_native(
+                identity,
+                session_id=self.session_id,
+                token=token,
+            )
         else:
+            if provenance is not BlockHandleProvenance.NATIVE:
+                raise ValueError("native identity requires native provenance")
             handle = MbaBlockHandle.native(
                 identity,
                 session_id=self.session_id,
                 token=token,
             )
+        if identity is not None:
             self._tokens_by_identity[identity].add(token)
         self._handles_by_token[token] = handle
         return handle
@@ -204,8 +291,10 @@ class MbaBlockIdentityIndex:
         self,
         identity: StableBlockIdentity,
         serial: int,
+        *,
+        provenance: BlockHandleProvenance = BlockHandleProvenance.NATIVE,
     ) -> MbaBlockHandle:
-        handle = self._new_handle(identity)
+        handle = self._new_handle(identity, provenance=provenance)
         self._bind(handle, serial)
         return handle
 
@@ -214,9 +303,24 @@ class MbaBlockIdentityIndex:
         self._bind(handle, serial)
         return handle
 
-    def create_native_handle(self, identity: StableBlockIdentity) -> MbaBlockHandle:
+    def create_native_handle(
+        self,
+        identity: StableBlockIdentity,
+        *,
+        provenance: BlockHandleProvenance = BlockHandleProvenance.NATIVE,
+    ) -> MbaBlockHandle:
         """Allocate an unbound native handle for a proved structural mutation."""
-        return self._new_handle(identity)
+        return self._new_handle(identity, provenance=provenance)
+
+    def create_imported_native_handle(
+        self,
+        identity: StableBlockIdentity,
+    ) -> MbaBlockHandle:
+        """Allocate an exact live handle for an imported native translation."""
+        return self.create_native_handle(
+            identity,
+            provenance=BlockHandleProvenance.IMPORTED_NATIVE,
+        )
 
     def create_synthetic_handle(self) -> MbaBlockHandle:
         """Allocate an unbound transaction-only handle for synthetic CFG work."""
@@ -232,6 +336,18 @@ class MbaBlockIdentityIndex:
                 handle = self._bind_new_synthetic(serial)
                 token = handle.token
             self._baseline_tokens[serial] = token
+
+    def begin_transaction(self, quantity: int) -> None:
+        """Rebase planned coordinates onto the current live MBA serials.
+
+        Baseline tokens are meaningful only inside one mutation transaction.
+        After a committed insertion, the same integer denotes a current live
+        block in the next transaction, not the prior transaction's planned
+        coordinate.  Rebuild the map at every batch boundary so serial
+        resolution cannot replay an obsolete shift.
+        """
+        self._baseline_tokens.clear()
+        self.ensure_serial_space(int(quantity))
 
     def identity_for_serial(self, serial: int) -> StableBlockIdentity | None:
         handle = self.handle_for_serial(serial)
@@ -273,13 +389,36 @@ class MbaBlockIdentityIndex:
             return RebindResult.ambiguous()
         return RebindResult.bound(current[0])
 
-    def rebind_identity(self, identity: StableBlockIdentity) -> RebindResult:
+    def _tokens_for_identity(
+        self,
+        identity: StableBlockIdentity,
+        provenance: BlockHandleProvenance | None,
+    ) -> tuple[str, ...]:
+        return tuple(
+            token
+            for token in self._tokens_by_identity.get(identity, ())
+            if provenance is None
+            or self._handles_by_token[token].provenance is provenance
+        )
+
+    def _rebind_identity(
+        self,
+        identity: StableBlockIdentity,
+        *,
+        provenance: BlockHandleProvenance | None,
+    ) -> RebindResult:
         """Rebind via exact identity, containment, then unique overlap."""
-        exact = self._bound_for_tokens(self._tokens_by_identity.get(identity, ()))
+        exact = self._bound_for_tokens(
+            self._tokens_for_identity(identity, provenance)
+        )
         if exact.block is not None or exact.status.name == "AMBIGUOUS":
             return exact
 
-        current = tuple(self.serials_by_identity)
+        current = tuple(
+            candidate
+            for candidate in self.serials_by_identity
+            if self._tokens_for_identity(candidate, provenance)
+        )
         contained = tuple(
             candidate
             for candidate in current
@@ -289,7 +428,9 @@ class MbaBlockIdentityIndex:
             )
         )
         if len(contained) == 1:
-            return self._bound_for_tokens(self._tokens_by_identity[contained[0]])
+            return self._bound_for_tokens(
+                self._tokens_for_identity(contained[0], provenance)
+            )
         if len(contained) > 1:
             return RebindResult.ambiguous()
 
@@ -307,7 +448,104 @@ class MbaBlockIdentityIndex:
         best = tuple(candidate for score, candidate in scored if score == best_score)
         if len(best) != 1:
             return RebindResult.ambiguous()
-        return self._bound_for_tokens(self._tokens_by_identity[best[0]])
+        return self._bound_for_tokens(
+            self._tokens_for_identity(best[0], provenance)
+        )
+
+    def rebind_identity(self, identity: StableBlockIdentity) -> RebindResult:
+        """Rebind any unique current translation of portable native identity."""
+        return self._rebind_identity(identity, provenance=None)
+
+    def rebind_imported_identity(
+        self,
+        identity: StableBlockIdentity,
+    ) -> RebindResult:
+        """Rebind only a unique importer-published native translation."""
+        return self._rebind_identity(
+            identity,
+            provenance=BlockHandleProvenance.IMPORTED_NATIVE,
+        )
+
+    def rebind_imported_region_entry(
+        self,
+        region: StableBlockIdentity,
+    ) -> RebindResult:
+        """Bind the imported block owning a region's first surviving anchor.
+
+        A handler's exact entry instruction can disappear during LOCOPT while
+        later instructions from the same resolver-owned native corridor remain
+        in the regenerated MBA.  Select the owner of the earliest surviving
+        native anchor in canonical region order.  Duplicate ownership of that
+        anchor is ambiguous and never falls through to a later address.
+        """
+        tokens_by_anchor: dict[int, set[str]] = defaultdict(set)
+        for identity in self.serials_by_identity:
+            tokens = tuple(
+                token
+                for token in self._tokens_for_identity(
+                    identity,
+                    BlockHandleProvenance.IMPORTED_NATIVE,
+                )
+                if self.resolve(self._handles_by_token[token]) is not None
+            )
+            if not tokens:
+                continue
+            for interval in identity.native_eas.intervals:
+                anchor_ea = int(interval.start_ea)
+                if region.native_eas.contains(anchor_ea):
+                    tokens_by_anchor[anchor_ea].update(tokens)
+
+        for interval in region.native_eas.intervals:
+            anchors = tuple(
+                anchor_ea
+                for anchor_ea in tokens_by_anchor
+                if interval.start_ea <= anchor_ea < interval.end_ea
+            )
+            if anchors:
+                return self._bound_for_tokens(
+                    tokens_by_anchor[min(anchors)]
+                )
+        return RebindResult.missing()
+
+    def rebind_imported_region_exit(
+        self,
+        region: StableBlockIdentity,
+    ) -> RebindResult:
+        """Bind the imported block owning a region's last surviving anchor.
+
+        Native handler replay may prove an exit instruction that LOCOPT folds
+        away.  The latest surviving imported anchor in the same resolver-owned
+        region is the only portable replacement for that mutation-time source.
+        Duplicate ownership of that latest anchor remains ambiguous.
+        """
+        tokens_by_anchor: dict[int, set[str]] = defaultdict(set)
+        for identity in self.serials_by_identity:
+            tokens = tuple(
+                token
+                for token in self._tokens_for_identity(
+                    identity,
+                    BlockHandleProvenance.IMPORTED_NATIVE,
+                )
+                if self.resolve(self._handles_by_token[token]) is not None
+            )
+            if not tokens:
+                continue
+            for interval in identity.native_eas.intervals:
+                anchor_ea = int(interval.start_ea)
+                if region.native_eas.contains(anchor_ea):
+                    tokens_by_anchor[anchor_ea].update(tokens)
+
+        for interval in reversed(region.native_eas.intervals):
+            anchors = tuple(
+                anchor_ea
+                for anchor_ea in tokens_by_anchor
+                if interval.start_ea <= anchor_ea < interval.end_ea
+            )
+            if anchors:
+                return self._bound_for_tokens(
+                    tokens_by_anchor[max(anchors)]
+                )
+        return RebindResult.missing()
 
     def rebind(self, handle: MbaBlockHandle) -> RebindResult:
         """Rebind native identity; synthetic handles never cross a rebuild."""
@@ -315,6 +553,8 @@ class MbaBlockIdentityIndex:
             return RebindResult.stale_generation()
         if handle.identity is None:
             return RebindResult.missing()
+        if handle.provenance is BlockHandleProvenance.IMPORTED_NATIVE:
+            return self.rebind_imported_identity(handle.identity)
         return self.rebind_identity(handle.identity)
 
     def identity_at_native_ea(self, anchor_ea: int) -> StableBlockIdentity | None:
@@ -381,10 +621,17 @@ class MbaBlockIdentityIndex:
         self._bind(created, int(returned_serial))
 
     def mark_removed(self, handle: MbaBlockHandle) -> None:
+        """Stale one removed block and compact all later live coordinates."""
         bound = self.resolve(handle)
         if bound is not None:
+            removed_serial = int(bound.serial)
             self._serial_by_token.pop(handle.token, None)
-            self._refresh_primary_serial(bound.serial)
+            for token, serial in tuple(self._serial_by_token.items()):
+                if serial > removed_serial:
+                    self._serial_by_token[token] = serial - 1
+            self._token_by_serial.clear()
+            for serial in set(self._serial_by_token.values()):
+                self._refresh_primary_serial(serial)
         self._stale_tokens.add(handle.token)
 
     def advance_generation(self) -> int:
@@ -392,36 +639,60 @@ class MbaBlockIdentityIndex:
         self.generation += 1
         return self.generation
 
-    def refresh_from_flow_graph(self, flow_graph: FlowGraph) -> None:
-        """Discard unprovable handles and rebuild native bindings from a fresh lift."""
+    def _replace_with_rebuilt(self, rebuilt: MbaBlockIdentityIndex) -> None:
+        """Install rebuilt bindings while preserving uniquely proved handles."""
         previous_native = {
             identity: tuple(
                 token for token in tokens if self.resolve(self._handles_by_token[token])
             )
             for identity, tokens in self._tokens_by_identity.items()
         }
-        rebuilt = type(self).from_flow_graph(
-            generation=self.generation,
-            evidence_generation=self.evidence_generation,
-            flow_graph=flow_graph,
-            session_id=self.session_id,
-        )
+        previous_tokens = set(self._handles_by_token)
+        preserved_tokens: set[str] = set()
         for identity, serials in rebuilt.serials_by_identity.items():
             old_tokens = previous_native.get(identity, ())
             if len(old_tokens) == 1 and len(serials) == 1:
                 handle = self._handles_by_token[old_tokens[0]]
+                replacement_token = rebuilt._token_by_serial[serials[0]]
+                rebuilt._serial_by_token.pop(replacement_token, None)
+                rebuilt._handles_by_token.pop(replacement_token, None)
                 rebuilt._handles_by_token[handle.token] = handle
-                rebuilt._tokens_by_identity[identity].discard(
-                    rebuilt._token_by_serial[serials[0]]
-                )
+                rebuilt._tokens_by_identity[identity].discard(replacement_token)
+                rebuilt._tokens_by_identity[identity].add(handle.token)
                 rebuilt._token_by_serial.pop(serials[0], None)
                 rebuilt._bind(handle, serials[0])
-        self._stale_tokens.update(self._handles_by_token)
+                preserved_tokens.add(handle.token)
+        stale_tokens = self._stale_tokens | (previous_tokens - preserved_tokens)
+        stale_tokens.difference_update(rebuilt._handles_by_token)
         self._handles_by_token = rebuilt._handles_by_token
         self._serial_by_token = rebuilt._serial_by_token
         self._token_by_serial = rebuilt._token_by_serial
         self._tokens_by_identity = rebuilt._tokens_by_identity
+        self._stale_tokens = stale_tokens
+        self._next_token = max(self._next_token, rebuilt._next_token)
         self._baseline_tokens.clear()
+
+    def refresh_from_mba(self, mba: object) -> None:
+        """Rebuild bindings from a callback-local MBA after an unknown SDK effect."""
+        self._replace_with_rebuilt(
+            type(self).from_mba(
+                mba,
+                generation=self.generation,
+                evidence_generation=self.evidence_generation,
+                session_id=self.session_id,
+            )
+        )
+
+    def refresh_from_flow_graph(self, flow_graph: FlowGraph) -> None:
+        """Discard unprovable handles and rebuild native bindings from a fresh lift."""
+        self._replace_with_rebuilt(
+            type(self).from_flow_graph(
+                generation=self.generation,
+                evidence_generation=self.evidence_generation,
+                flow_graph=flow_graph,
+                session_id=self.session_id,
+            )
+        )
 
 
 __all__ = ["MbaBlockIdentityIndex"]
