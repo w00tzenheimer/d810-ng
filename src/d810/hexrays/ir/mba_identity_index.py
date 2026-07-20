@@ -614,8 +614,15 @@ class MbaBlockIdentityIndex:
         original_bound = self.resolve(original)
         if original_bound is None:
             raise ValueError("cannot split a stale or foreign handle")
+        tail_serial = int(returned_tail_serial)
+        for token, serial in tuple(self._serial_by_token.items()):
+            if token != original.token and serial >= tail_serial:
+                self._serial_by_token[token] = serial + 1
+        self._token_by_serial.clear()
+        for serial in set(self._serial_by_token.values()):
+            self._refresh_primary_serial(serial)
         self._bind(retained, original_bound.serial)
-        self._bind(created_tail, int(returned_tail_serial))
+        self._bind(created_tail, tail_serial)
         self._stale_tokens.add(original.token)
         self._refresh_primary_serial(original_bound.serial)
 
