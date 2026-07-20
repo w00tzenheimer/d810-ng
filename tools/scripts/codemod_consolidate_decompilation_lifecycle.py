@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import json
 import os
 import re
 import sys
 import tempfile
+import tokenize
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -28,8 +30,35 @@ import libcst as cst
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SCOPES = ("src", "tests", "tools")
-SCAN_SUFFIXES = frozenset({".py", ".json", ".toml"})
+DEFAULT_SCOPES = ("src", "tests", "tools", ".github")
+PYTHON_SUFFIXES = frozenset({".py", ".pyi"})
+STRUCTURED_CONFIG_SUFFIXES = frozenset({".json", ".toml"})
+SCAN_SUFFIXES = frozenset(
+    {
+        *PYTHON_SUFFIXES,
+        *STRUCTURED_CONFIG_SUFFIXES,
+        ".md",
+        ".rst",
+        ".txt",
+        ".yaml",
+        ".yml",
+        ".ini",
+        ".cfg",
+        ".pyx",
+        ".pxd",
+        ".pxi",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".ll",
+    }
+)
+PLAIN_TEXT_SUFFIXES = SCAN_SUFFIXES - PYTHON_SUFFIXES - STRUCTURED_CONFIG_SUFFIXES
+EXCLUDED_ROOT_DOCUMENTS = frozenset({"AGENTS.md", "TODO.md"})
 SELF_TEST_FILE = f"test_{Path(__file__).stem}.py"
 SELF_SCRIPT = Path(__file__).resolve()
 SKIP_PARTS = frozenset(
@@ -77,8 +106,6 @@ NAME_RENAMES = {
     "register_default_recon_collectors": "register_default_preanalysis_collectors",
     "register_default_fact_collectors": "register_default_preanalysis_fact_collectors",
     "save_recon_result": "save_preanalysis_result",
-    "recon_phase": "preanalysis_phase",
-    "_recon_phase": "_preanalysis_phase",
     "recon_runtime": "analysis_runtime",
     "_recon_runtime": "_analysis_runtime",
     "_recon_bundle": "_analysis_bundle",
@@ -147,10 +174,32 @@ ADDRESS_KEYED_RESOLVER_APIS = frozenset(
 )
 MANUAL_NAMES = frozenset({"FlowGraphReadySubscriber"})
 MANUAL_RUNTIME_METHODS = frozenset({"reset_for_func", "analyze_and_persist"})
+MANUAL_CONSTRUCTOR_KEYWORDS = frozenset({"recon_phase"})
 EVENT_SUBSCRIBER_METHODS = frozenset({"on", "subscribe", "emit"})
 CLI_DECLARATION_METHODS = frozenset({"add_argument", "add_parser"})
-TEMPORARY_INTERNAL_PORTS = frozenset({"template_maturity"})
+TEMPORARY_INTERNAL_PORTS: frozenset[str] = frozenset()
 _RECON_API_NAME = re.compile(r"^_?recon(?:_|$)|^Recon(?:_|[A-Z]|$)")
+_RECON_TEXT_TERM = re.compile(
+    r"(?<![A-Za-z0-9_])(?:"
+    r"D810\.recon(?:\.[A-Za-z0-9_]+)*"
+    r"|d810-recon(?:-[A-Za-z0-9_-]+)*"
+    r"|--recon(?:-[A-Za-z0-9_-]+)*"
+    r"|Recon(?:[A-Z_][A-Za-z0-9_]*)?(?![a-z])"
+    r"|_?recon(?:[_-][A-Za-z0-9_-]+)?"
+    r")(?![A-Za-z0-9_])"
+)
+_RECON_PATH_TERM = re.compile(r"(?:^|[_.-])recon(?:[_.-]|$)")
+_PYTHON_REWRITE_NEEDLES = tuple(
+    sorted(
+        {
+            *MODULE_RENAMES,
+            *NAME_RENAMES,
+            *CLI_RENAMES,
+            *LITERAL_RENAMES,
+            *(f"DecompilationEvent.{name}" for name in EVENT_RENAMES),
+        }
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +216,39 @@ class Candidate:
 class RewriteResult:
     text: str
     changed: bool
+
+
+def _residual_text_candidates(
+    text: str,
+    *,
+    relative_path: str,
+    start_line: int = 1,
+    start_column: int = 0,
+) -> list[Candidate]:
+    """Inventory legacy lifecycle terminology in prose and string content."""
+    candidates: list[Candidate] = []
+    for match in _RECON_TEXT_TERM.finditer(text):
+        prefix = text[: match.start()]
+        line_offset = prefix.count("\n")
+        if line_offset:
+            column = match.start() - prefix.rfind("\n") - 1
+        else:
+            column = start_column + match.start()
+        candidates.append(
+            Candidate(
+                path=relative_path,
+                line=start_line + line_offset,
+                column=column,
+                kind="residual-recon-text",
+                detail=match.group(0),
+                rewriteable=False,
+            )
+        )
+    return candidates
+
+
+def _module_has_recon_term(module: str) -> bool:
+    return any(_RECON_PATH_TERM.search(part) for part in module.split("."))
 
 
 def _node_code(node: cst.CSTNode) -> str:
@@ -216,7 +298,9 @@ class _LifecycleRenameTransformer(cst.CSTTransformer):
                 continue
             aliases.append(alias.with_changes(name=cst.parse_expression(replacement)))
             changed = True
-        return updated_node.with_changes(names=tuple(aliases)) if changed else updated_node
+        return (
+            updated_node.with_changes(names=tuple(aliases)) if changed else updated_node
+        )
 
     def leave_ImportFrom(
         self,
@@ -274,6 +358,8 @@ class _LifecycleRenameTransformer(cst.CSTTransformer):
 
 def rewrite_text(source: str) -> RewriteResult:
     """Return a formatting-preserving rewrite for declared safe substitutions."""
+    if not any(needle in source for needle in _PYTHON_REWRITE_NEEDLES):
+        return RewriteResult(text=source, changed=False)
     module = cst.parse_module(source)
     rewritten = module.visit(_LifecycleRenameTransformer()).code
     return RewriteResult(text=rewritten, changed=rewritten != source)
@@ -335,10 +421,10 @@ def _is_function_ea_argument(node: ast.AST) -> bool:
     """Recognize the former function-EA facade without flagging session calls."""
     if isinstance(node, ast.Constant) and isinstance(node.value, int):
         return True
-    return (
-        isinstance(node, ast.Name)
-        and node.id.lstrip("_").lower() in {"function_ea", "func_ea"}
-    )
+    return isinstance(node, ast.Name) and node.id.lstrip("_").lower() in {
+        "function_ea",
+        "func_ea",
+    }
 
 
 class _CandidateVisitor(ast.NodeVisitor):
@@ -367,6 +453,13 @@ class _CandidateVisitor(ast.NodeVisitor):
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = node.module or ""
+        if module not in MODULE_RENAMES and _module_has_recon_term(module):
+            self._add(
+                node,
+                kind="residual-recon-api",
+                detail=module,
+                rewriteable=False,
+            )
         for alias in node.names:
             if alias.name in NAME_RENAMES or module in MODULE_RENAMES:
                 self._add(
@@ -391,6 +484,13 @@ class _CandidateVisitor(ast.NodeVisitor):
                     kind="legacy-import",
                     detail=f"import {alias.name}",
                     rewriteable=True,
+                )
+            elif _module_has_recon_term(alias.name):
+                self._add(
+                    node,
+                    kind="residual-recon-api",
+                    detail=alias.name,
+                    rewriteable=False,
                 )
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -562,8 +662,7 @@ class _CandidateVisitor(ast.NodeVisitor):
                             rewriteable=False,
                         )
                     elif (
-                        node.func.attr == "add_parser"
-                        and argument.value in CLI_RENAMES
+                        node.func.attr == "add_parser" and argument.value in CLI_RENAMES
                     ):
                         self._add(
                             argument,
@@ -578,6 +677,13 @@ class _CandidateVisitor(ast.NodeVisitor):
                     kind="constructor-injection",
                     detail=keyword.arg,
                     rewriteable=True,
+                )
+            elif keyword.arg in MANUAL_CONSTRUCTOR_KEYWORDS:
+                self._add(
+                    keyword.value,
+                    kind="manual-lifecycle-owner",
+                    detail=keyword.arg,
+                    rewriteable=False,
                 )
             elif keyword.arg in TEMPORARY_INTERNAL_PORTS:
                 self._add(
@@ -690,15 +796,94 @@ def _scan_toml_config(path: Path, *, root: Path) -> list[Candidate]:
     return candidates
 
 
+def _scan_python_prose(
+    source: str,
+    *,
+    relative_path: str,
+) -> list[Candidate]:
+    """Inventory comments and physical string tokens with exact line anchors."""
+    candidates: list[Candidate] = []
+    prose_token_types = {tokenize.COMMENT, tokenize.STRING}
+    fstring_middle = getattr(tokenize, "FSTRING_MIDDLE", None)
+    if fstring_middle is not None:
+        prose_token_types.add(fstring_middle)
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        for token in tokens:
+            if token.type not in prose_token_types:
+                continue
+            if token.type == tokenize.STRING:
+                try:
+                    value = ast.literal_eval(token.string)
+                except (SyntaxError, ValueError):
+                    value = None
+                if isinstance(value, str) and (
+                    value in LITERAL_RENAMES
+                    or _rewrite_dotted_symbol_literal(value) != value
+                ):
+                    continue
+            candidates.extend(
+                _residual_text_candidates(
+                    token.string,
+                    relative_path=relative_path,
+                    start_line=token.start[0],
+                    start_column=token.start[1],
+                )
+            )
+    except (IndentationError, tokenize.TokenError):
+        return candidates
+    return candidates
+
+
+def _path_candidate(path: Path, *, root: Path) -> Candidate | None:
+    relative_path = _relative_path(path, root)
+    for part in Path(relative_path).parts:
+        if _RECON_PATH_TERM.search(part):
+            return Candidate(
+                path=relative_path,
+                line=0,
+                column=0,
+                kind="residual-recon-path",
+                detail=part,
+                rewriteable=False,
+            )
+    return None
+
+
 def scan_paths(paths: Sequence[Path], *, root: Path) -> list[Candidate]:
     """Classify every requested migration candidate without mutating a file."""
     candidates: list[Candidate] = []
     for path in paths:
+        path_candidate = _path_candidate(path, root=root)
+        if path_candidate is not None:
+            candidates.append(path_candidate)
         if path.suffix == ".json":
             candidates.extend(_scan_json_config(path, root=root))
             continue
         if path.suffix == ".toml":
             candidates.extend(_scan_toml_config(path, root=root))
+            continue
+        if path.suffix in PLAIN_TEXT_SUFFIXES:
+            try:
+                source = path.read_text(encoding="utf-8")
+            except OSError as error:
+                candidates.append(
+                    Candidate(
+                        path=_relative_path(path, root),
+                        line=0,
+                        column=0,
+                        kind="unparseable-source",
+                        detail=str(error),
+                        rewriteable=False,
+                    )
+                )
+            else:
+                candidates.extend(
+                    _residual_text_candidates(
+                        source,
+                        relative_path=_relative_path(path, root),
+                    )
+                )
             continue
         try:
             source = path.read_text(encoding="utf-8")
@@ -718,6 +903,12 @@ def scan_paths(paths: Sequence[Path], *, root: Path) -> list[Candidate]:
         visitor = _CandidateVisitor(_relative_path(path, root))
         visitor.visit(tree)
         candidates.extend(visitor.candidates)
+        candidates.extend(
+            _scan_python_prose(
+                source,
+                relative_path=_relative_path(path, root),
+            )
+        )
     return sorted(
         candidates,
         key=lambda item: (item.path, item.line, item.column, item.kind, item.detail),
@@ -739,11 +930,17 @@ def _iter_scan_files(path: Path) -> Iterable[Path]:
 
 def discover_paths(root: Path, requested: Sequence[str]) -> list[Path]:
     """Return a stable, de-duplicated set of source and config files to inspect."""
-    roots = (
-        [*(root / item for item in DEFAULT_SCOPES), root / "pyproject.toml"]
-        if not requested
-        else [Path(item).resolve() for item in requested]
-    )
+    if requested:
+        roots = [Path(item).resolve() for item in requested]
+    else:
+        root_files = [
+            path
+            for path in root.iterdir()
+            if path.is_file()
+            and path.suffix in SCAN_SUFFIXES
+            and path.name not in EXCLUDED_ROOT_DOCUMENTS
+        ]
+        roots = [*(root / item for item in DEFAULT_SCOPES), *root_files]
     discovered = {
         path.resolve()
         for item in roots
@@ -773,13 +970,34 @@ def _report_payload(root: Path, candidates: Sequence[Candidate]) -> dict[str, ob
     tool_candidates = [
         candidate for candidate in candidates if candidate.path.startswith("tools/")
     ]
+    source_candidates = [
+        candidate for candidate in candidates if candidate.path.startswith("src/")
+    ]
+    test_candidates = [
+        candidate for candidate in candidates if candidate.path.startswith("tests/")
+    ]
+    documentation_candidates = [
+        candidate
+        for candidate in candidates
+        if Path(candidate.path).suffix in {".md", ".rst", ".txt"}
+    ]
+    configuration_candidates = [
+        candidate
+        for candidate in candidates
+        if Path(candidate.path).suffix
+        in {".json", ".toml", ".yaml", ".yml", ".ini", ".cfg"}
+    ]
     return {
         "schema_version": 1,
-        "root": str(root),
+        "root": ".",
         "summary": {
             **_summary(candidates),
             "production": _summary(production_candidates),
+            "source": _summary(source_candidates),
+            "tests": _summary(test_candidates),
             "tools": _summary(tool_candidates),
+            "documentation": _summary(documentation_candidates),
+            "configuration": _summary(configuration_candidates),
         },
         "candidates": [asdict(candidate) for candidate in candidates],
     }
@@ -788,9 +1006,7 @@ def _report_payload(root: Path, candidates: Sequence[Candidate]) -> dict[str, ob
 def _stage_text(path: Path, text: str) -> Path:
     """Write one same-directory temporary file with the destination's mode."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    destination_mode = (
-        path.stat().st_mode & 0o7777 if path.exists() else None
-    )
+    destination_mode = path.stat().st_mode & 0o7777 if path.exists() else None
     fd, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.codemod-",
         suffix=".tmp",
@@ -947,8 +1163,10 @@ def verify_manifest(
         path = item.get("path")
         detail = item.get("detail")
         maximum = item.get("maximum")
-        if not isinstance(path, str) or not isinstance(detail, str) or not isinstance(
-            maximum, int
+        if (
+            not isinstance(path, str)
+            or not isinstance(detail, str)
+            or not isinstance(maximum, int)
         ):
             errors.append(
                 "direct_runtime allowed production entry needs path/detail/maximum"
@@ -1098,8 +1316,10 @@ def verify_manifest(
         path = bridge.get("path")
         kind = bridge.get("kind")
         details = bridge.get("details")
-        if not isinstance(path, str) or not isinstance(kind, str) or not isinstance(
-            details, list
+        if (
+            not isinstance(path, str)
+            or not isinstance(kind, str)
+            or not isinstance(details, list)
         ):
             errors.append("manifest bridge requires path, kind, and details")
             continue
@@ -1113,8 +1333,7 @@ def verify_manifest(
         )
         if bridge_count == 0 and (root / path).exists():
             errors.append(
-                "bridge has no remaining legacy candidates and must be removed: "
-                f"{path}"
+                f"bridge has no remaining legacy candidates and must be removed: {path}"
             )
     return errors
 
@@ -1125,12 +1344,14 @@ def _rewrite_candidates(paths: Sequence[Path]) -> list[tuple[Path, RewriteResult
         if path.suffix not in SCAN_SUFFIXES:
             continue
         source = path.read_text(encoding="utf-8")
-        if path.suffix == ".py":
+        if path.suffix in PYTHON_SUFFIXES:
             result = rewrite_text(source)
         elif path.suffix == ".json":
             result = rewrite_json_text(source)
-        else:
+        elif path.suffix == ".toml":
             result = rewrite_toml_text(source)
+        else:
+            result = RewriteResult(text=source, changed=False)
         if result.changed:
             rewrites.append((path, result))
     return rewrites
@@ -1148,7 +1369,9 @@ def apply_rewrites(rewrites: Sequence[tuple[Path, RewriteResult]]) -> None:
     try:
         for path, result in rewrites:
             original = path.read_text(encoding="utf-8")
-            staged.append((path, _stage_text(path, result.text), _stage_text(path, original)))
+            staged.append(
+                (path, _stage_text(path, result.text), _stage_text(path, original))
+            )
     except Exception:
         for _path, replacement, backup in staged:
             replacement.unlink(missing_ok=True)
@@ -1191,7 +1414,9 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="Verify the report against a lifecycle migration manifest",
     )
-    parser.add_argument("--apply", action="store_true", help="Write only safe substitutions")
+    parser.add_argument(
+        "--apply", action="store_true", help="Write only safe substitutions"
+    )
     parser.add_argument(
         "--test-update",
         action="append",
@@ -1211,7 +1436,11 @@ def _validate_test_updates(root: Path, test_updates: Sequence[Path]) -> str | No
             relative = path.relative_to(root)
         except ValueError:
             return f"test update is outside --root: {test_update}"
-        if not path.is_file() or path.suffix != ".py" or not relative.parts[:1] == ("tests",):
+        if (
+            not path.is_file()
+            or path.suffix != ".py"
+            or not relative.parts[:1] == ("tests",)
+        ):
             return f"test update must be an existing Python file under tests/: {test_update}"
     return None
 
@@ -1222,13 +1451,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     paths = discover_paths(root, args.paths)
     candidates = scan_paths(paths, root=root)
     payload = _report_payload(root, candidates)
-    if args.report is not None:
-        _write_report(args.report.resolve(), payload)
 
     manifest_errors: list[str] = []
     if args.manifest is not None:
         try:
-            manifest_payload = json.loads(args.manifest.resolve().read_text(encoding="utf-8"))
+            manifest_payload = json.loads(
+                args.manifest.resolve().read_text(encoding="utf-8")
+            )
         except (OSError, ValueError, json.JSONDecodeError) as error:
             manifest_errors = [f"could not read manifest {args.manifest}: {error}"]
         else:
@@ -1249,6 +1478,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"manifest violation: {error}", file=sys.stderr)
         return 2
 
+    if args.report is not None:
+        _write_report(args.report.resolve(), payload)
+
     unknown = payload["summary"]["unknown"]
     if args.apply and unknown:
         print(
@@ -1261,7 +1493,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.apply:
         test_update_error = _validate_test_updates(root, args.test_update)
         if test_update_error is not None:
-            print(f"refusing --apply: {test_update_error}; no files were written", file=sys.stderr)
+            print(
+                f"refusing --apply: {test_update_error}; no files were written",
+                file=sys.stderr,
+            )
             return 2
 
     rewrites = _rewrite_candidates(paths)
