@@ -135,7 +135,7 @@ class MbaMutationGateway:
         if self.active:
             raise RuntimeError("a structural mutation batch is already active")
         if serial_quantity is not None:
-            self.identity_index.ensure_serial_space(int(serial_quantity))
+            self.identity_index.begin_transaction(int(serial_quantity))
         self._active_kind = kind
         self._active_description = str(description)
         self._affected_identities.clear()
@@ -152,10 +152,16 @@ class MbaMutationGateway:
     def resolve_serial(self, serial: int | None) -> int | None:
         if serial is None:
             return None
-        baseline_handle = self.identity_index._baseline_tokens.get(int(serial))
+        serial = int(serial)
+        if not self.active:
+            # Planned-coordinate rebinding is transaction-local.  Outside an
+            # active batch, callers are describing the current live MBA; a
+            # baseline retained by an earlier transaction must not shift it.
+            return serial
+        baseline_handle = self.identity_index._baseline_tokens.get(serial)
         if baseline_handle is None:
-            self.identity_index.ensure_serial_space(int(serial) + 1)
-            baseline_handle = self.identity_index._baseline_tokens[int(serial)]
+            self.identity_index.ensure_serial_space(serial + 1)
+            baseline_handle = self.identity_index._baseline_tokens[serial]
         bound = self.identity_index.resolve(
             self.identity_index._handles_by_token[baseline_handle]
         )
@@ -187,10 +193,80 @@ class MbaMutationGateway:
         )
         self._operation_count += 1
 
+    def record_edge_redirect(
+        self,
+        *,
+        source: MbaBlockHandle | None = None,
+        target: MbaBlockHandle | None = None,
+    ) -> None:
+        """Record one realized edge mutation without changing serial bindings."""
+        self._require_active()
+        self._record_handle(source)
+        self._record_handle(target)
+        self._operation_count += 1
+
     def record_remove(self, handle: MbaBlockHandle) -> None:
         self._require_active()
         self.identity_index.mark_removed(handle)
         self._record_handle(handle)
+        self._operation_count += 1
+
+    def record_split(
+        self,
+        *,
+        original: MbaBlockHandle,
+        retained: MbaBlockHandle,
+        created_tail: MbaBlockHandle,
+        returned_tail_serial: int,
+    ) -> None:
+        """Record one SDK split through the receipt-owning control plane."""
+        self._require_active()
+        self.identity_index.record_split(
+            original=original,
+            retained=retained,
+            created_tail=created_tail,
+            returned_tail_serial=int(returned_tail_serial),
+        )
+        self._record_handle(original)
+        self._record_handle(retained)
+        self._record_handle(created_tail)
+        self._operation_count += 1
+
+    def record_clone(
+        self,
+        *,
+        source: MbaBlockHandle,
+        returned_serial: int,
+        created: MbaBlockHandle | None = None,
+    ) -> MbaBlockHandle:
+        """Record one SDK clone and return its transaction-local handle."""
+        self._require_active()
+        created = created or (
+            self.identity_index.create_synthetic_handle()
+            if source.identity is None
+            else self.identity_index.create_native_handle(
+                source.identity,
+                provenance=source.provenance,
+            )
+        )
+        self.identity_index.record_clone(
+            source=source,
+            created=created,
+            returned_serial=int(returned_serial),
+        )
+        self._record_handle(source)
+        self._record_handle(created)
+        self._operation_count += 1
+        return created
+
+    def record_unknown_sdk_operation(self, mba: object) -> None:
+        """Refresh current bindings immediately after an unmodelled SDK mutation.
+
+        The raw MBA remains callback-local: the index retains only rebuilt
+        identities, handles, and integer coordinates.
+        """
+        self._require_active()
+        self.identity_index.refresh_from_mba(mba)
         self._operation_count += 1
 
     def commit(self) -> MbaMutationReceipt:
