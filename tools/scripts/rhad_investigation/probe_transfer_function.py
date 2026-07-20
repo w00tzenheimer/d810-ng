@@ -905,6 +905,25 @@ try:
                         f"{native_state.pending_generated_restart_generation}",
                         flush=True,
                     )
+            union_preparation = getattr(state, "preopt_union_preparation", None)
+            print(
+                "PREOPT_UNION_RESULT",
+                "prepared="
+                f"{union_preparation is not None and union_preparation.prepared}",
+                (
+                    "primary=None"
+                    if union_preparation is None
+                    or union_preparation.primary_seed_ea is None
+                    else f"primary=0x{union_preparation.primary_seed_ea:X}"
+                ),
+                (
+                    "ports=0"
+                    if union_preparation is None
+                    else "ports="
+                    f"{len(union_preparation.boundary_ports.direct) + len(union_preparation.boundary_ports.conditional)}"
+                ),
+                flush=True,
+            )
             materialized = bool(getattr(state, "is_materialized", False))
             resolution = getattr(state, "resolution", None)
             _trace_static_bootstrap_route(state)
