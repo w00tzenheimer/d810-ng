@@ -110,13 +110,16 @@ class MbaBlockIdentityIndex:
         native_key: NativePreanalysisKey,
         evidence_generation: int | None = None,
         session_id: str = "live-mba",
+        imported_instruction_origins: Mapping[int, int] | None = None,
     ) -> MbaBlockIdentityIndex:
         """Build current bindings directly from a callback-local live MBA.
 
         Only integer coordinates and serial-free identities are retained.  A
         cloned native block produces a second binding for the same identity,
         so later rebinding reports ``AMBIGUOUS`` instead of selecting the first
-        matching serial.
+        matching serial.  Imported instructions are rebound through their
+        native origins without lifting or cloning live operands; identity
+        indexing must remain observationally read-only at Hex-Rays callbacks.
         """
         index = cls(
             session_id=session_id,
@@ -124,18 +127,40 @@ class MbaBlockIdentityIndex:
             generation=generation,
             evidence_generation=evidence_generation,
         )
+        imported_instruction_origins = imported_instruction_origins or {}
         quantity = int(getattr(mba, "qty", 0) or 0)
         for serial in range(quantity):
             block = mba.get_mblock(serial)
             if block is None:
                 continue
             anchors: set[int] = set()
+            imported_anchors: set[int] = set()
             instruction = getattr(block, "head", None)
             visited: set[int] = set()
             while instruction is not None and id(instruction) not in visited:
                 visited.add(id(instruction))
-                anchors.add(int(getattr(instruction, "ea", -1) or -1))
+                instruction_ea = int(getattr(instruction, "ea", -1) or -1)
+                anchors.add(instruction_ea)
+                if instruction_ea in imported_instruction_origins:
+                    imported_anchors.add(
+                        int(imported_instruction_origins[instruction_ea])
+                    )
                 instruction = getattr(instruction, "next", None)
+            imported_eas = tuple(
+                ea
+                for ea in sorted(imported_anchors)
+                if 0 <= ea < 0xFFFFFFFFFFFFFFFF
+            )
+            if imported_eas:
+                index._bind_new_native(
+                    StableBlockIdentity.from_instruction_eas(
+                        imported_eas,
+                        native_key=native_key,
+                    ),
+                    serial,
+                    provenance=BlockHandleProvenance.IMPORTED_NATIVE,
+                )
+                continue
             instruction_eas = tuple(
                 ea for ea in sorted(anchors) if 0 <= ea < 0xFFFFFFFFFFFFFFFF
             )
