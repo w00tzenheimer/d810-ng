@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from d810.analyses.control_flow.native_preanalysis_session import (
+    NativePreanalysisFacts,
     NativePreanalysisSessionState,
 )
 from d810.core import typing
@@ -12,7 +13,10 @@ from d810.core.decompilation_session import (
     DecompilationSessionEvent,
 )
 from d810.core.logging import getLogger
-from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.core.native_preanalysis_key import (
+    NativePreanalysisKey,
+    NativePreanalysisKeyMismatch,
+)
 from d810.core.provider_phase import ProviderPhaseSnapshot
 
 logger = getLogger("D810.decompilation_lifecycle")
@@ -109,6 +113,102 @@ class DecompilationLifecycleCoordinator:
         init=False,
         repr=False,
     )
+
+    def ensure(
+        self,
+        key: NativePreanalysisKey,
+        *,
+        function_ea: int | None = None,
+        database_identity: str | None = None,
+    ) -> tuple[DecompilationSessionContext, bool]:
+        """Ensure one coordinator-owned session for an exact portable key."""
+        if not isinstance(key, NativePreanalysisKey):
+            raise TypeError("session ensure requires a native preanalysis key")
+        current = self.get(key)
+        if current is not None:
+            return current, False
+        session, created = self.ensure_hexrays_session(
+            function_ea=(key.function_rva if function_ea is None else int(function_ea)),
+            database_identity=(
+                key.input_identity
+                if database_identity is None
+                else str(database_identity)
+            ),
+        )
+        if session.native_key != key:
+            if created:
+                self.finish_hexrays_session()
+            raise NativePreanalysisKeyMismatch(
+                key,
+                session.native_key,
+                key.mismatch_fields(session.native_key),
+            )
+        return session, created
+
+    def get(self, key: NativePreanalysisKey) -> DecompilationSessionContext | None:
+        """Return the innermost active session with this exact portable key."""
+        if not isinstance(key, NativePreanalysisKey):
+            raise TypeError("session lookup requires a native preanalysis key")
+        for activation in reversed(self._active_sessions):
+            if activation.session.native_key == key:
+                return activation.session
+        return None
+
+    def merge_facts(
+        self,
+        key: NativePreanalysisKey,
+        facts: NativePreanalysisFacts,
+    ) -> bool:
+        """Merge changed normalized evidence into its sole session authority."""
+        session = self.get(key)
+        if session is None:
+            raise KeyError("native preanalysis session is not active")
+        if not isinstance(facts, NativePreanalysisFacts):
+            raise TypeError("fact merge requires NativePreanalysisFacts")
+        facts.require_key(key)
+        state = session.native_preanalysis
+        if state.facts == facts:
+            return False
+        state.facts = facts
+        state.mark_evidence_changed()
+        return True
+
+    def mark_preopt_bound(
+        self,
+        key: NativePreanalysisKey,
+        evidence_epoch: int,
+    ) -> bool:
+        """Bind PREOPT exactly once to the current portable evidence epoch."""
+        session = self.get(key)
+        if session is None:
+            raise KeyError("native preanalysis session is not active")
+        current = int(session.native_preanalysis.evidence_generation)
+        requested = int(evidence_epoch)
+        if requested != current:
+            raise ValueError(
+                f"PREOPT evidence epoch mismatch: current={current} requested={requested}"
+            )
+        return session.native_preanalysis.mark_preopt_bound()
+
+    def finish(self, key: NativePreanalysisKey) -> None:
+        """Finish the innermost exact-key owner and release all live state."""
+        session = self.get(key)
+        if session is None:
+            return
+        if (
+            not self._active_sessions
+            or self._active_sessions[-1].session is not session
+        ):
+            raise RuntimeError("cannot finish a session beneath another active owner")
+        while (
+            self._active_sessions
+            and self._active_sessions[-1].session is session
+            and not self._active_sessions[-1].owns_session
+        ):
+            self.finish_hexrays_session()
+        self.finish_hexrays_session()
+        if self.get(key) is session:
+            raise RuntimeError("session finish deferred by an active restart owner")
 
     def ensure_hexrays_session(
         self,
@@ -604,6 +704,7 @@ class DecompilationLifecycleCoordinator:
                         int(session.function_ea),
                         exc_info=True,
                     )
+        session.extensions.clear()
         session.current_mba_identity_index = None
         parent = self._active_sessions[-1].session if self._active_sessions else None
         preanalysis_runtime = self.preanalysis_runtime

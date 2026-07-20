@@ -14,6 +14,10 @@ from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     resolver_session_state,
 )
+from tests.native_preanalysis import make_native_key
+
+
+NATIVE_KEY = make_native_key()
 
 
 def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
@@ -21,6 +25,7 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
 ) -> None:
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
+        native_key=NATIVE_KEY,
         extensions={},
         event=SimpleNamespace(function_ea=0x401000),
     )
