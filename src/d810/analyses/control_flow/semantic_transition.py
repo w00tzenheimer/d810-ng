@@ -42,6 +42,41 @@ class StateWriteAnchor:
     instruction_ea: int | None = None
 
 
+def rebind_state_write_anchors(
+    anchors: tuple[StateWriteAnchor, ...],
+    *,
+    block_serial_for_instruction_ea,
+) -> tuple[StateWriteAnchor, ...]:
+    """Rebind portable state-write anchors into the current MBA.
+
+    ``block_serial`` is snapshot-local, so only the native instruction EA may
+    carry an anchor across maturity or regeneration.  Missing and ambiguous
+    EA bindings are explicit abstentions; falling back to the recorded serial
+    would silently route a mutation through an unrelated live block.
+    """
+    rebound: list[StateWriteAnchor] = []
+    seen: set[StateWriteAnchor] = set()
+    for anchor in anchors:
+        if anchor.instruction_ea is None:
+            continue
+        block_serial = block_serial_for_instruction_ea(
+            int(anchor.instruction_ea)
+        )
+        if block_serial is None:
+            continue
+        current = StateWriteAnchor(
+            block_serial=int(block_serial),
+            state_const=int(anchor.state_const),
+            state_var_stkoff=anchor.state_var_stkoff,
+            state_var_reg=anchor.state_var_reg,
+            instruction_ea=int(anchor.instruction_ea),
+        )
+        if current not in seen:
+            rebound.append(current)
+            seen.add(current)
+    return tuple(rebound)
+
+
 @dataclass(frozen=True, slots=True)
 class StateTransitionResolution:
     """Result of resolving one transition through a state-dispatcher map."""
@@ -456,6 +491,7 @@ __all__ = [
     "SemanticTransition",
     "SemanticTransitionKind",
     "facts_from_validated_view",
+    "rebind_state_write_anchors",
     "semantic_transition_from_fact",
     "resolve_state_transitions",
     "StateTransitionFact",

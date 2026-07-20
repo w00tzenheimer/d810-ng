@@ -20,6 +20,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     lookup_state_keyed_transfer_target,
     lookup_singleton_transfer_target,
     materialized_dispatcher_router_native_ranges,
+    mutation_authoritative_materialized_transfers,
     native_origin_blocks_in_ranges,
     materialized_terminal_target_eas_by_source,
     missing_materialized_handler_targets,
@@ -50,6 +51,158 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+
+
+def test_mutation_projection_excludes_observation_only_transfer_kinds() -> None:
+    static = MaterializedIndirectTransfer(
+        0x1010,
+        0x1000,
+        (0x1010,),
+        (0x2000,),
+        resolver_kind="static_fixpoint",
+    )
+    exit_route = MaterializedIndirectTransfer(
+        0x2010,
+        0x2000,
+        (),
+        (0x3000,),
+        selector_state_var_reg=28,
+        selector_state_constant=0xAABBCCDD,
+        resolver_kind="static_handler_exit_route",
+    )
+    observation = MaterializedIndirectTransfer(
+        0x3010,
+        0x3000,
+        (),
+        (0x4000,),
+        selector_state_var_reg=28,
+        selector_state_constant=0xAABBCCDD,
+        resolver_kind="condition_chain_handler_evidence",
+    )
+    raw_choice = MaterializedIndirectTransfer(
+        0x4010,
+        0x4000,
+        (0x4010,),
+        (),
+        selector_state_var_reg=28,
+        predicate_true_state=1,
+        predicate_false_state=2,
+        resolver_kind="static_conditional_state_choice",
+    )
+    transfers = (static, observation, raw_choice, exit_route)
+
+    assert mutation_authoritative_materialized_transfers(transfers) == (
+        static,
+        exit_route,
+    )
+    assert transfers == (static, observation, raw_choice, exit_route)
+
+
+def test_mutation_projection_prefers_stronger_equivalent_static_predicate() -> None:
+    stronger = MaterializedIndirectTransfer(
+        0x40E20E,
+        0x40E1F6,
+        (0x40E200, 0x40E20E),
+        (0x40F12D, 0x40DC04),
+        condition_code=4,
+        true_target_ea=0x40F12D,
+        false_target_ea=0x40DC04,
+        selector_state_var_reg=28,
+        predicate_true_state=0x3AF41FBE,
+        predicate_false_state=0x85AE90D3,
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    weaker_equivalent = MaterializedIndirectTransfer(
+        0x40E20E,
+        0x40E208,
+        (0x40E20E,),
+        (0x40DC04, 0x40F12D),
+        condition_code=5,
+        true_target_ea=0x40DC04,
+        false_target_ea=0x40F12D,
+        selector_state_var_reg=28,
+        predicate_true_state=0x85AE90D3,
+        predicate_false_state=0x3AF41FBE,
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    unique_branch = MaterializedIndirectTransfer(
+        0x40E300,
+        0x40E2F0,
+        (0x40E300,),
+        (0x40E400, 0x40E500),
+        condition_code=4,
+        true_target_ea=0x40E400,
+        false_target_ea=0x40E500,
+        selector_state_var_reg=28,
+        predicate_true_state=3,
+        predicate_false_state=4,
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    conflicting = MaterializedIndirectTransfer(
+        0x40E300,
+        0x40E2F0,
+        (0x40E2F8, 0x40E300),
+        (0x40E400, 0x40E600),
+        condition_code=4,
+        true_target_ea=0x40E400,
+        false_target_ea=0x40E600,
+        selector_state_var_reg=28,
+        predicate_true_state=3,
+        predicate_false_state=4,
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+
+    assert mutation_authoritative_materialized_transfers(
+        (weaker_equivalent, stronger, unique_branch, conflicting)
+    ) == (stronger,)
+
+
+def test_mutation_projection_rejects_shared_entry_dispatch_navigation_source() -> None:
+    first_handler = MaterializedIndirectTransfer(
+        0x5000,
+        0x5000,
+        (),
+        (0x5100,),
+        selector_state_var_reg=28,
+        selector_state_constant=1,
+        resolver_kind="static_handler_entry_route",
+    )
+    second_handler = MaterializedIndirectTransfer(
+        0x6000,
+        0x6000,
+        (),
+        (0x6100,),
+        selector_state_var_reg=28,
+        selector_state_constant=2,
+        resolver_kind="static_handler_entry_route",
+    )
+    navigation_first = MaterializedIndirectTransfer(
+        0x4000,
+        0x4000,
+        (),
+        (0x5100,),
+        selector_state_var_reg=28,
+        selector_state_constant=1,
+        resolver_kind="static_handler_entry_route",
+    )
+    navigation_second = MaterializedIndirectTransfer(
+        0x4000,
+        0x4000,
+        (),
+        (0x6100,),
+        selector_state_var_reg=28,
+        selector_state_constant=2,
+        resolver_kind="static_handler_entry_route",
+    )
+
+    assert mutation_authoritative_materialized_transfers(
+        (
+            navigation_first,
+            first_handler,
+            navigation_second,
+            second_handler,
+        )
+    ) == (first_handler, second_handler)
 
 
 def _block(

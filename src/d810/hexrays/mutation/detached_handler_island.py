@@ -35,6 +35,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
 )
 from d810.core.logging import getLogger
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 from d810.hexrays.mutation.cfg_verify import (
     clear_owned_fake_block_registrations,
     clear_resolver_proven_live_predicates,
@@ -44,6 +45,11 @@ from d810.hexrays.mutation.cfg_verify import (
 from d810.transforms.graph_modification import (
     PreserveLivePredicateCondition,
     SyntheticStackValueEqualsCondition,
+)
+from d810.ir.block_identity import (
+    BlockHandleProvenance,
+    NativeEaInterval,
+    StableBlockIdentity,
 )
 
 logger = getLogger("D810.mutation.detached_handler_island")
@@ -846,6 +852,19 @@ class DetachedSnippetTemplate:
     direct_call_stack_pointer_deltas: tuple[tuple[int, int], ...] = ()
 
 
+def _template_block_stable_identity(
+    block: DetachedSnippetBlockTemplate,
+) -> StableBlockIdentity | None:
+    """Return portable native identity only for a positive owned interval."""
+    start_ea = int(block.native_entry_ea)
+    end_ea = int(block.native_end_ea)
+    if start_ea <= 0 or end_ea <= start_ea:
+        return None
+    return StableBlockIdentity.from_intervals(
+        (NativeEaInterval(start_ea, end_ea),)
+    )
+
+
 @dataclass(slots=True)
 class _ImportedSnippetRoot:
     """Renumbering-stable identity for one imported snippet root."""
@@ -869,6 +888,7 @@ _PREOPT_UNION_SNIPPET_TEMPLATES: dict[
     tuple[int, int],
     DetachedSnippetTemplate,
 ] = {}
+_ACTIVE_PREOPT_UNION_IMPORT_MBA_IDS: set[int] = set()
 _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES: dict[
     tuple[int, int],
     DetachedSnippetTemplate,
@@ -1657,6 +1677,7 @@ def _capture_detached_snippet_template(
     owned_block_entry_eas: Collection[int] | None,
     additional_owned_block_entry_eas: Collection[int] | None,
     terminal_return_entry_eas: Collection[int],
+    resolver_proven_internal_successor_eas: Mapping[int, int],
     native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]],
     authoritative_stack_frame_offsets_by_ea: Mapping[
         int, tuple[int, ...]
@@ -1937,6 +1958,35 @@ def _capture_detached_snippet_template(
                 else None
             )
             if successor_ea is None and block.tail is not None:
+                proven_internal_target_ea = (
+                    resolver_proven_internal_successor_eas.get(
+                        int(block.tail.ea)
+                    )
+                )
+                if proven_internal_target_ea is not None:
+                    target_serials = tuple(
+                        int(candidate_serial)
+                        for candidate_serial, candidate in included.items()
+                        if _unique_block_native_ea(candidate)
+                        == int(proven_internal_target_ea)
+                    )
+                    if len(target_serials) != 1:
+                        logger.info(
+                            "detached snippet capture abstained: target=0x%X "
+                            "source=blk%d@0x%X resolver_ea=0x%X "
+                            "proven_target=0x%X matches=%s "
+                            "reason=non_unique_resolver_proven_internal_successor",
+                            int(target_ea),
+                            int(block.serial),
+                            int(block.start),
+                            int(block.tail.ea),
+                            int(proven_internal_target_ea),
+                            target_serials,
+                        )
+                        return False
+                    internal_successors.append(target_serials[0])
+                    external_successors.append(0)
+                    continue
                 successor_ea = _resolver_cut_target_for_synthetic_successor(
                     boundary_ports,
                     int(block.tail.ea),
@@ -2163,6 +2213,7 @@ def capture_detached_snippet_template(
         owned_block_entry_eas,
         additional_owned_block_entry_eas,
         terminal_return_entry_eas,
+        {},
         (
             {}
             if native_stack_frame_offsets_by_ea is None
@@ -2190,6 +2241,7 @@ def capture_preopt_union_snippet_template(
     owned_block_entry_eas: Collection[int] | None = None,
     additional_owned_block_entry_eas: Collection[int] | None = None,
     terminal_return_entry_eas: Collection[int] = (),
+    resolver_proven_internal_successor_eas: Mapping[int, int] | None = None,
     native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]] | None = None,
     authoritative_stack_frame_offsets_by_ea: Mapping[
         int, tuple[int, ...]
@@ -2229,6 +2281,11 @@ def capture_preopt_union_snippet_template(
         owned_block_entry_eas,
         range_split_entries,
         terminal_return_entry_eas,
+        (
+            {}
+            if resolver_proven_internal_successor_eas is None
+            else resolver_proven_internal_successor_eas
+        ),
         (
             {}
             if native_stack_frame_offsets_by_ea is None
@@ -2346,6 +2403,7 @@ def capture_detached_replacement_snippet_template(
         owned_block_entry_eas,
         additional_owned_block_entry_eas,
         terminal_return_entry_eas,
+        {},
         (
             {}
             if native_stack_frame_offsets_by_ea is None
@@ -5407,6 +5465,7 @@ def _apply_boundary_port_batch(
     transparent_helpers: Collection[object] = (),
     pending_instruction_origins: Mapping[tuple[int, int], int] | None = None,
     selected_templates: tuple[DetachedSnippetTemplate, ...] = (),
+    mutation_gateway: MbaMutationGateway | None = None,
 ) -> tuple[DetachedSnippetBoundaryPortResult, ...] | None:
     applied: list[DetachedSnippetBoundaryPortResult] = []
     instruction_origins = (
@@ -5481,7 +5540,14 @@ def _apply_boundary_port_batch(
             if previous is not edge_source:
                 return None
         semantic_successors = set(edge_source_by_semantic_successor)
-        modifier = DeferredGraphModifier(mba)
+        modifier = DeferredGraphModifier(
+            mba,
+            mutation_gateway=(
+                None
+                if mutation_gateway is None
+                else mutation_gateway.new_transaction()
+            ),
+        )
         if delivery_mode == "terminal_goto" and not old_successors:
             source_instruction_eas = {
                 int(record.port.source_instruction_ea)
@@ -5763,7 +5829,14 @@ def _apply_boundary_port_batch(
                 fallthrough is not None,
             )
             return None
-        modifier = DeferredGraphModifier(mba)
+        modifier = DeferredGraphModifier(
+            mba,
+            mutation_gateway=(
+                None
+                if mutation_gateway is None
+                else mutation_gateway.new_transaction()
+            ),
+        )
         if mutation.materialize_resolver_cut:
             port = mutation.record.port
             mba_identity = stable_mba_identity(mba)
@@ -6073,6 +6146,7 @@ def _materialize_detached_snippet_templates(
     expected_template_maturity: int | None = None,
     allow_raw_preopt_calls: bool = False,
     import_native_preopt_ranges: bool = False,
+    mutation_gateway: MbaMutationGateway | None = None,
 ) -> DetachedSnippetImportResult | dict[int, int]:
     """Import cached snippets and return target EA -> root serial."""
     templates = tuple(
@@ -6316,6 +6390,25 @@ def _materialize_detached_snippet_templates(
                         int(captured.ea),
                     ),
                 )
+                source_lvar = next(
+                    (
+                        operand
+                        for operand in _instruction_operands(instruction)
+                        if int(operand.t) == int(ida_hexrays.mop_l)
+                    ),
+                    None,
+                )
+                if source_lvar is not None:
+                    logger.info(
+                        "detached snippet import abstained: target=0x%X "
+                        "block_ea=0x%X lvar_idx=%d lvar_off=%d "
+                        "reason=lvar_rebind_unproven",
+                        int(template.target_ea),
+                        int(block.native_entry_ea),
+                        int(source_lvar.l.idx),
+                        int(source_lvar.l.off),
+                    )
+                    return {}
                 missing_source_vd = next(
                     (
                         int(operand.s.off)
@@ -6389,7 +6482,12 @@ def _materialize_detached_snippet_templates(
         boundary_port_batch.conditional
     )
 
-    modifier = DeferredGraphModifier(mba)
+    modifier = DeferredGraphModifier(
+        mba,
+        mutation_gateway=(
+            None if mutation_gateway is None else mutation_gateway.new_transaction()
+        ),
+    )
     mba_identity = stable_mba_identity(mba)
     pending_instruction_origins: dict[tuple[int, int], int] = {}
     pending_owned_instruction_eas: dict[int, list[int]] = {
@@ -6403,11 +6501,28 @@ def _materialize_detached_snippet_templates(
                 ref_serial=0,
                 is_0_way=True,
                 verify=False,
+                stable_identity=_template_block_stable_identity(block),
+                handle_provenance=BlockHandleProvenance.IMPORTED_NATIVE,
             )
             if created_serial is None:
                 return {}
+            created_block = mba.get_mblock(int(created_serial))
+            if created_block is None:
+                return {}
+            # A copied standalone block inherits the reference block's range.
+            # Publish verifier-safe synthetic metadata before allocating the
+            # next block: copy_block may validate every block already present,
+            # and delaying this until instruction population can raise Hex-Rays
+            # INTERR 50870 inside that next allocation.
+            modifier.configure_block_now(
+                created_block,
+                block_type=int(ida_hexrays.BLT_0WAY),
+                flags=int(ida_hexrays.MBL_KEEP) | int(ida_hexrays.MBL_FAKE),
+                start_ea=int(mba.entry_ea),
+                end_ea=int(mba.entry_ea) + 1,
+            )
             created[(int(template.target_ea), int(block.source_serial))] = (
-                mba.get_mblock(int(created_serial))
+                created_block
             )
 
     roots = {
@@ -6705,6 +6820,11 @@ def _materialize_detached_snippet_templates(
                 return {}
             imported_fallthrough_helpers.append(helper)
 
+    # Block creation and adjacency helpers form one append/insert transaction.
+    # Publish their bindings before any boundary-port modifier starts its own
+    # transaction over the same live identity index.
+    modifier.commit_immediate_mutations()
+
     # A source MBA may encode a one-way edge as ordinary fallthrough.  Once
     # its block is appended to another MBA, that edge is still implicit only
     # when the remapped successor is the imported block's new ``serial+1``.
@@ -6767,6 +6887,7 @@ def _materialize_detached_snippet_templates(
         transparent_helpers=tuple(imported_fallthrough_helpers),
         pending_instruction_origins=pending_instruction_origins,
         selected_templates=selected,
+        mutation_gateway=mutation_gateway,
     )
     if applied_boundary_ports is None:
         logger.error(
@@ -7025,17 +7146,36 @@ def materialize_preopt_union_snippet_templates(
     mba: object,
     function_ea: int,
     target_eas: tuple[int, ...],
+    *,
+    mutation_gateway: MbaMutationGateway | None = None,
 ) -> DetachedSnippetImportResult | dict[int, int]:
     """Import a dedicated PREOPT union and defer call analysis to Hex-Rays."""
-    return _materialize_detached_snippet_templates(
-        mba,
-        function_ea,
-        target_eas,
-        _PREOPT_UNION_SNIPPET_TEMPLATES,
-        expected_template_maturity=int(ida_hexrays.MMAT_PREOPTIMIZED),
-        allow_raw_preopt_calls=True,
-        import_native_preopt_ranges=True,
-    )
+    mba_identity = stable_mba_identity(mba)
+    if mba_identity in _ACTIVE_PREOPT_UNION_IMPORT_MBA_IDS:
+        logger.debug(
+            "PREOPT union import abstained: func=0x%X reason=reentrant_import",
+            int(function_ea),
+        )
+        return {}
+    _ACTIVE_PREOPT_UNION_IMPORT_MBA_IDS.add(mba_identity)
+    try:
+        return _materialize_detached_snippet_templates(
+            mba,
+            function_ea,
+            target_eas,
+            _PREOPT_UNION_SNIPPET_TEMPLATES,
+            expected_template_maturity=int(ida_hexrays.MMAT_PREOPTIMIZED),
+            allow_raw_preopt_calls=True,
+            import_native_preopt_ranges=True,
+            mutation_gateway=mutation_gateway,
+        )
+    finally:
+        _ACTIVE_PREOPT_UNION_IMPORT_MBA_IDS.discard(mba_identity)
+
+
+def preopt_union_import_in_progress(mba: object) -> bool:
+    """Return whether this MBA is inside the temporary re-entrancy barrier."""
+    return stable_mba_identity(mba) in _ACTIVE_PREOPT_UNION_IMPORT_MBA_IDS
 
 
 def materialize_detached_replacement_snippet_templates(
@@ -7867,6 +8007,7 @@ def clear_detached_handler_call_templates() -> None:
     _ANALYZED_CALL_RESULT_DEFINITION_CONFLICTS.clear()
     _DETACHED_SNIPPET_TEMPLATES.clear()
     _PREOPT_UNION_SNIPPET_TEMPLATES.clear()
+    _ACTIVE_PREOPT_UNION_IMPORT_MBA_IDS.clear()
     _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES.clear()
     _DETACHED_CALLINFO_TEMPLATES.clear()
     _DETACHED_CALLINFO_CONFLICTS.clear()

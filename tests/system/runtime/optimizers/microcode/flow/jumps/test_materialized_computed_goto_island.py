@@ -9,6 +9,8 @@ import ida_hexrays
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
+from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.optimizers.microcode.flow.jumps import (
     materialized_computed_goto_island as island,
 )
@@ -239,7 +241,7 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
             mba,
             0x1000,
             (0x2000,),
-            {},
+            {"mutation_gateway": None},
         )
     ]
     assert first_decision["microcode_modified"] is True
@@ -248,6 +250,73 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
         "preopt_union_seed_count": 2,
         "preopt_union_boundary_port_count": 1,
     }
+
+
+def test_preopt_handler_skips_union_when_bootstrap_route_is_live(monkeypatch) -> None:
+    session, state = _resolver_state()
+    source_ea = 0x40D348
+    handler_ea = 0x40EAA7
+    state_constant = 0x699BC698
+    assert state.discover_static_native_bootstrap_route(
+        source_anchor_ea=source_ea,
+        state_constant=state_constant,
+        handler_anchor_ea=handler_ea,
+    )
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(source_ea, source_ea + 1),)
+    )
+    handler_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(handler_ea, handler_ea + 1),)
+    )
+    state.bind_current_mba(
+        MbaBlockIdentityIndex.from_bindings(
+            generation=0,
+            evidence_generation=state.evidence_generation,
+            bindings=((source_identity, 0), (handler_identity, 1)),
+        )
+    )
+    source = SimpleNamespace(
+        serial=0,
+        head=object(),
+        tail=SimpleNamespace(ea=source_ea, opcode=ida_hexrays.m_goto),
+        nsucc=lambda: 1,
+    )
+    handler = SimpleNamespace(serial=1, head=object(), tail=object())
+    mba = SimpleNamespace(
+        qty=2,
+        get_mblock=lambda serial: source if int(serial) == 0 else handler,
+    )
+    preparation = _Preparation(prepared=True)
+
+    monkeypatch.setattr(island, "restore_terminal_return_carriers", lambda *_: 0)
+    monkeypatch.setattr(
+        island,
+        "refine_transient_terminal_return_type",
+        lambda *_: False,
+    )
+    monkeypatch.setattr(
+        island,
+        "get_prepared_preopt_union_closure",
+        lambda candidate_state: preparation if candidate_state is state else None,
+    )
+    monkeypatch.setattr(
+        island,
+        "materialize_preopt_union_snippet_templates",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("live bootstrap route must not clone the full union")
+        ),
+    )
+
+    decision: dict[str, object] = {"session": session}
+    island._restore_preopt_terminal_return_carriers(
+        function_ea=0x1000,
+        mba=mba,
+        decision=decision,
+    )
+
+    assert decision == {"session": session}
+    assert state.preopt_union_imported_mbas == set()
+    assert state.preopt_union_mutated_mbas == set()
 
 
 def test_preopt_success_records_session_owned_union_ownership(monkeypatch) -> None:

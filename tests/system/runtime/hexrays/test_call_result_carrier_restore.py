@@ -11,19 +11,19 @@ import pytest
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 
 
-def test_calls_done_restarts_from_generated_only_when_explicitly_requested() -> None:
-    """A refreshed PREOPT template needs a full decompilation restart."""
+def test_calls_done_defers_generated_restart_to_the_flowchart_owner() -> None:
+    """CALLS cannot return a documented full-decompilation restart code."""
 
     def callback(_event, **kwargs) -> None:
         decision = kwargs["decision"]
         decision["request_redo"] = True
-        decision["restart_from_generated"] = True
+        decision["defer_generated_restart"] = True
         decision["reason"] = "preopt_template_refreshed"
 
     hook = SimpleNamespace(callback=callback)
     mba = SimpleNamespace(entry_ea=0x40D200)
 
-    assert HexraysDecompilationHook.calls_done(hook, mba) == ida_hexrays.MERR_REDO
+    assert HexraysDecompilationHook.calls_done(hook, mba) == 0
 
 
 def test_calls_done_retains_calls_loop_for_ordinary_redo_requests() -> None:
@@ -687,9 +687,7 @@ def test_replays_stack_terminal_carrier_through_stable_frame_identity(
         _state_write, restored = lowered_block.instructions()
         assert int(restored.ea) == carrier_ea
         assert int(restored.l.t) == int(ida_hexrays.mop_S)
-        assert int(restored.l.s.off) == int(
-            lowered.stkoff_ida2vd(stable_ida_stkoff)
-        )
+        assert int(restored.l.s.off) == int(lowered.stkoff_ida2vd(stable_ida_stkoff))
         assert int(restored.d.r) == return_mreg
     finally:
         detached_handler_island.clear_terminal_return_carrier_templates()
@@ -2025,6 +2023,139 @@ def test_preoptimized_hook_dispatches_live_mba_before_locopt() -> None:
     assert events == [DecompilationEvent.HEXRAYS_PREOPT_READY]
 
 
+def test_preoptimized_hook_owns_top_level_structural_mutation() -> None:
+    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+    from d810.core.decompilation_session import DecompilationEvent
+
+    mba = SimpleNamespace(entry_ea=0x40A560, maturity=1)
+    session = SimpleNamespace(native_preanalysis_depth=0)
+    identity_index = object()
+    mutation_gateway = object()
+    lifecycle_calls: list[tuple[object, ...]] = []
+    events: list[object] = []
+    lifecycle = SimpleNamespace(
+        ensure_hexrays_session=lambda **kwargs: (session, False),
+        current_session=lambda function_ea: session,
+        build_current_mba_identity_index=lambda **kwargs: identity_index,
+        new_current_mba_mutation_gateway=lambda **kwargs: mutation_gateway,
+        preopt_ready_was_emitted=lambda **kwargs: False,
+        mark_preopt_ready_emitted=lambda **kwargs: lifecycle_calls.append(
+            (
+                "mark",
+                int(kwargs["function_ea"]),
+                bool(kwargs["microcode_modified"]),
+                bool(kwargs["callback_pointer_refresh_required"]),
+            )
+        ),
+    )
+
+    def callback(event: object, **kwargs: object) -> None:
+        events.append((event, kwargs))
+        kwargs["decision"]["microcode_modified"] = True
+
+    hook = SimpleNamespace(
+        callback=callback,
+        _decompilation_lifecycle=lifecycle,
+        _database_identity="sample.i64",
+    )
+
+    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
+    assert events == [
+        (
+            DecompilationEvent.HEXRAYS_PREOPT_READY,
+            {
+                "function_ea": 0x40A560,
+                "mba": mba,
+                "decision": {
+                    "request_redo": False,
+                    "session": session,
+                    "identity_index": identity_index,
+                    "mutation_gateway": mutation_gateway,
+                    "microcode_modified": True,
+                },
+            },
+        )
+    ]
+    assert lifecycle_calls == [("mark", 0x40A560, True, False)]
+
+
+def test_preoptimized_hook_suppresses_manager_native_preanalysis_snippet() -> None:
+    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+
+    mba = SimpleNamespace(entry_ea=0x40D48E, maturity=1)
+    session = SimpleNamespace(native_preanalysis_depth=1)
+    events: list[object] = []
+    lifecycle = SimpleNamespace(
+        ensure_hexrays_session=lambda **kwargs: (session, False),
+        current_session=lambda function_ea: session,
+        build_current_mba_identity_index=lambda **kwargs: object(),
+        new_current_mba_mutation_gateway=lambda **kwargs: object(),
+        preopt_ready_was_emitted=lambda **kwargs: False,
+        mark_preopt_ready_emitted=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("internal snippet marked the public PREOPT generation")
+        ),
+    )
+    hook = SimpleNamespace(
+        callback=lambda *args, **kwargs: events.append((args, kwargs)),
+        _decompilation_lifecycle=lifecycle,
+        _database_identity="sample.i64",
+    )
+
+    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
+    assert events == []
+
+
+def test_preoptimized_hook_returns_success_when_microcode_is_unchanged() -> None:
+    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+
+    mba = SimpleNamespace(entry_ea=0x40A560)
+    hook = SimpleNamespace(callback=lambda event, **kwargs: None)
+
+    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
+
+
+def test_hexrays_hooks_own_the_preopt_generation_guard() -> None:
+    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+    from d810.core.decompilation_session import DecompilationEvent
+
+    mba = SimpleNamespace(entry_ea=0x40A560)
+    lifecycle_calls: list[tuple[str, int]] = []
+    lifecycle = SimpleNamespace(
+        begin_current_mba_generation=lambda *, function_ea: lifecycle_calls.append(
+            ("begin", function_ea)
+        ),
+        mark_preopt_ready_emitted=(
+            lambda *, function_ea, microcode_modified,
+            callback_pointer_refresh_required: lifecycle_calls.append(
+                (
+                    "preopt",
+                    function_ea,
+                    microcode_modified,
+                    callback_pointer_refresh_required,
+                )
+            )
+        ),
+    )
+
+    def callback(event: object, **kwargs: object) -> None:
+        assert event in {
+            DecompilationEvent.HEXRAYS_FLOWCHART_READY,
+            DecompilationEvent.HEXRAYS_PREOPT_READY,
+        }
+
+    hook = SimpleNamespace(
+        callback=callback,
+        _decompilation_lifecycle=lifecycle,
+    )
+
+    assert HexraysDecompilationHook.flowchart(hook, object(), mba, object(), 0) == 0
+    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
+    assert lifecycle_calls == [
+        ("begin", 0x40A560),
+        ("preopt", 0x40A560, False, False),
+    ]
+
+
 def test_flowchart_hook_scopes_active_lifecycle_session_into_decision() -> None:
     """Flowchart lazily creates and scopes one coordinator-owned session."""
     from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
@@ -2050,12 +2181,9 @@ def test_flowchart_hook_scopes_active_lifecycle_session_into_decision() -> None:
         return session, len(ensured) == 1
 
     events: list[object] = []
+
     def callback(event: object, *args: object, **kwargs: object) -> None:
         events.append(event)
-        if event is DecompilationEvent.SESSION_STARTED:
-            assert args == (session.event,)
-            assert kwargs == {}
-            return
         assert args == ()
         assert event is DecompilationEvent.HEXRAYS_FLOWCHART_READY
         assert kwargs["function_ea"] == 0x40D200
@@ -2086,7 +2214,6 @@ def test_flowchart_hook_scopes_active_lifecycle_session_into_decision() -> None:
     ]
     assert queried_function_eas == [0x40D200, 0x40D200]
     assert events == [
-        DecompilationEvent.SESSION_STARTED,
         DecompilationEvent.HEXRAYS_FLOWCHART_READY,
         DecompilationEvent.HEXRAYS_FLOWCHART_READY,
     ]
@@ -2365,9 +2492,7 @@ def test_terminal_route_helper_recovers_live_native_exit_from_state_snapshot(
         lambda _mba, ea: (
             source
             if int(ea) == native_exit_ea
-            else target
-            if int(ea) == target_ea
-            else None
+            else target if int(ea) == target_ea else None
         ),
     )
 

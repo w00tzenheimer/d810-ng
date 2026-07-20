@@ -133,9 +133,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             return None
         function_ea = HexraysDecompilationHook._function_owner_ea(mba)
         callback_entry_ea = (
-            int(getattr(mba, "entry_ea", 0) or 0)
-            if structural_callback
-            else None
+            int(getattr(mba, "entry_ea", 0) or 0) if structural_callback else None
         )
         try:
             session, _created = ensure_session(
@@ -161,6 +159,13 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
     ) -> "int":
         decision = HexraysDecompilationHook._decision_for_mba(self, mba)
         function_ea = HexraysDecompilationHook._function_owner_ea(mba)
+        begin_generation = getattr(
+            getattr(self, "_decompilation_lifecycle", None),
+            "begin_current_mba_generation",
+            None,
+        )
+        if callable(begin_generation):
+            begin_generation(function_ea=function_ea)
         try:
             self.callback(
                 DecompilationEvent.HEXRAYS_FLOWCHART_READY,
@@ -208,11 +213,11 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
                 function_ea,
                 decision.get("reason", "unspecified"),
             )
-            if bool(decision.get("restart_from_generated")):
-                # CALLS can discover evidence that changes a resolver-owned
-                # PREOPT template.  A loop-local restart cannot revisit that
-                # template; MERR_REDO asks Hex-Rays to regenerate the MBA.
-                return ida_hexrays.MERR_REDO
+            if bool(decision.get("defer_generated_restart")):
+                # hxe_calls_done has no documented microcode-error return
+                # contract. The manager retains the session and initiates a
+                # follow-up whose flowchart callback returns MERR_REDO.
+                return 0
             # Hex-Rays documents MERR_LOOP as the required result when a
             # calls_done subscriber changes microcode inputs.  It restarts the
             # optimization pipeline at the CALLS boundary.
@@ -296,13 +301,30 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         return 0
 
     def preoptimized(self, mba: ida_hexrays.mbl_array_t) -> "int":
-        """Run profile-gated mutation before local and call analysis."""
+        """Import structural PREOPT evidence before instruction callbacks."""
+        function_ea = HexraysDecompilationHook._function_owner_ea(mba)
+        was_emitted = getattr(
+            getattr(self, "_decompilation_lifecycle", None),
+            "preopt_ready_was_emitted",
+            None,
+        )
+        if callable(was_emitted) and was_emitted(function_ea=function_ea):
+            return 0
         decision = HexraysDecompilationHook._decision_for_mba(
             self,
             mba,
             bind_live_identity=True,
         )
-        function_ea = HexraysDecompilationHook._function_owner_ea(mba)
+        session = decision.get("session")
+        if (
+            session is not None
+            and int(getattr(session, "native_preanalysis_depth", 0)) > 0
+        ):
+            # Manager-owned explicit-range generation captures a pristine
+            # source template. Applying the public PREOPT import pipeline to
+            # that internal MBA would recursively rewrite the source before
+            # capture and make its later replay structurally unsafe.
+            return 0
         try:
             self.callback(
                 DecompilationEvent.HEXRAYS_PREOPT_READY,
@@ -310,6 +332,21 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
                 mba=mba,
                 decision=decision,
             )
+            mark_emitted = getattr(
+                getattr(self, "_decompilation_lifecycle", None),
+                "mark_preopt_ready_emitted",
+                None,
+            )
+            if callable(mark_emitted):
+                mark_emitted(
+                    function_ea=function_ea,
+                    microcode_modified=bool(decision.get("microcode_modified")),
+                    # The preoptimized hook runs before Hex-Rays schedules
+                    # instruction and block optimizer operands. Structural
+                    # mutation here therefore needs no callback-local stale
+                    # pointer handshake.
+                    callback_pointer_refresh_required=False,
+                )
         except Exception:
             main_logger.debug(
                 "Hex-Rays PREOPT preanalysis event failed for 0x%X",
@@ -378,9 +415,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         # glbopt() actually fires; the per-maturity flow_context does not). Empty
         # when no block optimizer is installed -> the cleanup fails closed.
         prefold_def_eas = (
-            self._block_optimizer.prefold_return_reg_consumer_def_eas_for(
-                function_ea
-            )
+            self._block_optimizer.prefold_return_reg_consumer_def_eas_for(function_ea)
             if self._block_optimizer is not None
             else frozenset()
         )

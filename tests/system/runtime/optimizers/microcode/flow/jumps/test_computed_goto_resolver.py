@@ -4216,6 +4216,55 @@ def test_flowchart_stages_static_resolution_until_between_decompile_capture(
     assert decision == {"session": session}
 
 
+def test_manager_preanalysis_stages_static_resolution_before_byte_delivery(
+    monkeypatch,
+) -> None:
+    function_ea = 0x401000
+    plan = _PatchPlan(
+        jmp_ea=0x401020,
+        block_entry=0x401010,
+        patch_start=0x401018,
+        patch_bytes=b"\x90",
+        region_end=0x401022,
+        insn_heads=(0x401018,),
+        new_block_eas=(),
+        target_eas=(0x402000,),
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={plan.jmp_ea: plan.target_eas},
+        reachable_eas=(function_ea,),
+        arch="x86",
+        executed_insns=1,
+        seeds_run=0,
+        patch_plans=(plan,),
+    )
+    _session, state = _resolver_session()
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_resolve_computed_goto_resolution",
+        lambda _function_ea: resolution,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "materialize_computed_gotos",
+        lambda *_args, **_kwargs: pytest.fail(
+            "static delivery must wait until the prepatch source is captured"
+        ),
+    )
+
+    assert (
+        computed_goto_resolver.stage_computed_goto_preanalysis(
+            function_ea,
+            state=state,
+        )
+        is resolution
+    )
+    assert state.resolution is resolution
+    assert state.materialization is not None
+    assert state.pending_prepatch_materialization is resolution
+
+
 def test_function_context_register_values_abstain_on_conflicting_or_unknown_values():
     states = {
         0x1000: {"esi": frozenset({1})},
@@ -7816,11 +7865,23 @@ def test_prepare_preopt_union_binds_matching_prepatch_source_without_regeneratio
         computed_goto_resolver._PrepatchPreoptUnionSource(
         primary_seed_ea=seed_ea,
         seed_eas=(seed_ea,),
+        seed_native_ranges=((seed_ea, ((seed_ea, 0x2010),)),),
         native_ranges=((seed_ea, 0x2010),),
         imported_block_entry_eas=(seed_ea,),
         cfg=pristine_cfg,
         closure=pristine_closure,
         )
+    )
+    harness["state"].materialized_transfers = (
+        *harness["state"].materialized_transfers,
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x1900,
+            source_block_ea=0x1900,
+            materialized_anchor_eas=(),
+            target_eas=(seed_ea,),
+            resolver_kind="static_handler_entry_route",
+            owned_native_ranges=((seed_ea, 0x2040),),
+        ),
     )
     bound: list[tuple[int, int, object]] = []
     monkeypatch.setattr(
@@ -7944,6 +8005,78 @@ def test_preopt_refresh_conditional_boundary_supersedes_bootstrap_direct() -> No
 
     assert merged.direct == ()
     assert merged.conditional == (entry_choice,)
+
+
+def test_preopt_refresh_keeps_static_choice_port_across_maturity_shape_drift() -> None:
+    baseline = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=0x40DFA2,
+        predicate_ea=0x40E04B,
+        old_taken_target_ea=0x40E052,
+        old_fallthrough_target_ea=0x40E04D,
+        taken_target_ea=0x40F177,
+        fallthrough_target_ea=0x40D848,
+        state_register=28,
+        taken_state=0x6BD791A0,
+        fallthrough_state=0x0698355C,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        resolver_kind="resolver_proven_static_conditional_state_choice",
+        old_taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        old_fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        logical_source_anchor_ea=0x40E04B,
+        condition_code=4,
+        predicate_true_is_taken=True,
+    )
+    calls_shape = replace(
+        baseline,
+        predicate_size=4,
+        condition_code=5,
+        predicate_register=8,
+        predicate_constant=0,
+        predicate_true_is_taken=False,
+    )
+
+    merged = computed_goto_resolver._merge_preopt_union_boundary_ports(
+        DetachedSnippetBoundaryPorts((), (baseline,)),
+        DetachedSnippetBoundaryPorts((), (calls_shape,)),
+    )
+
+    assert merged.conditional == (baseline,)
+    with pytest.raises(ValueError, match="conflicting conditional boundary port"):
+        computed_goto_resolver._merge_preopt_union_boundary_ports(
+            DetachedSnippetBoundaryPorts((), (baseline,)),
+            DetachedSnippetBoundaryPorts(
+                (),
+                (replace(calls_shape, taken_target_ea=0x40F178),),
+            ),
+        )
+
+
+def test_calls_refresh_reimports_an_unchanged_port_set_for_new_evidence(
+    monkeypatch,
+) -> None:
+    harness = _install_preopt_union_success_harness(monkeypatch)
+    state = harness["state"]
+    previous = computed_goto_resolver.PreoptUnionPreparationResult(
+        function_ea=harness["function_ea"],
+        prepared=True,
+        published=True,
+    )
+    state.preopt_union_preparation = previous
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_preopt_union_closure",
+        lambda current_state, **_kwargs: (
+            previous if current_state is state else None
+        ),
+    )
+
+    assert computed_goto_resolver._refresh_preopt_union_from_calls_evidence(
+        state,
+        harness["live_mba"],
+    )
+    assert state.pending_preopt_reimport
 
 
 def test_prepare_preopt_union_closure_uses_exact_ownership_and_atomic_cut_port(
@@ -8071,6 +8204,36 @@ def test_preopt_union_cut_port_classifies_an_imported_target() -> None:
     assert len(ports.direct) == 1
     assert ports.direct[0].source_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
     assert ports.direct[0].target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+
+
+def test_preopt_union_internal_successor_proof_requires_one_imported_target() -> None:
+    source_ea = 0x2000
+    target_ea = 0x2100
+    cut_ea = 0x200C
+    closure = SimpleNamespace(
+        included_block_eas=(source_ea, target_ea),
+        proven_import_boundary_edges=(
+            SimpleNamespace(
+                source_instruction_ea=cut_ea,
+                target_ea=target_ea,
+            ),
+        ),
+    )
+
+    assert computed_goto_resolver._preopt_union_internal_successor_eas(
+        closure
+    ) == {cut_ea: target_ea}
+
+    closure.proven_import_boundary_edges = (
+        *closure.proven_import_boundary_edges,
+        SimpleNamespace(
+            source_instruction_ea=cut_ea,
+            target_ea=0x2200,
+        ),
+    )
+    assert computed_goto_resolver._preopt_union_internal_successor_eas(
+        closure
+    ) == {}
 
 
 def test_preopt_union_groups_two_resolver_cut_targets_into_one_conditional_port(

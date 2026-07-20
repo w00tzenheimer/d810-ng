@@ -20,6 +20,7 @@ helper_logger = getLogger(__name__)
 
 
 _OWNED_FAKE_BLOCK_ANCHORS: dict[int, set[int]] = {}
+_OWNED_FAKE_BLOCK_POINTERS: dict[int, set[int]] = {}
 _RESOLVER_PROVEN_LIVE_PREDICATES: dict[int, set[int]] = {}
 
 
@@ -30,11 +31,20 @@ def _stable_mba_identity(mba: object) -> int:
         return id(mba)
 
 
+def _stable_block_pointer(block: object) -> int:
+    """Return the native block pointer shared by transient SWIG wrappers."""
+    try:
+        return int(block.this)
+    except (AttributeError, TypeError, ValueError):
+        return id(block)
+
+
 def register_owned_fake_block(mba: object, block: object) -> None:
     """Register instruction anchors for a d810-owned synthetic fake block."""
-    anchors = _OWNED_FAKE_BLOCK_ANCHORS.setdefault(
-        _stable_mba_identity(mba),
-        set(),
+    mba_identity = _stable_mba_identity(mba)
+    anchors = _OWNED_FAKE_BLOCK_ANCHORS.setdefault(mba_identity, set())
+    _OWNED_FAKE_BLOCK_POINTERS.setdefault(mba_identity, set()).add(
+        _stable_block_pointer(block)
     )
     instruction = block.head
     while instruction is not None:
@@ -51,6 +61,24 @@ def register_owned_fake_block(mba: object, block: object) -> None:
     )
 
 
+def is_owned_fake_block(mba: object, block: object) -> bool:
+    """Return whether this exact current-MBA block is importer-owned.
+
+    Native and imported translations may deliberately carry identical EAs, so
+    optimizer routing must use the live block pointer rather than an EA or a
+    maturity-local serial.
+    """
+    return _stable_block_pointer(block) in _OWNED_FAKE_BLOCK_POINTERS.get(
+        _stable_mba_identity(mba),
+        set(),
+    )
+
+
+def has_owned_fake_blocks(mba: object) -> bool:
+    """Return whether the current MBA contains importer-owned fake blocks."""
+    return bool(_OWNED_FAKE_BLOCK_POINTERS.get(_stable_mba_identity(mba)))
+
+
 def clear_owned_fake_block_registrations() -> None:
     """Forget verifier-owned fake-block anchors at pipeline teardown."""
     helper_logger.info(
@@ -58,6 +86,7 @@ def clear_owned_fake_block_registrations() -> None:
         len(_OWNED_FAKE_BLOCK_ANCHORS),
     )
     _OWNED_FAKE_BLOCK_ANCHORS.clear()
+    _OWNED_FAKE_BLOCK_POINTERS.clear()
 
 
 def register_resolver_proven_live_predicate(
@@ -392,7 +421,9 @@ __all__ = [
     "_json_safe",
     "clear_owned_fake_block_registrations",
     "clear_resolver_proven_live_predicates",
+    "has_owned_fake_blocks",
     "is_resolver_proven_live_predicate",
+    "is_owned_fake_block",
     "register_owned_fake_block",
     "register_resolver_proven_live_predicate",
     "repair_owned_fake_block_boundaries",

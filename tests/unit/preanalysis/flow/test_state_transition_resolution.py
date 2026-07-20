@@ -9,6 +9,7 @@ from d810.analyses.control_flow.semantic_transition import (
     StateTransitionFact,
     StateWriteAnchor,
     facts_from_validated_view,
+    rebind_state_write_anchors,
     resolve_state_transitions_with_dispatcher_map,
 )
 from d810.analyses.value_flow.model import FactObservation, ValidatedFactView
@@ -116,6 +117,43 @@ def test_resolves_register_state_and_matching_register_write_anchor() -> None:
     )
 
     assert resolutions[0].resolved_next_state_const_u64 == 0x55
+
+
+def test_state_write_anchor_rebinds_by_instruction_ea_and_abstains_without_it() -> None:
+    rebound = rebind_state_write_anchors(
+        (
+            StateWriteAnchor(
+                block_serial=368,
+                state_const=0x81F82C5E,
+                state_var_reg=20,
+                instruction_ea=0x40D350,
+            ),
+            StateWriteAnchor(
+                block_serial=12,
+                state_const=0x55,
+                state_var_reg=20,
+            ),
+            StateWriteAnchor(
+                block_serial=13,
+                state_const=0x66,
+                state_var_reg=20,
+                instruction_ea=0x40D360,
+            ),
+        ),
+        block_serial_for_instruction_ea=lambda ea: {
+            0x40D350: 369,
+            0x40D360: None,
+        }.get(ea),
+    )
+
+    assert rebound == (
+        StateWriteAnchor(
+            block_serial=369,
+            state_const=0x81F82C5E,
+            state_var_reg=20,
+            instruction_ea=0x40D350,
+        ),
+    )
 
 
 def test_reports_dispatcher_self_loop_target() -> None:

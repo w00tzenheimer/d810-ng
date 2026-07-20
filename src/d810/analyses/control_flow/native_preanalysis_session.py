@@ -5,6 +5,7 @@ optimizer dependency.  The lifecycle coordinator owns one instance directly;
 live adapters may attach a current-generation index separately, but may not
 become the authority for evidence generation or restart decisions.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -63,7 +64,9 @@ class BootstrapRouteEvidence:
     def key(self) -> tuple[StableBlockIdentity, int]:
         return self.source_identity, int(self.state)
 
-    def diagnostic_payload(self, *, generation: int, rebound: bool) -> dict[str, object]:
+    def diagnostic_payload(
+        self, *, generation: int, rebound: bool
+    ) -> dict[str, object]:
         return {
             "source_ea": f"0x{self.source_anchor_ea:X}",
             "state": f"0x{int(self.state):X}",
@@ -113,13 +116,14 @@ class NativePreanalysisSessionState:
     rebound_bootstrap_keys: set[tuple[StableBlockIdentity, int]] = field(
         default_factory=set
     )
-    rebound_bootstrap_generations: dict[
-        tuple[StableBlockIdentity, int], int
-    ] = field(default_factory=dict)
+    rebound_bootstrap_generations: dict[tuple[StableBlockIdentity, int], int] = field(
+        default_factory=dict
+    )
     published_bootstrap_keys: set[tuple[StableBlockIdentity, int]] = field(
         default_factory=set
     )
     redo_generation: int | None = None
+    pending_generated_restart_generation: int | None = None
 
     def mark_evidence_changed(self) -> None:
         """Advance a bound epoch, or coalesce first-pass native evidence.
@@ -132,8 +136,12 @@ class NativePreanalysisSessionState:
         """
         if self.bound_preopt_generation is None and self.evidence_generation > 0:
             return
+        restart_pending = self.pending_generated_restart_generation is not None
         self.evidence_generation += 1
         self.redo_generation = None
+        self.pending_generated_restart_generation = (
+            self.evidence_generation if restart_pending else None
+        )
 
     def merge_bootstrap_route(self, evidence: BootstrapRouteEvidence) -> bool:
         """Merge only changed portable evidence and invalidate PREOPT binding."""
@@ -141,7 +149,10 @@ class NativePreanalysisSessionState:
         current = self.bootstrap_routes.get(key)
         if current == evidence:
             return False
-        if current is not None and current.proof_kind is BootstrapRouteProofKind.STATIC_NATIVE:
+        if (
+            current is not None
+            and current.proof_kind is BootstrapRouteProofKind.STATIC_NATIVE
+        ):
             if evidence.proof_kind is not BootstrapRouteProofKind.STATIC_NATIVE:
                 return False
         if current is not None and current != evidence:
@@ -161,8 +172,7 @@ class NativePreanalysisSessionState:
         if (
             self.bootstrap_routes.get(key) != evidence
             or key in self.conflicted_bootstrap_keys
-            or self.rebound_bootstrap_generations.get(key)
-            == self.evidence_generation
+            or self.rebound_bootstrap_generations.get(key) == self.evidence_generation
         ):
             return False
         self.rebound_bootstrap_keys.add(key)
@@ -209,6 +219,30 @@ class NativePreanalysisSessionState:
         if self.redo_generation == self.evidence_generation:
             return False
         self.redo_generation = self.evidence_generation
+        return True
+
+    @property
+    def has_pending_generated_restart(self) -> bool:
+        """Whether CALLS staged a controller-owned generated-MBA restart."""
+        return self.pending_generated_restart_generation == self.evidence_generation
+
+    def request_generated_restart(self) -> bool:
+        """Stage one CALLS-discovered restart for a later flowchart callback.
+
+        ``hxe_calls_done`` has no documented microcode-error return contract.
+        The owning decompile controller must initiate a follow-up pass; its
+        flowchart callback then consumes this request and returns ``MERR_REDO``.
+        """
+        if not self.request_controlled_redo():
+            return False
+        self.pending_generated_restart_generation = self.evidence_generation
+        return True
+
+    def consume_generated_restart(self) -> bool:
+        """Consume the current generation's staged flowchart restart once."""
+        if not self.has_pending_generated_restart:
+            return False
+        self.pending_generated_restart_generation = None
         return True
 
     def needs_preopt_binding(self) -> bool:
