@@ -214,6 +214,7 @@ _PYTHON_REWRITE_NEEDLES = tuple(
             *NAME_RENAMES,
             *CLI_RENAMES,
             *LITERAL_RENAMES,
+            *(original for original, _replacement in _EMBEDDED_CAMEL_IDENTIFIER_RENAMES),
             "Recon",
             "recon",
             *(f"DecompilationEvent.{name}" for name in EVENT_RENAMES),

@@ -462,6 +462,19 @@ reconstruction_result = reconcile_inputs()
 """
 
 
+def test_rewrite_text_does_not_skip_uppercase_embedded_lifecycle_constant() -> None:
+    mod = _load_module()
+
+    result = mod.rewrite_text(
+        'NORMALIZED_RECON_CFG_SCOPE = "normalized_preanalysis_cfg_fact"\n'
+    )
+
+    assert result.changed
+    assert result.text == (
+        'NORMALIZED_PREANALYSIS_CFG_SCOPE = "normalized_preanalysis_cfg_fact"\n'
+    )
+
+
 def test_scan_inventories_residual_recon_module_imports(tmp_path: Path) -> None:
     mod = _load_module()
     sample = tmp_path / "sample.py"
