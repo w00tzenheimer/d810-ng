@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import sys
 from types import SimpleNamespace
 
@@ -82,6 +83,15 @@ def _site(module, *, block: int = 1, ea: int = 0x180018F75):
         insn_ea=ea,
         proof=SimpleNamespace(reason="drop #0xb5 @blk1"),
     )
+
+
+def test_condition_chain_rebinding_has_no_local_ea_to_serial_authority(
+    glbopt_module,
+) -> None:
+    source = inspect.getsource(glbopt_module.prune_unreachable_condition_chain)
+
+    assert "MbaBlockIdentityIndex.from_mba" in source
+    assert "ea_to_serial" not in source
 
 
 def test_return_const_corruption_cleanup_dry_run_does_not_mutate(

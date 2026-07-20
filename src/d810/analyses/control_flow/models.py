@@ -1,4 +1,9 @@
-"Core data model for the reconnaissance pipeline.\n\nImmutable value objects passed between PreanalysisPhase, AnalysisPhase, and\nRuleScopeService. All public types are frozen dataclasses or NamedTuples.\nNo IDA imports - this module is unit-testable without IDA.\n"
+"""Core data model for the reconnaissance pipeline.
+
+Immutable value objects passed between PreanalysisPhase, AnalysisPhase, and
+RuleScopeService. All public types are frozen dataclasses or NamedTuples.
+No IDA imports - this module is unit-testable without IDA.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -20,6 +20,7 @@ from d810.ir.flowgraph import (
     InsnSnapshot,
     MopSnapshot,
 )
+from d810.ir.block_identity import StableBlockIdentity
 
 
 CONDITIONAL_HANDLER_BRIDGE_KINDS = frozenset(
@@ -135,6 +136,166 @@ class MaterializedIndirectTransfer:
     state_carrier_ida_stkoff: int | None = None
 
 
+_MUTATION_AUTHORITATIVE_TRANSFER_KINDS = frozenset(
+    {
+        "static_fixpoint",
+        "static_equality_fixpoint",
+        "static_equality_route",
+        "detached_static_fixpoint",
+        "static_handler_exit_route",
+        "static_stack_carried_state_choice",
+        "residual_state_route",
+    }
+)
+
+
+def _handler_entry_route_semantic_key(
+    transfer: MaterializedIndirectTransfer,
+) -> tuple[int, int, int] | None:
+    if (
+        transfer.resolver_kind != "static_handler_entry_route"
+        or transfer.selector_state_var_reg is None
+        or transfer.selector_state_constant is None
+        or len(transfer.target_eas) != 1
+        or int(transfer.source_block_ea) <= 0
+        or int(transfer.target_eas[0]) <= 0
+    ):
+        return None
+    return (
+        int(transfer.selector_state_var_reg),
+        int(transfer.selector_state_constant) & 0xFFFFFFFF,
+        int(transfer.target_eas[0]),
+    )
+
+
+def _conditional_bridge_semantic_key(
+    transfer: MaterializedIndirectTransfer,
+) -> tuple[int, frozenset[tuple[int, int]]] | None:
+    if (
+        not is_conditional_handler_bridge_kind(transfer.resolver_kind)
+        or int(transfer.source_jmp_ea) <= 0
+        or transfer.predicate_true_state is None
+        or transfer.predicate_false_state is None
+        or transfer.true_target_ea is None
+        or transfer.false_target_ea is None
+    ):
+        return None
+    arms = frozenset(
+        {
+            (
+                int(transfer.predicate_true_state) & 0xFFFFFFFF,
+                int(transfer.true_target_ea),
+            ),
+            (
+                int(transfer.predicate_false_state) & 0xFFFFFFFF,
+                int(transfer.false_target_ea),
+            ),
+        }
+    )
+    if len(arms) != 2 or {target for _state, target in arms} != {
+        int(target_ea) for target_ea in transfer.target_eas
+    }:
+        return None
+    return int(transfer.selector_state_var_reg or -1), arms
+
+
+def mutation_authoritative_materialized_transfers(
+    transfers: Sequence[MaterializedIndirectTransfer],
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Project accumulated resolver evidence to structural rewrite authority.
+
+    A resolver session intentionally retains observations from multiple MBA
+    generations.  Those observations may refresh diagnostics and portable
+    identity, but they are not all independent permission to mutate the live
+    CFG.  This projection keeps exact delivery facts, rejects entry-dispatch
+    sources that route several states, and admits one predicate only when every
+    observation of its stable jump anchor agrees on the same state/target arms.
+
+    Equivalent predicate observations are ranked by proof provenance: static
+    pre-materialization evidence outranks a later live observation, and the
+    candidate with the largest exact native anchor set outranks a one-anchor
+    re-observation.  Equal-strength disagreement abstains instead of selecting
+    by tuple order or maturity-local block address.
+    """
+    ordered = tuple(transfers)
+    selected: set[MaterializedIndirectTransfer] = {
+        transfer
+        for transfer in ordered
+        if transfer.resolver_kind in _MUTATION_AUTHORITATIVE_TRANSFER_KINDS
+    }
+
+    entry_routes = tuple(
+        transfer
+        for transfer in ordered
+        if _handler_entry_route_semantic_key(transfer) is not None
+    )
+    entry_semantics_by_source: dict[int, set[tuple[int, int, int]]] = {}
+    for transfer in entry_routes:
+        semantic_key = _handler_entry_route_semantic_key(transfer)
+        assert semantic_key is not None
+        entry_semantics_by_source.setdefault(
+            int(transfer.source_block_ea), set()
+        ).add(semantic_key)
+    navigation_sources = frozenset(
+        source_ea
+        for source_ea, semantics in entry_semantics_by_source.items()
+        if len(semantics) != 1
+    )
+    entry_candidates: dict[
+        tuple[int, int, int], set[MaterializedIndirectTransfer]
+    ] = {}
+    for transfer in entry_routes:
+        if int(transfer.source_block_ea) in navigation_sources:
+            continue
+        semantic_key = _handler_entry_route_semantic_key(transfer)
+        assert semantic_key is not None
+        entry_candidates.setdefault(semantic_key, set()).add(transfer)
+    for candidates in entry_candidates.values():
+        if len(candidates) == 1:
+            selected.update(candidates)
+
+    bridges_by_source: dict[int, list[MaterializedIndirectTransfer]] = {}
+    for transfer in ordered:
+        if is_conditional_handler_bridge_kind(transfer.resolver_kind):
+            bridges_by_source.setdefault(int(transfer.source_jmp_ea), []).append(
+                transfer
+            )
+    for candidates in bridges_by_source.values():
+        semantic_keys = {
+            semantic_key
+            for transfer in candidates
+            for semantic_key in (_conditional_bridge_semantic_key(transfer),)
+            if semantic_key is not None
+        }
+        if len(semantic_keys) != 1 or any(
+            _conditional_bridge_semantic_key(transfer) is None
+            for transfer in candidates
+        ):
+            continue
+        ranked: dict[tuple[int, int], set[MaterializedIndirectTransfer]] = {}
+        for transfer in candidates:
+            rank = (
+                int(
+                    transfer.resolver_kind
+                    == "static_conditional_state_choice_bridge"
+                ),
+                len(frozenset(int(ea) for ea in transfer.materialized_anchor_eas)),
+            )
+            ranked.setdefault(rank, set()).add(transfer)
+        strongest = ranked[max(ranked)]
+        if len(strongest) == 1:
+            selected.update(strongest)
+
+    result: list[MaterializedIndirectTransfer] = []
+    seen: set[MaterializedIndirectTransfer] = set()
+    for transfer in ordered:
+        if transfer not in selected or transfer in seen:
+            continue
+        result.append(transfer)
+        seen.add(transfer)
+    return tuple(result)
+
+
 @dataclass(frozen=True, slots=True)
 class MaterializedStateRoute:
     """One exact logical-CFG route proven for a concrete state write.
@@ -164,6 +325,27 @@ class MaterializedStateRoute:
     source_native_ea: int | None = None
     #: Stable native identity of a terminal endpoint omitted from the live
     #: FlowGraph.  The route target serial then names the canonical STOP.
+    target_native_ea: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PortableMaterializedStateRoute:
+    """Serial-free state route carried across regenerated MBA maturities.
+
+    The native CALLS graph proves the logical edge while all three block
+    coordinates still have native identities.  A later imported MBA may use
+    the edge only after each identity rebinds uniquely and the current
+    state-to-handler map agrees with the rebound target.
+    """
+
+    source_identity: StableBlockIdentity
+    state_constant: int
+    target_identity: StableBlockIdentity | None
+    source_handler_identity: StableBlockIdentity | None = None
+    source_handler_region_identity: StableBlockIdentity | None = None
+    handler_exit_proven: bool = False
+    proof_kind: str = "state_route"
+    source_native_ea: int | None = None
     target_native_ea: int | None = None
 
 

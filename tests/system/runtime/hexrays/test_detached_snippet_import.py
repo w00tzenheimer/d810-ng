@@ -11,6 +11,13 @@ import pytest
 
 from d810.hexrays.mutation import detached_handler_island
 from d810.hexrays.mutation import cfg_verify
+from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+from d810.ir.block_identity import (
+    BlockHandleProvenance,
+    NativeEaInterval,
+    StableBlockIdentity,
+)
 
 
 class _Operand:
@@ -20,6 +27,8 @@ class _Operand:
         *,
         size: int = 4,
         stack_offset: int | None = None,
+        lvar_index: int | None = None,
+        lvar_offset: int = 0,
         address: "_Operand | None" = None,
         nested: "_Instruction | None" = None,
         arguments: tuple["_Operand", ...] = (),
@@ -33,6 +42,11 @@ class _Operand:
         self.s = (
             SimpleNamespace(off=int(stack_offset)) if stack_offset is not None else None
         )
+        self.l = (
+            SimpleNamespace(idx=int(lvar_index), off=int(lvar_offset))
+            if lvar_index is not None
+            else None
+        )
         self.a = address
         self.d = nested
         self.f = SimpleNamespace(args=list(arguments))
@@ -41,9 +55,9 @@ class _Operand:
         self.g = int(target_ea)
         self.nnn = SimpleNamespace(value=int(value or 0))
 
-    def make_stkvar(self, _mba: object, stack_offset: int) -> None:
+    def make_stkvar(self, mba: object, stack_offset: int) -> None:
         self.t = int(ida_hexrays.mop_S)
-        self.s = SimpleNamespace(off=int(stack_offset))
+        self.s = SimpleNamespace(off=int(stack_offset), mba=mba)
 
     def make_blkref(self, serial: int) -> None:
         self.t = int(ida_hexrays.mop_b)
@@ -302,10 +316,10 @@ def _fake_minsn(instruction: _Instruction | int) -> _Instruction:
     return copy.deepcopy(instruction)
 
 
-def _install_runtime_fakes(monkeypatch) -> list[tuple[int, int]]:
+def _install_runtime_fakes(monkeypatch) -> list[tuple[object, int, int]]:
     from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
-    created: list[tuple[int, int]] = []
+    created: list[tuple[object, int, int]] = []
 
     def create_standalone_block(
         modifier: DeferredGraphModifier,
@@ -315,6 +329,8 @@ def _install_runtime_fakes(monkeypatch) -> list[tuple[int, int]]:
         target_serial: int | None = None,
         is_0_way: bool = False,
         verify: bool = True,
+        stable_identity: object | None = None,
+        handle_provenance: BlockHandleProvenance = BlockHandleProvenance.NATIVE,
     ) -> int:
         assert ref_serial == 0
         assert not blk_ins
@@ -322,6 +338,14 @@ def _install_runtime_fakes(monkeypatch) -> list[tuple[int, int]]:
         assert is_0_way is True
         assert verify is False
         mba = modifier.mba
+        for prior_mba, prior_serial, _anchor_ea in created:
+            if prior_mba is not mba:
+                continue
+            prior = mba.get_mblock(prior_serial)
+            assert int(prior.flags) & int(ida_hexrays.MBL_FAKE)
+            assert int(prior.start) == int(mba.entry_ea)
+            assert int(prior.end) == int(mba.entry_ea) + 1
+        old_qty = int(mba.qty)
         serial = mba.qty
         anchor_ea = 0xF00000 + serial
         block = _Block(
@@ -330,7 +354,21 @@ def _install_runtime_fakes(monkeypatch) -> list[tuple[int, int]]:
             (_Instruction(ida_hexrays.m_nop, anchor_ea),),
         )
         mba.append_block(block)
-        created.append((serial, anchor_ea))
+        if modifier._mutation_gateway is not None:
+            handle = (
+                None
+                if stable_identity is None
+                else modifier._mutation_gateway.identity_index.create_native_handle(
+                    stable_identity,
+                    provenance=handle_provenance,
+                )
+            )
+            modifier._record_serial_insertion(
+                serial,
+                old_qty,
+                created=handle,
+            )
+        created.append((mba, serial, anchor_ea))
         return serial
 
     monkeypatch.setattr(
@@ -465,6 +503,9 @@ def test_recursively_rebases_all_stack_operand_shapes(monkeypatch) -> None:
         (_Block(0, target_ea, (source_instruction,)),),
         vd_to_ida_delta=0x1000,
     )
+    for operand in detached_handler_island._instruction_operands(source_instruction):
+        if int(operand.t) == int(ida_hexrays.mop_S):
+            operand.s.mba = source
     destination = _MBA(
         (
             _Block(
@@ -499,6 +540,59 @@ def test_recursively_rebases_all_stack_operand_shapes(monkeypatch) -> None:
     imported_arg = imported.d.d.r.f.args[0]
     assert int(imported_arg.s.off) == source_offsets[3] + stable_destination_delta
     assert int(imported_arg.size) == 8
+    assert all(
+        operand.s.mba is destination
+        for operand in detached_handler_island._instruction_operands(imported)
+        if int(operand.t) == int(ida_hexrays.mop_S)
+    )
+
+
+def test_local_variable_operand_abstains_before_destination_mutation(monkeypatch) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40C4F6
+    source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_mov,
+                        target_ea,
+                        left=_Operand(ida_hexrays.mop_l, lvar_index=7),
+                    ),
+                ),
+            ),
+        ),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+    )
+
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, target_ea + 1),),
+    )
+    original_qty = int(destination.qty)
+
+    assert (
+        detached_handler_island.materialize_detached_snippet_templates(
+            destination,
+            function_ea,
+            (target_ea,),
+        )
+        == {}
+    )
+    assert int(destination.qty) == original_qty
 
 
 def test_transparent_empty_entry_uses_first_anchored_successor_as_root(
@@ -640,6 +734,53 @@ def test_range_capture_bypasses_empty_split_to_owned_successor(
     entry = next(block for block in template.blocks if block.source_serial == 0)
     assert entry.successor_serials == (2,)
     assert entry.external_successor_eas == (0,)
+
+
+def test_preopt_union_capture_rebinds_resolver_proven_internal_successor(
+    monkeypatch,
+) -> None:
+    """A synthetic PREOPT exit is rebound only through native-EA proof."""
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40D200
+    source_ea = 0x40F819
+    resolver_ea = 0x40F81F
+    target_ea = 0x40E5C0
+    synthetic_exit = 0xFFFFFFFFFFFFFFFF
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_ea,
+                (_Instruction(ida_hexrays.m_icall, resolver_ea),),
+                (2,),
+            ),
+            _Block(
+                1,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+            ),
+            _Block(2, synthetic_exit, ()),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        source_ea,
+        source,
+        ((target_ea, target_ea + 1), (source_ea, resolver_ea + 1)),
+        owned_block_entry_eas=(source_ea, target_ea),
+        resolver_proven_internal_successor_eas={resolver_ea: target_ea},
+    )
+    template = detached_handler_island._PREOPT_UNION_SNIPPET_TEMPLATES[
+        (function_ea, source_ea)
+    ]
+    captured_source = next(
+        block for block in template.blocks if block.native_entry_ea == source_ea
+    )
+    assert captured_source.successor_serials == (1,)
+    assert captured_source.external_successor_eas == (0,)
 
 
 def test_range_capture_includes_resolver_created_leader_without_native_anchor(
@@ -6258,6 +6399,7 @@ def test_import_boundary_port_restores_pruned_live_conditional(
     # while the imported-root lineage still relocates that native target to a
     # surviving merged block.  Querying the applied evidence must refresh the
     # arm anchors from that live root instead of returning stale PREOPT anchors.
+    taken_block._set_instructions(())
     rebound_anchor_ea = 0xF20000
     rebound_taken_block = _Block(
         destination.qty,
@@ -6273,6 +6415,9 @@ def test_import_boundary_port_restores_pruned_live_conditional(
             owned_instruction_eas=(rebound_anchor_ea,),
         )
     )
+    detached_handler_island._IMPORTED_INSTRUCTION_ORIGINS[
+        (identity, rebound_anchor_ea)
+    ] = taken_target_ea
 
     rebound_evidence = (
         detached_handler_island.imported_detached_snippet_conditional_boundary_evidence(
@@ -8084,6 +8229,122 @@ def test_preopt_union_capture_owns_instruction_backed_range_splits(
     assert secondary is not None
     assert secondary.head is not None
     assert int(secondary.head.ea) != split_ea
+
+
+def test_preopt_union_import_publishes_native_blocks_to_session_identity_index(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    target_ea = 0x40EAA7
+    source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (_Instruction(ida_hexrays.m_mov, target_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, target_ea + 1),),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    session_id = "rhad.i64:0xB000:1"
+    entry_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(function_ea, function_ea + 1),)
+    )
+    imported_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(target_ea, target_ea + 1),)
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=0,
+        bindings=((entry_identity, 0),),
+        session_id=session_id,
+    )
+    gateway = MbaMutationGateway(
+        session_id=session_id,
+        function_ea=function_ea,
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+        identity_index=index,
+    )
+
+    roots = detached_handler_island.materialize_preopt_union_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+        mutation_gateway=gateway,
+    )
+
+    rebound = index.rebind_identity(imported_identity)
+    assert rebound.block is not None
+    assert rebound.block.serial == roots[target_ea]
+    assert rebound.block.handle.provenance is BlockHandleProvenance.IMPORTED_NATIVE
+    assert index.rebind_imported_identity(imported_identity).block == rebound.block
+    assert index.generation == 1
+
+
+def test_preopt_union_import_barrier_rejects_same_mba_reentry(monkeypatch) -> None:
+    mba = SimpleNamespace(this=0x1234)
+    observed: list[bool] = []
+
+    def materialize(*_args, **_kwargs):
+        observed.append(
+            detached_handler_island.preopt_union_import_in_progress(mba)
+        )
+        assert (
+            detached_handler_island.materialize_preopt_union_snippet_templates(
+                mba,
+                0xB000,
+                (0x40EAA7,),
+            )
+            == {}
+        )
+        return {0x40EAA7: 7}
+
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_materialize_detached_snippet_templates",
+        materialize,
+    )
+
+    result = detached_handler_island.materialize_preopt_union_snippet_templates(
+        mba,
+        0xB000,
+        (0x40EAA7,),
+    )
+
+    assert result == {0x40EAA7: 7}
+    assert observed == [True]
+    assert not detached_handler_island.preopt_union_import_in_progress(mba)
+
+
+def test_zero_width_template_sentinel_has_no_native_identity() -> None:
+    sentinel = detached_handler_island.DetachedSnippetBlockTemplate(
+        source_serial=0,
+        native_entry_ea=0x40F821,
+        native_end_ea=0x40F821,
+        instructions=(),
+        block_type=int(ida_hexrays.BLT_0WAY),
+        block_flags=0,
+        successor_serials=(),
+        external_successor_eas=(),
+    )
+
+    assert detached_handler_island._template_block_stable_identity(sentinel) is None
 
 
 def test_template_ranges_backfill_microcode_silent_native_entry() -> None:
