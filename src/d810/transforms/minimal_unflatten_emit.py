@@ -25,6 +25,7 @@ emits ``GraphModification`` values compiled to a ``PatchPlan``.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 import re
 import hashlib
@@ -91,7 +92,11 @@ from d810.core.observability_preanalysis import (
     observe_branch_witness_decisions,
     observe_exit_path_shortcut_decisions,
 )
-from d810.ir.block_identity import block_label
+from d810.ir.block_identity import (
+    NativeEaInterval,
+    StableBlockIdentity,
+    block_label,
+)
 from d810.ir.flowgraph import BlockKind, InsnKind, OperandKind
 from d810.ir.semantics import PredicateKind
 from d810.transforms.exit_path_liveness_policy import (
@@ -1217,6 +1222,209 @@ def _strict_paths_converge_on_indirect_endpoint(
     return tuple(path_definitions)
 
 
+def _applied_resolver_cut_conditional_endpoints(
+    flow_graph,
+    evidence_rows: tuple[AppliedDetachedSnippetConditionalBoundaryPort, ...],
+    *,
+    router_blocks: frozenset[int],
+    state_var_reg: int,
+) -> dict[int, frozenset[tuple[str, int]]]:
+    """Bind exact applied resolver-cut predicates whose arms enter routers."""
+    routers = frozenset(int(serial) for serial in router_blocks)
+    endpoints: dict[int, frozenset[tuple[str, int]]] = {}
+
+    def anchored_blocks(anchor_eas: tuple[int, ...]) -> set[int]:
+        anchors = {int(ea) for ea in anchor_eas}
+        return {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if any(int(insn.ea) in anchors for insn in block.insn_snapshots)
+        }
+
+    for evidence in evidence_rows:
+        port = evidence.port
+        if (
+            port.resolver_kind != "resolver_proven_register_compare_cut"
+            or port.logical_source_anchor_ea is not None
+            or port.taken_target_ea == port.fallthrough_target_ea
+        ):
+            continue
+        predicate_blocks = {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if int(block.nsucc) == 2
+            and block.insn_snapshots
+            and block.insn_snapshots[-1].is_conditional_jump
+            and int(block.insn_snapshots[-1].ea) == int(port.predicate_ea)
+        }
+        taken_targets = anchored_blocks(evidence.taken_target_anchor_eas)
+        fallthrough_targets = anchored_blocks(
+            evidence.fallthrough_target_anchor_eas
+        )
+        if logger.info_on:
+            logger.info(
+                "applied resolver-cut conditional candidate: predicate=0x%X "
+                "predicate_blocks=%s taken_blocks=%s fallthrough_blocks=%s "
+                "taken_router=%s fallthrough_router=%s",
+                int(port.predicate_ea),
+                [
+                    _format_block_label(flow_graph, serial)
+                    for serial in sorted(predicate_blocks)
+                ],
+                [
+                    _format_block_label(flow_graph, serial)
+                    for serial in sorted(taken_targets)
+                ],
+                [
+                    _format_block_label(flow_graph, serial)
+                    for serial in sorted(fallthrough_targets)
+                ],
+                bool(taken_targets and taken_targets <= routers),
+                bool(fallthrough_targets and fallthrough_targets <= routers),
+            )
+        if (
+            len(predicate_blocks) != 1
+            or len(taken_targets) != 1
+            or len(fallthrough_targets) != 1
+        ):
+            continue
+        endpoint = next(iter(predicate_blocks))
+        taken_target = next(iter(taken_targets))
+        fallthrough_target = next(iter(fallthrough_targets))
+        if (
+            taken_target not in routers
+            or fallthrough_target not in routers
+            or taken_target == fallthrough_target
+        ):
+            continue
+        block = flow_graph.get_block(endpoint)
+        assert block is not None
+        tail = block.insn_snapshots[-1]
+        taken_start = tail.d.block_ref if tail.d is not None else None
+        if taken_start is None or int(taken_start) not in block.succs:
+            continue
+        fallthrough_starts = tuple(
+            int(successor)
+            for successor in block.succs
+            if int(successor) != int(taken_start)
+        )
+        if len(fallthrough_starts) != 1:
+            continue
+        taken_proof = _strict_one_way_path_enters_region(
+            flow_graph,
+            int(taken_start),
+            frozenset({taken_target}),
+            state_var_reg=int(state_var_reg),
+        )
+        fallthrough_proof = _strict_one_way_path_enters_region(
+            flow_graph,
+            fallthrough_starts[0],
+            frozenset({fallthrough_target}),
+            state_var_reg=int(state_var_reg),
+        )
+        if taken_proof is None or fallthrough_proof is None:
+            if logger.info_on:
+                logger.info(
+                    "applied resolver-cut conditional abstained: predicate=0x%X "
+                    "gate=arm_path taken=%s fallthrough=%s",
+                    int(port.predicate_ea),
+                    taken_proof is not None,
+                    fallthrough_proof is not None,
+                )
+            continue
+        definitions = frozenset({*taken_proof, *fallthrough_proof})
+        existing = endpoints.get(endpoint)
+        if existing is not None and existing != definitions:
+            endpoints.pop(endpoint, None)
+            continue
+        endpoints[endpoint] = definitions
+    return endpoints
+
+
+def _strict_paths_converge_on_applied_conditional_endpoint(
+    flow_graph,
+    start_serials: tuple[int, ...],
+    endpoint_definitions: Mapping[int, frozenset[tuple[str, int]]],
+    *,
+    state_var_reg: int,
+    max_hops: int = 8,
+) -> tuple[frozenset[tuple[str, int]], ...] | None:
+    """Prove pure one-way arms converge on one receipt-bound predicate."""
+    if len(start_serials) < 2 or not endpoint_definitions:
+        return None
+    endpoints: list[int] = []
+    path_definitions: list[frozenset[tuple[str, int]]] = []
+    forbidden_kinds = {
+        InsnKind.CALL,
+        InsnKind.COND_JUMP,
+        InsnKind.EQUALITY_JUMP,
+        InsnKind.GOTO,
+        InsnKind.INDIRECT_JUMP,
+        InsnKind.RET,
+        InsnKind.STORE,
+        InsnKind.TABLE_JUMP,
+    }
+    for start_serial in start_serials:
+        current = int(start_serial)
+        seen: set[int] = set()
+        definitions: set[tuple[str, int]] = set()
+        endpoint: int | None = None
+        for _hop in range(int(max_hops) + 1):
+            if current in endpoint_definitions:
+                endpoint = current
+                definitions.update(endpoint_definitions[current])
+                break
+            if current in seen:
+                return None
+            seen.add(current)
+            block = flow_graph.get_block(current)
+            if block is None or int(block.nsucc) != 1:
+                return None
+            semantic_insns = tuple(
+                instruction
+                for instruction in block.insn_snapshots
+                if instruction.kind is not InsnKind.NOP
+            )
+            goto_insns = tuple(
+                instruction
+                for instruction in semantic_insns
+                if instruction.kind is InsnKind.GOTO
+            )
+            if (
+                len(goto_insns) > 1
+                or (goto_insns and semantic_insns[-1] is not goto_insns[0])
+            ):
+                return None
+            for instruction in semantic_insns[:-1] if goto_insns else semantic_insns:
+                destination = instruction.d
+                if (
+                    instruction.kind in forbidden_kinds
+                    or destination is None
+                    or destination.kind is not OperandKind.REGISTER
+                    or destination.reg is None
+                    or int(destination.reg) == int(state_var_reg)
+                ):
+                    return None
+                definitions.add(("reg", int(destination.reg)))
+            successor = int(block.succs[0])
+            if goto_insns:
+                destination = goto_insns[0].d
+                if (
+                    destination is not None
+                    and destination.block_ref is not None
+                    and int(destination.block_ref) != successor
+                ):
+                    return None
+            current = successor
+        if endpoint is None:
+            return None
+        endpoints.append(endpoint)
+        path_definitions.append(frozenset(definitions))
+    if len(set(endpoints)) != 1:
+        return None
+    return tuple(path_definitions)
+
+
 def _resolver_cut_endpoint_serials(
     flow_graph,
     evidence_rows: tuple[AppliedDetachedSnippetDirectBoundaryPort, ...],
@@ -1453,6 +1661,9 @@ def build_stack_carried_state_selector_lowerings(
     imported_direct_boundary_evidence: tuple[
         AppliedDetachedSnippetDirectBoundaryPort, ...
     ] = (),
+    imported_conditional_boundary_evidence: tuple[
+        AppliedDetachedSnippetConditionalBoundaryPort, ...
+    ] = (),
     imported_native_eas_by_serial: Mapping[int, frozenset[int]] | None = None,
     handler_entry_eas_by_serial: Mapping[int, int] | None = None,
     state_carrier_vd_stkoffs_by_store_ea: Mapping[int, int] | None = None,
@@ -1487,6 +1698,40 @@ def build_stack_carried_state_selector_lowerings(
             imported_endpoint_serials=resolver_cut_endpoints,
         )
     )
+    if logger.info_on and imported_conditional_boundary_evidence:
+        logger.info(
+            "applied conditional boundary inventory: %s",
+            [
+                {
+                    "predicate": f"0x{int(evidence.port.predicate_ea):X}",
+                    "kind": evidence.port.resolver_kind,
+                    "logical_source": (
+                        None
+                        if evidence.port.logical_source_anchor_ea is None
+                        else f"0x{int(evidence.port.logical_source_anchor_ea):X}"
+                    ),
+                }
+                for evidence in imported_conditional_boundary_evidence
+            ],
+        )
+    applied_conditional_endpoints = (
+        _applied_resolver_cut_conditional_endpoints(
+            flow_graph,
+            imported_conditional_boundary_evidence,
+            router_blocks=router_blocks,
+            state_var_reg=state_register,
+        )
+    )
+    if logger.info_on:
+        logger.info(
+            "applied resolver-cut conditional endpoints: %s",
+            {
+                _format_block_label(flow_graph, serial): sorted(definitions)
+                for serial, definitions in sorted(
+                    applied_conditional_endpoints.items()
+                )
+            },
+        )
     handler_entry_eas = handler_entry_eas_by_serial or {}
     imported_native_eas = imported_native_eas_by_serial or {}
     carrier_vd_stkoffs = state_carrier_vd_stkoffs_by_store_ea or {}
@@ -1711,6 +1956,17 @@ def build_stack_carried_state_selector_lowerings(
                         terminal_proofs.append(proof)
                 if len(terminal_proofs) == 1:
                     converged_definitions = terminal_proofs[0]
+            if converged_definitions is None and (
+                direct_folded_stack_source or loaded_stack_source is not None
+            ):
+                converged_definitions = (
+                    _strict_paths_converge_on_applied_conditional_endpoint(
+                        flow_graph,
+                        tuple(int(successor) for successor in consumer.succs),
+                        applied_conditional_endpoints,
+                        state_var_reg=state_register,
+                    )
+                )
             if converged_definitions is None:
                 if logger.info_on:
                     logger.info(
@@ -2412,6 +2668,7 @@ def build_state_write_redirects(
     infer_unmatched_returns: bool = True,
     entry_bridge_evidence: EntryBridgeEvidence | None = None,
     conditional_entry_bridge: ConditionalEntryBridgePlan | None = None,
+    exact_entry_bridge_present: bool = False,
     protected_edges: frozenset[tuple[int, int]] = frozenset(),
     dynamic_entry_bridge_edges: frozenset[tuple[int, int]] = frozenset(),
 ) -> list[object]:
@@ -2698,6 +2955,7 @@ def build_state_write_redirects(
         disp is not None
         and initial_state is None
         and len(prologue_preds) >= 2
+        and not exact_entry_bridge_present
         and not dynamic_entry_bridge_edges
     ):
         arm_routes: list[tuple[int, int]] = []  # (write_block, handler)
@@ -2735,6 +2993,7 @@ def build_state_write_redirects(
         and state_var_reg is not None
         and not conditional_entry_arms
         and conditional_entry_bridge is None
+        and not exact_entry_bridge_present
         and not dynamic_entry_bridge_edges
     ):
         for pred, merge, handler in _recover_register_conditional_entry(
@@ -2763,6 +3022,7 @@ def build_state_write_redirects(
         and disp is not None
         and not conditional_entry_arms
         and not register_entry_arms
+        and not exact_entry_bridge_present
         and not dynamic_entry_bridge_edges
     ):
         first = _resolve_state_target(int(initial_state))
@@ -6469,6 +6729,9 @@ def build_folded_loop_guard_transitions(
     fact_view,
     *,
     dispatcher_entry_serial: int,
+    block_serial_for_native_identity: Callable[
+        [StableBlockIdentity], int | None
+    ] | None = None,
 ):
     """Recover folded counted-loop guards as conditional state edges.
 
@@ -6506,14 +6769,10 @@ def build_folded_loop_guard_transitions(
     if not guard_facts:
         return []
 
+    if block_serial_for_native_identity is None:
+        return []
+
     disp = int(dispatcher_entry_serial)
-    # Map guard EA -> the live guard handler block (serial is maturity-local, EA
-    # is the stable cross-maturity key).
-    serial_by_ea: dict[int, int] = {}
-    for serial in flow_graph.blocks:
-        blk = flow_graph.get_block(serial)
-        if blk is not None:
-            serial_by_ea[int(getattr(blk, "start_ea", -1))] = int(serial)
 
     # Self-loop guards the back-edge model produced (write_block routes to
     # itself) -- the folded-guard symptom we replace.
@@ -6531,9 +6790,14 @@ def build_folded_loop_guard_transitions(
         guard_ea = payload.get("guard_ea")
         if guard_ea is None:
             continue
-        guard_serial = serial_by_ea.get(int(guard_ea))
+        guard_ea = int(guard_ea)
+        guard_identity = StableBlockIdentity.from_intervals(
+            (NativeEaInterval(guard_ea, guard_ea + 1),)
+        )
+        guard_serial = block_serial_for_native_identity(guard_identity)
         if guard_serial is None or guard_serial not in self_loop_guards:
             continue
+        guard_serial = int(guard_serial)
         body_state = payload.get("body_state")
         exit_state = payload.get("exit_state")
         counter_stkoff = payload.get("counter_stkoff")
@@ -6612,6 +6876,9 @@ def build_folded_loop_guard_lowerings(
     fact_view,
     *,
     dispatcher_entry_serial: int,
+    block_serial_for_native_identity: Callable[
+        [StableBlockIdentity], int | None
+    ] | None = None,
 ):
     """Compatibility wrapper: recover then lower folded guard transitions."""
     return lower_conditional_transition_candidates(
@@ -6621,6 +6888,9 @@ def build_folded_loop_guard_lowerings(
             transitions,
             fact_view,
             dispatcher_entry_serial=dispatcher_entry_serial,
+            block_serial_for_native_identity=(
+                block_serial_for_native_identity
+            ),
         )
     )
 
@@ -6955,6 +7225,9 @@ def emit_minimal_unflatten(
     dispatcher_region_serials: frozenset[int] = frozenset(),
     entry_bridge_evidence: EntryBridgeEvidence | None = None,
     bound_bootstrap_routes: tuple[BootstrapRouteBindingEvidence, ...] = (),
+    block_serial_for_native_identity: Callable[
+        [StableBlockIdentity], int | None
+    ] | None = None,
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 
@@ -7169,6 +7442,9 @@ def emit_minimal_unflatten(
                 materialized_indirect_transfers=materialized_indirect_transfers,
                 imported_direct_boundary_evidence=(
                     imported_direct_boundary_evidence
+                ),
+                imported_conditional_boundary_evidence=(
+                    imported_conditional_boundary_evidence
                 ),
                 imported_native_eas_by_serial=imported_native_eas_by_serial,
                 handler_entry_eas_by_serial=handler_entry_eas_by_serial,
@@ -7541,6 +7817,9 @@ def emit_minimal_unflatten(
         infer_unmatched_returns=not materialized_computed_goto_profile,
         entry_bridge_evidence=entry_bridge_evidence,
         conditional_entry_bridge=conditional_entry_bridge,
+        exact_entry_bridge_present=bool(
+            bootstrap_entry_routes or materialized_entry_route_mods
+        ),
         protected_edges=frozenset(
             {
                 *conditional_boundary_edges,
@@ -7893,6 +8172,9 @@ def emit_minimal_unflatten(
             transitions,
             fact_view,
             dispatcher_entry_serial=int(dispatcher_entry_serial),
+            block_serial_for_native_identity=(
+                block_serial_for_native_identity
+            ),
         )
         guard_lowerings, suppressed = lower_conditional_transition_candidates(
             guard_candidates
