@@ -1,7 +1,10 @@
 """Manager gate for session-owned pre-decompile resolver evidence."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
+
+import pytest
 
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
@@ -49,8 +52,16 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
     )
     monkeypatch.setattr(
         computed_goto_resolver,
+        "stage_computed_goto_preanalysis",
+        lambda function_ea, *, state: calls.append(("stage", state)) or resolution,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
         "resolve_and_materialize",
-        lambda function_ea, *, state: calls.append(("resolve", state)) or resolution,
+        lambda *_args, **_kwargs: pytest.fail(
+            "manager preflight must preserve the prepatch PREOPT source"
+        ),
     )
     monkeypatch.setattr(
         computed_goto_resolver,
@@ -69,13 +80,15 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
     assert manager.prepare_native_preanalysis(0x401000) == 3
 
     state = resolver_session_state(session)
+    # Session events belong to the coordinator. The manager must not mirror
+    # the event when its preflight reuses that permanent lifecycle port.
     assert events == []
     assert calls == [
         (
             "ensure",
             {"function_ea": 0x401000, "database_identity": "sample.i64"},
         ),
-        ("resolve", state),
+        ("stage", state),
         ("preanalysis.begin", session),
         ("discover-bootstrap", 0x401000, state),
         ("prepare", state),
@@ -83,3 +96,42 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
     ]
     assert state.materialization is not None
     assert state.materialization.resolution is resolution
+
+
+def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+    pending = iter((True, False))
+
+    class _Lifecycle:
+        @staticmethod
+        def has_pending_generated_restart(function_ea: int) -> bool:
+            calls.append(("pending", function_ea))
+            return next(pending)
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(
+        manager,
+        "prepare_native_preanalysis",
+        lambda function_ea: calls.append(("prepare", function_ea)) or 0,
+    )
+
+    rounds = iter(("first", "final"))
+    result = manager.decompile_with_native_preanalysis(
+        0x401000,
+        lambda: calls.append(("decompile", 0x401000)) or next(rounds),
+        lambda: calls.append(("invalidate", 0x401000)),
+    )
+
+    assert result == "final"
+    assert calls == [
+        ("prepare", 0x401000),
+        ("decompile", 0x401000),
+        ("pending", 0x401000),
+        ("prepare", 0x401000),
+        ("invalidate", 0x401000),
+        ("decompile", 0x401000),
+        ("pending", 0x401000),
+    ]

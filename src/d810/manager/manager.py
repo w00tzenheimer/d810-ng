@@ -10,10 +10,7 @@ from d810.core import (
     MOP_TO_AST_CACHE,
     typing,
 )
-from d810.core.decompilation_session import (
-    DecompilationEvent,
-    DecompilationSessionEvent,
-)
+from d810.core.decompilation_session import DecompilationSessionEvent
 from d810.core.logging import getLogger
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.project import (
@@ -40,6 +37,7 @@ from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+from d810.core.decompilation_session import DecompilationEvent
 from d810.hexrays.lifecycle import HEXRAYS_MICROCODE_PROVIDER
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 from d810.optimizers.microcode.instructions.handler import (
@@ -89,17 +87,41 @@ def _build_current_mba_identity_index(*, session, mba):
     """Hex-Rays-owned live-index port injected into the lifecycle coordinator."""
     from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
     from d810.hexrays.mutation.ir_translator import lift
+    from d810.hexrays.mutation.detached_handler_island import (
+        imported_detached_snippet_instruction_origins,
+    )
     from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
         resolver_session_state,
     )
 
+    state = resolver_session_state(session)
+    if state.preopt_union_import_active and state.identity_index is not None:
+        return state.identity_index
+
+    flow_graph = lift(mba)
+    imported_instruction_origins = dict(
+        imported_detached_snippet_instruction_origins(mba)
+    )
+    imported_native_eas_by_serial = {
+        int(block.serial): frozenset(
+            int(imported_instruction_origins[int(instruction.ea)])
+            for instruction in block.insn_snapshots
+            if int(instruction.ea) in imported_instruction_origins
+        )
+        for block in flow_graph.blocks.values()
+        if any(
+            int(instruction.ea) in imported_instruction_origins
+            for instruction in block.insn_snapshots
+        )
+    }
     index = MbaBlockIdentityIndex.from_flow_graph(
         generation=0,
         evidence_generation=session.native_preanalysis.evidence_generation,
-        flow_graph=lift(mba),
+        flow_graph=flow_graph,
         session_id=session.identity_key,
+        imported_native_eas_by_serial=imported_native_eas_by_serial,
     )
-    resolver_session_state(session).bind_current_mba(index)
+    state.bind_current_mba(index)
     return index
 
 
@@ -249,7 +271,7 @@ class D810Manager:
                 _has_unresolved_computed_goto,
                 discover_static_native_bootstrap_routes,
                 prepare_detached_handler_snippets,
-                resolve_and_materialize,
+                stage_computed_goto_preanalysis,
             )
             from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
                 resolver_session_state,
@@ -262,7 +284,10 @@ class D810Manager:
             if resolution is None:
                 if not _has_unresolved_computed_goto(function_ea):
                     return 0
-                resolution = resolve_and_materialize(function_ea, state=state)
+                resolution = stage_computed_goto_preanalysis(
+                    function_ea,
+                    state=state,
+                )
                 if resolution is None or not resolution.jmp_targets:
                     return 0
             if state.materialization is None and not state.materialized:
@@ -280,6 +305,32 @@ class D810Manager:
                 exc_info=True,
             )
             return 0
+
+    def decompile_with_native_preanalysis(
+        self,
+        function_ea: int,
+        decompile: typing.Callable[[], typing.Any],
+        invalidate_cached_cfunc: typing.Callable[[], None],
+    ) -> typing.Any:
+        """Run one top-level decompile plus at most one generated retry.
+
+        CALLS can stage evidence for PREOPT but cannot restart generated
+        microcode. This manager-owned controller performs the follow-up only
+        after the first decompile unwinds; the retained session lets its
+        flowchart callback issue the one supported ``MERR_REDO``.
+        """
+        function_ea = int(function_ea)
+        result: typing.Any = None
+        for _round in range(2):
+            self.prepare_native_preanalysis(function_ea)
+            if _round:
+                invalidate_cached_cfunc()
+            result = decompile()
+            if not self.decompilation_lifecycle.has_pending_generated_restart(
+                function_ea
+            ):
+                break
+        return result
 
     @property
     def storage(self):
@@ -333,7 +384,7 @@ class D810Manager:
                 importlib.import_module(module_name)
             except Exception:
                 logger.exception(
-                    "Preanalysis fact profile module load failed: %s",
+                    "Preanalysis profile module load failed: %s",
                     module_name,
                 )
 

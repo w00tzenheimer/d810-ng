@@ -83,6 +83,7 @@ def test_maturity_gate_allows_optimizer_at_correct_maturity():
 
 
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.core.decompilation_session import DecompilationEvent
 
 
@@ -93,9 +94,32 @@ def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
     calls: list[object] = []
 
     class _Lifecycle:
+        preopt_emitted = False
+
         def current_session(self, function_ea: int):
             calls.append(("session", function_ea))
             return session
+
+        def preopt_ready_was_emitted(self, *, function_ea: int) -> bool:
+            calls.append(("already-emitted", function_ea))
+            return self.preopt_emitted
+
+        def mark_preopt_ready_emitted(
+            self,
+            *,
+            function_ea: int,
+            microcode_modified: bool,
+            callback_pointer_refresh_required: bool = True,
+        ) -> None:
+            calls.append(
+                (
+                    "mark-emitted",
+                    function_ea,
+                    microcode_modified,
+                    callback_pointer_refresh_required,
+                )
+            )
+            self.preopt_emitted = True
 
         def build_current_mba_identity_index(self, *, function_ea: int, mba: object):
             calls.append(("index", function_ea, mba))
@@ -121,6 +145,7 @@ def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
     assert manager._emit_top_level_preopt_ready(mba)
     assert calls == [
         ("session", 0x40D200),
+        ("already-emitted", 0x40D200),
         ("index", 0x40D200, mba),
         ("gateway", 0x40D200, ida_hexrays.MMAT_PREOPTIMIZED),
         (
@@ -138,10 +163,14 @@ def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
                 },
             },
         ),
+        ("mark-emitted", 0x40D200, True, False),
     ]
     assert not manager._emit_top_level_preopt_ready(mba)
-    assert calls[-1] == ("session", 0x40D200)
-    assert len(calls) == 5
+    assert calls[-2:] == [
+        ("session", 0x40D200),
+        ("already-emitted", 0x40D200),
+    ]
+    assert len(calls) == 8
 
 
 def test_instruction_adapter_emits_preopt_for_new_mba_at_same_maturity() -> None:
@@ -155,6 +184,233 @@ def test_instruction_adapter_emits_preopt_for_new_mba_at_same_maturity() -> None
     manager.log_info_on_input(SimpleNamespace(mba=mba, serial=0), _make_ins())
 
     assert emitted == [mba]
+
+
+def test_instruction_adapter_skips_fallback_after_hook_emitted_preopt() -> None:
+    calls: list[object] = []
+    session = SimpleNamespace(native_preanalysis_depth=0)
+
+    class _Lifecycle:
+        def current_session(self, function_ea: int):
+            calls.append(("session", function_ea))
+            return session
+
+        def preopt_ready_was_emitted(self, *, function_ea: int) -> bool:
+            calls.append(("already-emitted", function_ea))
+            return True
+
+        def build_current_mba_identity_index(self, **kwargs):
+            raise AssertionError("duplicate PREOPT fallback rebuilt the live index")
+
+    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager._decompilation_lifecycle = _Lifecycle()
+    manager.event_emitter = object()
+    mba = SimpleNamespace(
+        entry_ea=0x40D200,
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    assert not manager._emit_top_level_preopt_ready(mba)
+    assert calls == [
+        ("session", 0x40D200),
+        ("already-emitted", 0x40D200),
+    ]
+
+
+def test_instruction_adapter_discards_first_operand_after_preopt_mutation() -> None:
+    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager.current_maturity = ida_hexrays.MMAT_GENERATED
+    consumed: list[str] = []
+    manager._decompilation_lifecycle = SimpleNamespace(
+        consume_current_preopt_microcode_modified=lambda *, consumer: (
+            consumed.append(consumer) or True
+        )
+    )
+    manager.analyzer = SimpleNamespace(
+        set_maturity=lambda maturity: (_ for _ in ()).throw(
+            AssertionError("maturity analysis touched a stale optimizer operand")
+        )
+    )
+    manager._emit_top_level_preopt_ready = lambda mba: (_ for _ in ()).throw(
+        AssertionError("stale optimizer operand reached PREOPT fallback")
+    )
+    mba = SimpleNamespace(
+        entry_ea=0x40D201,
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    assert manager.log_info_on_input(SimpleNamespace(mba=mba, serial=0), _make_ins())
+    assert consumed == ["instruction"]
+
+
+def test_block_adapter_rebuilds_flow_context_for_new_evidence_generation() -> None:
+    class _Context:
+        def __init__(self, **kwargs):
+            self.created_with = kwargs
+            self.refreshed = []
+
+        def refresh_mba(self, mba):
+            self.refreshed.append(mba)
+
+        def set_function_priors_provider(self, _provider):
+            pass
+
+        def set_phase(self, **_kwargs):
+            pass
+
+        def prime_for_rules(self, _rules):
+            pass
+
+    generation = [1]
+    evidence_generation = [7]
+    manager = BlockOptimizerManager.__new__(BlockOptimizerManager)
+    manager.current_maturity = ida_hexrays.MMAT_CALLS
+    manager._flow_context = None
+    manager._flow_context_key = None
+    manager._flow_context_type = _Context
+    manager._decompilation_lifecycle = SimpleNamespace(
+        current_mba_generation=lambda *, function_ea: generation[0],
+        current_evidence_generation=lambda *, function_ea: evidence_generation[0],
+    )
+    manager._validated_fact_view_provider = None
+    manager._fact_consumer_callback = None
+    manager._flow_context_summary_provider = None
+    manager._planner_outcome_callback = None
+    manager._flow_gate_outcome_callback = None
+    manager._function_priors_provider = None
+    manager._attach_hint_summary = lambda _context: None
+    bindings = []
+    manager._bind_resolver_session_state = (
+        lambda context, mba: bindings.append(("state", context, mba))
+    )
+    manager._bind_mutation_gateway_port = (
+        lambda context, mba: bindings.append(("gateway", context, mba))
+    )
+    mba = SimpleNamespace(
+        entry_ea=0x40D200,
+        maturity=ida_hexrays.MMAT_CALLS,
+        this=0x1111,
+    )
+    blk = SimpleNamespace(mba=mba)
+
+    first = manager._get_or_create_flow_context(
+        blk,
+        phase_priority=100,
+        phase_index=0,
+        phase_rules=(),
+    )
+    same = manager._get_or_create_flow_context(
+        blk,
+        phase_priority=100,
+        phase_index=0,
+        phase_rules=(),
+    )
+    evidence_generation[0] = 8
+    regenerated = manager._get_or_create_flow_context(
+        blk,
+        phase_priority=100,
+        phase_index=0,
+        phase_rules=(),
+    )
+
+    assert same is first
+    assert first.refreshed == [mba]
+    assert regenerated is not first
+    assert [kind for kind, _context, _mba in bindings] == [
+        "state",
+        "gateway",
+        "state",
+        "gateway",
+    ]
+
+
+def test_block_adapter_rebuilds_flow_context_for_new_mba_address() -> None:
+    class _Context:
+        def __init__(self, **_kwargs):
+            pass
+
+        def refresh_mba(self, _mba):
+            raise AssertionError("a different mba_t reused the prior flow context")
+
+        def set_function_priors_provider(self, _provider):
+            pass
+
+        def set_phase(self, **_kwargs):
+            pass
+
+        def prime_for_rules(self, _rules):
+            pass
+
+    manager = BlockOptimizerManager.__new__(BlockOptimizerManager)
+    manager.current_maturity = ida_hexrays.MMAT_CALLS
+    manager._flow_context = None
+    manager._flow_context_key = None
+    manager._flow_context_type = _Context
+    manager._decompilation_lifecycle = SimpleNamespace(
+        current_mba_generation=lambda *, function_ea: 1
+    )
+    manager._validated_fact_view_provider = None
+    manager._fact_consumer_callback = None
+    manager._flow_context_summary_provider = None
+    manager._planner_outcome_callback = None
+    manager._flow_gate_outcome_callback = None
+    manager._function_priors_provider = None
+    manager._attach_hint_summary = lambda _context: None
+    bindings = []
+    manager._bind_resolver_session_state = (
+        lambda context, mba: bindings.append(("state", context, mba))
+    )
+    manager._bind_mutation_gateway_port = (
+        lambda context, mba: bindings.append(("gateway", context, mba))
+    )
+    first_mba = SimpleNamespace(
+        entry_ea=0x40D200,
+        maturity=ida_hexrays.MMAT_CALLS,
+        this=0x1111,
+    )
+    regenerated_mba = SimpleNamespace(
+        entry_ea=0x40D200,
+        maturity=ida_hexrays.MMAT_CALLS,
+        this=0x2222,
+    )
+
+    first = manager._get_or_create_flow_context(
+        SimpleNamespace(mba=first_mba),
+        phase_priority=100,
+        phase_index=0,
+        phase_rules=(),
+    )
+    regenerated = manager._get_or_create_flow_context(
+        SimpleNamespace(mba=regenerated_mba),
+        phase_priority=100,
+        phase_index=0,
+        phase_rules=(),
+    )
+
+    assert regenerated is not first
+    assert [kind for kind, _context, _mba in bindings] == [
+        "state",
+        "gateway",
+        "state",
+        "gateway",
+    ]
+
+
+def test_block_adapter_discards_first_block_after_preopt_mutation() -> None:
+    manager = BlockOptimizerManager.__new__(BlockOptimizerManager)
+    consumed: list[str] = []
+    manager._decompilation_lifecycle = SimpleNamespace(
+        consume_current_preopt_microcode_modified=lambda *, consumer: (
+            consumed.append(consumer) or True
+        )
+    )
+    manager.optimize = lambda blk: (_ for _ in ()).throw(
+        AssertionError("stale optimizer block reached rule execution")
+    )
+    blk = SimpleNamespace(mba=SimpleNamespace())
+
+    assert BlockOptimizerManager.func(manager, blk) == 1
+    assert consumed == ["block"]
 
 
 class _MockOptimizer:
@@ -254,6 +510,71 @@ def test_instruction_optimizer_abstains_during_scoped_suppression():
     with suppress_d810_optimization():
         assert mgr.optimize(_make_blk(ida_hexrays.MMAT_LOCOPT), _make_ins()) is False
     assert optimizer.calls == 0
+
+
+def test_instruction_optimizer_accepts_destination_owned_imported_mba():
+    optimizer = _MockOptimizer(
+        "EarlyOpt",
+        [ida_hexrays.MMAT_PREOPTIMIZED, ida_hexrays.MMAT_LOCOPT],
+    )
+    mgr = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    mgr.current_maturity = ida_hexrays.MMAT_PREOPTIMIZED
+    mgr._rule_scope_service = None
+    mgr._run_later_rule_names = frozenset()
+    mgr._active_optimizers = [optimizer]
+    mgr._last_optimizer_tried = None
+    mgr.analyzer = SimpleNamespace(analyze=lambda _blk, _ins: None)
+    mgr._resolve_active_instruction_rule_names = lambda _blk: frozenset()
+
+    shared_ea = 0x40EAA7
+    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED)
+    native = SimpleNamespace(
+        mba=mba,
+        serial=10,
+        head=SimpleNamespace(ea=shared_ea),
+    )
+    imported = SimpleNamespace(
+        mba=mba,
+        serial=110,
+        head=SimpleNamespace(ea=shared_ea),
+    )
+    assert mgr.optimize(imported, _make_ins()) is False
+    assert optimizer.calls == 1
+
+    assert mgr.optimize(native, _make_ins()) is False
+    assert optimizer.calls == 2
+
+    mgr.current_maturity = ida_hexrays.MMAT_LOCOPT
+    assert mgr.optimize(imported, _make_ins()) is False
+    assert optimizer.calls == 3
+
+
+def test_owned_fake_block_registry_distinguishes_native_clone_with_same_ea():
+    from d810.hexrays.mutation.cfg_verify import (
+        clear_owned_fake_block_registrations,
+        is_owned_fake_block,
+        register_owned_fake_block,
+    )
+
+    clear_owned_fake_block_registrations()
+    try:
+        mba = SimpleNamespace(this=0xA000, map_fict_ea=lambda ea: ea)
+        instruction = SimpleNamespace(ea=0x40EAA7, next=None)
+        imported = SimpleNamespace(
+            this=0xB000,
+            serial=110,
+            head=instruction,
+            tail=instruction,
+        )
+        imported_wrapper = SimpleNamespace(this=0xB000)
+        native_clone = SimpleNamespace(this=0xC000)
+
+        register_owned_fake_block(mba, imported)
+
+        assert is_owned_fake_block(mba, imported_wrapper)
+        assert not is_owned_fake_block(mba, native_clone)
+    finally:
+        clear_owned_fake_block_registrations()
 
 
 from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (

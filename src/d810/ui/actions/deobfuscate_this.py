@@ -2,6 +2,7 @@
 
 Re-decompiles the current function with D810ng optimizations active.
 """
+
 from __future__ import annotations
 
 from d810.core import typing
@@ -10,6 +11,7 @@ from d810.core.logging import getLogger
 from d810.ui.actions.base import D810ActionHandler
 
 logger = getLogger("D810.ui")
+
 
 def _get_current_func_ea(ctx: typing.Any, idaapi_shim: typing.Any) -> int | None:
     """Extract the entry-point EA of the function from the context.
@@ -58,20 +60,15 @@ class DeobfuscateThisFunction(D810ActionHandler):
         logger.info("Triggering re-decompilation for function at %s", hex(func_ea))
 
         vdui = idaapi_shim.get_widget_vdui(ctx.widget)
-        prepared = self._state.manager.prepare_native_preanalysis(int(func_ea))
-        if prepared:
-            logger.info(
-                "Prepared %d detached microcode snippet(s) for %s",
-                int(prepared),
-                hex(func_ea),
-            )
-
-        # Force a refresh of the pseudocode view, which re-runs the
-        # decompiler (and therefore all installed D-810 hooks).
-        if vdui is not None:
-            vdui.refresh_view(True)
-        else:
-            idaapi_shim.decompile(func_ea)
+        self._state.manager.decompile_with_native_preanalysis(
+            int(func_ea),
+            lambda: (
+                vdui.refresh_view(True)
+                if vdui is not None
+                else idaapi_shim.decompile(func_ea)
+            ),
+            lambda: idaapi_shim.mark_cfunc_dirty(func_ea, False),
+        )
 
         return 1
 

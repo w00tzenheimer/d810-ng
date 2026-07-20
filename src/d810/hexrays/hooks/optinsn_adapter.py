@@ -174,7 +174,6 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         # capture, analysis, and hint application; this adapter only emits
         # the callback-local FlowGraph event.
         self._decompilation_lifecycle = None
-        self._last_preopt_ready_mba_token: tuple[object, int, int] | None = None
 
         self.instruction_optimizers = []
         self._active_optimizers: list = []
@@ -486,15 +485,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 int(getattr(mba, "entry_ea", 0) or 0),
             )
             return False
-        try:
-            mba_identity = int(mba.this)
-        except (AttributeError, TypeError, ValueError):
-            mba_identity = id(mba)
-        session_identity = getattr(session, "identity_key", id(session))
-        mba_token = (session_identity, mba_identity, function_ea)
-        if mba_token == getattr(self, "_last_preopt_ready_mba_token", None):
+        was_emitted = getattr(lifecycle, "preopt_ready_was_emitted", None)
+        if callable(was_emitted) and was_emitted(function_ea=function_ea):
             return False
-        self._last_preopt_ready_mba_token = mba_token
         index = lifecycle.build_current_mba_identity_index(
             function_ea=function_ea,
             mba=mba,
@@ -527,6 +520,16 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             mba=mba,
             decision=decision,
         )
+        mark_emitted = getattr(lifecycle, "mark_preopt_ready_emitted", None)
+        if callable(mark_emitted):
+            mark_emitted(
+                function_ea=function_ea,
+                microcode_modified=bool(decision.get("microcode_modified")),
+                # This adapter owns the structural callback and immediately
+                # returns its modified decision, so no queued adapter pointer
+                # predates the mutation.
+                callback_pointer_refresh_required=False,
+            )
         optimizer_logger.debug(
             "instruction PREOPT seam emitted: func=0x%x modified=%s "
             "request_redo=%s listeners=%d",
@@ -553,6 +556,21 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     ) -> bool:
         mba: ida_hexrays.mbl_array_t = blk.mba
         preopt_modified = False
+
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        consume_modified = getattr(
+            lifecycle,
+            "consume_current_preopt_microcode_modified",
+            None,
+        )
+        if callable(consume_modified) and consume_modified(
+            consumer="instruction"
+        ):
+            # ``hxe_preoptimized`` may have replaced blocks or instructions
+            # after Hex-Rays captured this callback's operand.  Do not run
+            # even maturity-change analysis before Hex-Rays revisits the MBA
+            # with pointers from the updated graph.
+            return True
 
         if (mba is not None) and (mba.maturity != self.current_maturity):
             new_maturity = mba.maturity

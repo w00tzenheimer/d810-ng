@@ -42,7 +42,9 @@ def _make_config(
     ida_user_dir: str | pathlib.Path | None,
 ):
     config_module = importlib.import_module("d810.core.config")
-    return config_module.D810Configuration(config_path=config_path, ida_user_dir=ida_user_dir)
+    return config_module.D810Configuration(
+        config_path=config_path, ida_user_dir=ida_user_dir
+    )
 
 
 def _make_state():
@@ -88,7 +90,9 @@ def configure(
     if config_path is not None and config_dir is not None:
         raise ValueError("Use either config_path or config_dir, not both.")
     resolved_config_path = (
-        pathlib.Path(config_dir) / "options.json" if config_dir is not None else config_path
+        pathlib.Path(config_dir) / "options.json"
+        if config_dir is not None
+        else config_path
     )
 
     config = _make_config(config_path=resolved_config_path, ida_user_dir=ida_user_dir)
@@ -112,7 +116,9 @@ def configure(
 def start() -> None:
     """Install D810 Hex-Rays hooks for subsequent decompilation calls."""
     if not _configured or _state is None:
-        raise RuntimeError("d810 headless API is not configured. Call configure() first.")
+        raise RuntimeError(
+            "d810 headless API is not configured. Call configure() first."
+        )
     if _state.manager.started:
         return
     if not _ensure_hexrays():
@@ -129,8 +135,26 @@ def prepare_native_preanalysis(function_ea: int) -> int:
     headless function-EA cache.
     """
     if not _configured or _state is None:
-        raise RuntimeError("d810 headless API is not configured. Call configure() first.")
+        raise RuntimeError(
+            "d810 headless API is not configured. Call configure() first."
+        )
     return int(_state.manager.prepare_native_preanalysis(int(function_ea)))
+
+
+def decompile(function_ea: int) -> typing.Any:
+    """Decompile through the manager-owned bounded PREOPT restart controller."""
+    if not _configured or _state is None:
+        raise RuntimeError(
+            "d810 headless API is not configured. Call configure() first."
+        )
+    import ida_hexrays
+
+    function_ea = int(function_ea)
+    return _state.manager.decompile_with_native_preanalysis(
+        function_ea,
+        lambda: ida_hexrays.decompile(function_ea),
+        ida_hexrays.clear_cached_cfuncs,
+    )
 
 
 def stop() -> None:
@@ -162,4 +186,11 @@ def status() -> dict[str, typing.Any]:
     return result
 
 
-__all__ = ["configure", "prepare_native_preanalysis", "start", "status", "stop"]
+__all__ = [
+    "configure",
+    "decompile",
+    "prepare_native_preanalysis",
+    "start",
+    "status",
+    "stop",
+]
