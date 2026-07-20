@@ -31,7 +31,17 @@ def test_structural_receipts_advance_one_generation_and_deduplicate_identities()
     identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
     )
-    gateway = MbaMutationGateway(generation=7, native_key=NATIVE_KEY)
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-gateway",
+        generation=7,
+        bindings=(),
+        native_key=NATIVE_KEY,
+    )
+    gateway = MbaMutationGateway(
+        generation=7,
+        native_key=NATIVE_KEY,
+        identity_index=index,
+    )
 
     receipt = gateway.record(
         StructuralMutationKind.EDGE_REDIRECT,

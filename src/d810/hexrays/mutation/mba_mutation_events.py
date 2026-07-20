@@ -94,12 +94,10 @@ class MbaMutationGateway:
         if self.generation < 0 or not self.session_id:
             raise ValueError("mutation gateway requires a session and generation")
         if self.identity_index is None:
-            self.identity_index = MbaBlockIdentityIndex(
-                session_id=self.session_id,
-                native_key=self.native_key,
-                generation=self.generation,
+            raise ValueError(
+                "mutation gateway requires a coordinator-owned identity index"
             )
-        elif self.identity_index.session_id != self.session_id:
+        if self.identity_index.session_id != self.session_id:
             raise ValueError("mutation gateway and identity index sessions differ")
         elif self.identity_index.generation != self.generation:
             raise ValueError("mutation gateway and identity index generations differ")

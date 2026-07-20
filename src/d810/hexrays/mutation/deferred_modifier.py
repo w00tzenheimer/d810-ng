@@ -1073,9 +1073,8 @@ class DeferredGraphModifier:
     _pre_snapshot: FlowGraph | None = None
     # Optional event emitter; when None, no events are emitted (zero overhead).
     event_emitter: EventEmitter | None = None
-    # Session/manager-owned transaction gateway.  Production callers inject
-    # this port so every structural write shares the current-MBA identity
-    # index; standalone tools may omit it and still use the same gateway API.
+    # Session/manager-owned transaction gateway. Structural writes fail closed
+    # when the coordinator has not injected this port.
     mutation_gateway: MbaMutationGateway | None = None
     # Metadata injected by callers so payloads carry rich context.
     _optimizer_name: str = field(default="", init=False)
@@ -2519,6 +2518,33 @@ class DeferredGraphModifier:
         return copy_block_keep(
             self.mba, ref_blk, int(dest_serial), cpblk_flags=int(cpblk_flags)
         )
+
+    def split_block_now(
+        self,
+        block: ida_hexrays.mblock_t,
+        start_insn: ida_hexrays.minsn_t,
+    ) -> ida_hexrays.mblock_t | None:
+        """Split one live block and publish its serial shift atomically."""
+        old_qty = int(self.mba.qty)
+        self._begin_mutation_batch(
+            serial_quantity=old_qty,
+            kind=StructuralMutationKind.BLOCK_INSERT,
+            description="split live block",
+        )
+        try:
+            new_block = self.mba.split_block(block, start_insn)
+            if new_block is None:
+                self._finish_mutation_batch(0)
+                return None
+            self._record_serial_insertion(
+                int(new_block.serial),
+                old_qty,
+            )
+            self._finish_mutation_batch(1)
+            return new_block
+        except Exception:
+            self._finish_mutation_batch(0)
+            raise
 
     def mark_blocks_dirty_now(
         self,
@@ -6583,31 +6609,18 @@ class DeferredGraphModifier:
         """Create the sole serial-binding authority for this apply batch."""
         if self._mutation_gateway is not None and self._mutation_gateway.active:
             return
-        try:
-            gateway = self._mutation_gateway
-            if gateway is None:
-                function_ea = int(getattr(self.mba, "entry_ea", 0) or 0)
-                maturity = int(getattr(self.mba, "maturity", 0) or 0)
-                session_id = self._session_id or f"deferred-{id(self):x}"
-                gateway = MbaMutationGateway(
-                    session_id=session_id,
-                    function_ea=function_ea,
-                    maturity=maturity,
-                )
-                self._mutation_gateway = gateway
-            gateway.begin_batch(
-                kind,
-                serial_quantity=(
-                    int(self.mba.qty)
-                    if serial_quantity is None
-                    else int(serial_quantity)
-                ),
-                description=description,
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise RuntimeError(
+                "structural mutation requires a coordinator-owned gateway"
             )
-        except Exception:
-            logger.exception("failed to start mutation receipt batch")
-            if self._mutation_gateway is not self.mutation_gateway:
-                self._mutation_gateway = None
+        gateway.begin_batch(
+            kind,
+            serial_quantity=(
+                int(self.mba.qty) if serial_quantity is None else int(serial_quantity)
+            ),
+            description=description,
+        )
 
     def _finish_mutation_batch(self, applied: int) -> None:
         gateway = self._mutation_gateway

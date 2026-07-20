@@ -15,6 +15,7 @@ from d810.optimizers.microcode.flow.jumps import (
     materialized_computed_goto_island as island,
 )
 from tests.native_preanalysis import make_native_key
+from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 NATIVE_KEY = make_native_key()
 
@@ -81,12 +82,19 @@ def _resolver_state():
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
+        native_key=NATIVE_KEY,
     )
     return session, island.resolver_session_state(session)
 
 
 def _bind_rule_state(rule, state) -> None:
-    rule.set_flow_context(SimpleNamespace(resolver_session_state=lambda: state))
+    gateway_mba = SimpleNamespace(qty=0, entry_ea=0, maturity=0)
+    rule.set_flow_context(
+        SimpleNamespace(
+            resolver_session_state=lambda: state,
+            new_mba_mutation_gateway=lambda: make_mutation_gateway(gateway_mba),
+        )
+    )
 
 
 def test_detached_planner_uses_first_surviving_instruction_as_live_target(
@@ -105,9 +113,11 @@ def test_detached_planner_uses_first_surviving_instruction_as_live_target(
         lambda _mba: (),
     )
 
+    mba = _MBA(_Block(0x1020, (0x1028, 0x1030)))
     island._materialize_missing_detached_snippets(
-        _MBA(_Block(0x1020, (0x1028, 0x1030))),
+        mba,
         (),
+        mutation_gateway=make_mutation_gateway(mba),
     )
 
     assert captured["live_eas"] == frozenset({0x1020, 0x1028, 0x1030})
@@ -130,9 +140,11 @@ def test_detached_planner_excludes_empty_external_placeholder_target(
         lambda _mba: (),
     )
 
+    mba = _MBA(_Block(0x40CD46, ()))
     island._materialize_missing_detached_snippets(
-        _MBA(_Block(0x40CD46, ())),
+        mba,
         (),
+        mutation_gateway=make_mutation_gateway(mba),
     )
 
     assert captured["live_eas"] == frozenset({0x40CD46})
@@ -227,7 +239,11 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
         "materialize_preopt_union_snippet_templates",
         import_union,
     )
-    first_decision: dict[str, object] = {"session": session}
+    gateway = make_mutation_gateway(mba)
+    first_decision: dict[str, object] = {
+        "session": session,
+        "mutation_gateway": gateway,
+    }
     island._restore_preopt_terminal_return_carriers(
         function_ea=0x1000,
         mba=mba,
@@ -236,7 +252,10 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
     island._restore_preopt_terminal_return_carriers(
         function_ea=0x1000,
         mba=mba,
-        decision={"session": session},
+        decision={
+            "session": session,
+            "mutation_gateway": make_mutation_gateway(mba),
+        },
     )
 
     assert imports == [
@@ -244,7 +263,7 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
             mba,
             0x1000,
             (0x2000,),
-            {"mutation_gateway": None},
+            {"mutation_gateway": gateway},
         )
     ]
     assert first_decision["microcode_modified"] is True
@@ -524,7 +543,10 @@ def test_post_mutation_preopt_abstention_suppresses_locopt_fallback(
         lambda current_mba, *_args, **_kwargs: fallback_calls.append(current_mba) or 1,
     )
 
-    preopt_decision: dict[str, object] = {"session": session}
+    preopt_decision: dict[str, object] = {
+        "session": session,
+        "mutation_gateway": make_mutation_gateway(mba),
+    }
     island._restore_preopt_terminal_return_carriers(
         function_ea=0x1000,
         mba=mba,
@@ -684,7 +706,14 @@ def test_applied_preopt_boundary_prevents_legacy_residual_route_overwrite(
         ),
     )
 
-    assert island._apply_residual_state_route_bridges(mba, (transfer,)) == 0
+    assert (
+        island._apply_residual_state_route_bridges(
+            mba,
+            (transfer,),
+            mutation_gateway=make_mutation_gateway(mba),
+        )
+        == 0
+    )
 
 
 def test_residual_state_route_targets_instruction_backed_native_owner(
@@ -730,7 +759,15 @@ def test_residual_state_route_targets_instruction_backed_native_owner(
 
     monkeypatch.setattr(island, "plan_residual_state_route_bridges", capture_plan)
 
-    assert island._apply_residual_state_route_bridges(object(), (transfer,)) == 0
+    mba = SimpleNamespace(qty=0, entry_ea=0, maturity=0)
+    assert (
+        island._apply_residual_state_route_bridges(
+            mba,
+            (transfer,),
+            mutation_gateway=make_mutation_gateway(mba),
+        )
+        == 0
+    )
     assert captured_live_blocks == {
         source_write_ea: 3,
         target_ea: 45,
@@ -784,8 +821,9 @@ def test_live_resolver_cut_counterpart_routes_through_atomic_gateway(
     queued: list[tuple[int, int]] = []
 
     class _Modifier:
-        def __init__(self, current_mba) -> None:
+        def __init__(self, current_mba, *, mutation_gateway) -> None:
             assert current_mba is mba
+            assert mutation_gateway is not None
 
         def queue_terminal_goto_change(
             self,
@@ -802,5 +840,11 @@ def test_live_resolver_cut_counterpart_routes_through_atomic_gateway(
 
     monkeypatch.setattr(island, "DeferredGraphModifier", _Modifier)
 
-    assert island._apply_live_resolver_cut_counterparts(mba) == 1
+    assert (
+        island._apply_live_resolver_cut_counterparts(
+            mba,
+            mutation_gateway=make_mutation_gateway(mba),
+        )
+        == 1
+    )
     assert queued == [(7, 9)]
