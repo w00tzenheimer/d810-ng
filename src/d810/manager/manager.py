@@ -159,7 +159,11 @@ def _new_current_mba_mutation_gateway(
     )
 
 
-def maybe_run_tail_distinct(mba: typing.Any) -> None:
+def maybe_run_tail_distinct(
+    mba: typing.Any,
+    *,
+    mutation_gateway: typing.Any,
+) -> None:
     """Env-gated hook: ``D810_TAIL_DISTINCT_BYTE`` topology-only experiment.
 
     Thin manager-level re-export of the implementation in
@@ -173,7 +177,7 @@ def maybe_run_tail_distinct(mba: typing.Any) -> None:
         maybe_run_tail_distinct as _impl,
     )
 
-    _impl(mba)
+    _impl(mba, mutation_gateway=mutation_gateway)
 
 
 def _maturity_name(maturity: int) -> str:

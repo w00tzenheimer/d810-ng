@@ -71,6 +71,7 @@ from d810.hexrays.mutation.detached_handler_island import (
     stable_mba_identity,
 )
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.transforms.graph_modification import SyntheticRegisterNonzeroCondition
 from d810.hexrays.preanalysis.calls_done_preanalysis import (
@@ -385,6 +386,13 @@ def _restore_preopt_terminal_return_carriers(
         return
 
     primary_seed_ea = int(preparation.primary_seed_ea)
+    mutation_gateway = decision.get("mutation_gateway")
+    if not isinstance(mutation_gateway, MbaMutationGateway):
+        logger.info(
+            "PREOPT union import skipped: func=0x%X reason=mutation_gateway",
+            int(function_ea),
+        )
+        return
     qty_before_import = int(mba.qty)
     state.preopt_union_import_active = True
     try:
@@ -392,7 +400,7 @@ def _restore_preopt_terminal_return_carriers(
             mba,
             int(function_ea),
             (primary_seed_ea,),
-            mutation_gateway=decision.get("mutation_gateway"),
+            mutation_gateway=mutation_gateway,
         )
     finally:
         state.preopt_union_import_active = False
@@ -584,6 +592,8 @@ def _candidate_conditional_bridge_plans(
 def _apply_residual_state_route_bridges(
     mba: object,
     transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    mutation_gateway: MbaMutationGateway,
 ) -> int:
     """Redirect live one-way state-write exits to resolver-proven handlers."""
     evidence = tuple(
@@ -683,7 +693,10 @@ def _apply_residual_state_route_bridges(
         )
     if not actionable_plans:
         return 0
-    modifier = DeferredGraphModifier(mba)
+    modifier = DeferredGraphModifier(
+        mba,
+        mutation_gateway=mutation_gateway.new_transaction(),
+    )
     for plan in actionable_plans:
         source = mba.get_mblock(int(plan.source_block_serial))
         if (
@@ -708,6 +721,8 @@ def _apply_residual_state_route_bridges(
 def _apply_detached_snippet_terminal_routes(
     mba: object,
     transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    mutation_gateway: MbaMutationGateway,
 ) -> int:
     """Replace imported terminal m_ijmps with exact resolver-target edges."""
     terminal_origins = (
@@ -818,7 +833,10 @@ def _apply_detached_snippet_terminal_routes(
     )
     if not plans:
         return 0
-    modifier = DeferredGraphModifier(mba)
+    modifier = DeferredGraphModifier(
+        mba,
+        mutation_gateway=mutation_gateway.new_transaction(),
+    )
     for plan in plans:
         modifier.queue_terminal_goto_change(
             block_serial=int(plan.source_block_serial),
@@ -832,7 +850,11 @@ def _apply_detached_snippet_terminal_routes(
     return int(modifier.apply(defer_post_apply_maintenance=True))
 
 
-def _apply_live_resolver_cut_counterparts(mba: object) -> int:
+def _apply_live_resolver_cut_counterparts(
+    mba: object,
+    *,
+    mutation_gateway: MbaMutationGateway,
+) -> int:
     """Rebind imported resolver-cut terminal ports to exact native sources.
 
     The detached-snippet importer applies each direct boundary port to the
@@ -892,7 +914,10 @@ def _apply_live_resolver_cut_counterparts(mba: object) -> int:
 
     if not plans:
         return 0
-    modifier = DeferredGraphModifier(mba)
+    modifier = DeferredGraphModifier(
+        mba,
+        mutation_gateway=mutation_gateway.new_transaction(),
+    )
     for source_serial, target_serial, source_ea, target_ea in plans:
         modifier.queue_terminal_goto_change(
             block_serial=source_serial,
@@ -910,6 +935,7 @@ def _materialize_missing_detached_snippets(
     mba: object,
     transfers: tuple[MaterializedIndirectTransfer, ...],
     *,
+    mutation_gateway: MbaMutationGateway,
     require_live_residual_source: bool = True,
     expected_template_maturity: int | None = None,
     allow_raw_preopt_calls: bool = False,
@@ -1006,6 +1032,7 @@ def _materialize_missing_detached_snippets(
         mba,
         int(mba.entry_ea),
         target_eas,
+        mutation_gateway=mutation_gateway,
         expected_template_maturity=expected_template_maturity,
         allow_raw_preopt_calls=allow_raw_preopt_calls,
         import_native_preopt_ranges=import_native_preopt_ranges,
@@ -1025,6 +1052,7 @@ def _materialize_live_handler_replacements(
     transfers: tuple[MaterializedIndirectTransfer, ...],
     *,
     state: ResolverSessionState,
+    mutation_gateway: MbaMutationGateway,
 ) -> int:
     """Restore a cached two-arm handler after LOCOPT folded its predicate."""
     function_ea = int(mba.entry_ea)
@@ -1191,6 +1219,7 @@ def _materialize_live_handler_replacements(
         mba,
         function_ea,
         tuple(int(plan.target_ea) for plan in plans),
+        mutation_gateway=mutation_gateway,
     )
     requested = {int(plan.target_ea) for plan in plans}
     if set(roots) != requested:
@@ -1206,7 +1235,13 @@ def _materialize_live_handler_replacements(
         if target_ea in old_target_serials
     }
     redirected = (
-        redirect_live_target_predecessors(mba, redirect_map) if redirect_map else 0
+        redirect_live_target_predecessors(
+            mba,
+            redirect_map,
+            mutation_gateway=mutation_gateway,
+        )
+        if redirect_map
+        else 0
     )
     if redirect_map and redirected <= 0:
         logger.info(
@@ -1495,10 +1530,18 @@ def _materialize_locopt_preanalysis(
         state = resolver_session_state(session)
     except (TypeError, ValueError):
         return
+    mutation_gateway = decision.get("mutation_gateway")
+    if not isinstance(mutation_gateway, MbaMutationGateway):
+        logger.info(
+            "LOCOPT preanalysis skipped: func=0x%X reason=mutation_gateway",
+            int(function_ea),
+        )
+        return
     transfers = state.materialized_transfers
     imported = _materialize_missing_detached_snippets(
         mba,
         transfers,
+        mutation_gateway=mutation_gateway,
         require_live_residual_source=False,
         expected_template_maturity=int(ida_hexrays.MMAT_LOCOPT),
     )
@@ -1577,6 +1620,7 @@ def _apply_conditional_bridge_plans(
     plans: tuple[ConditionalHandlerBridgePlan, ...],
     *,
     state: ResolverSessionState,
+    mutation_gateway: MbaMutationGateway,
 ) -> int:
     """Apply exact live-predicate bridges through the deferred CFG mutator."""
     transfers = state.materialized_transfers
@@ -1693,7 +1737,10 @@ def _apply_conditional_bridge_plans(
             )
             continue
         old_dispatcher = int(source.succset[0])
-        modifier = DeferredGraphModifier(mba)
+        modifier = DeferredGraphModifier(
+            mba,
+            mutation_gateway=mutation_gateway.new_transaction(),
+        )
         for exit_serial, dispatcher_serial, exit_ea in terminal_exit_bridges:
             modifier.queue_terminal_goto_change(
                 block_serial=exit_serial,
@@ -1963,6 +2010,16 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
         state = self.current_resolver_session_state()
         if not isinstance(state, ResolverSessionState):
             return 0
+        flow_context = self.flow_context
+        mutation_gateway = (
+            None if flow_context is None else flow_context.new_mba_mutation_gateway()
+        )
+        if not isinstance(mutation_gateway, MbaMutationGateway):
+            logger.info(
+                "computed-goto island abstained: func=0x%X reason=mutation_gateway",
+                function_ea,
+            )
+            return 0
         mba_identity = (
             function_ea,
             stable_mba_identity(mba),
@@ -1989,6 +2046,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                     mba,
                     transfers,
                     state=state,
+                    mutation_gateway=mutation_gateway,
                 )
                 if not preopt_union_owns_mba
                 else 0
@@ -1997,6 +2055,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 _materialize_missing_detached_snippets(
                     mba,
                     transfers,
+                    mutation_gateway=mutation_gateway,
                     require_live_residual_source=True,
                     expected_template_maturity=int(ida_hexrays.MMAT_LOCOPT),
                 )
@@ -2015,17 +2074,28 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 state=state,
             )
             live_resolver_cuts = (
-                _apply_live_resolver_cut_counterparts(mba)
+                _apply_live_resolver_cut_counterparts(
+                    mba,
+                    mutation_gateway=mutation_gateway,
+                )
                 if not preopt_union_owns_mba
                 else 0
             )
             terminal_routes = (
-                _apply_detached_snippet_terminal_routes(mba, transfers)
+                _apply_detached_snippet_terminal_routes(
+                    mba,
+                    transfers,
+                    mutation_gateway=mutation_gateway,
+                )
                 if not preopt_union_owns_mba
                 else 0
             )
             residual_bridges = (
-                _apply_residual_state_route_bridges(mba, transfers)
+                _apply_residual_state_route_bridges(
+                    mba,
+                    transfers,
+                    mutation_gateway=mutation_gateway,
+                )
                 if not preopt_union_owns_mba
                 else 0
             )
@@ -2040,6 +2110,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                         mba,
                         bridge_plans,
                         state=state,
+                        mutation_gateway=mutation_gateway,
                     )
                     if bridge_plans
                     else 0
@@ -2119,10 +2190,12 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
         terminal_routes = _apply_detached_snippet_terminal_routes(
             mba,
             transfers,
+            mutation_gateway=mutation_gateway,
         )
         residual_bridges = _apply_residual_state_route_bridges(
             mba,
             transfers,
+            mutation_gateway=mutation_gateway,
         )
         pre_dce_changes = (
             int(kept_snippet_blocks) + int(terminal_routes) + int(residual_bridges)
@@ -2156,7 +2229,11 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 reverse=True,
             ):
                 try:
-                    applied = materialize_detached_handler_island(mba, plan)
+                    applied = materialize_detached_handler_island(
+                        mba,
+                        plan,
+                        mutation_gateway=mutation_gateway,
+                    )
                 except Exception:
                     logger.warning(
                         "detached handler island failed: func=0x%X predicate=0x%X",
@@ -2179,6 +2256,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                         mba,
                         remaining_bridges,
                         state=state,
+                        mutation_gateway=mutation_gateway,
                     )
                     if remaining_bridges
                     else 0

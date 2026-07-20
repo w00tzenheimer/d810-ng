@@ -55,7 +55,6 @@ from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
     StructuralMutationKind,
 )
-from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.ir.block_identity import StableBlockIdentity
 from d810.hexrays.mutation.terminal_return_literals import (
     remember_terminal_zero_guard_literal_return_value,
@@ -132,25 +131,10 @@ class LiveMbaAdapter:
         self,
         mba,
         *,
+        mutation_gateway: MbaMutationGateway,
         dispatcher_artifact_planner: Any | None = None,
-        mutation_gateway: MbaMutationGateway | None = None,
     ) -> None:  # mba: ida_hexrays.mba_t
         self._mba = mba
-        if mutation_gateway is None:
-            session_id = f"byte-tail-{id(self):x}"
-            maturity = int(getattr(mba, "maturity", 0) or 0)
-            identity_index = MbaBlockIdentityIndex.from_mba(
-                mba,
-                generation=0,
-                evidence_generation=maturity,
-                session_id=session_id,
-            )
-            mutation_gateway = MbaMutationGateway(
-                session_id=session_id,
-                function_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                maturity=maturity,
-                identity_index=identity_index,
-            )
         self._mutation_gateway = mutation_gateway
         self._identity_index = mutation_gateway.identity_index
         self._dispatcher_artifact_planner = dispatcher_artifact_planner
@@ -380,17 +364,12 @@ class LiveMbaAdapter:
                 f"block {block_serial}"
             )
 
-        new_blk = mba.split_block(blk, target)
+        new_blk = self._new_deferred_modifier().split_block_now(blk, target)
         if new_blk is None:
             raise RuntimeError(
                 "split_block_at_tail_jcnd: mba.split_block returned "
                 f"None for block {block_serial}"
             )
-        self._record_inserted_serial(
-            int(getattr(new_blk, "serial", 0) or 0),
-            int(getattr(mba, "qty", 0) or 0) - 1,
-        )
-
         try:
             new_blk.flags |= _MBL_KEEP
         except Exception:
@@ -1858,6 +1837,7 @@ def _byte_emit_fact_view(fact_view: Any | None) -> Any | None:
 def maybe_run_tail_distinct(
     mba: Any,
     *,
+    mutation_gateway: MbaMutationGateway,
     fact_view: Any | None = None,
     evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
 ) -> None:
@@ -1895,7 +1875,7 @@ def maybe_run_tail_distinct(
         return
 
     fact_view = _byte_emit_fact_view(fact_view)
-    adapter = LiveMbaAdapter(mba)
+    adapter = LiveMbaAdapter(mba, mutation_gateway=mutation_gateway)
     try:
         report = isolate_byte_emit_tail(
             byte_index=byte_index,
@@ -1915,6 +1895,7 @@ def maybe_run_tail_distinct(
 def maybe_run_tail_duplicate_convergence(
     mba: Any,
     *,
+    mutation_gateway: MbaMutationGateway,
     fact_view: Any | None = None,
     evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
 ) -> None:
@@ -1963,7 +1944,7 @@ def maybe_run_tail_duplicate_convergence(
         return
 
     fact_view = _byte_emit_fact_view(fact_view)
-    adapter = LiveMbaAdapter(mba)
+    adapter = LiveMbaAdapter(mba, mutation_gateway=mutation_gateway)
     try:
         report = duplicate_convergence_for_byte_path(
             byte_index=byte_index,
@@ -2220,13 +2201,23 @@ def _resolve_live_site_block_from_payload(
         return None
 
     if source_ea is not None:
-        block = adapter.find_block(_native_point_identity(int(source_ea)))
+        block = adapter.find_block(
+            _native_point_identity(
+                int(source_ea),
+                native_key=adapter.native_key,
+            )
+        )
         if block is not None:
             return int(block.serial)
 
     block_ea = _int_from_payload(payload.get("block_ea"))
     if block_ea is not None:
-        block = adapter.find_block(_native_point_identity(int(block_ea)))
+        block = adapter.find_block(
+            _native_point_identity(
+                int(block_ea),
+                native_key=adapter.native_key,
+            )
+        )
         if block is not None:
             return int(block.serial)
 
@@ -3723,6 +3714,7 @@ def _infer_terminal_tail_egress_byte_indices(rows: Iterable[Any]) -> tuple[int, 
 def maybe_rewrite_impossible_return_artifact_edges(
     mba: Any,
     *,
+    mutation_gateway: MbaMutationGateway,
     evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
     impossible_return_artifact_edges: Iterable[Any] = (),
 ) -> tuple[tuple[int, int, int], ...]:
@@ -3739,7 +3731,7 @@ def maybe_rewrite_impossible_return_artifact_edges(
         logger.info("impossible_return_artifact_edges: skipped reason=no_evidence")
         return ()
 
-    adapter = LiveMbaAdapter(mba)
+    adapter = LiveMbaAdapter(mba, mutation_gateway=mutation_gateway)
     applied = _rewrite_impossible_return_artifact_edges(adapter, edge_proofs)
     if not applied:
         return ()
@@ -3752,6 +3744,8 @@ def maybe_rewrite_impossible_return_artifact_edges(
 
 def maybe_rewrite_terminal_zero_guard_literal_return_edges(
     mba: Any,
+    *,
+    mutation_gateway: MbaMutationGateway,
 ) -> tuple[tuple[int, int, int], ...]:
     """Late Hex-Rays cleanup for residual zero arms proven to return a literal."""
     raw = os.environ.get("D810_REWRITE_TERMINAL_ZERO_GUARD_LITERAL_RETURNS", "1")
@@ -3761,7 +3755,7 @@ def maybe_rewrite_terminal_zero_guard_literal_return_edges(
     literal_values = _terminal_zero_guard_literal_return_values(mba)
     if not literal_values:
         return ()
-    adapter = LiveMbaAdapter(mba)
+    adapter = LiveMbaAdapter(mba, mutation_gateway=mutation_gateway)
     applied = _rewrite_terminal_zero_guard_literal_return_edges(
         adapter,
         literal_values,
@@ -4216,6 +4210,7 @@ def _close_terminal_tail_entry_frontier(
 def maybe_run_terminal_tail_cascade_egress_lowering(
     mba: Any,
     *,
+    mutation_gateway: MbaMutationGateway,
     fact_view: Any | None = None,
     dag: Any | None = None,
     evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
@@ -4260,10 +4255,11 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
     target_snap: int | None = None
 
     if dispatcher_artifact_planner is None:
-        adapter = LiveMbaAdapter(mba)
+        adapter = LiveMbaAdapter(mba, mutation_gateway=mutation_gateway)
     else:
         adapter = LiveMbaAdapter(
             mba,
+            mutation_gateway=mutation_gateway,
             dispatcher_artifact_planner=dispatcher_artifact_planner,
         )
 
@@ -4640,6 +4636,7 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
 def maybe_run_tail_state_cascade(
     mba: Any,
     *,
+    mutation_gateway: MbaMutationGateway,
     fact_view: Any | None = None,
     evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
 ) -> None:
@@ -4730,7 +4727,7 @@ def maybe_run_tail_state_cascade(
         byte5_row.state_write_bypassed,
     )
 
-    adapter = LiveMbaAdapter(mba)
+    adapter = LiveMbaAdapter(mba, mutation_gateway=mutation_gateway)
 
     mapped_row, bridge_reason = _bridge_plan_row_to_live_mba(
         byte5_row,
@@ -4781,7 +4778,11 @@ def maybe_run_tail_state_cascade(
     logger.info("tail_state_cascade: %s", report)
 
 
-def maybe_run_byte_anchor(mba: Any) -> None:
+def maybe_run_byte_anchor(
+    mba: Any,
+    *,
+    mutation_gateway: MbaMutationGateway,
+) -> None:
     """Env-gated hook: ``D810_TAIL_ANCHOR_BYTE6_SPLIT_XOR`` probe.
 
     Default-off. When set to exactly ``"1"`` and NO prior tail-shape
@@ -4861,7 +4862,7 @@ def maybe_run_byte_anchor(mba: Any) -> None:
         )
         return
 
-    adapter = LiveMbaAdapter(mba)
+    adapter = LiveMbaAdapter(mba, mutation_gateway=mutation_gateway)
     try:
         if hybrid_byte_store_xor:
             # Run byte_store first so its anchor's m_stx is in place,

@@ -19,6 +19,7 @@ from d810.ir.block_identity import (
     StableBlockIdentity,
 )
 from tests.native_preanalysis import make_native_key
+from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 NATIVE_KEY = make_native_key()
 
@@ -530,6 +531,7 @@ def test_recursively_rebases_all_stack_operand_shapes(monkeypatch) -> None:
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported = destination.get_mblock(roots[target_ea]).head
@@ -594,6 +596,7 @@ def test_local_variable_operand_abstains_before_destination_mutation(
             destination,
             function_ea,
             (target_ea,),
+            mutation_gateway=make_mutation_gateway(destination),
         )
         == {}
     )
@@ -643,6 +646,7 @@ def test_transparent_empty_entry_uses_first_anchored_successor_as_root(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported = destination.get_mblock(roots[target_ea])
@@ -1282,6 +1286,7 @@ def test_same_fragment_vd_uses_instruction_specific_native_stack_identity(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
     imported = destination.get_mblock(roots[target_ea]).instructions()
     assert tuple(int(instruction.l.s.off) for instruction in imported) == (
@@ -1347,6 +1352,7 @@ def test_remaps_recursive_block_references_and_cfg_edges(monkeypatch) -> None:
         destination,
         function_ea,
         (root_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported_root = destination.get_mblock(roots[root_ea])
@@ -1684,8 +1690,7 @@ def test_redirects_live_target_predecessors_to_imported_replacement() -> None:
 
     assert (
         detached_handler_island.redirect_live_target_predecessors(
-            mba,
-            {2: 3},
+            mba, {2: 3}, mutation_gateway=make_mutation_gateway(mba)
         )
         == 1
     )
@@ -1711,8 +1716,7 @@ def test_live_target_replacement_abstains_atomically_on_two_way_predecessor() ->
 
     assert (
         detached_handler_island.redirect_live_target_predecessors(
-            mba,
-            {2: 4},
+            mba, {2: 4}, mutation_gateway=make_mutation_gateway(mba)
         )
         == 0
     )
@@ -1880,6 +1884,7 @@ def test_import_uses_exact_analyzed_call_from_replacement_template(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported_block = destination.get_mblock(roots[target_ea])
@@ -2493,6 +2498,7 @@ def test_import_omits_transient_stack_setup_subsumed_by_analyzed_call(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported = destination.get_mblock(roots[target_ea])
@@ -2622,6 +2628,7 @@ def test_import_preserves_analyzed_call_result_carrier(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported_block = destination.get_mblock(roots[target_ea])
@@ -2769,6 +2776,7 @@ def test_import_rebases_persistent_stack_slots_through_ida_identity(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported_root = destination.get_mblock(roots[target_ea])
@@ -2837,6 +2845,7 @@ def test_safe_verify_repairs_normalized_registered_import_boundary(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
     imported_block = destination.get_mblock(roots[target_ea])
     imported_block.end = function_ea
@@ -2886,6 +2895,7 @@ def test_import_abstains_atomically_without_exact_analyzed_call(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert roots == {}
@@ -2934,6 +2944,7 @@ def test_preopt_import_preserves_raw_call_for_destination_analysis(
         (target_ea,),
         expected_template_maturity=ida_hexrays.MMAT_PREOPTIMIZED,
         allow_raw_preopt_calls=True,
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported_block = destination.get_mblock(roots[target_ea])
@@ -2993,6 +3004,7 @@ def test_preopt_import_splits_multiple_raw_calls_into_closing_blocks(
         (target_ea,),
         expected_template_maturity=ida_hexrays.MMAT_PREOPTIMIZED,
         allow_raw_preopt_calls=True,
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     first = destination.get_mblock(roots[target_ea])
@@ -3121,6 +3133,7 @@ def test_conditional_fallthrough_helper_is_raw_preopt_scoped(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert target_ea in roots
@@ -3166,6 +3179,7 @@ def test_preopt_native_range_import_preserves_call_ea_and_marks_outline(
         expected_template_maturity=ida_hexrays.MMAT_PREOPTIMIZED,
         allow_raw_preopt_calls=True,
         import_native_preopt_ranges=True,
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported_block = destination.get_mblock(roots[target_ea])
@@ -3299,6 +3313,7 @@ def test_imported_callinfo_defers_to_unique_live_native_authority(
         function_ea,
         (target_ea,),
         expected_template_maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+        mutation_gateway=make_mutation_gateway(destination),
     )
     imported_call = destination.get_mblock(roots[target_ea]).head
     assert imported_call is not None
@@ -3404,6 +3419,7 @@ def test_abstains_atomically_when_external_exit_is_ambiguous(monkeypatch) -> Non
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert roots == {}
@@ -3451,6 +3467,7 @@ def test_imports_locopt_template_into_preoptimized_destination_when_requested(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert roots == {}
@@ -3463,6 +3480,7 @@ def test_imports_locopt_template_into_preoptimized_destination_when_requested(
         function_ea,
         (target_ea,),
         expected_template_maturity=ida_hexrays.MMAT_LOCOPT,
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert target_ea in roots
@@ -3519,6 +3537,7 @@ def test_import_materializes_nonadjacent_external_fallthrough_as_goto(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported = destination.get_mblock(roots[target_ea])
@@ -3858,6 +3877,7 @@ def test_terminal_return_port_inserts_captured_carrier_in_imported_return_arm(
         destination,
         function_ea,
         (terminal_target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported_return = destination.get_mblock(result[terminal_target_ea])
@@ -3906,6 +3926,7 @@ def test_terminal_return_port_abstains_atomically_without_unique_carrier(
         destination,
         function_ea,
         (terminal_target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert len(result) == 0
@@ -4039,6 +4060,7 @@ def test_preflight_uses_proven_logical_source_when_predicate_is_absent(
             mutation.taken_target.imported_key: taken_block,
             mutation.fallthrough_target.imported_key: fallthrough_block,
         },
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert applied is not None
@@ -4198,6 +4220,7 @@ def test_preflight_binds_proven_logical_source_from_imported_consumer(
         pending_instruction_origins={
             (identity, synthetic_consumer_ea): consumer_load_ea,
         },
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert applied is not None
@@ -4471,6 +4494,7 @@ def test_preopt_import_materializes_stack_selected_state_at_later_live_endpoint(
             mutation.taken_target.imported_key: taken_block,
             mutation.fallthrough_target.imported_key: fallthrough_block,
         },
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert applied is not None
@@ -4634,6 +4658,7 @@ def test_preflight_prefers_late_stack_choice_anchor_over_live_predicate(
             mutation.taken_target.imported_key: taken_block,
             mutation.fallthrough_target.imported_key: fallthrough_block,
         },
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert applied is not None
@@ -4773,6 +4798,7 @@ def test_preopt_import_preserves_fresh_live_predicate_for_imported_arms(
             mutation.taken_target.imported_key: taken_block,
             mutation.fallthrough_target.imported_key: fallthrough_block,
         },
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert applied is not None
@@ -5265,6 +5291,7 @@ def test_preopt_import_lowers_resolver_register_compare_cut_to_two_way(
         destination,
         function_ea,
         (source_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert len(result.applied_boundary_ports) == 1
@@ -5464,6 +5491,7 @@ def test_import_boundary_port_connects_imported_source_to_imported_target(
         destination,
         function_ea,
         (source_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported_source = destination.get_mblock(result[source_ea])
@@ -5554,6 +5582,7 @@ def test_import_boundary_port_prefers_template_local_old_successor(
         destination,
         function_ea,
         (source_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert result[source_ea] >= 0
@@ -5735,6 +5764,7 @@ def test_import_conditional_port_prefers_owned_old_targets_over_live_duplicates(
         destination,
         function_ea,
         (source_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported_source = destination.get_mblock(result[source_ea])
@@ -5895,6 +5925,7 @@ def test_import_direct_port_collapses_conditional_through_owned_helper(
         destination,
         function_ea,
         (source_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported_source = destination.get_mblock(result[source_ea])
@@ -6001,6 +6032,7 @@ def test_import_boundary_port_connects_live_source_to_imported_target(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert tuple(destination.get_mblock(1).succset) == (result[target_ea],)
@@ -6077,6 +6109,7 @@ def test_import_boundary_port_binds_imported_target_by_represented_range(
         destination,
         function_ea,
         (imported_root_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     origins = dict(
@@ -6155,6 +6188,7 @@ def test_import_boundary_port_distinguishes_live_old_copy_from_imported_target(
         destination,
         function_ea,
         (shared_target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert result[shared_target_ea] != 2
@@ -6211,6 +6245,7 @@ def test_import_boundary_port_accepts_owner_enum_from_reloaded_module(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert tuple(destination.get_mblock(1).succset) == (result[target_ea],)
@@ -6266,6 +6301,7 @@ def test_import_boundary_port_materializes_pruned_live_frontier(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert tuple(destination.get_mblock(1).succset) == (result[target_ea],)
@@ -6372,6 +6408,7 @@ def test_import_boundary_port_restores_pruned_live_conditional(
         destination,
         function_ea,
         (taken_target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert restored and restored[0][0] == live_source_ea
@@ -6531,6 +6568,7 @@ def test_import_boundary_port_preserves_call_corridor(
         function_ea,
         (source_ea,),
         allow_raw_preopt_calls=True,
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported_source = destination.get_mblock(result[source_ea])
@@ -6625,6 +6663,7 @@ def test_import_boundary_port_restores_pruned_live_post_call_route(
         function_ea,
         (target_ea,),
         allow_raw_preopt_calls=True,
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     live_source = destination.get_mblock(1)
@@ -6736,6 +6775,7 @@ def test_import_boundary_port_abstains_before_allocation_when_sibling_missing(
         destination,
         function_ea,
         (first_source_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert result == {}
@@ -6795,6 +6835,7 @@ def test_allocates_distinct_in_range_eas_for_converging_imported_defs(
         destination,
         function_ea,
         (first_target_ea, second_target_ea),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     imported_eas = {
@@ -6846,6 +6887,7 @@ def test_relocates_imported_root_after_block_renumbering(monkeypatch) -> None:
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
     original_root = destination.get_mblock(roots[target_ea])
 
@@ -6901,6 +6943,7 @@ def test_relocates_imported_root_after_original_head_is_eliminated(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
     root = destination.get_mblock(roots[target_ea])
     original_head = root.head
@@ -7297,6 +7340,7 @@ def test_relocates_imported_root_from_surviving_owned_instruction_origin(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
     imported_root = destination.get_mblock(roots[target_ea])
     surviving_block = destination.get_mblock(roots[target_ea] + 1)
@@ -7347,6 +7391,7 @@ def test_preserves_native_origin_for_imported_terminal_indirect_jump(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
     imported = destination.get_mblock(roots[target_ea]).tail
     assert imported is not None
@@ -7423,6 +7468,7 @@ def test_resolver_cut_port_binds_exact_instruction_after_microblock_split(
         function_ea,
         (source_block_ea,),
         allow_raw_preopt_calls=True,
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     origins = dict(
@@ -7502,6 +7548,7 @@ def test_resolver_cut_port_lowers_raw_one_way_call_to_goto(
         function_ea,
         (source_block_ea,),
         allow_raw_preopt_calls=True,
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     origins = dict(
@@ -7597,9 +7644,7 @@ def test_resolver_cut_port_replaces_synthetic_return_envelope(
     )
 
     applied = detached_handler_island._apply_boundary_port_batch(
-        destination,
-        batch,
-        {},
+        destination, batch, {}, mutation_gateway=make_mutation_gateway(destination)
     )
 
     assert applied is not None
@@ -7691,9 +7736,7 @@ def test_exact_state_route_collapses_two_way_dispatcher_envelope(
     )
 
     applied = detached_handler_island._apply_boundary_port_batch(
-        destination,
-        batch,
-        {},
+        destination, batch, {}, mutation_gateway=make_mutation_gateway(destination)
     )
 
     assert applied is not None
@@ -7774,9 +7817,7 @@ def test_exact_state_route_collapses_preopt_call_dispatcher_envelope(
     )
 
     applied = detached_handler_island._apply_boundary_port_batch(
-        destination,
-        batch,
-        {},
+        destination, batch, {}, mutation_gateway=make_mutation_gateway(destination)
     )
 
     assert applied is not None
@@ -7847,6 +7888,7 @@ def test_resolver_cut_port_lowers_preopt_transfer_envelope_to_goto(
         function_ea,
         (source_block_ea,),
         allow_raw_preopt_calls=True,
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     origins = dict(
@@ -7965,6 +8007,7 @@ def test_capture_drops_only_the_synthetic_exit_after_a_native_return(
         function_ea,
         (return_ea,),
         allow_raw_preopt_calls=True,
+        mutation_gateway=make_mutation_gateway(destination),
     )
     imported_return = destination.get_mblock(roots[return_ea])
     assert int(imported_return.tail.opcode) == int(ida_hexrays.m_ret)
@@ -8016,6 +8059,7 @@ def test_capture_normalizes_native_mret_with_synthetic_exit_to_terminal_block(
         function_ea,
         (return_ea,),
         allow_raw_preopt_calls=True,
+        mutation_gateway=make_mutation_gateway(destination),
     )
     imported_return = destination.get_mblock(roots[return_ea])
     assert tuple(
@@ -8068,6 +8112,7 @@ def test_capture_appends_return_only_for_native_terminal_evidence(monkeypatch) -
         function_ea,
         (return_ea,),
         allow_raw_preopt_calls=True,
+        mutation_gateway=make_mutation_gateway(destination),
     )
     imported_return = destination.get_mblock(roots[return_ea])
     opcodes = tuple(
@@ -8148,11 +8193,13 @@ def test_preopt_union_template_does_not_replace_legacy_fallback(monkeypatch) -> 
         legacy_destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(legacy_destination),
     )
     union_roots = detached_handler_island.materialize_preopt_union_snippet_templates(
         union_destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(union_destination),
     )
 
     assert int(
@@ -8217,6 +8264,7 @@ def test_preopt_union_capture_owns_instruction_backed_range_splits(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert set(roots) == {target_ea}
@@ -8305,9 +8353,7 @@ def test_preopt_union_import_barrier_rejects_same_mba_reentry(monkeypatch) -> No
         observed.append(detached_handler_island.preopt_union_import_in_progress(mba))
         assert (
             detached_handler_island.materialize_preopt_union_snippet_templates(
-                mba,
-                0xB000,
-                (0x40EAA7,),
+                mba, 0xB000, (0x40EAA7,), mutation_gateway=make_mutation_gateway(mba)
             )
             == {}
         )
@@ -8320,9 +8366,7 @@ def test_preopt_union_import_barrier_rejects_same_mba_reentry(monkeypatch) -> No
     )
 
     result = detached_handler_island.materialize_preopt_union_snippet_templates(
-        mba,
-        0xB000,
-        (0x40EAA7,),
+        mba, 0xB000, (0x40EAA7,), mutation_gateway=make_mutation_gateway(mba)
     )
 
     assert result == {0x40EAA7: 7}
@@ -8342,7 +8386,12 @@ def test_zero_width_template_sentinel_has_no_native_identity() -> None:
         external_successor_eas=(),
     )
 
-    assert detached_handler_island._template_block_stable_identity(sentinel) is None
+    assert (
+        detached_handler_island._template_block_stable_identity(
+            sentinel, native_key=NATIVE_KEY
+        )
+        is None
+    )
 
 
 def test_template_ranges_backfill_microcode_silent_native_entry() -> None:
@@ -8452,6 +8501,7 @@ def test_preopt_union_range_publication_relocates_stale_created_proxies(
         destination,
         function_ea,
         (target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert set(roots) == {target_ea}
@@ -8566,6 +8616,7 @@ def test_import_abstains_from_nonreturn_stop_template(monkeypatch) -> None:
         function_ea,
         (target_ea,),
         allow_raw_preopt_calls=True,
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert roots == {}

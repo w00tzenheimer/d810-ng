@@ -3779,14 +3779,17 @@ def _analyzed_destination_stack_map(
 
 def _remap_template_block_refs(
     instruction: object,
-    serial_map: dict[int, int],
+    *,
+    created: Mapping[tuple[int, int], object],
+    target_ea: int,
     external_map: dict[int, int],
 ) -> bool:
     for operand in _instruction_operands(instruction):
         if int(operand.t) != int(ida_hexrays.mop_b):
             continue
         source_serial = int(operand.b)
-        target_serial = serial_map.get(source_serial)
+        created_block = created.get((int(target_ea), source_serial))
+        target_serial = None if created_block is None else int(created_block.serial)
         if target_serial is None:
             target_serial = external_map.get(source_serial)
         if target_serial is None:
@@ -5440,7 +5443,7 @@ def _apply_boundary_port_batch(
     transparent_helpers: Collection[object] = (),
     pending_instruction_origins: Mapping[tuple[int, int], int] | None = None,
     selected_templates: tuple[DetachedSnippetTemplate, ...] = (),
-    mutation_gateway: MbaMutationGateway | None = None,
+    mutation_gateway: MbaMutationGateway,
 ) -> tuple[DetachedSnippetBoundaryPortResult, ...] | None:
     applied: list[DetachedSnippetBoundaryPortResult] = []
     instruction_origins = (
@@ -5517,9 +5520,7 @@ def _apply_boundary_port_batch(
         semantic_successors = set(edge_source_by_semantic_successor)
         modifier = DeferredGraphModifier(
             mba,
-            mutation_gateway=(
-                None if mutation_gateway is None else mutation_gateway.new_transaction()
-            ),
+            mutation_gateway=mutation_gateway.new_transaction(),
         )
         if delivery_mode == "terminal_goto" and not old_successors:
             source_instruction_eas = {
@@ -5799,9 +5800,7 @@ def _apply_boundary_port_batch(
             return None
         modifier = DeferredGraphModifier(
             mba,
-            mutation_gateway=(
-                None if mutation_gateway is None else mutation_gateway.new_transaction()
-            ),
+            mutation_gateway=mutation_gateway.new_transaction(),
         )
         if mutation.materialize_resolver_cut:
             port = mutation.record.port
@@ -6102,7 +6101,7 @@ def _materialize_detached_snippet_templates(
     expected_template_maturity: int | None = None,
     allow_raw_preopt_calls: bool = False,
     import_native_preopt_ranges: bool = False,
-    mutation_gateway: MbaMutationGateway | None = None,
+    mutation_gateway: MbaMutationGateway,
 ) -> DetachedSnippetImportResult | dict[int, int]:
     """Import cached snippets and return target EA -> root serial."""
     templates = tuple(
@@ -6443,9 +6442,7 @@ def _materialize_detached_snippet_templates(
 
     modifier = DeferredGraphModifier(
         mba,
-        mutation_gateway=(
-            None if mutation_gateway is None else mutation_gateway.new_transaction()
-        ),
+        mutation_gateway=mutation_gateway.new_transaction(),
     )
     mba_identity = stable_mba_identity(mba)
     pending_instruction_origins: dict[tuple[int, int], int] = {}
@@ -6522,12 +6519,6 @@ def _materialize_detached_snippet_templates(
             mba.mbr.ranges.push_back(ida_range.range_t(start_ea, end_ea))
         mba.set_mba_flags2(int(ida_hexrays.MBA2_HAS_OUTLINES))
     for template in selected:
-        serial_map = {
-            int(block.source_serial): int(
-                created[(int(template.target_ea), int(block.source_serial))].serial
-            )
-            for block in template.blocks
-        }
         stack_map = _stack_map_with_positive_identity_overrides(
             stack_maps_by_target[int(template.target_ea)],
             stable_stack_maps_by_target[int(template.target_ea)],
@@ -6624,8 +6615,9 @@ def _materialize_detached_snippet_templates(
                     return {}
                 if not _remap_template_block_refs(
                     instruction,
-                    serial_map,
-                    external_map,
+                    created=created,
+                    target_ea=int(template.target_ea),
+                    external_map=external_map,
                 ):
                     logger.info(
                         "detached snippet import abstained: target=0x%X "
@@ -6716,7 +6708,9 @@ def _materialize_detached_snippet_templates(
                 block.external_successor_eas,
             ):
                 if int(external_ea) <= 0:
-                    target_serial = serial_map[int(source_successor)]
+                    target_serial = int(
+                        created[(int(template.target_ea), int(source_successor))].serial
+                    )
                 else:
                     target_serial = roots.get(int(external_ea))
                     if target_serial is None:
@@ -7069,6 +7063,7 @@ def materialize_detached_snippet_templates(
     function_ea: int,
     target_eas: tuple[int, ...],
     *,
+    mutation_gateway: MbaMutationGateway,
     expected_template_maturity: int | None = None,
     allow_raw_preopt_calls: bool = False,
     import_native_preopt_ranges: bool = False,
@@ -7095,6 +7090,7 @@ def materialize_detached_snippet_templates(
         expected_template_maturity=expected_template_maturity,
         allow_raw_preopt_calls=allow_raw_preopt_calls,
         import_native_preopt_ranges=import_native_preopt_ranges,
+        mutation_gateway=mutation_gateway,
     )
 
 
@@ -7103,7 +7099,7 @@ def materialize_preopt_union_snippet_templates(
     function_ea: int,
     target_eas: tuple[int, ...],
     *,
-    mutation_gateway: MbaMutationGateway | None = None,
+    mutation_gateway: MbaMutationGateway,
 ) -> DetachedSnippetImportResult | dict[int, int]:
     """Import a dedicated PREOPT union and defer call analysis to Hex-Rays."""
     mba_identity = stable_mba_identity(mba)
@@ -7138,6 +7134,8 @@ def materialize_detached_replacement_snippet_templates(
     mba: object,
     function_ea: int,
     target_eas: tuple[int, ...],
+    *,
+    mutation_gateway: MbaMutationGateway,
 ) -> DetachedSnippetImportResult:
     """Import CALLS templates selected to restore lost conditional arms."""
     return _materialize_detached_snippet_templates(
@@ -7146,12 +7144,15 @@ def materialize_detached_replacement_snippet_templates(
         target_eas,
         _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES,
         expected_template_maturity=int(ida_hexrays.MMAT_CALLS),
+        mutation_gateway=mutation_gateway,
     )
 
 
 def redirect_live_target_predecessors(
     mba: object,
     replacement_roots_by_old_serial: Mapping[int, int],
+    *,
+    mutation_gateway: MbaMutationGateway,
 ) -> int:
     """Atomically retarget one-way incoming edges to imported roots.
 
@@ -7190,7 +7191,10 @@ def redirect_live_target_predecessors(
                 return 0
             rows.append((predecessor, int(new_serial)))
 
-    modifier = DeferredGraphModifier(mba)
+    modifier = DeferredGraphModifier(
+        mba,
+        mutation_gateway=mutation_gateway.new_transaction(),
+    )
     for predecessor, new_serial in rows:
         if not modifier.redirect_one_way_now(
             int(predecessor.serial),
@@ -8008,6 +8012,8 @@ def _state_write(ea: int, state_register: int, state: int) -> object:
 def materialize_detached_handler_island(
     mba: object,
     plan: DetachedHandlerIslandPlan,
+    *,
+    mutation_gateway: MbaMutationGateway,
 ) -> bool:
     """Apply one call + conditional-state island atomically or abstain."""
     source = find_unique_live_block_by_ea(mba, int(plan.source_predicate_ea))
@@ -8049,7 +8055,10 @@ def materialize_detached_handler_island(
         int(plan.true_state),
     )
 
-    modifier = DeferredGraphModifier(mba)
+    modifier = DeferredGraphModifier(
+        mba,
+        mutation_gateway=mutation_gateway.new_transaction(),
+    )
     free_block = mba.get_mblock(modifier.insert_nop_block_now(int(source.serial)))
     true_handler = find_unique_live_block_by_ea(mba, int(plan.true_target_ea))
     false_handler = find_unique_live_block_by_ea(mba, int(plan.false_target_ea))

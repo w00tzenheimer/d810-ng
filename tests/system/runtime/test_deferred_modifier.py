@@ -22,6 +22,7 @@ from d810.ir.flowgraph import InsnSnapshot
 from d810.hexrays.mutation import deferred_modifier as dm
 from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
 from tests.native_preanalysis import make_native_key
+from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 NATIVE_KEY = make_native_key()
 
@@ -130,12 +131,7 @@ class _FakeMBA:
 
 def test_modifier_uses_an_injected_session_mutation_gateway() -> None:
     mba = _FakeMBA()
-    gateway = MbaMutationGateway(
-        session_id="sample.i64:0x180000000:1",
-        function_ea=mba.entry_ea,
-        maturity=4,
-        native_key=NATIVE_KEY,
-    )
+    gateway = make_mutation_gateway(mba)
 
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     modifier._begin_mutation_batch(serial_quantity=mba.qty)
@@ -256,7 +252,9 @@ def test_zero_way_existing_goto_is_retargeted_without_appending(monkeypatch) -> 
 
 def test_apply_aborts_on_first_failed_modification_and_cleans(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
@@ -301,7 +299,9 @@ def test_apply_orders_conditional_block_insertions_by_descending_source(
         20: _FakeBlock(20, start=0x40DE51),
     }
     mba.qty = 30
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
@@ -345,7 +345,9 @@ def test_apply_transactional_rolls_back_when_mid_batch_aborts(monkeypatch):
     must invoke the snapshot restore path and return 0.
     """
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
@@ -395,7 +397,9 @@ def test_apply_transactional_returns_full_count_when_all_mods_succeed(monkeypatc
     No rollback should fire when every queued mod lands cleanly.
     """
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
@@ -441,7 +445,9 @@ def test_apply_transactional_rejects_batch_with_contradictory_redirects(monkeypa
     never entered.
     """
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
@@ -483,7 +489,9 @@ def test_detect_transactional_batch_conflicts_direct():
     easiest to validate directly.
     """
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
 
     # No conflict: single graph mod.
     modifier.modifications = [
@@ -537,7 +545,9 @@ def test_apply_transactional_marks_verify_failed_when_rollback_itself_fails(
     state and verify_failed must be set so callers can abort gracefully.
     """
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
@@ -575,7 +585,9 @@ def test_apply_transactional_marks_verify_failed_when_rollback_itself_fails(
 
 def test_apply_transactional_rolls_back_alias_scalarization_verify_failure(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.INSN_SCALARIZE_LOCAL_ALIAS_ACCESS,
@@ -631,7 +643,9 @@ def test_apply_transactional_rolls_back_alias_scalarization_verify_failure(monke
 
 def test_scalarize_local_alias_access_revalidates_live_host_text_hash() -> None:
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     block = _FakeBlock(0)
     host = SimpleNamespace(
         opcode=ida_hexrays.m_ldx,
@@ -702,7 +716,9 @@ def test_retarget_output_store_rewrites_only_store_address_operand(monkeypatch) 
     store_block.head = host
     mba.blocks = {0: entry, 1: store_block}
     mba.qty = 2
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
 
     assert (
         modifier._apply_retarget_output_store(
@@ -722,7 +738,9 @@ def test_retarget_output_store_rewrites_only_store_address_operand(monkeypatch) 
 
 def test_scalarize_local_alias_access_coalesce_keeps_distinct_live_anchors() -> None:
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.queue_scalarize_local_alias_access(
         7,
         0x180010000,
@@ -748,7 +766,9 @@ def test_scalarize_local_alias_access_coalesce_keeps_distinct_live_anchors() -> 
 
 def test_apply_tolerates_queued_mod_logging_introspection_failure(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -797,7 +817,9 @@ def test_block_target_change_rewrites_fallthrough_via_helper_and_remaps_later_ta
     }
     mba.qty = 300
 
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
 
     nop_blk = _FakeBlock(16)
     helper_targets: list[tuple[int, int]] = []
@@ -872,7 +894,9 @@ def test_block_target_change_fallthrough_helper_preserves_target_ea_after_serial
     }
     mba.qty = 300
 
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     # The original target blk50@0x40AB25 is currently blk51@0x40AB25.
     # Another original block 51 independently maps to live serial 52.  Once
     # _apply_single resolves new_target 50 -> 51, the fallthrough helper must
@@ -933,7 +957,9 @@ def test_conditional_lowering_helper_remaps_later_branch_targets(monkeypatch):
     monkeypatch.setattr(dm, "copy_block_keep", _copy_block_keep)
     monkeypatch.setattr(dm, "insert_goto_instruction", lambda *_a, **_k: None)
 
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     assert modifier._build_fallthrough_goto_helper(guard, target) == 11
 
     captured: list[tuple[int, int | None]] = []
@@ -1025,7 +1051,9 @@ def test_restore_pruned_conditional_preserves_predicate_and_builds_both_arms(
     monkeypatch.setattr(dm, "insert_goto_instruction", lambda *_a, **_k: None)
     monkeypatch.setattr(dm.ida_hexrays, "mop_t", _BlockReference)
 
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     assert modifier.restore_pruned_conditional_now(
         guard,
         taken_target=taken_target,
@@ -1088,7 +1116,9 @@ def test_conditional_lowering_helpers_keep_target_identity_across_two_insertions
         lambda helper, target, **_kwargs: goto_targets.append((helper, target)),
     )
 
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     assert modifier._build_fallthrough_goto_helper(guard, taken_target) is not None
     assert (
         modifier._build_fallthrough_goto_helper(guard, fallthrough_target) is not None
@@ -1143,7 +1173,9 @@ def test_conditional_helper_rebinds_target_when_proxy_serial_stays_stale(
         lambda _helper, target, **_kwargs: goto_targets.append(int(target)),
     )
 
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     assert modifier._build_fallthrough_goto_helper(guard, stale_target) == 11
 
     assert goto_targets == [21]
@@ -1173,7 +1205,9 @@ def test_conditional_reacquire_uses_current_insertion_position_before_ea_fallbac
         700: duplicate_ea,
     }
     mba.qty = 701
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier._serial_remap = {108: 400, 664: 800}
 
     assert (
@@ -1202,7 +1236,9 @@ def test_conditional_lowering_resolves_dispatcher_serial_once(monkeypatch):
     source = _FakeBlock(87)
     mba.blocks = {87: source}
     mba.qty = 143
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     _seed_current_serials(
         modifier,
         {
@@ -1245,7 +1281,9 @@ def test_conditional_lowering_resolves_dispatcher_serial_once(monkeypatch):
 
 def test_create_and_redirect_rejects_non_1way_source(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     src = _FakeBlock(5)
     src.nsucc = lambda: 2  # type: ignore[assignment]
 
@@ -1271,7 +1309,9 @@ def test_create_and_redirect_materializes_symbolic_snapshots_before_block_creati
     monkeypatch,
 ):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     src = _FakeBlock(5)
 
     captured: dict[str, object] = {}
@@ -1314,7 +1354,9 @@ def test_create_and_redirect_materializes_symbolic_snapshots_before_block_creati
 
 def test_apply_pre_rejects_create_and_redirect_from_entry_block(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_CREATE_WITH_REDIRECT,
@@ -1346,7 +1388,9 @@ def test_apply_pre_rejects_create_and_redirect_from_entry_block(monkeypatch):
 
 def test_coalesce_resolves_mixed_terminal_conflicts():
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_CREATE_WITH_REDIRECT,
@@ -1374,7 +1418,9 @@ def test_coalesce_resolves_mixed_terminal_conflicts():
 
 def test_apply_runs_conservative_cleanup_without_optimize_local(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
@@ -1404,7 +1450,9 @@ def test_apply_attempts_verify_recovery(monkeypatch):
     # takes the optimize_local(0) branch, and post-apply verify succeeds so
     # the recovery branch is not entered).
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
@@ -1436,7 +1484,9 @@ def test_apply_attempts_verify_recovery(monkeypatch):
 
 def test_apply_attempts_verify_recovery_on_non_runtime_preapply_exception(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
@@ -1468,7 +1518,9 @@ def test_apply_attempts_verify_recovery_on_non_runtime_preapply_exception(monkey
 
 def test_apply_executes_post_apply_hook(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
@@ -1503,7 +1555,9 @@ def test_apply_executes_post_apply_hook(monkeypatch):
 
 def test_apply_pre_rejects_illegal_edge_split_trampoline_and_continues(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.EDGE_SPLIT_TRAMPOLINE,
@@ -1562,7 +1616,9 @@ def test_create_conditional_redirect_records_serial_drift_remap_and_continues(
     mba.blocks.update({5: source, 6: ref})
     mba.qty = len(mba.blocks)
 
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     _seed_current_serials(modifier, {10: 13, 11: 14})
 
     monkeypatch.setattr(dm.ida_hexrays, "is_mcode_jcond", lambda _opcode: True)
@@ -1652,7 +1708,9 @@ def test_create_conditional_redirect_rejects_stale_source_edge_before_cloning(
     mba.blocks.update({5: source})
     mba.qty = len(mba.blocks)
 
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     duplicate_calls = {"count": 0}
 
     def _duplicate_block(*_args, **_kwargs):
@@ -1687,7 +1745,9 @@ def test_duplicate_block_records_serial_drift_remap_and_continues(monkeypatch):
     mba.blocks.update({5: source, 7: pred})
     mba.qty = len(mba.blocks)
 
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
 
     monkeypatch.setattr(
         modifier,
@@ -1718,7 +1778,9 @@ def test_duplicate_block_records_serial_drift_remap_and_continues(monkeypatch):
 
 def test_duplicate_replay_queue_records_single_composite_modification():
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     body = (InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),)
 
     modifier.queue_duplicate_replay_and_redirect(
@@ -1793,7 +1855,9 @@ def test_clone_conditional_as_goto_records_serial_drift_remap_and_replays_shape(
     monkeypatch,
 ):
     mba, source, pred, clone = _clone_as_goto_fixture()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     trace: list[tuple] = []
 
     monkeypatch.setattr(dm, "copy_block_keep", lambda *_a, **_k: clone)
@@ -1889,7 +1953,9 @@ def _clone_as_goto_from_arm_fixture():
 
 def test_clone_conditional_as_goto_from_branch_arm_applies_2way_rewire(monkeypatch):
     mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     trace: list[tuple] = []
 
     monkeypatch.setattr(dm, "copy_block_keep", lambda *_a, **_k: clone)
@@ -1935,7 +2001,9 @@ def test_clone_conditional_as_goto_from_branch_arm_applies_fallthrough_rewire(
     monkeypatch,
 ):
     mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     trace: list[tuple] = []
 
     # pred's explicit branch arm targets the other successor, so source blk[5]
@@ -2003,7 +2071,9 @@ def test_clone_conditional_as_goto_from_branch_arm_refuses_one_way_predecessor(
 ):
     """Apply path rejects when pred is 1-way at apply-time (drift / mis-queue)."""
     mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
 
     # Mutate pred to 1-way to simulate stale/drifted topology.
     pred.nsucc = lambda: 1  # type: ignore[assignment]
@@ -2034,7 +2104,9 @@ def test_clone_conditional_as_goto_from_branch_arm_refuses_branch_arm_mismatch(
 ):
     """Apply path rejects when pred's explicit branch arm doesn't point at source."""
     mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
 
     # Flip pred's explicit branch operand to target the OTHER successor.
     pred.tail = SimpleNamespace(
@@ -2097,7 +2169,9 @@ class TestCreateConditionalRedirectIntegration:
         if mba is None:
             pytest.skip("Failed to generate GLBOPT1 microcode for approov_real_pattern")
 
-        legacy_like = dm.DeferredGraphModifier(mba)
+        legacy_like = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         legacy_like.queue_goto_change(2, 8, description="legacy-like goto 2->8")
         legacy_like.queue_goto_change(8, 9, description="legacy-like goto 8->9")
         applied = legacy_like.apply(run_optimize_local=True, run_deep_cleaning=False)
@@ -2128,7 +2202,9 @@ def test_apply_pre_rejects_duplicate_block_with_fallthrough_predecessor(monkeypa
     mba.blocks.update({5: source, 6: pred, 7: target})
     mba.qty = len(mba.blocks)
 
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
@@ -2169,7 +2245,9 @@ def test_duplicate_block_rejects_unexpected_secondary_serial(monkeypatch):
     mba.blocks.update({5: source, 6: pred})
     mba.qty = len(mba.blocks)
 
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
 
     monkeypatch.setattr(
         dm,
@@ -2231,7 +2309,9 @@ def test_duplicate_block_applies_explicit_conditional_targets(monkeypatch):
     mba.qty = len(mba.blocks)
     mba.copy_block = lambda *_args, **_kwargs: duplicated_blk  # type: ignore[attr-defined]
 
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
 
     monkeypatch.setattr(dm.ida_hexrays, "is_mcode_jcond", lambda _opcode: True)
     monkeypatch.setattr(
@@ -2286,7 +2366,9 @@ def test_duplicate_block_applies_explicit_conditional_targets(monkeypatch):
 
 def test_apply_marks_verify_failed_on_post_apply_hook_exception(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
@@ -2314,7 +2396,9 @@ def test_apply_marks_verify_failed_on_post_apply_hook_exception(monkeypatch):
 
 def test_apply_skips_post_native_verify_after_contract_failure(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
@@ -2359,7 +2443,9 @@ def test_apply_skips_post_native_verify_after_contract_failure(monkeypatch):
 
 def test_apply_rolls_back_snapshot_after_contract_failure(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
@@ -2415,7 +2501,9 @@ def test_apply_rolls_back_snapshot_after_contract_failure(monkeypatch):
 
 def test_apply_rolls_back_failed_mod_and_continues(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -2482,7 +2570,9 @@ def test_apply_rolls_back_failed_mod_and_continues(monkeypatch):
 
 def test_apply_sets_verify_failed_if_rollback_cannot_recover(monkeypatch):
     mba = _FakeMBA()
-    modifier = dm.DeferredGraphModifier(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
     modifier.modifications = [
         dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -2686,7 +2776,9 @@ class TestEdgeRedirectViaPredSplitCorridor:
 
         mba = _build_suffix_mba({24: pred, 32: src, 62: current_target, 70: new_target})
         state = _patch_suffix_dependencies(monkeypatch, mba)
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
 
         ok = modifier._apply_edge_redirect_via_pred_split_corridor(
             blk=src,
@@ -2720,7 +2812,9 @@ class TestEdgeRedirectViaPredSplitCorridor:
 
         mba = _build_suffix_mba({24: pred, 32: src, 62: target})
         state = _patch_suffix_dependencies(monkeypatch, mba)
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
 
         ok = modifier._apply_edge_redirect_via_pred_split_corridor(
             blk=src,
@@ -2754,7 +2848,9 @@ class TestEdgeRedirectViaPredSplitCorridor:
 
         mba = _build_suffix_mba({9: pred, 10: src, 11: tail})
         state = _patch_suffix_dependencies(monkeypatch, mba)
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
 
         ok = modifier._apply_edge_redirect_via_pred_split_corridor(
             blk=src,
@@ -2797,7 +2893,9 @@ class TestPrivateTerminalSuffix:
 
         mba = _build_suffix_mba({1: blk_a, 2: blk_s, 3: blk_t})
         state = _patch_suffix_dependencies(monkeypatch, mba)
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
 
         ok = modifier._apply_private_terminal_suffix(
             anchor_blk=blk_a,
@@ -2858,7 +2956,9 @@ class TestPrivateTerminalSuffix:
 
         mba = _build_suffix_mba({1: blk_a, 2: blk_s, 3: blk_t, 5: blk_other})
         state = _patch_suffix_dependencies(monkeypatch, mba)
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
 
         ok = modifier._apply_private_terminal_suffix(
             anchor_blk=blk_a,
@@ -2891,7 +2991,9 @@ class TestPrivateTerminalSuffix:
 
         mba = _build_suffix_mba({1: blk_a, 2: blk_s1, 3: blk_s2, 4: blk_t})
         state = _patch_suffix_dependencies(monkeypatch, mba)
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
 
         ok = modifier._apply_private_terminal_suffix(
             anchor_blk=blk_a,
@@ -2950,7 +3052,9 @@ class TestPrivateTerminalSuffix:
 
         mba = _build_suffix_mba({1: blk_a, 2: blk_s, 3: blk_t})
         state = _patch_suffix_dependencies(monkeypatch, mba)
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
 
         # Expected serials (99, 100) will NOT match actual (4, 5)
         ok = modifier._apply_private_terminal_suffix(
@@ -3259,7 +3363,9 @@ class TestStagedAtomicApply:
 
         changes = _staged_patch_wiring(monkeypatch, mba)
 
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         modifier.modifications = [
             dm.GraphModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -3301,7 +3407,9 @@ class TestStagedAtomicApply:
         mba.qty = max(mba.blocks.keys()) + 1
 
         changes = _staged_patch_wiring(monkeypatch, mba)
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         modifier.modifications = [
             dm.GraphModification(
                 dm.ModificationType.BLOCK_TERMINAL_GOTO_CHANGE,
@@ -3337,7 +3445,9 @@ class TestStagedAtomicApply:
 
         _staged_patch_wiring(monkeypatch, mba)
 
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         modifier.modifications = [
             dm.GraphModification(
                 dm.ModificationType.INSN_NOP,
@@ -3370,7 +3480,9 @@ class TestStagedAtomicApply:
     ):
         """staged_atomic=False (default) preserves the existing sequential path."""
         mba = _StagedFakeMBA()
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         modifier.modifications = [
             dm.GraphModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -3411,7 +3523,9 @@ class TestStagedAtomicApply:
 
         changes = _staged_patch_wiring(monkeypatch, mba)
 
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         modifier.modifications = [
             dm.GraphModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -3457,7 +3571,9 @@ class TestStagedAtomicApply:
             raising=False,
         )
 
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         modifier.modifications = [
             dm.GraphModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -3514,7 +3630,9 @@ class TestStagedAtomicApply:
 
         changes = _staged_patch_wiring(monkeypatch, mba)
 
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         modifier.modifications = [
             dm.GraphModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -3604,7 +3722,9 @@ class TestStagedAtomicApply:
 
         monkeypatch.setattr(_StagedFakeMBA, "remove_block", _strict_remove_block)
 
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         modifier.modifications = [
             dm.GraphModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -3705,7 +3825,9 @@ class TestStagedAtomicEaIdentity:
 
         _staged_patch_wiring(monkeypatch, mba)
 
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         mod = dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
             block_serial=5,
@@ -3761,7 +3883,9 @@ class TestStagedAtomicEaIdentity:
         mba.qty = 113
 
         _staged_patch_wiring(monkeypatch, mba)
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         _seed_current_serials(modifier, {100: 101})
         mod = dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -3793,7 +3917,9 @@ class TestStagedAtomicEaIdentity:
 
         changes = _staged_patch_wiring(monkeypatch, mba)
 
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         mod = dm.GraphModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
             block_serial=5,
@@ -3872,7 +3998,9 @@ class TestStagedAtomicEaIdentity:
 
         _staged_patch_wiring(monkeypatch, mba)
 
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         modifier.modifications = [
             dm.GraphModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -3943,7 +4071,9 @@ class TestStagedAtomicEaIdentity:
 
         _staged_patch_wiring(monkeypatch, mba)
 
-        modifier = dm.DeferredGraphModifier(mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
         modifier.modifications = [
             dm.GraphModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,

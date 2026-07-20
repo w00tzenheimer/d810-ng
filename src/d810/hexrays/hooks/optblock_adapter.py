@@ -1114,7 +1114,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 maybe_rewrite_impossible_return_artifact_edges,
             )
 
-            applied = maybe_rewrite_impossible_return_artifact_edges(mba)
+            applied = maybe_rewrite_impossible_return_artifact_edges(
+                mba,
+                mutation_gateway=self._flow_context.new_mba_mutation_gateway(),
+            )
         except Exception:
             optimizer_logger.exception(
                 "impossible return artifact return-edge cleanup failed"
@@ -1236,6 +1239,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 dag = get_persisted_preanalysis_dag(func_ea)
             applied = maybe_run_terminal_tail_cascade_egress_lowering(
                 mba,
+                mutation_gateway=self._flow_context.new_mba_mutation_gateway(),
                 fact_view=fact_view,
                 dag=dag,
                 cascade_priors=cascade_priors,
@@ -1277,7 +1281,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 maybe_rewrite_terminal_zero_guard_literal_return_edges,
             )
 
-            applied = maybe_rewrite_terminal_zero_guard_literal_return_edges(mba)
+            applied = maybe_rewrite_terminal_zero_guard_literal_return_edges(
+                mba,
+                mutation_gateway=self._flow_context.new_mba_mutation_gateway(),
+            )
         except Exception:
             optimizer_logger.exception(
                 "terminal zero-guard literal return cleanup failed"

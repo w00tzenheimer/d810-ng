@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from tests.native_preanalysis import make_native_key
+from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 NATIVE_KEY = make_native_key()
 
@@ -135,17 +136,11 @@ class _FakeLiveMba:
 
 def test_live_adapter_uses_fresh_transactions_over_an_injected_gateway_index():
     from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import LiveMbaAdapter
-    from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 
     mba = _FakeLiveMba()
     mba.entry_ea = 0x401000
     mba.maturity = 4
-    gateway = MbaMutationGateway(
-        session_id="sample.i64:0x401000:1",
-        function_ea=0x401000,
-        maturity=4,
-        native_key=NATIVE_KEY,
-    )
+    gateway = make_mutation_gateway(mba)
 
     adapter = LiveMbaAdapter(mba, mutation_gateway=gateway)
     modifier = adapter._new_deferred_modifier()
@@ -186,6 +181,7 @@ def test_source_byte_family_key_requires_structural_identity_not_dstr():
 @dataclass
 class _FakeLiveAdapter:
     _mba: _FakeLiveMba
+    native_key = NATIVE_KEY
 
     def find_block(self, identity):
         from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
@@ -449,8 +445,7 @@ def test_tail_distinct_uses_provider_fact_view_without_diag(monkeypatch):
     monkeypatch.setattr(runtime, "isolate_byte_emit_tail", fake_isolate_byte_emit_tail)
 
     runtime.maybe_run_tail_distinct(
-        mba,
-        evidence_provider=provider,
+        mba, evidence_provider=provider, mutation_gateway=make_mutation_gateway(mba)
     )
 
     assert provider.seen_mba is mba
@@ -469,7 +464,9 @@ def test_tail_distinct_missing_provider_skips_without_diag(monkeypatch):
     monkeypatch.setenv("D810_TAIL_DISTINCT_BYTE", "2")
     monkeypatch.setattr(runtime, "isolate_byte_emit_tail", fail_isolate_byte_emit_tail)
 
-    runtime.maybe_run_tail_distinct(object())
+    runtime.maybe_run_tail_distinct(
+        object(), mutation_gateway=make_mutation_gateway(object())
+    )
 
     assert not hasattr(runtime, "DiagDbFactView")
 
@@ -509,7 +506,9 @@ def test_tail_distinct_accepts_validated_fact_view(monkeypatch):
     monkeypatch.setenv("D810_TAIL_DISTINCT_BYTE", "2")
     monkeypatch.setattr(runtime, "isolate_byte_emit_tail", fake_isolate_byte_emit_tail)
 
-    runtime.maybe_run_tail_distinct(object(), fact_view=view)
+    runtime.maybe_run_tail_distinct(
+        object(), fact_view=view, mutation_gateway=make_mutation_gateway(object())
+    )
 
     assert len(calls["rows"]) == 1
     assert calls["rows"][0].block_serial == 118
@@ -542,8 +541,7 @@ def test_tail_duplicate_convergence_uses_explicit_fact_view_without_diag(monkeyp
     )
 
     runtime.maybe_run_tail_duplicate_convergence(
-        object(),
-        fact_view=fact_view,
+        object(), fact_view=fact_view, mutation_gateway=make_mutation_gateway(object())
     )
 
     assert calls["byte_index"] == 6
@@ -565,7 +563,9 @@ def test_tail_duplicate_missing_provider_skips_without_diag(monkeypatch):
         fail_duplicate_convergence_for_byte_path,
     )
 
-    runtime.maybe_run_tail_duplicate_convergence(object())
+    runtime.maybe_run_tail_duplicate_convergence(
+        object(), mutation_gateway=make_mutation_gateway(object())
+    )
 
     assert not hasattr(runtime, "DiagDbFactView")
 
@@ -623,7 +623,7 @@ def test_terminal_tail_uses_provider_planner_evidence_without_fact_view(monkeypa
     monkeypatch.setattr(runtime, "_load_planner_blocks_from_mba", fail_mba_blocks)
     monkeypatch.setattr(runtime, "_load_planner_sites_from_fact_view", fail_fact_sites)
     monkeypatch.setattr(runtime, "_load_dag_semantics_from_dag", lambda value: value)
-    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: object())
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba, **_kwargs: object())
     monkeypatch.setattr(
         runtime,
         "execute_terminal_tail_cascade_egress_lowering",
@@ -642,8 +642,7 @@ def test_terminal_tail_uses_provider_planner_evidence_without_fact_view(monkeypa
 
     mba = object()
     applied = runtime.maybe_run_terminal_tail_cascade_egress_lowering(
-        mba,
-        evidence_provider=provider,
+        mba, evidence_provider=provider, mutation_gateway=make_mutation_gateway(mba)
     )
 
     assert applied is True
@@ -723,7 +722,7 @@ def test_terminal_tail_bridge_preflight_blocks_partial_row_lowering(monkeypatch)
         "TerminalTailCascadeEgressPlanner",
         FakePlanner,
     )
-    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: object())
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba, **_kwargs: object())
     monkeypatch.setattr(
         runtime,
         "execute_terminal_tail_cascade_egress_lowering",
@@ -733,6 +732,7 @@ def test_terminal_tail_bridge_preflight_blocks_partial_row_lowering(monkeypatch)
     applied = runtime.maybe_run_terminal_tail_cascade_egress_lowering(
         object(),
         evidence_provider=provider,
+        mutation_gateway=make_mutation_gateway(object()),
     )
 
     assert applied is False
@@ -849,7 +849,7 @@ def test_terminal_tail_bridge_uses_planner_source_block(monkeypatch):
         "TerminalTailCascadeEgressPlanner",
         FakePlanner,
     )
-    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: adapter)
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba, **_kwargs: adapter)
     monkeypatch.setattr(
         runtime,
         "execute_terminal_tail_cascade_egress_lowering",
@@ -859,6 +859,7 @@ def test_terminal_tail_bridge_uses_planner_source_block(monkeypatch):
     applied = runtime.maybe_run_terminal_tail_cascade_egress_lowering(
         object(),
         evidence_provider=provider,
+        mutation_gateway=make_mutation_gateway(object()),
     )
 
     assert applied is True
@@ -963,7 +964,7 @@ def test_terminal_tail_bridge_refuses_without_planner_source_block(monkeypatch):
         "TerminalTailCascadeEgressPlanner",
         FakePlanner,
     )
-    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: adapter)
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba, **_kwargs: adapter)
     monkeypatch.setattr(
         runtime,
         "execute_terminal_tail_cascade_egress_lowering",
@@ -973,6 +974,7 @@ def test_terminal_tail_bridge_refuses_without_planner_source_block(monkeypatch):
     applied = runtime.maybe_run_terminal_tail_cascade_egress_lowering(
         object(),
         evidence_provider=provider,
+        mutation_gateway=make_mutation_gateway(object()),
     )
 
     assert applied is False
@@ -1023,7 +1025,7 @@ def test_terminal_tail_without_explicit_cascade_priors_avoids_row_redirects(
         "TerminalTailCascadeEgressPlanner",
         FakePlanner,
     )
-    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: FakeAdapter())
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba, **_kwargs: FakeAdapter())
     monkeypatch.setattr(
         runtime,
         "_bridge_plan_row_to_live_mba",
@@ -1038,6 +1040,7 @@ def test_terminal_tail_without_explicit_cascade_priors_avoids_row_redirects(
     applied = runtime.maybe_run_terminal_tail_cascade_egress_lowering(
         object(),
         evidence_provider=provider,
+        mutation_gateway=make_mutation_gateway(object()),
     )
 
     assert applied is True
@@ -1071,7 +1074,9 @@ def test_tail_state_cascade_missing_provider_skips_without_diag(monkeypatch):
         fail_load_planner_blocks_from_mba,
     )
 
-    runtime.maybe_run_tail_state_cascade(object())
+    runtime.maybe_run_tail_state_cascade(
+        object(), mutation_gateway=make_mutation_gateway(object())
+    )
 
     assert not hasattr(runtime, "DiagDbFactView")
 
@@ -2073,7 +2078,7 @@ def test_impossible_return_artifact_rewrite_uses_provider_evidence(monkeypatch):
     )
 
     monkeypatch.setenv("D810_REWRITE_IMPOSSIBLE_RETURN_ARTIFACTS", "1")
-    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: adapter)
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba, **_kwargs: adapter)
     monkeypatch.setattr(
         runtime,
         "_live_successor_map",
@@ -2088,6 +2093,7 @@ def test_impossible_return_artifact_rewrite_uses_provider_evidence(monkeypatch):
     applied = runtime.maybe_rewrite_impossible_return_artifact_edges(
         object(),
         evidence_provider=provider,
+        mutation_gateway=make_mutation_gateway(object()),
     )
 
     assert applied == ((27, 28, 29),)
