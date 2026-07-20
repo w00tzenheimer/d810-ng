@@ -402,6 +402,66 @@ def test_scan_inventories_unknown_recon_apis_and_cli_names(tmp_path: Path) -> No
     }
 
 
+def test_scan_and_rewrite_embedded_lifecycle_identifiers(tmp_path: Path) -> None:
+    mod = _load_module()
+    sample = tmp_path / "sample.py"
+    source = """class _ReconOutcomeLike:
+    pass
+
+class TestReconPhaseRuntime:
+    pass
+
+class TestReconStoreWriter:
+    pass
+
+class TestReconResult:
+    pass
+
+class TestReconPipelineCoverage:
+    pass
+
+NORMALIZED_RECON_CFG_SCOPE = "normalized_preanalysis_cfg_fact"
+D810_RECON_SKIP_PRIMARY = "reconstruction experiment"
+reconstruction_result = reconcile_inputs()
+"""
+    sample.write_text(source, encoding="utf-8")
+
+    candidates = mod.scan_paths([sample], root=tmp_path)
+
+    assert {
+        candidate.detail
+        for candidate in candidates
+        if candidate.kind == "residual-recon-api"
+    } == {
+        "_ReconOutcomeLike",
+        "TestReconPhaseRuntime",
+        "TestReconStoreWriter",
+        "TestReconResult",
+        "TestReconPipelineCoverage",
+        "NORMALIZED_RECON_CFG_SCOPE",
+    }
+    assert all(candidate.rewriteable for candidate in candidates)
+    assert mod.rewrite_text(source).text == """class _AnalysisOutcomeLike:
+    pass
+
+class TestPreanalysisPhaseRuntime:
+    pass
+
+class TestPreanalysisStoreWriter:
+    pass
+
+class TestPreanalysisResult:
+    pass
+
+class TestAnalysisPipelineCoverage:
+    pass
+
+NORMALIZED_PREANALYSIS_CFG_SCOPE = "normalized_preanalysis_cfg_fact"
+D810_RECON_SKIP_PRIMARY = "reconstruction experiment"
+reconstruction_result = reconcile_inputs()
+"""
+
+
 def test_scan_inventories_residual_recon_module_imports(tmp_path: Path) -> None:
     mod = _load_module()
     sample = tmp_path / "sample.py"
