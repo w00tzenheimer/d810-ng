@@ -111,14 +111,14 @@ family_logger = getLogger("D810.unflat.cleanup_family")
 
 CLEANUP_FAMILY_METADATA_KEY = "simple_flattening_cleanup"
 
-NORMALIZED_RECON_CFG_SCOPE = "normalized_preanalysis_cfg_fact"
+NORMALIZED_PREANALYSIS_CFG_SCOPE = "normalized_preanalysis_cfg_fact"
 ENGINE_CLEANUP_SCOPE = "engine_cleanup"
 
 _STRATEGY_SCOPES = {
-    "guarded_state_machine": NORMALIZED_RECON_CFG_SCOPE,
-    "local_select_loop": NORMALIZED_RECON_CFG_SCOPE,
-    "side_effect_select_loop": NORMALIZED_RECON_CFG_SCOPE,
-    "selector_shell": NORMALIZED_RECON_CFG_SCOPE,
+    "guarded_state_machine": NORMALIZED_PREANALYSIS_CFG_SCOPE,
+    "local_select_loop": NORMALIZED_PREANALYSIS_CFG_SCOPE,
+    "side_effect_select_loop": NORMALIZED_PREANALYSIS_CFG_SCOPE,
+    "selector_shell": NORMALIZED_PREANALYSIS_CFG_SCOPE,
 }
 
 __all__ = [
