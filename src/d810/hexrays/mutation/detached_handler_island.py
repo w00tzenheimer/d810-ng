@@ -3892,6 +3892,7 @@ def _exact_jcc_predicate_true_is_taken(
     predicate_size: int | None,
     predicate_constant: int | None,
     condition_opcodes: dict[int, tuple[int, int]] | None = None,
+    allow_imported_derived_left: bool = False,
 ) -> bool | None:
     """Orient an exact two-way jcc without depending on block ownership."""
     if condition_opcodes is None:
@@ -3908,12 +3909,83 @@ def _exact_jcc_predicate_true_is_taken(
             15: (int(ida_hexrays.m_jg), int(ida_hexrays.m_jle)),
         }
     opcodes = condition_opcodes.get(int(condition_code))
+    set_condition_opcodes = {
+        2: (int(ida_hexrays.m_setb), int(ida_hexrays.m_setae)),
+        3: (int(ida_hexrays.m_setae), int(ida_hexrays.m_setb)),
+        4: (int(ida_hexrays.m_setz), int(ida_hexrays.m_setnz)),
+        5: (int(ida_hexrays.m_setnz), int(ida_hexrays.m_setz)),
+        6: (int(ida_hexrays.m_setbe), int(ida_hexrays.m_seta)),
+        7: (int(ida_hexrays.m_seta), int(ida_hexrays.m_setbe)),
+        12: (int(ida_hexrays.m_setl), int(ida_hexrays.m_setge)),
+        13: (int(ida_hexrays.m_setge), int(ida_hexrays.m_setl)),
+        14: (int(ida_hexrays.m_setle), int(ida_hexrays.m_setg)),
+        15: (int(ida_hexrays.m_setg), int(ida_hexrays.m_setle)),
+    }.get(int(condition_code))
+    compared_predicate = predicate
+    orientation_opcodes = opcodes
     if (
-        opcodes is None
+        predicate is not None
+        and int(predicate.opcode) == int(ida_hexrays.m_jcnd)
+        and int(predicate.l.t) == int(ida_hexrays.mop_d)
+    ):
+        def expression_orientation(expression: object) -> bool | None:
+            if int(expression.ea) != int(predicate_ea):
+                return None
+            if (
+                set_condition_opcodes is not None
+                and int(expression.opcode) in set_condition_opcodes
+            ):
+                return int(expression.opcode) == set_condition_opcodes[0]
+            if (
+                int(expression.opcode) == int(ida_hexrays.m_xor)
+                and int(expression.l.t) == int(ida_hexrays.mop_r)
+                and int(expression.l.size) == 1
+                and int(expression.r.t) == int(ida_hexrays.mop_r)
+                and int(expression.r.size) == 1
+                and int(condition_code) in (12, 13)
+            ):
+                # Signed less-than is ``SF xor OF``; signed greater-or-equal
+                # is its logical inverse.  GENERATED represents the two flag
+                # bits as one-byte registers at the exact native predicate EA.
+                return int(condition_code) == 12
+            if int(expression.opcode) != int(ida_hexrays.m_lnot):
+                return None
+            if int(expression.l.t) == int(ida_hexrays.mop_d):
+                nested_orientation = expression_orientation(expression.l.d)
+                return (
+                    None
+                    if nested_orientation is None
+                    else not nested_orientation
+                )
+            if (
+                int(expression.l.t) == int(ida_hexrays.mop_r)
+                and int(expression.l.size) == 1
+                and int(expression.r.t) == int(ida_hexrays.mop_z)
+                and int(condition_code) in (4, 5)
+            ):
+                # GENERATED equality branches use the one-byte zero-flag
+                # carrier directly. ``lnot(zf)`` matches native ``jnz`` and
+                # inverts native ``jz``.
+                return int(condition_code) == 5
+            return None
+
+        if (
+            int(successor_count) != 2
+            or int(predicate.ea) != int(predicate_ea)
+            or predicate_register is not None
+            or predicate_size is not None
+            or predicate_constant is not None
+        ):
+            return None
+        return expression_orientation(predicate.l.d)
+    if (
+        orientation_opcodes is None
+        or compared_predicate is None
         or predicate is None
         or int(successor_count) != 2
         or int(predicate.ea) != int(predicate_ea)
-        or int(predicate.opcode) not in opcodes
+        or int(compared_predicate.ea) != int(predicate_ea)
+        or int(compared_predicate.opcode) not in orientation_opcodes
     ):
         return None
     if (
@@ -3921,22 +3993,30 @@ def _exact_jcc_predicate_true_is_taken(
         and predicate_size is None
         and predicate_constant is None
     ):
-        return int(predicate.opcode) == opcodes[0]
+        return int(compared_predicate.opcode) == orientation_opcodes[0]
     if (
         predicate_register is None
         or predicate_size is None
         or int(predicate_size) <= 0
         or predicate_constant is None
-        or int(predicate.l.t) != int(ida_hexrays.mop_r)
-        or int(predicate.l.r) != int(predicate_register)
-        or int(predicate.l.size) != int(predicate_size)
-        or int(predicate.r.t) != int(ida_hexrays.mop_n)
+        or int(compared_predicate.l.size) != int(predicate_size)
+        or int(compared_predicate.r.t) != int(ida_hexrays.mop_n)
+        or int(compared_predicate.r.size) != int(predicate_size)
     ):
         return None
-    mask = (1 << (8 * int(predicate_size))) - 1
-    if int(predicate.r.nnn.value) & mask != int(predicate_constant) & mask:
+    register_matches = (
+        int(compared_predicate.l.t) == int(ida_hexrays.mop_r)
+        and int(compared_predicate.l.r) == int(predicate_register)
+    )
+    imported_derived_left = allow_imported_derived_left and int(
+        compared_predicate.l.t
+    ) == int(ida_hexrays.mop_d)
+    if not register_matches and not imported_derived_left:
         return None
-    return int(predicate.opcode) == opcodes[0]
+    mask = (1 << (8 * int(predicate_size))) - 1
+    if int(compared_predicate.r.nnn.value) & mask != int(predicate_constant) & mask:
+        return None
+    return int(compared_predicate.opcode) == orientation_opcodes[0]
 
 
 def _exact_live_predicate_true_is_taken(
@@ -3994,6 +4074,7 @@ def _exact_imported_predicate_true_is_taken(
         predicate_register=port.predicate_register,
         predicate_size=port.predicate_size,
         predicate_constant=port.predicate_constant,
+        allow_imported_derived_left=True,
     )
 
 
@@ -4015,6 +4096,7 @@ class _ConditionalBoundaryPortMutation:
     fallthrough_target: _BoundaryPortBlockBinding
     restore_pruned_source: bool = False
     preserve_live_predicate: bool = False
+    preserved_predicate_true_is_taken: bool | None = None
     materialize_logical_source: bool = False
     materialize_resolver_cut: bool = False
 
@@ -4382,25 +4464,194 @@ def _preflight_boundary_port_batch(
             live_block=live,
         )
 
-    def preserves_exact_predicate(
+    def exact_predicate_orientation(
         port: DetachedSnippetConditionalBoundaryPort,
         source: _BoundaryPortBlockBinding | None,
-    ) -> bool:
+    ) -> bool | None:
         orientation = _exact_live_predicate_true_is_taken(port, source)
+        proof_kind = "live"
         if orientation is None:
             orientation = _exact_imported_predicate_true_is_taken(
                 port,
                 source,
                 templates_by_target=template_by_target,
             )
-        return port.predicate_true_is_taken in (True, False) and orientation is bool(
-            port.predicate_true_is_taken
+            proof_kind = "imported"
+        proven = port.predicate_true_is_taken in (True, False) and orientation in (
+            True,
+            False,
         )
+        relation = (
+            None
+            if not proven
+            else (
+                "matching"
+                if orientation is bool(port.predicate_true_is_taken)
+                else "inverted"
+            )
+        )
+        predicate_shape: dict[str, object] = {}
+        if source is not None and source.imported_key is not None:
+            template_target_ea, template_serial = source.imported_key
+            proof_template = template_by_target.get(int(template_target_ea))
+            proof_block = (
+                None
+                if proof_template is None
+                else _template_block_by_serial(proof_template, int(template_serial))
+            )
+            proof_predicate = (
+                None
+                if proof_block is None or not proof_block.instructions
+                else proof_block.instructions[-1]
+            )
+            if proof_block is not None:
+                predicate_shape["template_block"] = (
+                    f"blk{int(proof_block.source_serial)}"
+                    f"@0x{int(proof_block.native_entry_ea):X}"
+                )
+                predicate_shape["successor_count"] = len(
+                    proof_block.successor_serials
+                )
+            if proof_predicate is not None:
+                diagnostic_condition_opcodes = {
+                    2: (int(ida_hexrays.m_jb), int(ida_hexrays.m_jae)),
+                    3: (int(ida_hexrays.m_jae), int(ida_hexrays.m_jb)),
+                    4: (int(ida_hexrays.m_jz), int(ida_hexrays.m_jnz)),
+                    5: (int(ida_hexrays.m_jnz), int(ida_hexrays.m_jz)),
+                    6: (int(ida_hexrays.m_jbe), int(ida_hexrays.m_ja)),
+                    7: (int(ida_hexrays.m_ja), int(ida_hexrays.m_jbe)),
+                    12: (int(ida_hexrays.m_jl), int(ida_hexrays.m_jge)),
+                    13: (int(ida_hexrays.m_jge), int(ida_hexrays.m_jl)),
+                    14: (int(ida_hexrays.m_jle), int(ida_hexrays.m_jg)),
+                    15: (int(ida_hexrays.m_jg), int(ida_hexrays.m_jle)),
+                }.get(int(port.condition_code or -1))
+                predicate_shape.update(
+                    {
+                        "predicate_ea": int(proof_predicate.ea),
+                        "predicate_opcode": int(proof_predicate.opcode),
+                        "left_type": int(proof_predicate.l.t),
+                        "left_size": int(proof_predicate.l.size),
+                        "right_type": int(proof_predicate.r.t),
+                        "right_size": int(proof_predicate.r.size),
+                        "dest_type": int(proof_predicate.d.t),
+                        "dest_block": (
+                            int(proof_predicate.d.b)
+                            if int(proof_predicate.d.t) == int(ida_hexrays.mop_b)
+                            else None
+                        ),
+                        "expected_condition_opcodes": diagnostic_condition_opcodes,
+                    }
+                )
+                if int(proof_predicate.l.t) == int(ida_hexrays.mop_d):
+                    nested_predicate = proof_predicate.l.d
+                    def diagnostic_expression(
+                        expression: object,
+                        depth: int = 0,
+                    ) -> dict[str, object]:
+                        row: dict[str, object] = {
+                            "ea": int(expression.ea),
+                            "opcode": int(expression.opcode),
+                            "left_type": int(expression.l.t),
+                            "left_size": int(expression.l.size),
+                            "right_type": int(expression.r.t),
+                            "right_size": int(expression.r.size),
+                        }
+                        if depth < 4 and int(expression.l.t) == int(
+                            ida_hexrays.mop_d
+                        ):
+                            row["left_expression"] = diagnostic_expression(
+                                expression.l.d,
+                                depth + 1,
+                            )
+                        return row
+
+                    predicate_shape.update(
+                        {
+                            "nested_predicate_ea": int(nested_predicate.ea),
+                            "nested_predicate_opcode": int(
+                                nested_predicate.opcode
+                            ),
+                            "nested_left_type": int(nested_predicate.l.t),
+                            "nested_left_size": int(nested_predicate.l.size),
+                            "nested_right_type": int(nested_predicate.r.t),
+                            "nested_right_size": int(nested_predicate.r.size),
+                            "predicate_expression": diagnostic_expression(
+                                nested_predicate
+                            ),
+                        }
+                    )
+        if mutation_gateway is not None:
+            try:
+                from d810.core.maturity_labels import mmat_label
+                from d810.core.observability import emit as emit_diagnostic
+                from d810.core.observability_events import IdentityDecisionObserved
+
+                emit_diagnostic(
+                    IdentityDecisionObserved(
+                        session_id=mutation_gateway.session_id,
+                        func_ea=int(mutation_gateway.function_ea),
+                        decision_kind="conditional_predicate_orientation",
+                        consumer="detached_snippet_import",
+                        identity_role=port.source_owner.value,
+                        native_key_json=mutation_gateway.native_key.to_json(),
+                        exact_eas_json=json.dumps(
+                            [int(port.source_block_ea), int(port.predicate_ea)]
+                        ),
+                        native_ranges_json=json.dumps(
+                            [
+                                {
+                                    "start_ea": int(port.source_block_ea),
+                                    "end_ea": int(port.predicate_ea) + 1,
+                                }
+                            ],
+                            sort_keys=True,
+                        ),
+                        primary_anchor_ea=int(port.predicate_ea),
+                        current_serial=(
+                            None
+                            if source is None or source.live_block is None
+                            else int(source.live_block.serial)
+                        ),
+                        mba_generation=int(mutation_gateway.identity_index.generation),
+                        evidence_generation=int(
+                            mutation_gateway.identity_index.evidence_generation
+                        ),
+                        maturity=mmat_label(int(mutation_gateway.maturity)),
+                        outcome="matched" if proven else "rejected",
+                        candidates_json=json.dumps(
+                            [
+                                {
+                                    "condition_code": port.condition_code,
+                                    "expected_true_is_taken": port.predicate_true_is_taken,
+                                    "observed_true_is_taken": orientation,
+                                    "predicate_constant": port.predicate_constant,
+                                    "predicate_register": port.predicate_register,
+                                    "predicate_size": port.predicate_size,
+                                    "proof_kind": proof_kind,
+                                    "relation": relation,
+                                    **predicate_shape,
+                                }
+                            ],
+                            sort_keys=True,
+                        ),
+                        reason=(
+                            f"exact {proof_kind} predicate orientation proven ({relation})"
+                            if proven
+                            else f"exact {proof_kind} predicate orientation rejected"
+                        ),
+                    )
+                )
+            except Exception:
+                logger.debug(
+                    "conditional predicate orientation observation failed",
+                    exc_info=True,
+                )
+        return orientation if proven else None
 
     def bind_conditional_source(
         record: DetachedSnippetTemplateConditionalBoundaryPort,
         template: DetachedSnippetTemplate,
-    ) -> tuple[_BoundaryPortBlockBinding | None, bool, bool]:
+    ) -> tuple[_BoundaryPortBlockBinding | None, bool, bool, bool | None]:
         port = record.port
         resolver_cut_opcodes = (
             (
@@ -4497,17 +4748,19 @@ def _preflight_boundary_port_batch(
                 exact_instruction_ea=int(port.logical_source_anchor_ea),
             )
             materialize_logical_source = source is not None
+        preserved_orientation = exact_predicate_orientation(port, source)
         return (
             source,
             materialize_logical_source,
             source is not None
             and resolver_cut_complete
-            and not preserves_exact_predicate(port, source),
+            and preserved_orientation is None,
+            preserved_orientation,
         )
 
     conditional_source_resolutions: dict[
         tuple[int, int],
-        tuple[_BoundaryPortBlockBinding | None, bool, bool],
+        tuple[_BoundaryPortBlockBinding | None, bool, bool, bool | None],
     ] = {}
     boundary_sources: dict[
         tuple[int, DetachedSnippetBoundaryPortOwner],
@@ -4785,10 +5038,11 @@ def _preflight_boundary_port_batch(
                 source,
                 materialize_logical_source,
                 materialize_resolver_cut,
+                preserved_predicate_true_is_taken,
             ) = conditional_source_resolutions[(id(template), id(record))]
-            preserve_live_predicate = preserves_exact_predicate(
-                port,
-                source,
+            preserve_live_predicate = preserved_predicate_true_is_taken in (
+                True,
+                False,
             )
             taken_target = bind_conditional_target(
                 owner=port.taken_target_owner,
@@ -5142,6 +5396,9 @@ def _preflight_boundary_port_batch(
                     fallthrough_target=fallthrough_target,
                     restore_pruned_source=pruned_live_conditional,
                     preserve_live_predicate=preserve_live_predicate,
+                    preserved_predicate_true_is_taken=(
+                        preserved_predicate_true_is_taken
+                    ),
                     materialize_logical_source=materialize_logical_source,
                     materialize_resolver_cut=materialize_resolver_cut,
                 )
@@ -6213,21 +6470,122 @@ def _apply_boundary_port_batch(
             continue
         if mutation.preserve_live_predicate:
             port = mutation.record.port
-            if (
-                port.predicate_true_is_taken not in (True, False)
+            live_predicate_ea = (
+                None if source.tail is None else int(source.tail.ea)
+            )
+            predicate_origin_matches = (
+                live_predicate_ea is not None
+                and (
+                    live_predicate_ea == int(port.predicate_ea)
+                    or instruction_origins.get((mba_identity, live_predicate_ea))
+                    == int(port.predicate_ea)
+                    or _IMPORTED_INSTRUCTION_ORIGINS.get(
+                        (mba_identity, live_predicate_ea)
+                    )
+                    == int(port.predicate_ea)
+                )
+            )
+            validation_ok = not (
+                mutation.preserved_predicate_true_is_taken not in (True, False)
                 or source.tail is None
-                or int(source.tail.ea) != int(port.predicate_ea)
+                or not predicate_origin_matches
                 or int(source.nsucc()) != 2
                 or int(source.tail.d.t) != int(ida_hexrays.mop_b)
-            ):
+            )
+            try:
+                from d810.core.maturity_labels import mmat_label
+                from d810.core.observability import emit as emit_diagnostic
+                from d810.core.observability_events import IdentityDecisionObserved
+
+                tail = source.tail
+                emit_diagnostic(
+                    IdentityDecisionObserved(
+                        session_id=mutation_gateway.session_id,
+                        func_ea=int(mutation_gateway.function_ea),
+                        decision_kind="conditional_predicate_apply_validation",
+                        consumer="detached_snippet_import",
+                        identity_role=port.source_owner.value,
+                        native_key_json=mutation_gateway.native_key.to_json(),
+                        exact_eas_json=json.dumps(
+                            [int(port.source_block_ea), int(port.predicate_ea)]
+                        ),
+                        native_ranges_json=json.dumps(
+                            [
+                                {
+                                    "start_ea": int(port.source_block_ea),
+                                    "end_ea": int(port.predicate_ea) + 1,
+                                }
+                            ],
+                            sort_keys=True,
+                        ),
+                        primary_anchor_ea=int(port.predicate_ea),
+                        current_serial=int(source.serial),
+                        mba_generation=int(mutation_gateway.identity_index.generation),
+                        evidence_generation=int(
+                            mutation_gateway.identity_index.evidence_generation
+                        ),
+                        maturity=mmat_label(int(mutation_gateway.maturity)),
+                        outcome="matched" if validation_ok else "rejected",
+                        candidates_json=json.dumps(
+                            [
+                                {
+                                    "source_anchor_ea": int(
+                                        _unique_block_native_ea(source)
+                                        or int(source.start)
+                                    ),
+                                    "successors": [
+                                        int(serial) for serial in source.succset
+                                    ],
+                                    "tail_ea": (
+                                        None if tail is None else int(tail.ea)
+                                    ),
+                                    "tail_opcode": (
+                                        None if tail is None else int(tail.opcode)
+                                    ),
+                                    "tail_dest_type": (
+                                        None if tail is None else int(tail.d.t)
+                                    ),
+                                    "true_is_taken": (
+                                        mutation.preserved_predicate_true_is_taken
+                                    ),
+                                }
+                            ],
+                            sort_keys=True,
+                        ),
+                        reason=(
+                            "exact predicate survived apply-time rebinding"
+                            if validation_ok
+                            else "exact predicate failed apply-time rebinding"
+                        ),
+                    )
+                )
+            except Exception:
+                logger.debug(
+                    "conditional predicate apply validation observation failed",
+                    exc_info=True,
+                )
+            if not validation_ok:
+                logger.info(
+                    "boundary-port conditional apply validation rejected: "
+                    "source=blk%d@0x%X predicate=0x%X successors=%s "
+                    "tail_ea=%s tail_opcode=%s tail_dest_type=%s",
+                    int(source.serial),
+                    int(_unique_block_native_ea(source) or int(source.start)),
+                    int(port.predicate_ea),
+                    tuple(int(serial) for serial in source.succset),
+                    None if source.tail is None else f"0x{int(source.tail.ea):X}",
+                    None if source.tail is None else int(source.tail.opcode),
+                    None if source.tail is None else int(source.tail.d.t),
+                )
                 return None
+            assert live_predicate_ea is not None
             modifier.queue_lower_conditional_state_transition(
                 source_serial=int(source.serial),
                 old_dispatcher_serial=int(source.tail.d.b),
-                rewrite_from_ea=int(port.predicate_ea),
+                rewrite_from_ea=live_predicate_ea,
                 condition_operand=PreserveLivePredicateCondition(
-                    predicate_ea=int(port.predicate_ea),
-                    true_is_taken=bool(port.predicate_true_is_taken),
+                    predicate_ea=live_predicate_ea,
+                    true_is_taken=bool(mutation.preserved_predicate_true_is_taken),
                 ),
                 false_target_serial=int(fallthrough.serial),
                 true_target_serial=int(taken.serial),
@@ -6797,6 +7155,14 @@ def _materialize_detached_snippet_templates(
     pending_owned_instruction_eas: dict[int, list[int]] = {
         int(template.target_ea): [] for template in selected
     }
+    occupied_instruction_eas = {
+        int(instruction.ea)
+        for serial in range(int(mba.qty))
+        for block in (mba.get_mblock(serial),)
+        if block is not None
+        for instruction in _instructions(block)
+        if int(instruction.ea) > 0
+    }
     created: dict[tuple[int, int], object] = {}
     imported_fallthrough_helpers: list[object] = []
     for template in selected:
@@ -6974,27 +7340,107 @@ def _materialize_detached_snippet_templates(
                         int(block.native_entry_ea),
                     )
                     return {}
-                # Multiple detached roots can define the same location and
-                # later converge.  Reusing the function entry EA makes those
-                # definitions indistinguishable to Hex-Rays value numbering
-                # (INTERR 50342).  Detached native EAs may also lie outside the
-                # destination MBA ranges (INTERR 50863/50870), so every imported
-                # instruction receives a unique fictitious EA mapped to the live
-                # function entry.  At LOCOPT/CALLS, analyzed mop_f argument
-                # lists were preserved above and no longer depend on native-EA
-                # call analysis.  The PREOPT-only raw-call mode deliberately
-                # keeps the original call setup so the destination MBA can
-                # perform its own call analysis.
+                # Multiple reachable definitions at one address are
+                # indistinguishable to Hex-Rays value numbering (INTERR 50342).
+                # Detached native EAs may also lie outside the destination MBA
+                # ranges (INTERR 50863/50870), so ordinary imported instructions
+                # receive unique fictitious EAs mapped to the live function
+                # entry.  PREOPT raw calls retain their native EA only when the
+                # destination does not already own it.  A colliding call is
+                # assigned a unique fictitious EA mapped back to its native call
+                # site, preserving call-analysis location without aliasing the
+                # reachable live instruction.
                 # Native provenance is retained separately for resolver and
                 # diagnostics consumers.
-                imported_instruction_ea = (
-                    native_instruction_ea
-                    if preserve_native_call_eas
+                is_raw_preopt_call = bool(
+                    preserve_native_call_eas
                     and captured_opcode
                     in (int(ida_hexrays.m_call), int(ida_hexrays.m_icall))
-                    else int(mba.alloc_fict_ea(int(mba.entry_ea) + 1))
                 )
+                native_call_ea_available = bool(
+                    is_raw_preopt_call
+                    and native_instruction_ea not in occupied_instruction_eas
+                )
+                if native_call_ea_available:
+                    imported_instruction_ea = native_instruction_ea
+                    occupied_instruction_eas.add(native_instruction_ea)
+                elif is_raw_preopt_call:
+                    imported_instruction_ea = int(
+                        mba.alloc_fict_ea(native_instruction_ea)
+                    )
+                else:
+                    imported_instruction_ea = int(
+                        mba.alloc_fict_ea(int(mba.entry_ea) + 1)
+                    )
                 instruction.setaddr(imported_instruction_ea)
+                if is_raw_preopt_call and mutation_gateway is not None:
+                    try:
+                        from d810.core.maturity_labels import mmat_label
+                        from d810.core.observability import emit as emit_diagnostic
+                        from d810.core.observability_events import (
+                            IdentityDecisionObserved,
+                        )
+
+                        emit_diagnostic(
+                            IdentityDecisionObserved(
+                                session_id=mutation_gateway.session_id,
+                                func_ea=int(mutation_gateway.function_ea),
+                                decision_kind="imported_call_ea_allocation",
+                                consumer="detached_snippet_import",
+                                identity_role="instruction_origin",
+                                native_key_json=mutation_gateway.native_key.to_json(),
+                                exact_eas_json=json.dumps(
+                                    [int(native_instruction_ea)]
+                                ),
+                                native_ranges_json=json.dumps(
+                                    [
+                                        {
+                                            "start_ea": int(native_instruction_ea),
+                                            "end_ea": int(native_instruction_ea)
+                                            + 1,
+                                        }
+                                    ],
+                                    sort_keys=True,
+                                ),
+                                primary_anchor_ea=int(native_instruction_ea),
+                                current_serial=int(destination.serial),
+                                mba_generation=int(
+                                    mutation_gateway.identity_index.generation
+                                ),
+                                evidence_generation=int(
+                                    mutation_gateway.identity_index.evidence_generation
+                                ),
+                                maturity=mmat_label(int(mutation_gateway.maturity)),
+                                outcome=(
+                                    "preserved"
+                                    if native_call_ea_available
+                                    else "relocated"
+                                ),
+                                candidates_json=json.dumps(
+                                    [
+                                        {
+                                            "imported_ea": int(
+                                                imported_instruction_ea
+                                            ),
+                                            "native_ea_collision": bool(
+                                                not native_call_ea_available
+                                            ),
+                                        }
+                                    ],
+                                    sort_keys=True,
+                                ),
+                                reason=(
+                                    "native call EA is unoccupied"
+                                    if native_call_ea_available
+                                    else "native call EA is already owned by the live MBA"
+                                ),
+                            )
+                        )
+                    except Exception:
+                        logger.debug(
+                            "failed to emit imported call EA decision",
+                            exc_info=True,
+                        )
                 if native_instruction_ea > 0:
                     pending_instruction_origins[
                         (mba_identity, imported_instruction_ea)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from enum import Enum
 from types import SimpleNamespace
 
@@ -2955,6 +2956,66 @@ def test_preopt_import_preserves_raw_call_for_destination_analysis(
     assert int(imported_block.flags) & int(ida_hexrays.MBL_PUSH)
 
 
+def test_preopt_import_relocates_a_call_ea_already_owned_by_the_live_mba(
+    monkeypatch,
+) -> None:
+    """Reachable imported calls must not alias an existing live location."""
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40B9A6
+    call_ea = 0x40BA56
+    raw_source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (
+                    _Instruction(ida_hexrays.m_push, call_ea - 1),
+                    _Instruction(ida_hexrays.m_call, call_ea),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_call, call_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_GENERATED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        raw_source,
+        ((target_ea, call_ea + 1),),
+    )
+
+    roots = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+        expected_template_maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+        allow_raw_preopt_calls=True,
+        import_native_preopt_ranges=True,
+        mutation_gateway=make_mutation_gateway(destination),
+    )
+
+    imported_call = destination.get_mblock(roots[target_ea]).tail
+    assert imported_call is not None
+    assert int(imported_call.ea) != call_ea
+    assert destination.map_fict_ea(int(imported_call.ea)) == call_ea
+    origins = dict(
+        detached_handler_island.imported_detached_snippet_instruction_origins(
+            destination
+        )
+    )
+    assert origins[int(imported_call.ea)] == call_ea
+
+
 def test_preopt_import_splits_multiple_raw_calls_into_closing_blocks(
     monkeypatch,
 ) -> None:
@@ -4815,6 +4876,7 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
     from d810.analyses.control_flow.detached_handler_island import (
         DetachedSnippetBoundaryPortOwner,
     )
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
     _install_runtime_fakes(monkeypatch)
     function_ea = 0x9000
@@ -4823,17 +4885,17 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
     taken_target_ea = 0x1100
     fallthrough_target_ea = 0x1180
     predicate = _Instruction(
-        ida_hexrays.m_jz,
+        ida_hexrays.m_jcnd,
         predicate_ea,
         left=_Operand(
             ida_hexrays.mop_d,
-            nested=_Instruction(ida_hexrays.m_ldx, predicate_ea),
+            size=1,
+            nested=_Instruction(
+                ida_hexrays.m_lnot,
+                predicate_ea,
+                left=_Operand(ida_hexrays.mop_r, size=1, register=1),
+            ),
         ),
-        right=_Operand(
-            ida_hexrays.mop_d,
-            nested=_Instruction(ida_hexrays.m_ldx, predicate_ea),
-        ),
-        dest=_Operand(ida_hexrays.mop_b, block_ref=2),
     )
     source = _MBA(
         (
@@ -4884,7 +4946,7 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
         taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
         fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
         logical_source_anchor_ea=predicate_ea,
-        condition_code=4,
+        condition_code=5,
         predicate_true_is_taken=True,
     )
     assert detached_handler_island.capture_detached_snippet_template(
@@ -4908,6 +4970,8 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
     template = detached_handler_island._DETACHED_SNIPPET_TEMPLATES[
         (function_ea, source_block_ea)
     ]
+    template.blocks[1].instructions[-1].d.erase()
+    assert int(template.blocks[1].instructions[-1].d.t) == int(ida_hexrays.mop_z)
     record = template.boundary_ports.conditional[0]
     assert record.source_serial == 1
     imported_source = detached_handler_island._BoundaryPortBlockBinding(
@@ -4922,6 +4986,38 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
         )
         is True
     )
+    assert (
+        detached_handler_island._exact_imported_predicate_true_is_taken(
+            replace(port, condition_code=4, predicate_true_is_taken=False),
+            imported_source,
+            templates_by_target={source_block_ea: template},
+        )
+        is False
+    )
+    equality_expression = template.blocks[1].instructions[-1].l.d
+    template.blocks[1].instructions[-1].l.d = _Instruction(
+        ida_hexrays.m_lnot,
+        predicate_ea,
+        left=_Operand(
+            ida_hexrays.mop_d,
+            size=1,
+            nested=_Instruction(
+                ida_hexrays.m_xor,
+                predicate_ea,
+                left=_Operand(ida_hexrays.mop_r, size=1, register=1),
+                right=_Operand(ida_hexrays.mop_r, size=1, register=2),
+            ),
+        ),
+    )
+    assert (
+        detached_handler_island._exact_imported_predicate_true_is_taken(
+            replace(port, condition_code=13, predicate_true_is_taken=True),
+            imported_source,
+            templates_by_target={source_block_ea: template},
+        )
+        is True
+    )
+    template.blocks[1].instructions[-1].l.d = equality_expression
 
     identity_events: list[object] = []
     monkeypatch.setattr(
@@ -4940,6 +5036,7 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
     mutation = batch.conditional[0]
     assert mutation.source.imported_key == (source_block_ea, 1)
     assert mutation.preserve_live_predicate is True
+    assert mutation.preserved_predicate_true_is_taken is True
     assert identity_events
     assert all(event.primary_anchor_ea is not None for event in identity_events)
     assert all(
@@ -4947,6 +5044,77 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
         for event in identity_events
     )
     assert {event.consumer for event in identity_events} == {"detached_snippet_import"}
+    orientation_events = [
+        event
+        for event in identity_events
+        if event.decision_kind == "conditional_predicate_orientation"
+    ]
+    assert orientation_events
+    assert {event.primary_anchor_ea for event in orientation_events} == {predicate_ea}
+    assert {event.outcome for event in orientation_events} == {"matched"}
+    assert {event.reason for event in orientation_events} == {
+        "exact imported predicate orientation proven (matching)"
+    }
+
+    imported_predicate_ea = 0xF10000
+    imported_source_block = _Block(
+        1,
+        imported_predicate_ea,
+        (
+            _Instruction(
+                ida_hexrays.m_jcnd,
+                imported_predicate_ea,
+                left=copy.deepcopy(predicate.l),
+                dest=_Operand(ida_hexrays.mop_b, block_ref=3),
+            ),
+        ),
+        (2, 3),
+    )
+    imported_source_block.type = int(ida_hexrays.BLT_2WAY)
+    imported_taken_block = _Block(
+        2,
+        0xF11000,
+        (_Instruction(ida_hexrays.m_nop, 0xF11000),),
+    )
+    imported_fallthrough_block = _Block(
+        3,
+        0xF11800,
+        (_Instruction(ida_hexrays.m_nop, 0xF11800),),
+    )
+    destination.append_block(imported_source_block)
+    destination.append_block(imported_taken_block)
+    destination.append_block(imported_fallthrough_block)
+    queued: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "queue_lower_conditional_state_transition",
+        lambda _modifier, **kwargs: queued.append(kwargs),
+    )
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "apply",
+        lambda _modifier, **_kwargs: 1,
+    )
+    mba_identity = detached_handler_island.stable_mba_identity(destination)
+    applied = detached_handler_island._apply_boundary_port_batch(
+        destination,
+        batch,
+        {
+            mutation.source.imported_key: imported_source_block,
+            mutation.taken_target.imported_key: imported_taken_block,
+            mutation.fallthrough_target.imported_key: imported_fallthrough_block,
+        },
+        pending_instruction_origins={
+            (mba_identity, imported_predicate_ea): predicate_ea,
+        },
+        selected_templates=(template,),
+        mutation_gateway=make_mutation_gateway(destination),
+    )
+
+    assert applied is not None
+    assert len(queued) == 1
+    assert queued[0]["rewrite_from_ea"] == imported_predicate_ea
+    assert queued[0]["condition_operand"].predicate_ea == imported_predicate_ea
 
 
 def test_preopt_import_preserves_inverted_signed_live_predicate(
