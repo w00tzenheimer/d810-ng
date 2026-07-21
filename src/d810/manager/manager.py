@@ -344,9 +344,14 @@ class D810Manager:
                 state.begin_materialization(resolution)
             lifecycle.begin_native_preanalysis(session)
             try:
-                discover_static_native_bootstrap_routes(function_ea, state)
                 prepared_carriers = prepare_terminal_return_carrier_templates(state)
                 prepared_snippets = prepare_detached_handler_snippets(state)
+                # Snippet preparation materializes the portable transfer
+                # inventory that identifies the state selector.  Bootstrap
+                # discovery must consume that completed inventory; running it
+                # earlier always abstains with no selectors, while the later
+                # flowchart fallback may already see materialization complete.
+                discover_static_native_bootstrap_routes(function_ea, state)
                 return int(prepared_carriers) + int(prepared_snippets)
             finally:
                 lifecycle.finish_native_preanalysis(session)

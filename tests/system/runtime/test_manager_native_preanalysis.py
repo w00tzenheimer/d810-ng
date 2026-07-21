@@ -100,9 +100,9 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
         ),
         ("stage", state),
         ("preanalysis.begin", session),
-        ("discover-bootstrap", 0x401000, state),
         ("prepare-carriers", state),
         ("prepare", state),
+        ("discover-bootstrap", 0x401000, state),
         ("preanalysis.finish", session),
     ]
     assert state.materialization is not None

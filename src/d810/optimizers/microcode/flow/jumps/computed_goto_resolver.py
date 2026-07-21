@@ -4022,10 +4022,12 @@ def _recover_static_choice_handler_entry_routes(
         return ()
 
     entry_sources_by_mreg: dict[int, set[int]] = {}
-    for source_ea, state_mreg, _bootstrap_state in entry_seed_resolver(
+    for seed in entry_seed_resolver(
         int(resolution.function_ea),
         selector_mregs,
     ):
+        source_ea = int(seed.source_anchor_ea)
+        state_mreg = int(seed.state_mreg)
         if int(source_ea) <= 0 or int(state_mreg) not in selector_mregs:
             continue
         entry_sources_by_mreg.setdefault(int(state_mreg), set()).add(int(source_ea))
@@ -12674,18 +12676,28 @@ def _bootstrap_native_replay_inputs(
     return context_mregs, snapshots_by_ea, frozenset(dispatch_anchor_eas)
 
 
+class NativeEntryBootstrapSeed(NamedTuple):
+    """Portable proof at the first direct jump in the native entry corridor."""
+
+    source_anchor_ea: int
+    direct_target_ea: int
+    state_mreg: int
+    state_constant: int
+
+
 def _native_entry_bootstrap_seeds(
     function_ea: int,
     selector_mregs: frozenset[int],
     *,
     max_instructions: int = 1024,
-) -> tuple[tuple[int, int, int], ...]:
+) -> tuple[NativeEntryBootstrapSeed, ...]:
     """Find constant selector values reaching the first direct entry jump.
 
-    This deliberately follows only the native fallthrough corridor.  A call,
+    This deliberately follows only the native fallthrough corridor.  Calls
+    invalidate ABI caller-clobbered facts and then preserve fallthrough.  A
     conditional transfer, indirect jump, undecodable instruction, or unknown
-    write to a selector makes the proof abstain.  The returned source is the
-    direct jump instruction EA, never a maturity-local block identifier.
+    write to a selector makes the proof abstain.  The returned source and target
+    are native instruction EAs, never maturity-local block identifiers.
     """
     import ida_ua  # type: ignore[import-untyped]
     import idaapi  # type: ignore[import-untyped]
@@ -12699,7 +12711,12 @@ def _native_entry_bootstrap_seeds(
             return ()
         mnemonic = (idaapi.print_insn_mnem(ea) or "").lower()
         destination = instruction.ops[0]
-        if destination.type == idaapi.o_reg:
+        if destination.type == idaapi.o_reg and mnemonic not in {
+            "call",
+            "cmp",
+            "push",
+            "test",
+        }:
             destination_mreg = _native_register_mreg(_sv_reg_name(destination))
             if destination_mreg in selector_mregs:
                 source = instruction.ops[1]
@@ -12707,14 +12724,29 @@ def _native_entry_bootstrap_seeds(
                     values[int(destination_mreg)] = int(source.value) & _MASK32
                 else:
                     values.pop(int(destination_mreg), None)
+        if mnemonic == "call":
+            # A native call returns to this fallthrough corridor.  Preserve
+            # callee-saved selector facts and invalidate only ABI
+            # caller-clobbered registers; a later selector assignment remains
+            # exact portable evidence.
+            for register_name in _SV_CALLER_CLOBBERED:
+                caller_mreg = _native_register_mreg(register_name)
+                if caller_mreg is not None:
+                    values.pop(int(caller_mreg), None)
         if mnemonic == "jmp":
             if instruction.ops[0].type not in (idaapi.o_near, idaapi.o_far):
                 return ()
+            direct_target_ea = int(instruction.ops[0].addr)
             return tuple(
-                (int(ea), int(selector_mreg), int(state))
+                NativeEntryBootstrapSeed(
+                    source_anchor_ea=int(ea),
+                    direct_target_ea=direct_target_ea,
+                    state_mreg=int(selector_mreg),
+                    state_constant=int(state),
+                )
                 for selector_mreg, state in sorted(values.items())
             )
-        if mnemonic in _SV_JCC_MNEMS or mnemonic in ("call", "ret", "retn", "retf"):
+        if mnemonic in _SV_JCC_MNEMS or mnemonic in ("ret", "retn", "retf"):
             return ()
         ea += length
     return ()
@@ -12728,8 +12760,9 @@ def discover_static_native_bootstrap_routes(
 
     Static resolution supplies the selector registers, register snapshots, and
     the set of proven native block entries.  The native entry scan supplies a
-    constant selector at the first direct jump.  Concrete corridor replay must
-    then reach one of those known entries before a portable route is accepted.
+    constant selector and exact target at the first direct jump.  A target
+    already proven as a native block entry is accepted directly; otherwise,
+    concrete corridor replay must reach a known entry before publication.
     """
     resolution = state.portable_evidence.computed_goto_resolution
     if not isinstance(resolution, ComputedGotoResolution):
@@ -12780,28 +12813,48 @@ def discover_static_native_bootstrap_routes(
     context_mregs, register_snapshots_by_ea, dispatch_anchor_eas = (
         _bootstrap_native_replay_inputs(transfers)
     )
+    navigation_sources = frozenset(
+        int(transfer.source_block_ea)
+        for transfer in transfers
+        if transfer.resolver_kind == "static_handler_entry_route"
+    )
     discovered = False
-    for source_anchor_ea, state_mreg, state_constant in seeds:
+    for seed in seeds:
+        source_anchor_ea = int(seed.source_anchor_ea)
+        state_mreg = int(seed.state_mreg)
+        state_constant = int(seed.state_constant)
         initial_mregs = dict(context_mregs)
-        initial_mregs[int(state_mreg)] = int(state_constant)
-        handler_anchor_ea = _resolve_concrete_dispatch_corridor(
-            int(source_anchor_ea),
-            initial_mregs=initial_mregs,
-            handler_eas=frozenset(),
-            register_snapshots_by_ea=register_snapshots_by_ea,
-            dispatch_anchor_eas=dispatch_anchor_eas,
-            selector_write_handler_mregs=frozenset({int(state_mreg)}),
-            known_block_entry_eas=frozenset(known_entries),
-        )
+        initial_mregs[state_mreg] = state_constant
+        direct_target_ea = int(seed.direct_target_ea)
+        if (
+            direct_target_ea in known_entries
+            and source_anchor_ea not in navigation_sources
+        ):
+            handler_anchor_ea: int | None = direct_target_ea
+            proof_mode = "direct_target"
+        else:
+            handler_anchor_ea = _resolve_concrete_dispatch_corridor(
+                source_anchor_ea,
+                initial_mregs=initial_mregs,
+                handler_eas=frozenset(),
+                register_snapshots_by_ea=register_snapshots_by_ea,
+                dispatch_anchor_eas=dispatch_anchor_eas,
+                selector_write_handler_mregs=frozenset({state_mreg}),
+                known_block_entry_eas=frozenset(known_entries),
+            )
+            proof_mode = "corridor_replay"
         logger.debug(
             "native preflight bootstrap replay: func=0x%X source=0x%X "
-            "state_mreg=%d state=0x%X target=%s known=%s",
+            "direct_target=0x%X state_mreg=%d state=0x%X target=%s "
+            "known=%s proof=%s",
             int(function_ea),
-            int(source_anchor_ea),
-            int(state_mreg),
-            int(state_constant),
+            source_anchor_ea,
+            direct_target_ea,
+            state_mreg,
+            state_constant,
             (None if handler_anchor_ea is None else f"0x{int(handler_anchor_ea):X}"),
             handler_anchor_ea in known_entries,
+            proof_mode,
         )
         if (
             handler_anchor_ea is None
@@ -12988,9 +13041,12 @@ def _on_preopt_bootstrap_route(
         != int(function_ea)
     ):
         return
-    if not state.native_preanalysis.needs_preopt_binding():
+    if (
+        not state.native_preanalysis.needs_preopt_binding()
+        and not state.native_preanalysis.needs_bootstrap_route_binding()
+    ):
         logger.debug(
-            "PREOPT bootstrap abstain: func=0x%X reason=no_pending_generation "
+            "PREOPT bootstrap abstain: func=0x%X reason=no_pending_binding "
             "evidence_generation=%d bound_generation=%s routes=%d",
             int(function_ea),
             int(state.evidence_generation),
