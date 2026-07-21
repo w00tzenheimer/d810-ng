@@ -553,82 +553,67 @@ class MbaBlockIdentityIndex:
         except Exception:
             return
 
-    def rebind_imported_region_entry(
+    def _rebind_region_boundary(
+        self,
+        region: StableBlockIdentity,
+        *,
+        entry: bool,
+    ) -> RebindResult:
+        tokens_by_anchor: dict[int, set[str]] = defaultdict(set)
+        for identity in self.serials_by_identity:
+            tokens = tuple(
+                token
+                for token in self._tokens_for_identity(identity, None)
+                if self.resolve(self._handles_by_token[token]) is not None
+            )
+            if not tokens:
+                continue
+            for interval in identity.native_ranges.intervals:
+                anchor_ea = int(interval.start_ea)
+                if region.native_ranges.contains(anchor_ea):
+                    tokens_by_anchor[anchor_ea].update(tokens)
+
+        intervals = region.native_ranges.intervals
+        for interval in intervals if entry else reversed(intervals):
+            anchors = tuple(
+                anchor_ea
+                for anchor_ea in tokens_by_anchor
+                if interval.start_ea <= anchor_ea < interval.end_ea
+            )
+            if anchors:
+                boundary_anchor = min(anchors) if entry else max(anchors)
+                return self._bound_for_tokens(tokens_by_anchor[boundary_anchor])
+        return RebindResult.missing()
+
+    def rebind_region_entry(
         self,
         region: StableBlockIdentity,
     ) -> RebindResult:
-        """Bind the imported block owning a region's first surviving anchor.
+        """Bind the block owning a region's first surviving native anchor.
 
         A handler's exact entry instruction can disappear during LOCOPT while
         later instructions from the same resolver-owned native corridor remain
-        in the regenerated MBA.  Select the owner of the earliest surviving
-        native anchor in canonical region order.  Duplicate ownership of that
-        anchor is ambiguous and never falls through to a later address.
+        in the regenerated MBA.  Native and imported translations are equally
+        valid; duplicate ownership of the earliest anchor remains ambiguous.
         """
-        tokens_by_anchor: dict[int, set[str]] = defaultdict(set)
-        for identity in self.serials_by_identity:
-            tokens = tuple(
-                token
-                for token in self._tokens_for_identity(
-                    identity,
-                    BlockHandleProvenance.IMPORTED_NATIVE,
-                )
-                if self.resolve(self._handles_by_token[token]) is not None
-            )
-            if not tokens:
-                continue
-            for interval in identity.native_ranges.intervals:
-                anchor_ea = int(interval.start_ea)
-                if region.native_ranges.contains(anchor_ea):
-                    tokens_by_anchor[anchor_ea].update(tokens)
+        result = self._rebind_region_boundary(region, entry=True)
+        self._observe_decision("rebind_region_entry", region, result)
+        return result
 
-        for interval in region.native_ranges.intervals:
-            anchors = tuple(
-                anchor_ea
-                for anchor_ea in tokens_by_anchor
-                if interval.start_ea <= anchor_ea < interval.end_ea
-            )
-            if anchors:
-                return self._bound_for_tokens(tokens_by_anchor[min(anchors)])
-        return RebindResult.missing()
-
-    def rebind_imported_region_exit(
+    def rebind_region_exit(
         self,
         region: StableBlockIdentity,
     ) -> RebindResult:
-        """Bind the imported block owning a region's last surviving anchor.
+        """Bind the block owning a region's last surviving native anchor.
 
         Native handler replay may prove an exit instruction that LOCOPT folds
-        away.  The latest surviving imported anchor in the same resolver-owned
-        region is the only portable replacement for that mutation-time source.
-        Duplicate ownership of that latest anchor remains ambiguous.
+        away.  The latest surviving native or imported anchor in the same
+        resolver-owned region is the portable mutation-time source.  Duplicate
+        ownership of that anchor remains ambiguous.
         """
-        tokens_by_anchor: dict[int, set[str]] = defaultdict(set)
-        for identity in self.serials_by_identity:
-            tokens = tuple(
-                token
-                for token in self._tokens_for_identity(
-                    identity,
-                    BlockHandleProvenance.IMPORTED_NATIVE,
-                )
-                if self.resolve(self._handles_by_token[token]) is not None
-            )
-            if not tokens:
-                continue
-            for interval in identity.native_ranges.intervals:
-                anchor_ea = int(interval.start_ea)
-                if region.native_ranges.contains(anchor_ea):
-                    tokens_by_anchor[anchor_ea].update(tokens)
-
-        for interval in reversed(region.native_ranges.intervals):
-            anchors = tuple(
-                anchor_ea
-                for anchor_ea in tokens_by_anchor
-                if interval.start_ea <= anchor_ea < interval.end_ea
-            )
-            if anchors:
-                return self._bound_for_tokens(tokens_by_anchor[max(anchors)])
-        return RebindResult.missing()
+        result = self._rebind_region_boundary(region, entry=False)
+        self._observe_decision("rebind_region_exit", region, result)
+        return result
 
     def rebind(self, handle: MbaBlockHandle) -> RebindResult:
         """Rebind native identity; synthetic handles never cross a rebuild."""
