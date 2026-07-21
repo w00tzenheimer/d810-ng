@@ -136,9 +136,7 @@ class MbaBlockIdentityIndex:
             anchors: set[int] = set()
             imported_anchors: set[int] = set()
             instruction = getattr(block, "head", None)
-            visited: set[int] = set()
-            while instruction is not None and id(instruction) not in visited:
-                visited.add(id(instruction))
+            while instruction is not None:
                 instruction_ea = int(getattr(instruction, "ea", -1) or -1)
                 anchors.add(instruction_ea)
                 if instruction_ea in imported_instruction_origins:
