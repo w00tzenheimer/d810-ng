@@ -330,7 +330,7 @@ EXPECTED_TABLE_INFO = {
         ("reason", "TEXT", 1, 0),
         ("evidence_json", "TEXT", 1, 0),
     ],
-    "modifications": [
+    "snapshot_modifications": [
         ("snapshot_id", "INTEGER", 1, 1),
         ("mod_index", "INTEGER", 1, 2),
         ("mod_type", "TEXT", 1, 0),
@@ -626,7 +626,7 @@ EXPECTED_INDEXES = {
         ("c", ("snapshot_id", "selected")),
         ("pk", ("snapshot_id", "collapsed_edge_id", "alternate_edge_id")),
     ],
-    "modifications": [("pk", ("snapshot_id", "mod_index"))],
+    "snapshot_modifications": [("pk", ("snapshot_id", "mod_index"))],
     "block_classification": [("pk", ("snapshot_id", "serial"))],
     "rendered_programs": [("pk", ("snapshot_id", "variant_name"))],
     "rendered_program_nodes": [
@@ -689,7 +689,7 @@ ALLOWED_PK_NOTNULL_DIFFS = {("watch_block_transitions", "id"): 0}
 
 
 BLOCK_REFERENCE_EA_CONTRACTS = {
-    "modifications": {
+    "snapshot_modifications": {
         "source_block": (
             "source_block_label",
             "source_block_ea_hex",

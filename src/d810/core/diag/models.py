@@ -1,8 +1,8 @@
 """peewee Models = schema source of truth for the diag DB.
 
-All non-view diag tables are modeled here (schema source of truth); only the
-SQL **views** (``var_writes`` + the ``dag_*`` back-compat views) remain as raw
-DDL in ``schema._SCHEMA_SQL``. peewee owns the diag connection (see
+All non-view diag tables are modeled here (schema source of truth); only
+analytical SQL views remain as raw DDL in ``schema._SCHEMA_SQL``. peewee owns
+the diag connection (see
 ``core/diag/__init__``); query call-sites stay raw SQL on ``db.connection()``.
 
 Modeling rules (must hold for every Model so positional INSERTs and the
@@ -10,9 +10,8 @@ Modeling rules (must hold for every Model so positional INSERTs and the
 
 * Fields declared in **exact DDL column order**.
 * ``CompositeKey(...)`` suppresses peewee's implicit ``id`` auto-PK for tables
-  whose original DDL used a composite ``PRIMARY KEY (...)``; the CompositeKey
-  argument order reproduces the DDL ``PRIMARY KEY`` column order (which can
-  differ from the column-declaration order, e.g. ``state_cfg_node_blocks``).
+whose original DDL used a composite ``PRIMARY KEY (...)``; the CompositeKey
+  argument order reproduces the DDL ``PRIMARY KEY`` column order.
 * ``snapshot_id`` FKs use ``index=False`` (the hand-DDL has no FK index).
 * ``Check("...")`` reproduces CHECK constraints; ``Meta.indexes`` reproduces
   every ``CREATE INDEX`` in the original DDL.
@@ -43,6 +42,16 @@ diag_db = SqliteDatabase(None)
 class BaseModel(Model):
     class Meta:
         database = diag_db
+
+
+class DiagnosticSchemaVersion(BaseModel):
+    """Exact schema marker; diagnostic databases are not migrated."""
+
+    singleton = IntegerField(primary_key=True, constraints=[Check("singleton = 1")])
+    version = IntegerField()
+
+    class Meta:
+        table_name = "diagnostic_schema"
 
 
 def _snapshot_fk() -> ForeignKeyField:
@@ -590,7 +599,7 @@ class Modification(BaseModel):
     reason = TextField(null=True)
 
     class Meta:
-        table_name = "modifications"
+        table_name = "snapshot_modifications"
         primary_key = CompositeKey("snapshot", "mod_index")
 
 
@@ -888,6 +897,7 @@ class TerminalTailDceCause(BaseModel):
 # All modeled tables. Order: Snapshot first (FK target); every other table's
 # ``snapshot_id`` FK points only at Snapshot, so the remaining order is free.
 MODELS = (
+    DiagnosticSchemaVersion,
     Snapshot,
     SnapshotMaturity,
     # Layer 1

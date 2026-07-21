@@ -225,7 +225,7 @@ def test_observe_modifications_writes_to_modifications_table(fake_conn):
     observe_modifications(snap, mods)
 
     rows = fake_conn.execute(
-        "SELECT mod_index, mod_type FROM modifications ORDER BY mod_index"
+        "SELECT mod_index, mod_type FROM snapshot_modifications ORDER BY mod_index"
     ).fetchall()
     assert rows == [(0, "goto_redirect"), (1, "insert_block")]
 

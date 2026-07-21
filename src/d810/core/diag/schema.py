@@ -2,25 +2,33 @@
 
 The diag DB is peewee-owned (``SqliteDatabase``). All non-view diag tables are
 defined by peewee **Models** in :mod:`d810.core.diag.models` (schema source of
-truth); only the SQL **views** (``var_writes`` + the ``dag_*`` back-compat
-views) remain raw DDL in ``_SCHEMA_SQL`` below. ``create_tables`` applies the
-Models (``db.create_tables(MODELS)``) and then the view DDL.
+truth); only analytical SQL views remain raw DDL. Diagnostic databases are
+disposable: readers and writers reject every schema except the current one.
 """
 from __future__ import annotations
 
 
 from d810._vendor.peewee import SqliteDatabase
-from d810._vendor.playhouse.migrate import SqliteMigrator, migrate
-from d810.core.diag.models import MODELS
+from d810.core.diag.models import DiagnosticSchemaVersion, MODELS
+
+DIAGNOSTIC_SCHEMA_VERSION = 2
+
+
+class DiagnosticSchemaMismatch(RuntimeError):
+    """Raised when a disposable diagnostic database is not current."""
+
+    def __init__(self, *, expected: int, observed: int | None, path: str) -> None:
+        self.expected = int(expected)
+        self.observed = None if observed is None else int(observed)
+        self.path = str(path)
+        super().__init__(
+            "diagnostic schema mismatch: "
+            f"expected={self.expected} observed={self.observed!r} path={self.path}"
+        )
 
 # Only VIEWs remain raw DDL; every base table is a peewee Model (see models.py).
 #
 #   * ``var_writes`` -- analytical JOIN view over instructions + blocks.
-#   * ``dag_*``      -- back-compat views over the renamed ``state_cfg_*``
-#                       base tables (a control-flow graph has cycles -- "DAG"
-#                       was a misnomer). They keep old ad-hoc queries and
-#                       external ``.diag.sqlite3`` readers working; production
-#                       code reads/writes the ``state_cfg_*`` base tables.
 _SCHEMA_SQL = """\
 -- Derived: which instructions write to a given stack variable
 CREATE VIEW IF NOT EXISTS var_writes AS
@@ -28,81 +36,50 @@ SELECT i.*, b.succs, b.preds
 FROM instructions i
 JOIN blocks b ON i.snapshot_id = b.snapshot_id AND i.block_serial = b.serial
 WHERE i.dest_type = 'mop_S';
-
--- Back-compat VIEWs for the renamed recovered-CFG tables.
-CREATE VIEW IF NOT EXISTS dag_nodes AS SELECT * FROM state_cfg_nodes;
-CREATE VIEW IF NOT EXISTS dag_edges AS SELECT * FROM state_cfg_edges;
-CREATE VIEW IF NOT EXISTS dag_node_blocks AS SELECT * FROM state_cfg_node_blocks;
-CREATE VIEW IF NOT EXISTS dag_local_segments AS SELECT * FROM state_cfg_local_segments;
-CREATE VIEW IF NOT EXISTS dag_local_edges AS SELECT * FROM state_cfg_local_edges;
-CREATE VIEW IF NOT EXISTS dag_edge_diagnostics AS SELECT * FROM state_cfg_edge_diagnostics;
-CREATE VIEW IF NOT EXISTS dag_frontier_closure_diagnostics
-    AS SELECT * FROM state_cfg_frontier_closure_diagnostics;
-CREATE VIEW IF NOT EXISTS dag_edge_alternate_correlations
-    AS SELECT * FROM state_cfg_edge_alternate_correlations;
-CREATE VIEW IF NOT EXISTS dag_edge_alternate_selections
-    AS SELECT * FROM state_cfg_edge_alternate_selections;
 """
 
 
-# Recovered-CFG tables were historically ``dag_*`` base tables; they are now
-# ``state_cfg_*`` base tables (+ ``dag_*`` back-compat views).  Maps each old
-# base-table name to its new name for in-place migration of older DBs.
-_LEGACY_DAG_TABLE_RENAMES = {
-    "dag_nodes": "state_cfg_nodes",
-    "dag_edges": "state_cfg_edges",
-    "dag_node_blocks": "state_cfg_node_blocks",
-    "dag_local_segments": "state_cfg_local_segments",
-    "dag_local_edges": "state_cfg_local_edges",
-    "dag_edge_diagnostics": "state_cfg_edge_diagnostics",
-    "dag_frontier_closure_diagnostics": "state_cfg_frontier_closure_diagnostics",
-    "dag_edge_alternate_correlations": "state_cfg_edge_alternate_correlations",
-    "dag_edge_alternate_selections": "state_cfg_edge_alternate_selections",
-}
-
-def _migrate_legacy_dag_tables(db: SqliteDatabase) -> None:
-    """Rename pre-existing ``dag_*`` base tables to ``state_cfg_*`` (idempotent).
-
-    Older ``.diag.sqlite3`` files created ``dag_*`` as base tables.  The current
-    schema makes ``state_cfg_*`` the base tables and ``dag_*`` read-only views.
-    For each pair, if the old base table still exists and the new one does not,
-    rename it via ``playhouse.migrate.SqliteMigrator`` (data + attached indexes
-    follow the rename), then drop the now-stale ``idx_dag_*`` indexes so the
-    schema's ``idx_state_cfg_*`` indexes are canonical.  Must run BEFORE
-    ``db.create_tables(MODELS)`` so a renamed legacy table is not shadowed by a
-    fresh empty modeled table.
-    """
+def _observed_version(db: SqliteDatabase) -> int | None:
     conn = db.connection()
-    existing = {
-        name: kind
-        for name, kind in conn.execute(
-            "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view')"
-        ).fetchall()
-    }
-    migrator = SqliteMigrator(db)
-    ops = [
-        migrator.rename_table(old, new)
-        for old, new in _LEGACY_DAG_TABLE_RENAMES.items()
-        if existing.get(old) == "table" and new not in existing
-    ]
-    if ops:
-        migrate(*ops)
-    for (idx_name,) in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_dag_%'"
-    ).fetchall():
-        conn.execute(f"DROP INDEX IF EXISTS {idx_name}")
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type='table' AND name='diagnostic_schema'"
+    ).fetchone()
+    if exists is None:
+        return None
+    row = conn.execute(
+        "SELECT version FROM diagnostic_schema WHERE singleton=1"
+    ).fetchone()
+    return None if row is None else int(row[0])
+
+
+def require_current_schema(db: SqliteDatabase, path: str | None = None) -> None:
+    observed = _observed_version(db)
+    if observed != DIAGNOSTIC_SCHEMA_VERSION:
+        raise DiagnosticSchemaMismatch(
+            expected=DIAGNOSTIC_SCHEMA_VERSION,
+            observed=observed,
+            path=str(path if path is not None else db.database),
+        )
 
 
 def create_tables(db: SqliteDatabase) -> None:
     """Create all diagnostic snapshot tables, views, and indexes on ``db``.
 
-    Order: migrate legacy ``dag_*`` base tables → create the modeled tables
-    (``MODELS``) → apply the remaining raw DDL (the ``var_writes`` +
-    ``dag_*`` views). Uses IF NOT EXISTS / safe=True so this is idempotent.
+    Existing non-current databases are rejected; no migration is attempted.
+    Fresh databases receive the modeled tables and exact version marker.
     """
-    _migrate_legacy_dag_tables(db)
+    conn = db.connection()
+    has_objects = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
+    ).fetchone() is not None
+    if has_objects:
+        require_current_schema(db)
     with db.bind_ctx(MODELS):
         db.create_tables(MODELS, safe=True)
-    conn = db.connection()
+        DiagnosticSchemaVersion.insert(
+            singleton=1,
+            version=DIAGNOSTIC_SCHEMA_VERSION,
+        ).on_conflict_ignore().execute()
     conn.executescript(_SCHEMA_SQL)
-    conn.execute("PRAGMA user_version = 1")
+    conn.execute(f"PRAGMA user_version = {DIAGNOSTIC_SCHEMA_VERSION}")

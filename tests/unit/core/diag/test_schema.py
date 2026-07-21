@@ -23,7 +23,7 @@ def test_create_tables_creates_all_expected_tables():
     assert "state_cfg_node_blocks" in tables
     assert "state_cfg_local_segments" in tables
     assert "state_cfg_local_edges" in tables
-    assert "modifications" in tables
+    assert "snapshot_modifications" in tables
     assert "block_classification" in tables
     assert "rendered_programs" in tables
     assert "rendered_program_nodes" in tables
