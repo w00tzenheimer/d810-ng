@@ -474,6 +474,10 @@ def _restore_preopt_terminal_return_carriers(
             )
         return
 
+    state.native_preanalysis.set_imported_instruction_origins(
+        state.native_key,
+        tuple(imported_detached_snippet_instruction_origins(mba)),
+    )
     state.preopt_union_imported_mbas.add(
         _preopt_union_import_key(int(function_ea), mba)
     )
