@@ -26,11 +26,16 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     resolver_session_state,
 )
+from tests.native_preanalysis import make_native_key
+
+
+NATIVE_KEY = make_native_key()
 
 
 def _resolver_state() -> object:
     return resolver_session_state(
         SimpleNamespace(
+            native_key=NATIVE_KEY,
             native_preanalysis=NativePreanalysisSessionState(),
             extensions={},
         )
@@ -87,6 +92,7 @@ def test_materialized_transfer_evidence_is_session_scoped() -> None:
         target_eas=(0x402000,),
     )
     session = SimpleNamespace(
+        native_key=NATIVE_KEY,
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
     )
@@ -146,8 +152,8 @@ def test_session_evidence_retains_conflicting_conditional_bridge_generations() -
 
     assert materialized_indirect_transfers(state) == (
         stale,
-        unrelated,
         refreshed,
+        unrelated,
     )
     assert mutation_authoritative_materialized_transfers(
         materialized_indirect_transfers(state)
@@ -162,6 +168,7 @@ def test_terminal_return_carrier_evidence_is_session_scoped() -> None:
         state_constant=0x19A7218A,
     )
     session = SimpleNamespace(
+        native_key=NATIVE_KEY,
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
     )
@@ -349,6 +356,7 @@ def test_indirect_materialization_subscribes_to_flowchart_event(
     )
     calls: list[int] = []
     session = SimpleNamespace(
+        native_key=NATIVE_KEY,
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
     )
