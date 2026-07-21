@@ -393,11 +393,18 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             open_observability_session(function_ea)
         except Exception:
             pass  # diagnostic, never gates decompilation
-        HexraysDecompilationHook._ensure_lifecycle_session(
+        session = HexraysDecompilationHook._ensure_lifecycle_session(
             self,
             mba,
             structural_callback=True,
         )
+        reobserve = getattr(
+            getattr(self, "_decompilation_lifecycle", None),
+            "reobserve_active_diagnostic_session",
+            None,
+        )
+        if session is not None and callable(reobserve):
+            reobserve(function_ea)
         return 0
 
     def maturity(self, cfunc, new_maturity: int) -> int:

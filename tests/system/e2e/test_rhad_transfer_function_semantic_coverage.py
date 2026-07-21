@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import shutil
+import sqlite3
 import subprocess
 import sys
 
@@ -40,6 +41,38 @@ def _assert_preopt_union_is_the_default(log_text: str) -> None:
     assert "PREOPT_UNION_RESULT prepared=True" in log_text
     assert "LOCOPT preanalysis materialized" not in log_text
     assert "detached LOCOPT snippet captured" not in log_text
+
+
+def _assert_lifecycle_diag_authority(diag_path: pathlib.Path) -> None:
+    with sqlite3.connect(diag_path) as conn:
+        assert conn.execute(
+            "SELECT version FROM diagnostic_schema WHERE singleton=1"
+        ).fetchone() == (2,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM lifecycle_events le "
+            "LEFT JOIN diagnostic_sessions ds ON ds.session_id=le.session_id "
+            "WHERE ds.session_id IS NULL"
+        ).fetchone() == (0,)
+        counts = dict(conn.execute(
+            "SELECT event_kind,COUNT(*) FROM lifecycle_events GROUP BY event_kind"
+        ))
+        assert counts.get("session_active", 0) == 1
+        assert counts.get("evidence_generation", 0) >= 2
+        assert counts.get("identity_decision", 0) >= 6
+        assert counts.get("mutation_plan", 0) > 0
+        assert counts.get("mutation_receipt", 0) == counts["mutation_plan"]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM lifecycle_events p "
+            "WHERE p.event_kind='mutation_plan' AND NOT EXISTS ("
+            "SELECT 1 FROM lifecycle_events r "
+            "WHERE r.event_kind='mutation_receipt' "
+            "AND r.session_id=p.session_id "
+            "AND r.correlation_id=p.correlation_id)"
+        ).fetchone() == (0,)
+        assert conn.execute(
+            "SELECT COALESCE(SUM(diagnostic_error_count),0) "
+            "FROM diagnostic_sessions"
+        ).fetchone() == (0,)
 
 
 @pytest.mark.skipif(not _BINARY.exists(), reason="real loader fixture unavailable")
@@ -173,6 +206,7 @@ def test_third_real_loader_recovers_structured_terminal_values(
             "RHAD_TRANSFER_TRANSFERS_OUTPUT": str(transfer_path),
             "RHAD_TRANSFER_DIAG_OUTPUT": str(diag_path),
             "D810_DIAG_SNAPSHOT": "1",
+            "D810_DEFERRED_DIAG_PHASES": "1",
             "RHAD_TRANSFER_TRACE_STACK_SELECTORS": "1",
             "RHAD_TRANSFER_TRACE_HANDLER_ROUTES": "1",
             "RHAD_TRANSFER_TRACE_SESSION_STATE": "1",
@@ -223,6 +257,7 @@ def test_third_real_loader_recovers_structured_terminal_values(
     assert "while1=0" in log_text
     assert "jumpout=0" in log_text
     _assert_preopt_union_is_the_default(log_text)
+    _assert_lifecycle_diag_authority(diag_path)
 
 
 @pytest.mark.skipif(not _BINARY.exists(), reason="real loader fixture unavailable")

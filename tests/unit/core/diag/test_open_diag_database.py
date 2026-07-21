@@ -8,6 +8,9 @@ inspected DB stays byte-unchanged. Non-current schemas are rejected.
 from __future__ import annotations
 
 import sqlite3
+from types import SimpleNamespace
+
+import d810.core.diag as diag
 
 from d810.core.diag import (
     create_diag_database,
@@ -15,6 +18,28 @@ from d810.core.diag import (
     open_diag_database,
 )
 from d810.core.diag.models import Snapshot
+
+
+def test_open_diag_session_is_idempotent_for_nested_hexrays_prologs(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        diag,
+        "get_settings",
+        lambda: SimpleNamespace(diag_snapshots=True),
+    )
+    try:
+        diag.open_diag_session(0x40C8B0, log_dir=str(tmp_path))
+        first = diag.get_diag_db(0x40C8B0, log_dir=str(tmp_path))
+
+        # Generated/PREOPT re-entry and nested callbacks belong to the same
+        # top-level diagnostic authority; they must not rotate the sink.
+        diag.open_diag_session(0x40CD8C, log_dir=str(tmp_path))
+        second = diag.get_diag_db(0x40CD8C, log_dir=str(tmp_path))
+
+        assert second is first
+    finally:
+        diag.close_diag_session()
 
 
 def _seed(path: str) -> None:

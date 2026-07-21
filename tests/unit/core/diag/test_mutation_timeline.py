@@ -93,6 +93,7 @@ def test_plan_and_receipt_are_correlated_by_gateway_batch(diag_conn) -> None:
         "SELECT event_seq,event_kind,correlation_id FROM lifecycle_events "
         "ORDER BY event_seq"
     ).fetchall() == [
-        (1, "mutation_plan", "batch-1"),
-        (2, "mutation_receipt", "batch-1"),
+        (1, "session_active", None),
+        (2, "mutation_plan", "batch-1"),
+        (3, "mutation_receipt", "batch-1"),
     ]

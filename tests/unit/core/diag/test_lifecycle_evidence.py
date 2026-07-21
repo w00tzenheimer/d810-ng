@@ -88,7 +88,11 @@ def test_evidence_and_identity_details_share_ordered_envelopes(diag_conn) -> Non
     ).fetchone() == (17, 0x40C8B3, 9, "bound")
     assert diag_conn.execute(
         "SELECT event_seq,event_kind FROM lifecycle_events ORDER BY event_seq"
-    ).fetchall() == [(1, "evidence_generation"), (2, "identity_decision")]
+    ).fetchall() == [
+        (1, "session_active"),
+        (2, "evidence_generation"),
+        (3, "identity_decision"),
+    ]
 
 
 def test_identity_decision_rejects_serial_without_anchor() -> None:

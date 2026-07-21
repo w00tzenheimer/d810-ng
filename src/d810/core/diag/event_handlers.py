@@ -36,7 +36,7 @@ from d810.core import logging as _d810_logging
 from d810.core.diag import active_diag_db, diag_models_on, get_diag_conn
 from d810.core.diag.models import CfgProvenance, FactConsumer, Snapshot
 from d810.core.diag.lifecycle import (
-    persist_diagnostic_session,
+    persist_diagnostic_session_transition,
     persist_evidence_generation,
     persist_identity_decision,
     persist_lifecycle_event,
@@ -224,7 +224,7 @@ def _handle_diagnostic_session(ev: DiagnosticSessionObserved) -> None:
     except Exception:
         return
     if conn is not None:
-        persist_diagnostic_session(conn, ev)
+        persist_diagnostic_session_transition(conn, ev)
 
 
 def _handle_lifecycle_event(ev: LifecycleEventObserved) -> None:
