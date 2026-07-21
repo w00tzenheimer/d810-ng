@@ -453,9 +453,7 @@ def _restore_preopt_terminal_return_carriers(
                 decision,
                 preopt_union_post_mutation_abstention=True,
                 preopt_union_block_delta=int(block_delta),
-                preopt_union_imported_roots=tuple(
-                    int(root_ea) for root_ea in imported
-                ),
+                preopt_union_imported_roots=tuple(int(root_ea) for root_ea in imported),
                 preopt_union_applied_boundary_ports=len(
                     imported.applied_boundary_ports
                 ),
@@ -1484,7 +1482,11 @@ def _recover_imported_conditional_bridge_transfers(
             candidate_rows,
         )
         return transfers
-    state.merge_materialized_transfers(produced)
+    if state.native_preanalysis.merge_materialized_transfers(
+        state.native_key,
+        produced,
+    ):
+        state.invalidate_current_mba_binding()
     merged = state.materialized_transfers
     native_by_imported = {
         int(imported_ea): int(native_ea) for imported_ea, native_ea in origins
@@ -1974,6 +1976,7 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
     # Imported predicate/handler evidence must be connected before the generic
     # state-machine pass classifies unmatched states as terminal exits.
     PRIORITY = int(FlowRulePriority.UNFLATTEN) + 50
+
     def __init__(self) -> None:
         super().__init__()
         self.maturities = [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS]
@@ -2160,14 +2163,19 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                     int(restored_call_definitions),
                 )
                 return graph_changes
-            cached_carriers = state.call_result_carriers
+            resolver_evidence = state.native_preanalysis.resolver_evidence
+            cached_carriers = (
+                ()
+                if resolver_evidence is None
+                else resolver_evidence.call_result_carriers
+            )
             logger.info(
                 "call-result carrier restore phase: cached=%d",
                 len(cached_carriers),
             )
             restored = restore_call_result_carriers(mba, cached_carriers)
             if restored:
-                state.clear_call_result_carriers()
+                state.native_preanalysis.clear_call_result_carriers(state.native_key)
                 logger.info(
                     "restored %d call-result carrier(s) after state lowering",
                     int(restored),
@@ -2270,7 +2278,10 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
                 )
                 bridged = 0
             if bridged:
-                state.cache_call_result_carriers(captured_carriers)
+                state.native_preanalysis.merge_call_result_carriers(
+                    state.native_key,
+                    captured_carriers,
+                )
             changed = pre_dce_changes + int(materialized) + int(bridged)
             if changed:
                 logger.info(

@@ -37,7 +37,7 @@ def _resolver_state() -> object:
         SimpleNamespace(
             native_key=NATIVE_KEY,
             native_preanalysis=NativePreanalysisSessionState(),
-            extensions={},
+            resolver_attachment=None,
         )
     )
 
@@ -94,7 +94,7 @@ def test_materialized_transfer_evidence_is_session_scoped() -> None:
     session = SimpleNamespace(
         native_key=NATIVE_KEY,
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
     )
     state = resolver_session_state(session)
     other_state = _resolver_state()
@@ -155,9 +155,12 @@ def test_session_evidence_retains_conflicting_conditional_bridge_generations() -
         refreshed,
         unrelated,
     )
-    assert mutation_authoritative_materialized_transfers(
-        materialized_indirect_transfers(state)
-    ) == ()
+    assert (
+        mutation_authoritative_materialized_transfers(
+            materialized_indirect_transfers(state)
+        )
+        == ()
+    )
 
 
 def test_terminal_return_carrier_evidence_is_session_scoped() -> None:
@@ -170,7 +173,7 @@ def test_terminal_return_carrier_evidence_is_session_scoped() -> None:
     session = SimpleNamespace(
         native_key=NATIVE_KEY,
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
     )
     state = resolver_session_state(session)
     other_state = _resolver_state()
@@ -314,9 +317,9 @@ def test_current_function_materialization_uses_discovered_state_slot(
     monkeypatch.setattr(
         labels,
         "discover_indirect_jump_table",
-        lambda function_ea: discovered
-        if function_ea == discovered.function_ea
-        else None,
+        lambda function_ea: (
+            discovered if function_ea == discovered.function_ea else None
+        ),
     )
     monkeypatch.setattr(labels, "materialize_indirect_label_targets", materialize)
 
@@ -358,7 +361,7 @@ def test_indirect_materialization_subscribes_to_flowchart_event(
     session = SimpleNamespace(
         native_key=NATIVE_KEY,
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
     )
     state = resolver_session_state(session)
 
@@ -366,7 +369,9 @@ def test_indirect_materialization_subscribes_to_flowchart_event(
         calls.append(function_ea)
         return result
 
-    monkeypatch.setattr(labels, "run_indirect_materialization_for_function", materialize)
+    monkeypatch.setattr(
+        labels, "run_indirect_materialization_for_function", materialize
+    )
 
     labels.register_indirect_materialization({})
     decision: dict[str, object] = {

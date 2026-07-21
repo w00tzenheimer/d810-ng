@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisFacts,
     NativePreanalysisSessionState,
+    ResolverEvidenceAttachment,
 )
 from d810.core import typing
 from d810.core.decompilation_session import (
@@ -24,10 +25,10 @@ logger = getLogger("D810.decompilation_lifecycle")
 
 @dataclass(slots=True)
 class DecompilationSessionContext:
-    """Durable identity and generic extension storage for one session.
+    """Durable identity and typed resolver attachment for one session.
 
     This context deliberately contains no live Hex-Rays object.  Resolver
-    state will attach through ``extensions`` in the later session-state batch.
+    state attaches through one named lifecycle port.
     """
 
     function_ea: int
@@ -42,7 +43,7 @@ class DecompilationSessionContext:
     current_mba_identity_index: object | None = None
     preopt_ready_emitted_for_current_mba: bool = False
     preopt_refresh_consumers_for_current_mba: set[str] = field(default_factory=set)
-    extensions: dict[object, object] = field(default_factory=dict)
+    resolver_attachment: ResolverEvidenceAttachment | None = None
 
     @property
     def identity_key(self) -> str:
@@ -102,7 +103,10 @@ class DecompilationLifecycleCoordinator:
         None
     )
     mba_mutation_gateway_factory: typing.Callable[..., object | None] | None = None
-    session_extension_initializer: typing.Callable[[object], object] | None = None
+    resolver_attachment_initializer: (
+        typing.Callable[[DecompilationSessionContext], ResolverEvidenceAttachment]
+        | None
+    ) = None
     _active_sessions: list[_SessionActivation] = field(
         default_factory=list,
         init=False,
@@ -281,14 +285,19 @@ class DecompilationLifecycleCoordinator:
         self._active_sessions.append(
             _SessionActivation(session=session, owns_session=True)
         )
-        initializer = self.session_extension_initializer
+        initializer = self.resolver_attachment_initializer
         if callable(initializer):
             try:
-                initializer(session)
+                attachment = initializer(session)
+                if not isinstance(attachment, ResolverEvidenceAttachment):
+                    raise TypeError(
+                        "resolver attachment initializer returned an invalid port"
+                    )
+                session.resolver_attachment = attachment
             except Exception:
                 self._active_sessions.pop()
                 logger.exception(
-                    "session extension initialization failed for func=0x%x",
+                    "resolver attachment initialization failed for func=0x%x",
                     function_ea,
                 )
                 raise
@@ -413,14 +422,9 @@ class DecompilationLifecycleCoordinator:
             session.preopt_ready_emitted_for_current_mba = True
             if microcode_modified:
                 session.current_mba_identity_index = None
-                for attachment in tuple(session.extensions.values()):
-                    invalidate = getattr(
-                        attachment,
-                        "invalidate_current_mba_binding",
-                        None,
-                    )
-                    if callable(invalidate):
-                        invalidate()
+                attachment = session.resolver_attachment
+                if attachment is not None:
+                    attachment.invalidate_current_mba_binding()
             consumers = session.preopt_refresh_consumers_for_current_mba
             consumers.clear()
             if microcode_modified and callback_pointer_refresh_required:
@@ -688,18 +692,17 @@ class DecompilationLifecycleCoordinator:
         if not activation.owns_session:
             return None
         session = activation.session
-        for attachment in tuple(session.extensions.values()):
-            release_live_bindings = getattr(attachment, "release_live_bindings", None)
-            if callable(release_live_bindings):
-                try:
-                    release_live_bindings()
-                except Exception:
-                    logger.debug(
-                        "session attachment cleanup failed for func=0x%x",
-                        int(session.function_ea),
-                        exc_info=True,
-                    )
-        session.extensions.clear()
+        attachment = session.resolver_attachment
+        if attachment is not None:
+            try:
+                attachment.release_live_bindings()
+            except Exception:
+                logger.debug(
+                    "session attachment cleanup failed for func=0x%x",
+                    int(session.function_ea),
+                    exc_info=True,
+                )
+        session.resolver_attachment = None
         session.current_mba_identity_index = None
         parent = self._active_sessions[-1].session if self._active_sessions else None
         preanalysis_runtime = self.preanalysis_runtime

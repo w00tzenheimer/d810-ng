@@ -182,7 +182,7 @@ def _write_transfer_inventory(state: object | None, destination: Path) -> None:
                         for register, value in transfer.target_register_values
                     ],
                 }
-                for transfer in getattr(state, "materialized_transfers", ())
+                for transfer in (() if state is None else state.materialized_transfers)
             ],
             indent=2,
             sort_keys=True,
@@ -209,7 +209,7 @@ def _trace_static_bootstrap_route(state: object | None) -> None:
     source_ea = int(TRACE_BOOTSTRAP_SOURCE, 0)
     state_value = int(TRACE_BOOTSTRAP_STATE, 0)
     state_mreg = int(TRACE_BOOTSTRAP_STATE_MREG, 0)
-    transfers = tuple(getattr(state, "materialized_transfers", ()))
+    transfers = tuple(state.materialized_transfers)
     context_mregs, register_snapshots_by_ea, dispatch_anchor_eas = (
         _bootstrap_native_replay_inputs(transfers)
     )
@@ -373,9 +373,7 @@ try:
                     "source": identity_label(route.source_identity),
                     "state": f"0x{int(route.state_constant):08X}",
                     "target": identity_label(route.target_identity),
-                    "source_handler": identity_label(
-                        route.source_handler_identity
-                    ),
+                    "source_handler": identity_label(route.source_handler_identity),
                     "source_handler_region": identity_label(
                         route.source_handler_region_identity
                     ),
@@ -434,7 +432,9 @@ try:
                     "ROUTE_BUILD_OUTPUT",
                     f"routes={len(routes)}",
                     "proof_kinds="
-                    + repr(sorted(Counter(route.proof_kind for route in routes).items())),
+                    + repr(
+                        sorted(Counter(route.proof_kind for route in routes).items())
+                    ),
                     "source_handler_routes="
                     + repr(
                         [
@@ -467,18 +467,20 @@ try:
                         "live="
                         + repr(
                             [
-                                live_route_label(route, kwargs.get("flow_graph"))
-                                if kwargs.get("flow_graph") is not None
-                                else {
-                                    "source_identity": identity_label(
-                                        identity_index.identity_for_serial(
-                                            route.source_block_serial
-                                        )
-                                    ),
-                                    "state": f"0x{int(route.state_constant):08X}",
-                                    "source_native_ea": route.source_native_ea,
-                                    "target_native_ea": route.target_native_ea,
-                                }
+                                (
+                                    live_route_label(route, kwargs.get("flow_graph"))
+                                    if kwargs.get("flow_graph") is not None
+                                    else {
+                                        "source_identity": identity_label(
+                                            identity_index.identity_for_serial(
+                                                route.source_block_serial
+                                            )
+                                        ),
+                                        "state": f"0x{int(route.state_constant):08X}",
+                                        "source_native_ea": route.source_native_ea,
+                                        "target_native_ea": route.target_native_ea,
+                                    }
+                                )
                                 for route in terminal_routes
                             ]
                         ),
@@ -713,9 +715,9 @@ try:
                 print(
                     "RESOLVER_PREPARE_INPUT",
                     f"state_id={id(state)}",
-                    f"materialization={getattr(state, 'materialization', None) is not None}",
-                    f"materialized={bool(getattr(state, 'materialized', False))}",
-                    f"transfers={len(getattr(state, 'materialized_transfers', ())) }",
+                    f"materialization={state.materialization is not None}",
+                    f"materialized={bool(state.materialized)}",
+                    f"transfers={len(state.materialized_transfers)}",
                     flush=True,
                 )
                 return original_prepare_detached_handler_snippets(state)
@@ -795,8 +797,8 @@ try:
                 print(
                     "BOOTSTRAP_DISCOVERY_INPUT",
                     f"entry=0x{int(getattr(mba, 'entry_ea', 0)):X}",
-                    f"transfers={len(getattr(state, 'materialized_transfers', ())) }",
-                    f"generation={int(getattr(state, 'evidence_generation', 0))}",
+                    f"transfers={len(state.materialized_transfers)}",
+                    f"generation={int(state.evidence_generation)}",
                     flush=True,
                 )
                 cg._static_native_handler_entry_eas = (
@@ -821,7 +823,7 @@ try:
                 print(
                     "BOOTSTRAP_DISCOVERY_RESULT",
                     f"discovered={bool(discovered)}",
-                    f"routes={len(getattr(state.native_preanalysis, 'bootstrap_routes', {}))}",
+                    f"routes={len(state.native_preanalysis.bootstrap_routes)}",
                     flush=True,
                 )
                 return discovered
@@ -845,18 +847,18 @@ try:
                 )
                 if TRACE_SESSION_STATE and id(state) not in observed_session_states:
                     observed_session_states.add(id(state))
-                    materialization = getattr(state, "materialization", None)
                     print(
                         "RESOLVER_SESSION_FLOWCHART",
                         f"entry=0x{int(getattr(mba, 'entry_ea', 0)):X}",
                         f"session_id={id(session)}",
                         f"state_id={id(state)}",
-                        f"session={getattr(session, 'identity_key', None)}",
-                        f"extensions_before={tuple(repr(key) for key in session.extensions)}",
-                        f"materialization={materialization is not None}",
-                        f"materialized={bool(getattr(state, 'materialized', False))}",
-                        f"transfers={len(getattr(state, 'materialized_transfers', ())) }",
-                        f"evidence_generation={int(getattr(state, 'evidence_generation', 0))}",
+                        f"session={session.identity_key}",
+                        "resolver_attachment="
+                        f"{type(session.resolver_attachment).__name__}",
+                        f"materialization={state.materialization is not None}",
+                        f"materialized={bool(state.materialized)}",
+                        f"transfers={len(state.materialized_transfers)}",
+                        f"evidence_generation={int(state.evidence_generation)}",
                         flush=True,
                     )
 
@@ -870,11 +872,6 @@ try:
             if TRACE_SESSION_STATE:
                 lifecycle = headless._state.manager.decompilation_lifecycle
                 active_session = lifecycle.current_session(FUNCTION_EA)
-                extension_keys = (
-                    ()
-                    if active_session is None
-                    else tuple(repr(key) for key in active_session.extensions)
-                )
                 prepared_state = (
                     None
                     if active_session is None
@@ -885,11 +882,12 @@ try:
                     f"prepared={prepared}",
                     f"session_id={None if active_session is None else id(active_session)}",
                     f"state_id={None if prepared_state is None else id(prepared_state)}",
-                    f"session={None if active_session is None else getattr(active_session, 'identity_key', None)}",
-                    f"extensions_before={extension_keys}",
-                    f"materialization={prepared_state is not None and getattr(prepared_state, 'materialization', None) is not None}",
-                    f"materialized={False if prepared_state is None else bool(getattr(prepared_state, 'materialized', False))}",
-                    f"transfers={0 if prepared_state is None else len(getattr(prepared_state, 'materialized_transfers', ())) }",
+                    f"session={None if active_session is None else active_session.identity_key}",
+                    "resolver_attachment="
+                    f"{None if active_session is None else type(active_session.resolver_attachment).__name__}",
+                    f"materialization={prepared_state is not None and prepared_state.materialization is not None}",
+                    f"materialized={False if prepared_state is None else bool(prepared_state.materialized)}",
+                    f"transfers={0 if prepared_state is None else len(prepared_state.materialized_transfers)}",
                     flush=True,
                 )
             if PREPARE_ONLY:
@@ -936,8 +934,12 @@ try:
                 ),
                 flush=True,
             )
-            materialized = bool(getattr(state, "is_materialized", False))
-            resolution = getattr(state, "resolution", None)
+            materialized = False if state is None else state.is_materialized
+            resolution = (
+                None
+                if state is None
+                else state.portable_evidence.computed_goto_resolution
+            )
             _trace_static_bootstrap_route(state)
             if ORIGIN_OUTPUT and final is not None:
                 from d810.hexrays.mutation.detached_handler_island import (

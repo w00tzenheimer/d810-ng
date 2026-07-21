@@ -316,9 +316,13 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             bind_live_identity=True,
         )
         session = decision.get("session")
+        from d810.analyses.control_flow.native_preanalysis_session import (
+            ResolverLifecycleSession,
+        )
+
         if (
-            session is not None
-            and int(getattr(session, "native_preanalysis_depth", 0)) > 0
+            isinstance(session, ResolverLifecycleSession)
+            and int(session.native_preanalysis_depth) > 0
         ):
             # Manager-owned explicit-range generation captures a pristine
             # source template. Applying the public PREOPT import pipeline to

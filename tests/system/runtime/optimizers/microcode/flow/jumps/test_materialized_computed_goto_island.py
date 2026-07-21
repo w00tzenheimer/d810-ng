@@ -79,7 +79,7 @@ class _LiveBlock:
 def _resolver_state():
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     return session, island.resolver_session_state(session)
@@ -204,8 +204,9 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
         target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
         provenance="test_preopt_union",
     )
-    state.merge_native_facts(
-        boundary_ports=DetachedSnippetBoundaryPorts((boundary_port,), ())
+    state.native_preanalysis.merge_native_facts(
+        state.native_key,
+        boundary_ports=DetachedSnippetBoundaryPorts((boundary_port,), ()),
     )
 
     monkeypatch.setattr(island, "restore_terminal_return_carriers", lambda *_: 0)
@@ -285,7 +286,8 @@ def test_preopt_handler_skips_union_when_bootstrap_route_is_live(monkeypatch) ->
     source_ea = 0x40D348
     handler_ea = 0x40EAA7
     state_constant = 0x699BC698
-    assert state.discover_static_native_bootstrap_route(
+    assert state.native_preanalysis.discover_static_native_bootstrap_route(
+        state.native_key,
         source_anchor_ea=source_ea,
         state_constant=state_constant,
         handler_anchor_ea=handler_ea,

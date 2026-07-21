@@ -14,8 +14,14 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     TerminalReturnCarrierRequest,
 )
 from d810.analyses.control_flow.native_preanalysis_session import (
+    BootstrapRouteBindingEvidence,
+    BootstrapRouteEvidence,
+    BootstrapRouteProofKind,
+    CallResultCarrier,
+    ComputedGotoResolution,
     NativePreanalysisFacts,
     NativePreanalysisSessionState,
+    PreoptUnionPreparationResult,
 )
 from d810.analyses.control_flow.native_semantic_closure import NativeCfg
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
@@ -25,15 +31,10 @@ from d810.hexrays.mutation.mba_mutation_events import (
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
-    BootstrapRouteBindingEvidence,
-    BootstrapRouteEvidence,
-    BootstrapRouteProofKind,
     ResolverSessionState,
     resolver_session_state,
 )
 from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
-    ComputedGotoResolution,
-    PreoptUnionPreparationResult,
     _native_entry_corridor_serials,
     _on_calls_done_preanalysis,
     _on_flowchart_preanalysis,
@@ -66,7 +67,7 @@ def test_resolver_session_state_has_a_dedicated_module() -> None:
     )
 
 
-def test_resolver_session_state_uses_a_reload_stable_extension_key() -> None:
+def test_resolver_session_state_reuses_the_named_lifecycle_attachment() -> None:
     """A hot-reloaded resolver module must recover the preflight attachment."""
     native_preanalysis = NativePreanalysisSessionState()
     original = ResolverSessionState(
@@ -74,30 +75,50 @@ def test_resolver_session_state_uses_a_reload_stable_extension_key() -> None:
     )
     session = SimpleNamespace(
         native_preanalysis=native_preanalysis,
-        extensions={
-            "d810.optimizers.microcode.flow.jumps.resolver_session_state": original
-        },
+        resolver_attachment=original,
         native_key=NATIVE_KEY,
     )
 
     assert resolver_session_state(session) is original
-    assert session.extensions == {
-        "d810.optimizers.microcode.flow.jumps.resolver_session_state": original
-    }
+    assert session.resolver_attachment is original
 
 
-def test_call_result_carriers_are_owned_and_released_by_the_session() -> None:
+def test_call_result_carriers_are_lifecycle_owned_across_live_binding_release() -> None:
+    native_preanalysis = NativePreanalysisSessionState()
     state = ResolverSessionState(
-        native_preanalysis=NativePreanalysisSessionState(), native_key=NATIVE_KEY
+        native_preanalysis=native_preanalysis, native_key=NATIVE_KEY
     )
-    first = object()
-    second = object()
+    first = CallResultCarrier(
+        call_ea=0x401000,
+        carrier_ea=0x401002,
+        branch_ea=0x401004,
+        callee_ea=0x402000,
+        carrier_ida_stkoff=-4,
+        value_size=4,
+        branch_opcode=1,
+    )
+    second = replace(
+        first,
+        call_ea=0x401010,
+        carrier_ea=0x401012,
+        branch_ea=0x401014,
+    )
 
-    state.cache_call_result_carriers((first, second))
+    assert native_preanalysis.merge_call_result_carriers(
+        NATIVE_KEY,
+        (first, second),
+    )
 
-    assert state.call_result_carriers == (first, second)
+    assert native_preanalysis.resolver_evidence is not None
+    assert native_preanalysis.resolver_evidence.call_result_carriers == (
+        first,
+        second,
+    )
     state.release_live_bindings()
-    assert state.call_result_carriers == ()
+    assert native_preanalysis.resolver_evidence.call_result_carriers == (
+        first,
+        second,
+    )
 
 
 def test_portable_dispatcher_region_merges_without_snapshot_serials() -> None:
@@ -111,13 +132,23 @@ def test_portable_dispatcher_region_merges_without_snapshot_serials() -> None:
         (NativeEaInterval(0x40EAB1, 0x40EAB2),), native_key=NATIVE_KEY
     )
 
-    assert state.merge_portable_dispatcher_region_identity(first)
+    assert state.native_preanalysis.merge_portable_dispatcher_region_identity(
+        state.native_key,
+        first,
+    )
     assert state.evidence_generation == 1
-    assert not state.merge_portable_dispatcher_region_identity(first)
-    assert state.merge_portable_dispatcher_region_identity(second)
+    assert not state.native_preanalysis.merge_portable_dispatcher_region_identity(
+        state.native_key,
+        first,
+    )
+    assert state.native_preanalysis.merge_portable_dispatcher_region_identity(
+        state.native_key,
+        second,
+    )
     assert state.evidence_generation == 1
+    assert state.native_preanalysis.resolver_evidence is not None
     assert (
-        state.portable_dispatcher_region_identity
+        state.native_preanalysis.resolver_evidence.dispatcher_region_identity
         == StableBlockIdentity.from_intervals(
             (
                 NativeEaInterval(0x40EAA7, 0x40EAA8),
@@ -137,7 +168,7 @@ def test_session_evidence_rebinds_once_in_its_new_generation() -> None:
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -150,10 +181,10 @@ def test_session_evidence_rebinds_once_in_its_new_generation() -> None:
         proof_kind=BootstrapRouteProofKind.STATIC_NATIVE,
     )
 
-    assert state.merge_bootstrap_route(evidence)
+    assert state.native_preanalysis.merge_bootstrap_route(evidence)
     assert session.native_preanalysis.evidence_generation == 1
-    assert state.request_controlled_redo()
-    assert not state.request_controlled_redo()
+    assert state.native_preanalysis.request_controlled_redo()
+    assert not state.native_preanalysis.request_controlled_redo()
 
     state.bind_current_mba(
         MbaBlockIdentityIndex.from_bindings(
@@ -188,7 +219,7 @@ def test_generated_restart_is_staged_once_then_consumed_by_flowchart(
             evidence_generation=2,
             bound_preopt_generation=2,
         ),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -202,8 +233,8 @@ def test_generated_restart_is_staged_once_then_consumed_by_flowchart(
         ),
     )
 
-    assert state.request_generated_restart()
-    assert not state.request_generated_restart()
+    assert state.native_preanalysis.request_generated_restart()
+    assert not state.native_preanalysis.request_generated_restart()
     # Evidence discovered later in the same decompile (for example terminal
     # return-carrier requests during GLBOPT) belongs to the already-staged
     # controller retry.  It must advance that pending generation rather than
@@ -235,7 +266,7 @@ def test_replaying_identical_conditional_bridge_is_an_evidence_noop() -> None:
             evidence_generation=4,
             bound_preopt_generation=4,
         ),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -260,7 +291,9 @@ def test_replaying_identical_conditional_bridge_is_an_evidence_noop() -> None:
     )
     state.native_preanalysis.facts = _native_facts((before, bridge, after))
 
-    assert not state.merge_materialized_transfers((bridge,))
+    assert not state.native_preanalysis.merge_materialized_transfers(
+        state.native_key, (bridge,)
+    )
     assert frozenset(state.materialized_transfers) == {before, bridge, after}
     assert state.evidence_generation == 4
 
@@ -272,7 +305,7 @@ def test_weaker_conditional_bridge_refresh_cannot_erase_arm_state_evidence() -> 
             evidence_generation=4,
             bound_preopt_generation=4,
         ),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -304,7 +337,9 @@ def test_weaker_conditional_bridge_refresh_cannot_erase_arm_state_evidence() -> 
     )
     state.native_preanalysis.facts = _native_facts((exact,))
 
-    assert not state.merge_materialized_transfers((weaker_refresh,))
+    assert not state.native_preanalysis.merge_materialized_transfers(
+        state.native_key, (weaker_refresh,)
+    )
     assert state.materialized_transfers == (exact,)
     assert state.evidence_generation == 4
 
@@ -318,7 +353,7 @@ def test_weaker_conditional_bridge_refresh_cannot_inherit_states_across_sources(
             evidence_generation=4,
             bound_preopt_generation=4,
         ),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -347,7 +382,9 @@ def test_weaker_conditional_bridge_refresh_cannot_inherit_states_across_sources(
     )
     state.native_preanalysis.facts = _native_facts((exact,))
 
-    assert state.merge_materialized_transfers((regenerated,))
+    assert state.native_preanalysis.merge_materialized_transfers(
+        state.native_key, (regenerated,)
+    )
     assert frozenset(state.materialized_transfers) == {exact, regenerated}
     refreshed = next(
         transfer
@@ -370,12 +407,12 @@ def test_calls_ignores_obsolete_mba_after_generated_restart_is_staged(
             evidence_generation=4,
             bound_preopt_generation=4,
         ),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
     state.materialized = True
-    assert state.request_generated_restart()
+    assert state.native_preanalysis.request_generated_restart()
     analyzed: list[object] = []
     monkeypatch.setattr(
         resolver,
@@ -420,7 +457,7 @@ def test_bootstrap_route_is_published_only_after_current_preopt_rebind() -> None
         proof_kind=BootstrapRouteProofKind.STATIC_NATIVE,
     )
 
-    assert state.merge_bootstrap_route(route)
+    assert state.native_preanalysis.merge_bootstrap_route(route)
     assert state.bound_bootstrap_routes() == ()
 
     state.bind_current_mba(
@@ -450,11 +487,16 @@ def test_bootstrap_route_is_published_only_after_current_preopt_rebind() -> None
         ),
         evidence_generation=1,
     )
-    assert state.record_bootstrap_route_binding(binding)
+    assert state.native_preanalysis.record_bootstrap_route_binding(
+        state.native_key,
+        binding,
+    )
 
     assert state.native_preanalysis.mark_preopt_bound()
     assert state.bound_bootstrap_routes() == (route,)
-    assert state.bound_bootstrap_route_bindings() == (binding,)
+    assert state.native_preanalysis.bound_bootstrap_route_bindings(
+        state.native_key
+    ) == (binding,)
 
     # Later CALLS facts may advance the shared evidence epoch without
     # regenerating the already-routed MBA.  The route remains tied to the
@@ -462,7 +504,9 @@ def test_bootstrap_route_is_published_only_after_current_preopt_rebind() -> None
     state.native_preanalysis.mark_evidence_changed()
     assert state.evidence_generation == 2
     assert state.bound_bootstrap_routes() == (route,)
-    assert state.bound_bootstrap_route_bindings() == (binding,)
+    assert state.native_preanalysis.bound_bootstrap_route_bindings(
+        state.native_key
+    ) == (binding,)
 
 
 def test_preflight_discovery_discards_pre_redo_serials() -> None:
@@ -476,18 +520,19 @@ def test_preflight_discovery_discards_pre_redo_serials() -> None:
     state = resolver_session_state(
         SimpleNamespace(
             native_preanalysis=NativePreanalysisSessionState(),
-            extensions={},
+            resolver_attachment=None,
             native_key=NATIVE_KEY,
         )
     )
 
-    assert state.discover_static_native_bootstrap_route(
+    assert state.native_preanalysis.discover_static_native_bootstrap_route(
+        state.native_key,
         source_anchor_ea=0x40D348,
         state_constant=0x699BC698,
         handler_anchor_ea=0x40EAA7,
     )
     assert state.evidence_generation == 1
-    assert state.request_controlled_redo()
+    assert state.native_preanalysis.request_controlled_redo()
 
     state.bind_current_mba(
         MbaBlockIdentityIndex.from_bindings(
@@ -514,17 +559,18 @@ def test_preflight_discovery_names_both_anchors_without_a_live_mba() -> None:
     state = resolver_session_state(
         SimpleNamespace(
             native_preanalysis=NativePreanalysisSessionState(),
-            extensions={},
+            resolver_attachment=None,
             native_key=NATIVE_KEY,
         )
     )
 
-    assert state.discover_static_native_bootstrap_route(
+    assert state.native_preanalysis.discover_static_native_bootstrap_route(
+        state.native_key,
         source_anchor_ea=0x401020,
         state_constant=0x12345678,
         handler_anchor_ea=0x401100,
     )
-    assert state.request_controlled_redo()
+    assert state.native_preanalysis.request_controlled_redo()
 
     state.bind_current_mba(
         MbaBlockIdentityIndex.from_bindings(
@@ -552,7 +598,7 @@ def test_rebinding_survives_mutation_lineage_without_changing_evidence_epoch() -
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(evidence_generation=1),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -600,7 +646,7 @@ def test_bootstrap_rebind_can_select_the_unique_imported_handler_clone() -> None
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(evidence_generation=1),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -661,7 +707,7 @@ def test_preopt_route_consumption_uses_the_injected_mutation_gateway(
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -673,7 +719,7 @@ def test_preopt_route_consumption_uses_the_injected_mutation_gateway(
         handler_anchor_ea=0x401100,
         proof_kind=BootstrapRouteProofKind.STATIC_NATIVE,
     )
-    assert state.merge_bootstrap_route(route)
+    assert state.native_preanalysis.merge_bootstrap_route(route)
     state.bind_current_mba(
         MbaBlockIdentityIndex.from_bindings(
             generation=0,
@@ -726,11 +772,14 @@ def test_preopt_route_consumption_uses_the_injected_mutation_gateway(
             return 1
 
     monkeypatch.setattr(modifier_module, "DeferredGraphModifier", _Modifier)
-    state.preopt_union_preparation = PreoptUnionPreparationResult(
-        function_ea=0x401000,
-        prepared=True,
-        published=True,
-        primary_seed_ea=0x401080,
+    state.native_preanalysis.set_preopt_union_preparation(
+        state.native_key,
+        PreoptUnionPreparationResult(
+            function_ea=0x401000,
+            prepared=True,
+            published=True,
+            primary_seed_ea=0x401080,
+        ),
     )
     decision = {
         "session": session,
@@ -772,7 +821,7 @@ def test_preopt_route_consumption_materializes_a_zero_way_goto(monkeypatch) -> N
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -784,7 +833,7 @@ def test_preopt_route_consumption_materializes_a_zero_way_goto(monkeypatch) -> N
         handler_anchor_ea=0x40EAA7,
         proof_kind=BootstrapRouteProofKind.STATIC_NATIVE,
     )
-    assert state.merge_bootstrap_route(route)
+    assert state.native_preanalysis.merge_bootstrap_route(route)
     state.bind_current_mba(
         MbaBlockIdentityIndex.from_bindings(
             generation=0,
@@ -873,11 +922,12 @@ def test_preopt_routes_static_conditional_taken_arm_through_gateway(
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
-    assert state.merge_materialized_transfers(
+    assert state.native_preanalysis.merge_materialized_transfers(
+        state.native_key,
         (
             MaterializedIndirectTransfer(
                 source_jmp_ea=predicate_ea,
@@ -894,7 +944,7 @@ def test_preopt_routes_static_conditional_taken_arm_through_gateway(
                 predicate_preserve_live=True,
                 resolver_kind="static_conditional_state_choice_bridge",
             ),
-        )
+        ),
     )
     state.bind_current_mba(
         MbaBlockIdentityIndex.from_bindings(
@@ -999,11 +1049,12 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
     )
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
-    assert state.merge_materialized_transfers(
+    assert state.native_preanalysis.merge_materialized_transfers(
+        state.native_key,
         (
             MaterializedIndirectTransfer(
                 source_jmp_ea=predicate_ea,
@@ -1020,7 +1071,7 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
                 predicate_preserve_live=True,
                 resolver_kind="static_conditional_state_choice_bridge",
             ),
-        )
+        ),
     )
     state.bind_current_mba(
         MbaBlockIdentityIndex.from_bindings(
@@ -1108,11 +1159,14 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
     assert decision["microcode_modified"] is True
     assert session.native_preanalysis.bound_preopt_generation == 1
 
-    state.preopt_union_preparation = PreoptUnionPreparationResult(
-        function_ea=0x40D200,
-        prepared=True,
-        published=True,
-        primary_seed_ea=taken_target_ea,
+    state.native_preanalysis.set_preopt_union_preparation(
+        state.native_key,
+        PreoptUnionPreparationResult(
+            function_ea=0x40D200,
+            prepared=True,
+            published=True,
+            primary_seed_ea=taken_target_ea,
+        ),
     )
     state.native_preanalysis.mark_evidence_changed()
     _on_preopt_bootstrap_route(
@@ -1144,7 +1198,7 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
 def test_materialization_and_transfer_accumulation_are_session_owned() -> None:
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -1165,8 +1219,12 @@ def test_materialization_and_transfer_accumulation_are_session_owned() -> None:
     state.begin_materialization(resolution)
     assert state.materialization is not None
     assert state.materialization.resolution is resolution
-    assert state.merge_materialized_transfers((first_transfer,))
-    assert state.merge_materialized_transfers((first_transfer, second_transfer))
+    assert state.native_preanalysis.merge_materialized_transfers(
+        state.native_key, (first_transfer,)
+    )
+    assert state.native_preanalysis.merge_materialized_transfers(
+        state.native_key, (first_transfer, second_transfer)
+    )
     state.complete_materialization()
 
     assert state.materialized is True
@@ -1185,7 +1243,9 @@ def test_native_cfg_and_boundary_ports_have_one_session_owned_authority() -> Non
     state = ResolverSessionState(native_preanalysis=native, native_key=NATIVE_KEY)
     ports = DetachedSnippetBoundaryPorts((), ())
 
-    assert state.merge_native_facts(native_cfg=NativeCfg({}), boundary_ports=ports)
+    assert state.native_preanalysis.merge_native_facts(
+        state.native_key, native_cfg=NativeCfg({}), boundary_ports=ports
+    )
     assert isinstance(native.facts, NativePreanalysisFacts)
     assert state.boundary_ports is native.facts.boundary_ports
     assert "boundary_ports" not in PreoptUnionPreparationResult.__dataclass_fields__
@@ -1224,7 +1284,7 @@ def test_preflight_bootstrap_discovery_uses_the_portable_selector(
 
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -1239,7 +1299,8 @@ def test_preflight_bootstrap_discovery_uses_the_portable_selector(
             block_entries=(0x40EAA7,),
         )
     )
-    state.merge_materialized_transfers(
+    state.native_preanalysis.merge_materialized_transfers(
+        state.native_key,
         (
             MaterializedIndirectTransfer(
                 source_jmp_ea=0x40D37F,
@@ -1249,7 +1310,7 @@ def test_preflight_bootstrap_discovery_uses_the_portable_selector(
                 selector_state_var_reg=28,
                 source_register_values=((20, 0xD1978CAF),),
             ),
-        )
+        ),
     )
     replay_calls: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -1279,7 +1340,7 @@ def test_calls_done_uses_serial_free_native_discovery_as_fallback(monkeypatch) -
 
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -1351,7 +1412,7 @@ def test_calls_done_refreshes_completed_preopt_union_before_requesting_redo(
 
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -1434,7 +1495,7 @@ def test_calls_done_refreshes_completed_preopt_union_before_requesting_redo(
 def test_terminal_requests_and_live_bindings_are_released_with_the_session() -> None:
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
         native_key=NATIVE_KEY,
     )
     state = resolver_session_state(session)
@@ -1445,13 +1506,20 @@ def test_terminal_requests_and_live_bindings_are_released_with_the_session() -> 
         state_constant=0x12345678,
     )
 
-    assert state.merge_terminal_return_carrier_requests((request,))
+    assert state.native_preanalysis.merge_terminal_return_carrier_requests(
+        state.native_key,
+        (request,),
+    )
     state.identity_index = object()
     assert state.begin_snippet_capture(0x401000)
 
     state.release_live_bindings()
 
-    assert state.terminal_return_carrier_requests == (request,)
+    assert state.native_preanalysis.resolver_evidence is not None
+    assert (
+        state.native_preanalysis.resolver_evidence.terminal_return_carrier_requests
+        == (request,)
+    )
     assert state.identity_index is None
     assert state.materialization is None
     assert not state.snippet_capture_active

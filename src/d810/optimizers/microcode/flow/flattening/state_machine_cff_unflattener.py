@@ -875,7 +875,7 @@ def _bound_bootstrap_route_bindings(
     state: ResolverSessionState,
 ) -> tuple[BootstrapRouteBindingEvidence, ...]:
     """Read PREOPT's serial-free binding for the live MBA lineage."""
-    return state.bound_bootstrap_route_bindings()
+    return state.native_preanalysis.bound_bootstrap_route_bindings(state.native_key)
 
 
 class _ReducedProductBypassFamily:
@@ -1395,9 +1395,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             return 0
         flow_context = self.flow_context
         mutation_gateway = (
-            None
-            if flow_context is None
-            else flow_context.new_mba_mutation_gateway()
+            None if flow_context is None else flow_context.new_mba_mutation_gateway()
         )
         if mutation_gateway is None:
             logger.info(
@@ -1743,7 +1741,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 prelim,
             )
             if live_handler_evidence:
-                resolver_state.merge_materialized_transfers(live_handler_evidence)
+                if resolver_state.native_preanalysis.merge_materialized_transfers(
+                    resolver_state.native_key,
+                    live_handler_evidence,
+                ):
+                    resolver_state.invalidate_current_mba_binding()
                 materialized_indirect_transfers = resolver_state.materialized_transfers
         mutation_materialized_indirect_transfers = (
             mutation_authoritative_materialized_transfers(
@@ -2302,7 +2304,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if terminal_carrier_requests:
                 resolver_state = self.current_resolver_session_state()
                 if isinstance(resolver_state, ResolverSessionState):
-                    resolver_state.merge_terminal_return_carrier_requests(
+                    resolver_state.native_preanalysis.merge_terminal_return_carrier_requests(
+                        resolver_state.native_key,
                         terminal_carrier_requests,
                     )
                 logger.info(
@@ -2430,7 +2433,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
             if conditional_bridges:
                 if isinstance(resolver_state, ResolverSessionState):
-                    resolver_state.merge_materialized_transfers(conditional_bridges)
+                    if resolver_state.native_preanalysis.merge_materialized_transfers(
+                        resolver_state.native_key,
+                        conditional_bridges,
+                    ):
+                        resolver_state.invalidate_current_mba_binding()
                     materialized_indirect_transfers = (
                         resolver_state.materialized_transfers
                     )
@@ -2502,8 +2509,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     )
                 )
                 if portable_dispatcher_region is not None:
-                    changed = resolver_state.merge_portable_dispatcher_region_identity(
-                        portable_dispatcher_region
+                    changed = resolver_state.native_preanalysis.merge_portable_dispatcher_region_identity(
+                        resolver_state.native_key,
+                        portable_dispatcher_region,
                     )
                     logger.info(
                         "portable materialized dispatcher-region evidence: "
@@ -2536,18 +2544,33 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     )
                 )
                 if portable_state_route_evidence:
-                    changed = resolver_state.merge_portable_state_routes(
-                        portable_state_route_evidence
+                    changed = (
+                        resolver_state.native_preanalysis.merge_portable_state_routes(
+                            resolver_state.native_key,
+                            portable_state_route_evidence,
+                        )
+                    )
+                    resolver_evidence = (
+                        resolver_state.native_preanalysis.resolver_evidence
+                    )
+                    stored_portable_routes = (
+                        ()
+                        if resolver_evidence is None
+                        else resolver_evidence.state_routes
                     )
                     logger.info(
                         "portable materialized state-route evidence: "
                         "published=%d total=%d changed=%s",
                         len(portable_state_route_evidence),
-                        len(resolver_state.portable_state_routes),
+                        len(stored_portable_routes),
                         changed,
                     )
+            resolver_evidence = resolver_state.native_preanalysis.resolver_evidence
+            stored_portable_routes = (
+                () if resolver_evidence is None else resolver_evidence.state_routes
+            )
             rebound_portable_routes = _rebind_portable_materialized_state_routes(
-                resolver_state.portable_state_routes,
+                stored_portable_routes,
                 current_identity_index,
                 handler_by_state=handler_targets,
                 flow_graph=source.flow_graph,
@@ -2563,13 +2586,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             logger.info(
                 "portable materialized state-route rebind: stored=%d rebound=%d "
                 "live=%d",
-                len(resolver_state.portable_state_routes),
+                len(stored_portable_routes),
                 len(rebound_portable_routes),
                 len(materialized_state_routes),
             )
+            stored_dispatcher_identity = (
+                None
+                if resolver_evidence is None
+                else resolver_evidence.dispatcher_region_identity
+            )
             unfiltered_rebound_dispatcher_region = (
                 _rebind_portable_materialized_dispatcher_region(
-                    resolver_state.portable_dispatcher_region_identity,
+                    stored_dispatcher_identity,
                     imported_native_eas_by_serial=imported_native_eas_by_serial,
                 )
             )
@@ -2610,7 +2638,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             logger.info(
                 "portable materialized dispatcher-region rebind: stored=%s "
                 "rebound=%d live=%d",
-                resolver_state.portable_dispatcher_region_identity is not None,
+                stored_dispatcher_identity is not None,
                 len(rebound_dispatcher_region),
                 len(materialized_dispatcher_router_serials),
             )

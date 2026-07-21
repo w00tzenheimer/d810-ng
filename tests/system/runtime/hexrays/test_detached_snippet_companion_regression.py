@@ -164,7 +164,7 @@ def test_companion_preparer_is_inert_without_profile_evidence(monkeypatch) -> No
     session = SimpleNamespace(
         native_key=make_native_key(),
         native_preanalysis=NativePreanalysisSessionState(),
-        extensions={},
+        resolver_attachment=None,
     )
     state = computed_goto_resolver.resolver_session_state(session)
 

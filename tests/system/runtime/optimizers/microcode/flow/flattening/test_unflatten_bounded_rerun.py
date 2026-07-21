@@ -1043,7 +1043,9 @@ def test_materialized_handler_entry_route_rejects_shared_bootstrap_source() -> N
     }
 
 
-def test_materialized_recovery_builds_portable_entry_route_evidence(monkeypatch) -> None:
+def test_materialized_recovery_builds_portable_entry_route_evidence(
+    monkeypatch,
+) -> None:
     """The identity migration must not pass identity-only args to EA helpers."""
     transfer = MaterializedIndirectTransfer(
         source_jmp_ea=0x40D348,
@@ -1064,7 +1066,9 @@ def test_materialized_recovery_builds_portable_entry_route_evidence(monkeypatch)
             bindings=(),
         ),
     )
-    resolver_state.merge_native_facts(transfers=(transfer,))
+    resolver_state.native_preanalysis.merge_native_facts(
+        resolver_state.native_key, transfers=(transfer,)
+    )
 
     monkeypatch.setattr(unflattener, "recover_dispatcher", lambda *_a, **_kw: None)
     monkeypatch.setattr(
@@ -1117,9 +1121,7 @@ def test_materialized_recovery_builds_portable_entry_route_evidence(monkeypatch)
     rule.config = {}
     rule.flow_context = None
     rule.current_resolver_session_state = lambda: resolver_state
-    rule._pass_manager = SimpleNamespace(
-        facts_for=lambda *_a, **_kw: SimpleNamespace()
-    )
+    rule._pass_manager = SimpleNamespace(facts_for=lambda *_a, **_kw: SimpleNamespace())
     flow_graph = SimpleNamespace(blocks={}, get_block=lambda _serial: None)
     mba = SimpleNamespace(entry_ea=_EA, maturity=ida_hexrays.MMAT_CALLS)
 

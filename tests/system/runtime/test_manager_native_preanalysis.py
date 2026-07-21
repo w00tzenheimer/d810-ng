@@ -26,7 +26,7 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
         native_key=NATIVE_KEY,
-        extensions={},
+        resolver_attachment=None,
         event=SimpleNamespace(function_ea=0x401000),
     )
     events: list[tuple[object, object]] = []
