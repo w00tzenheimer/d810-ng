@@ -3604,9 +3604,7 @@ def _direct_boundary_port(
     return DetachedSnippetDirectBoundaryPort(
         source_block_ea=source_block_ea,
         source_instruction_ea=(
-            source_block_ea
-            if source_instruction_ea is None
-            else source_instruction_ea
+            source_block_ea if source_instruction_ea is None else source_instruction_ea
         ),
         endpoint_block_ea=endpoint_block_ea,
         old_successor_eas=old_successor_eas,
@@ -5032,6 +5030,70 @@ def test_conditional_boundary_binding_relocates_after_prior_block_insertion() ->
     assert resolved is current
 
 
+def test_imported_rebind_prefers_unique_origin_over_native_duplicate() -> None:
+    native_ea = 0x2000
+    logical_anchor_ea = 0x2004
+    imported_instruction_ea = 0xF10004
+    template_target_ea = 0x3000
+    template_serial = 7
+    imported_owner = _Block(
+        1,
+        native_ea,
+        (_Instruction(ida_hexrays.m_mov, imported_instruction_ea),),
+    )
+    duplicate_origin = _Block(
+        2,
+        native_ea,
+        (_Instruction(ida_hexrays.m_mov, logical_anchor_ea),),
+    )
+    mba = _MBA(
+        (
+            _Block(0, 0x1000, (_Instruction(ida_hexrays.m_nop, 0x1000),)),
+            imported_owner,
+            duplicate_origin,
+        )
+    )
+    template = detached_handler_island.DetachedSnippetTemplate(
+        function_ea=0x1000,
+        target_ea=template_target_ea,
+        maturity=int(ida_hexrays.MMAT_PREOPTIMIZED),
+        root_source_serial=template_serial,
+        blocks=(
+            detached_handler_island.DetachedSnippetBlockTemplate(
+                source_serial=template_serial,
+                native_entry_ea=native_ea,
+                native_end_ea=logical_anchor_ea + 1,
+                instructions=(_Instruction(ida_hexrays.m_mov, logical_anchor_ea),),
+                block_type=int(ida_hexrays.BLT_0WAY),
+                block_flags=0,
+                successor_serials=(),
+                external_successor_eas=(),
+            ),
+        ),
+        stack_vd_to_ida=(),
+        owned_ranges=((native_ea, logical_anchor_ea + 1),),
+    )
+    key = (template_target_ea, template_serial)
+    binding = detached_handler_island._BoundaryPortBlockBinding(
+        native_ea=native_ea,
+        imported_key=key,
+    )
+    identity = detached_handler_island.stable_mba_identity(mba)
+
+    resolved = detached_handler_island._rebind_boundary_port_block(
+        mba,
+        binding,
+        {key: imported_owner},
+        exact_instruction_ea=logical_anchor_ea,
+        instruction_origins={
+            (identity, imported_instruction_ea): logical_anchor_ea,
+        },
+        templates_by_target={template_target_ea: template},
+    )
+
+    assert resolved is imported_owner
+
+
 def test_imported_boundary_binding_keeps_template_owner_over_live_overlap() -> None:
     native_entry_ea = 0x40CEAB
     native_instruction_ea = 0x40CEAD
@@ -5981,6 +6043,59 @@ def test_import_direct_port_collapses_conditional_through_owned_helper(
         for instruction in imported_source.instructions()
         if origins.get(int(instruction.ea)) is not None
     }
+
+
+def test_pruned_direct_endpoint_receipt_does_not_migrate_to_handler_entry(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        AppliedDetachedSnippetDirectBoundaryPort,
+        DetachedSnippetBoundaryPortOwner,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    handler_entry_ea = 0x40CADE
+    resolver_ea = 0x40CAF7
+    terminal_ea = 0x40CD8C
+    stale_resolver_anchor = 0xF1C00330
+    handler_entry = _Block(
+        0,
+        handler_entry_ea,
+        (_Instruction(ida_hexrays.m_mov, handler_entry_ea),),
+    )
+    terminal = _Block(
+        1,
+        terminal_ea,
+        (_Instruction(ida_hexrays.m_nop, terminal_ea),),
+    )
+    mba = _MBA((handler_entry, terminal))
+    port = _direct_boundary_port(
+        source_block_ea=handler_entry_ea,
+        source_instruction_ea=resolver_ea,
+        endpoint_block_ea=handler_entry_ea,
+        old_successor_eas=(),
+        target_ea=terminal_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        delivery_mode="terminal_goto",
+    )
+    identity = detached_handler_island.stable_mba_identity(mba)
+    detached_handler_island._IMPORTED_DIRECT_BOUNDARY_EVIDENCE[identity] = (
+        AppliedDetachedSnippetDirectBoundaryPort(
+            port=port,
+            endpoint_anchor_eas=(stale_resolver_anchor,),
+            target_anchor_eas=(terminal_ea,),
+        ),
+    )
+
+    evidence = (
+        detached_handler_island.imported_detached_snippet_direct_boundary_evidence(mba)
+    )
+
+    assert len(evidence) == 1
+    assert evidence[0].endpoint_anchor_eas == (stale_resolver_anchor,)
+    assert handler_entry_ea not in evidence[0].endpoint_anchor_eas
 
 
 def test_import_boundary_port_connects_live_source_to_imported_target(
@@ -7737,16 +7852,17 @@ def test_resolver_cut_port_rebinds_split_imported_endpoint_by_origin(
         ),
         conditional=(),
     )
+    instruction_origins = {
+        (
+            detached_handler_island.stable_mba_identity(destination),
+            synthetic_resolver_ea,
+        ): resolver_ea
+    }
     applied = detached_handler_island._apply_boundary_port_batch(
         destination,
         batch,
         {imported_key: imported_root},
-        pending_instruction_origins={
-            (
-                detached_handler_island.stable_mba_identity(destination),
-                synthetic_resolver_ea,
-            ): resolver_ea
-        },
+        pending_instruction_origins=instruction_origins,
         mutation_gateway=make_mutation_gateway(destination),
     )
 
@@ -7754,6 +7870,26 @@ def test_resolver_cut_port_rebinds_split_imported_endpoint_by_origin(
     assert len(applied) == 1
     assert tuple(split_endpoint.succset) == (int(target.serial),)
     assert int(split_endpoint.tail.opcode) == int(ida_hexrays.m_goto)
+    assert (
+        detached_handler_island._rebind_direct_boundary_evidence_blocks(
+            destination,
+            batch.direct[0],
+            {imported_key: imported_root},
+            instruction_origins={},
+            templates_by_target={},
+        )
+        is None
+    )
+    # The native runtime preserves the imported synthetic EA when replacing
+    # the transfer; the lightweight fake gateway uses the function EA.
+    split_endpoint.tail.ea = synthetic_resolver_ea
+    assert detached_handler_island._rebind_direct_boundary_evidence_blocks(
+        destination,
+        batch.direct[0],
+        {imported_key: imported_root},
+        instruction_origins=instruction_origins,
+        templates_by_target={},
+    ) == (split_endpoint, target)
 
 
 def test_exact_state_route_collapses_two_way_dispatcher_envelope(

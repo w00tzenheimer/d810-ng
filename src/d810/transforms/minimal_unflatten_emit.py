@@ -1042,7 +1042,7 @@ def _strict_one_way_path_enters_region(
 
     Hex-Rays can split one conditional arm into a one-way trampoline before
     the comparison-tree block.  Optional NOPs, one terminal GOTO, and
-    register-to-register copies are structurally transparent.  Copy
+    register copies and address formation are structurally transparent.  Their
     destinations are returned so the caller can independently prove they are
     dead at every direct handler target before bypassing them.
     """
@@ -1069,12 +1069,12 @@ def _strict_one_way_path_enters_region(
             for instruction in semantic_insns
             if instruction.kind is InsnKind.GOTO
         )
-        register_copies = tuple(
+        transparent_moves = tuple(
             instruction
             for instruction in semantic_insns
             if instruction.kind is InsnKind.MOV
             and instruction.l is not None
-            and instruction.l.kind is OperandKind.REGISTER
+            and instruction.l.kind in {OperandKind.REGISTER, OperandKind.ADDRESS}
             and instruction.d is not None
             and instruction.d.kind is OperandKind.REGISTER
             and instruction.d.reg is not None
@@ -1082,7 +1082,7 @@ def _strict_one_way_path_enters_region(
         )
         standard_transparent = (
             len(goto_insns) <= 1
-            and len(goto_insns) + len(register_copies) == len(semantic_insns)
+            and len(goto_insns) + len(transparent_moves) == len(semantic_insns)
             and (not goto_insns or semantic_insns[-1] is goto_insns[0])
         )
         if standard_transparent:
@@ -1125,7 +1125,7 @@ def _strict_one_way_path_enters_region(
             ):
                 return None
         bypassed_definitions.update(
-            ("reg", int(instruction.d.reg)) for instruction in register_copies
+            ("reg", int(instruction.d.reg)) for instruction in transparent_moves
         )
         current = successor
     return None
@@ -1749,6 +1749,7 @@ def build_stack_carried_state_selector_lowerings(
             native_consumer_serials_by_load_ea=native_consumer_serials,
         )
     )
+    portable_owner_serials = frozenset(portable_choice_owners.values())
     equality_targets = unique_materialized_equality_target_eas(
         materialized_indirect_transfers,
         state_register,
@@ -1911,9 +1912,11 @@ def build_stack_carried_state_selector_lowerings(
             stack_source = direct_stack_operands[0]
         elif loaded_stack_source is not None:
             stack_source = loaded_stack_source
+        elif int(consumer.serial) in portable_owner_serials:
+            stack_source = None
         else:
             continue
-        if stack_source is None or stack_source.stkoff is None:
+        if stack_source is not None and stack_source.stkoff is None:
             continue
         successor_paths = tuple(
             (
@@ -2117,6 +2120,8 @@ def build_stack_carried_state_selector_lowerings(
                     false_state,
                     (true_target, false_target),
                 )
+        if stack_source is None or stack_source.stkoff is None:
+            continue
         stack_offset = int(stack_source.stkoff)
         stores = writes_by_stkoff.get(stack_offset, [])
         if logger.info_on:

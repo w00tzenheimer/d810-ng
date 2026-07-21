@@ -1897,7 +1897,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 materialized_indirect_transfers,
                 materialized_state_var_reg,
                 validated_candidate_target_eas=frozenset(
-                    imported_detached_snippet_target_eas(mba)
+                    {
+                        *imported_detached_snippet_target_eas(mba),
+                        *(
+                            resolver_state.portable_evidence.preopt_union_preparation.seed_eas
+                            if isinstance(resolver_state, ResolverSessionState)
+                            and resolver_state.portable_evidence.preopt_union_preparation
+                            is not None
+                            else ()
+                        ),
+                    }
                 ),
             )
             entry_route_source_eas = (

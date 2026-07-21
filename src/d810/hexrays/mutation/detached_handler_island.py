@@ -654,17 +654,17 @@ def imported_detached_snippet_direct_boundary_evidence(
         native_ea: int,
         owner: DetachedSnippetBoundaryPortOwner,
         fallback: tuple[int, ...],
+        *,
+        allow_native_fallback: bool,
     ) -> tuple[int, ...]:
         anchor_blocks = {
             int(block.serial): block
             for anchor_ea in fallback
             for block in _blocks_containing_ea(mba, int(anchor_ea))
         }
-        block = (
-            next(iter(anchor_blocks.values()))
-            if len(anchor_blocks) == 1
-            else find_unique_live_block_by_native_ea(mba, int(native_ea))
-        )
+        block = next(iter(anchor_blocks.values())) if len(anchor_blocks) == 1 else None
+        if block is None and allow_native_fallback:
+            block = find_unique_live_block_by_native_ea(mba, int(native_ea))
         if block is None:
             return fallback
         anchors = _boundary_evidence_instruction_anchors(
@@ -681,11 +681,13 @@ def imported_detached_snippet_direct_boundary_evidence(
                 evidence.port.endpoint_block_ea,
                 evidence.port.endpoint_owner,
                 evidence.endpoint_anchor_eas,
+                allow_native_fallback=False,
             ),
             target_anchor_eas=live_anchors(
                 evidence.port.target_ea,
                 evidence.port.target_owner,
                 evidence.target_anchor_eas,
+                allow_native_fallback=True,
             ),
         )
         for evidence in evidence_rows
@@ -5088,7 +5090,26 @@ def _rebind_boundary_port_block(
                 or int(instruction.opcode) in accepted_opcodes
             )
         )
-        current = exact_matches[0] if len(exact_matches) == 1 else None
+        imported_origin_matches = tuple(
+            block
+            for serial in range(int(mba.qty))
+            for block in (mba.get_mblock(serial),)
+            if any(
+                pending_origins.get((mba_identity, int(instruction.ea)))
+                == int(exact_instruction_ea)
+                or _IMPORTED_INSTRUCTION_ORIGINS.get(
+                    (mba_identity, int(instruction.ea))
+                )
+                == int(exact_instruction_ea)
+                for instruction in _instructions(block)
+                if accepted_opcodes is None
+                or int(instruction.opcode) in accepted_opcodes
+            )
+        )
+        if binding.imported_key is not None and len(imported_origin_matches) == 1:
+            current = imported_origin_matches[0]
+        else:
+            current = exact_matches[0] if len(exact_matches) == 1 else None
     if current is not None:
         return current
     if binding.imported_key is not None:
@@ -5098,6 +5119,107 @@ def _rebind_boundary_port_block(
     if len(instruction_backed) == 1:
         return instruction_backed[0]
     return _resolve_boundary_port_block(binding, created)
+
+
+def _rebind_direct_boundary_evidence_blocks(
+    mba: object,
+    mutation: _DirectBoundaryPortMutation,
+    created: Mapping[tuple[int, int], object],
+    *,
+    instruction_origins: Mapping[tuple[int, int], int],
+    templates_by_target: Mapping[int, DetachedSnippetTemplate],
+) -> tuple[object, object] | None:
+    """Rebind one applied direct port after all structural insertions.
+
+    The apply phase may split the exact resolver instruction away from the
+    template block that originally owned it.  Capturing a receipt from the
+    cached SWIG proxy can then attach the receipt to a neighboring block after
+    serial renumbering.  Re-resolve the lowered instruction by native origin;
+    ``m_goto`` is accepted because a successful terminal cut has already
+    replaced the original indirect transfer at this point.
+    """
+    source_instruction_eas = {
+        int(record.port.source_instruction_ea) for record in mutation.records
+    }
+    endpoint_instruction_ea = (
+        next(iter(source_instruction_eas))
+        if len(source_instruction_eas) == 1
+        and all(
+            record.port.delivery_mode == "terminal_goto"
+            and int(record.port.endpoint_block_ea) == int(record.port.source_block_ea)
+            for record in mutation.records
+        )
+        else None
+    )
+    receipt_opcodes = {
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_call),
+        int(ida_hexrays.m_icall),
+        int(ida_hexrays.m_ijmp),
+        int(ida_hexrays.m_goto),
+    }
+    endpoint = _rebind_boundary_port_block(
+        mba,
+        mutation.endpoint,
+        created,
+        exact_instruction_ea=endpoint_instruction_ea,
+        exact_instruction_opcodes=(
+            receipt_opcodes if endpoint_instruction_ea is not None else None
+        ),
+        instruction_origins=instruction_origins,
+        templates_by_target=templates_by_target,
+    )
+    target = _rebind_boundary_port_block(
+        mba,
+        mutation.target,
+        created,
+        instruction_origins=instruction_origins,
+        templates_by_target=templates_by_target,
+    )
+    if endpoint is None or target is None:
+        return None
+    mba_identity = stable_mba_identity(mba)
+    if endpoint_instruction_ea is not None and not any(
+        (
+            int(instruction.ea) == int(endpoint_instruction_ea)
+            or instruction_origins.get((mba_identity, int(instruction.ea)))
+            == int(endpoint_instruction_ea)
+            or _IMPORTED_INSTRUCTION_ORIGINS.get((mba_identity, int(instruction.ea)))
+            == int(endpoint_instruction_ea)
+        )
+        and int(instruction.opcode) in receipt_opcodes
+        for instruction in _instructions(endpoint)
+    ):
+        logger.info(
+            "direct boundary receipt abstained: source=0x%X instruction=0x%X "
+            "reason=exact_source_pruned",
+            int(mutation.records[0].port.source_block_ea),
+            int(endpoint_instruction_ea),
+        )
+        return None
+    first_port = mutation.records[0].port
+    logger.info(
+        "direct boundary receipt rebind: source=0x%X instruction=0x%X "
+        "endpoint=blk%d@0x%X target=blk%d@0x%X endpoint_ops=%s",
+        int(first_port.source_block_ea),
+        int(first_port.source_instruction_ea),
+        int(endpoint.serial),
+        int(_unique_block_native_ea(endpoint) or int(endpoint.start)),
+        int(target.serial),
+        int(_unique_block_native_ea(target) or int(target.start)),
+        tuple(
+            (
+                int(instruction.opcode),
+                int(instruction.ea),
+                instruction_origins.get((mba_identity, int(instruction.ea)))
+                or _IMPORTED_INSTRUCTION_ORIGINS.get(
+                    (mba_identity, int(instruction.ea))
+                ),
+            )
+            for instruction in _instructions(endpoint)
+        ),
+    )
+    return endpoint, target
 
 
 def _rebind_imported_template_block(
@@ -5477,8 +5599,7 @@ def _apply_boundary_port_batch(
             if delivery_mode == "terminal_goto"
             and len(source_instruction_eas) == 1
             and all(
-                int(record.port.endpoint_block_ea)
-                == int(record.port.source_block_ea)
+                int(record.port.endpoint_block_ea) == int(record.port.source_block_ea)
                 for record in mutation.records
             )
             else None
@@ -7011,11 +7132,18 @@ def _materialize_detached_snippet_templates(
         )
     )
     direct_evidence: list[AppliedDetachedSnippetDirectBoundaryPort] = []
+    templates_by_target = {int(template.target_ea): template for template in selected}
     for mutation in boundary_port_batch.direct:
-        endpoint = _resolve_boundary_port_block(mutation.endpoint, created)
-        target = _resolve_boundary_port_block(mutation.target, created)
-        if endpoint is None or target is None:
+        rebound = _rebind_direct_boundary_evidence_blocks(
+            mba,
+            mutation,
+            created,
+            instruction_origins=pending_instruction_origins,
+            templates_by_target=templates_by_target,
+        )
+        if rebound is None:
             continue
+        endpoint, target = rebound
         for record in mutation.records:
             endpoint_anchors = _boundary_evidence_instruction_anchors(
                 mba,
@@ -7048,10 +7176,19 @@ def _materialize_detached_snippet_templates(
         )
     conditional_evidence: list[AppliedDetachedSnippetConditionalBoundaryPort] = []
     for mutation in boundary_port_batch.conditional:
-        taken_target = _resolve_boundary_port_block(mutation.taken_target, created)
-        fallthrough_target = _resolve_boundary_port_block(
+        taken_target = _rebind_boundary_port_block(
+            mba,
+            mutation.taken_target,
+            created,
+            instruction_origins=pending_instruction_origins,
+            templates_by_target=templates_by_target,
+        )
+        fallthrough_target = _rebind_boundary_port_block(
+            mba,
             mutation.fallthrough_target,
             created,
+            instruction_origins=pending_instruction_origins,
+            templates_by_target=templates_by_target,
         )
         if taken_target is None or fallthrough_target is None:
             continue

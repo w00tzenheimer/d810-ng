@@ -131,6 +131,10 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     unique_materialized_equality_target_eas,
     unique_materialized_state_register,
 )
+from d810.analyses.control_flow.native_compare import (
+    normalize_register_compare_predicate,
+    swapped_x86_condition_code,
+)
 from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.analyses.control_flow.semantic_transition import StateWriteAnchor
 from d810.analyses.control_flow.state_machine_analysis import (
@@ -2117,7 +2121,7 @@ def _static_conditional_state_choices(
     choices: set[MaterializedIndirectTransfer] = set()
     for block_entry, block_state in sorted(entry_state.items()):
         state = dict(block_state)
-        pending_compare: tuple[int, int, int] | None = None
+        pending_compare: tuple[int, int, int, bool] | None = None
         pending_choice: tuple[MaterializedIndirectTransfer, str] | None = None
         instruction = ida_ua.insn_t()
         ea = int(block_entry)
@@ -2176,7 +2180,31 @@ def _static_conditional_state_choices(
                         int(ea),
                         int(left_mreg),
                         (int(right.value) & _MASK32 if mnemonic == "cmp" else 0),
+                        False,
                     )
+                elif (
+                    mnemonic == "cmp"
+                    and left.type == idaapi.o_reg
+                    and right.type == idaapi.o_reg
+                ):
+                    normalized = normalize_register_compare_predicate(
+                        left_mreg=left_mreg,
+                        left_values=(
+                            state.get(left_name) if left_name is not None else None
+                        ),
+                        right_mreg=_native_register_mreg(_sv_reg_name(right)),
+                        right_values=state.get(_sv_reg_name(right)),
+                    )
+                    if normalized is None:
+                        pending_compare = None
+                    else:
+                        predicate_register, predicate_constant, swapped = normalized
+                        pending_compare = (
+                            int(ea),
+                            predicate_register,
+                            predicate_constant,
+                            swapped,
+                        )
                 else:
                     pending_compare = None
             elif mnemonic in _SV_CMOV_MNEMS:
@@ -2187,12 +2215,20 @@ def _static_conditional_state_choices(
                     is_lea=False,
                 )
                 if pending_compare is not None and destination_name is not None:
-                    compare_ea, predicate_register, predicate_constant = pending_compare
+                    (
+                        compare_ea,
+                        predicate_register,
+                        predicate_constant,
+                        swapped,
+                    ) = pending_compare
+                    condition_code = _select_cc_nibble(int(ea), length)
+                    if swapped:
+                        condition_code = swapped_x86_condition_code(condition_code)
                     choice = _make_static_conditional_state_choice(
                         source_block_ea=int(block_entry),
                         compare_ea=compare_ea,
                         select_ea=int(ea),
-                        condition_code=_select_cc_nibble(int(ea), length),
+                        condition_code=condition_code,
                         predicate_register=predicate_register,
                         predicate_size=4,
                         predicate_constant=predicate_constant,
@@ -4487,6 +4523,27 @@ def _block_has_live_register_state_write(
     return False
 
 
+def _last_one_way_block_before_target(
+    flow_graph: FlowGraph,
+    source_serial: int,
+    target_serial: int,
+) -> int | None:
+    """Preserve a live handler corridor before bypassing a terminal epilogue."""
+    current = int(source_serial)
+    target = int(target_serial)
+    seen: set[int] = set()
+    while current not in seen and current != target:
+        seen.add(current)
+        block = flow_graph.get_block(current)
+        if block is None or block.nsucc != 1:
+            return None
+        successor = int(block.succs[0])
+        if successor == target:
+            return current
+        current = successor
+    return None
+
+
 def _build_materialized_state_routes(
     flow_graph: FlowGraph,
     *,
@@ -5249,9 +5306,7 @@ def _build_materialized_state_routes(
                         and transfer.selector_state_var_reg is not None
                         and int(transfer.selector_state_var_reg) == int(state_var_reg)
                         and transfer.selector_state_constant is not None
-                        and (
-                            int(transfer.selector_state_constant) & _MASK32
-                        )
+                        and (int(transfer.selector_state_constant) & _MASK32)
                         == state_constant
                         and len(transfer.target_eas) == 1
                     }
@@ -5281,13 +5336,22 @@ def _build_materialized_state_routes(
                         except Exception:
                             terminal_route_target_serial = None
                     terminal_route = terminal_route_target_serial is not None
+                    selected_route_source_serial = int(
+                        route_source_serial
+                        if route_source_serial is not None
+                        else source_serial
+                    )
+                    if terminal_route:
+                        terminal_predecessor = _last_one_way_block_before_target(
+                            flow_graph,
+                            selected_route_source_serial,
+                            int(target_serial),
+                        )
+                        if terminal_predecessor is not None:
+                            selected_route_source_serial = terminal_predecessor
                     routes.add(
                         MaterializedStateRoute(
-                            source_block_serial=int(
-                                route_source_serial
-                                if route_source_serial is not None
-                                else source_serial
-                            ),
+                            source_block_serial=selected_route_source_serial,
                             state_constant=state_constant,
                             target_handler_serial=(
                                 int(terminal_route_target_serial)
@@ -5342,8 +5406,7 @@ def _build_materialized_state_routes(
                     != int(transfer.source_block_ea)
                     or int(getattr(port, "endpoint_block_ea", 0) or 0)
                     != int(transfer.source_block_ea)
-                    or int(getattr(port, "target_ea", 0) or 0)
-                    != target_native_ea
+                    or int(getattr(port, "target_ea", 0) or 0) != target_native_ea
                     or (
                         getattr(port, "state_register", None) is not None
                         and int(port.state_register) != int(state_var_reg)

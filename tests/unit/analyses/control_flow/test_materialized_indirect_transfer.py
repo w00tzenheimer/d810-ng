@@ -1163,6 +1163,32 @@ def test_equality_target_projection_abstains_on_conflicting_primary_routes() -> 
     assert unique_materialized_equality_target_eas(transfers, 20) == {}
 
 
+def test_validated_import_target_resolves_conflicting_handler_entry_routes() -> None:
+    state = 0x2F0F683D
+    source_ea = 0x40CC6E
+    dispatcher_target = 0x40CBB0
+    imported_handler_target = 0x40CC89
+    transfers = tuple(
+        MaterializedIndirectTransfer(
+            source_jmp_ea=source_ea,
+            source_block_ea=source_ea,
+            materialized_anchor_eas=(),
+            target_eas=(target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=state,
+            resolver_kind="static_handler_entry_route",
+        )
+        for target_ea in (dispatcher_target, imported_handler_target)
+    )
+
+    assert unique_materialized_equality_target_eas(transfers, 20) == {}
+    assert unique_materialized_equality_target_eas(
+        transfers,
+        20,
+        validated_candidate_target_eas=frozenset({imported_handler_target}),
+    ) == {state: imported_handler_target}
+
+
 def test_terminal_multi_target_uses_exact_state_snapshot_handler_ea() -> None:
     state = 0x7F9D6412
     equality = MaterializedIndirectTransfer(

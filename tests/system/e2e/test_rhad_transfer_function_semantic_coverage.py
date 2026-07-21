@@ -151,6 +151,7 @@ def test_third_real_loader_recovers_structured_terminal_values(
     binary = tmp_path / _BINARY.name
     output_path = tmp_path / "sub_40C8B0.c"
     transfer_path = tmp_path / "sub_40C8B0.transfers.json"
+    diag_path = tmp_path / "sub_40C8B0.diag.sqlite3"
     log_path = tmp_path / "sub_40C8B0.log"
     shutil.copy2(_BINARY, binary)
 
@@ -170,6 +171,11 @@ def test_third_real_loader_recovers_structured_terminal_values(
             "RHAD_TRANSFER_END": hex(_THIRD_FUNCTION_END),
             "RHAD_TRANSFER_OUTPUT": str(output_path),
             "RHAD_TRANSFER_TRANSFERS_OUTPUT": str(transfer_path),
+            "RHAD_TRANSFER_DIAG_OUTPUT": str(diag_path),
+            "D810_DIAG_SNAPSHOT": "1",
+            "RHAD_TRANSFER_TRACE_STACK_SELECTORS": "1",
+            "RHAD_TRANSFER_TRACE_HANDLER_ROUTES": "1",
+            "RHAD_TRANSFER_TRACE_SESSION_STATE": "1",
         }
     )
     with log_path.open("w", encoding="utf-8") as log_file:
