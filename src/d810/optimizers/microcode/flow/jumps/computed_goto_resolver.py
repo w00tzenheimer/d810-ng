@@ -12398,9 +12398,15 @@ def _on_stkpnts(
     )
     for live_ea, native_ea in sorted(native_ea_by_live_ea.items()):
         try:
-            spd = detached_call_spd_by_ea.get(int(native_ea))
-            if spd is None:
-                spd = int(ida_frame.get_spd(function, int(native_ea)))
+            native_spd = int(ida_frame.get_spd(function, int(native_ea)))
+            route_call_delta = detached_call_spd_by_ea.get(int(native_ea))
+            # Captured push depth is relative to the detached route entry;
+            # hxe_stkpnts consumes absolute function-frame coordinates.
+            spd = (
+                native_spd
+                if route_call_delta is None
+                else native_spd + int(route_call_delta)
+            )
             _upsert_stkpnt(stack_points, int(live_ea), spd)
         except Exception:
             logger.debug(
@@ -12418,11 +12424,15 @@ def _on_stkpnts(
     decision["stack_points_modified"] = len(projected)
     logger.info(
         "computed-goto stack provenance projected: func=0x%X points=%d "
-        "capture=%s native_calls=%s",
+        "capture=%s native_calls=%s route_call_spds=%s",
         key,
         len(projected),
         capture_active,
         [hex(int(ea)) for ea in detached_callinfo_template_eas(key)],
+        [
+            (hex(int(call_ea)), int(spd))
+            for call_ea, spd in sorted(detached_call_spd_by_ea.items())
+        ],
     )
 
 
