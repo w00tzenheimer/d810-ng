@@ -24,6 +24,7 @@ from dataclasses import dataclass
 import ida_hexrays
 
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 # --- the lab's large-const state scheme ---
 STATE_K0 = 0xC6685257
@@ -503,7 +504,9 @@ def apply_lowering_and_render(flat_ea, recover_fn, lower_fn=lower_dispatch_drain
                 if plan is None:
                     return 0
                 box["done"] = True
-                mod = DeferredGraphModifier(mba)
+                mod = DeferredGraphModifier(
+                    mba, mutation_gateway=make_mutation_gateway(mba)
+                )
                 lower_fn(mod, plan)
                 mod.coalesce()
                 box["applied"] = mod.apply(run_optimize_local=True)
@@ -609,7 +612,9 @@ def apply_region_deshare_and_render(flat_ea):
                         ins = ins.next
                     box["tail_eas"] = eas
                     box["phase"] = 1
-                    mod = DeferredGraphModifier(mba)
+                    mod = DeferredGraphModifier(
+                        mba, mutation_gateway=make_mutation_gateway(mba)
+                    )
                     for k in (STATE_KENTRY, STATE_K0, STATE_K1):
                         tgt = routing.get(k)
                         if tgt is None:
@@ -647,7 +652,9 @@ def apply_region_deshare_and_render(flat_ea):
                     payload = _capture_state_free(tblk)
                     if len(preds) < 2:
                         return 0
-                    mod = DeferredGraphModifier(mba)
+                    mod = DeferredGraphModifier(
+                        mba, mutation_gateway=make_mutation_gateway(mba)
+                    )
                     for P in preds:
                         mod.queue_create_and_redirect(
                             P, term, list(payload), old_target_serial=best)

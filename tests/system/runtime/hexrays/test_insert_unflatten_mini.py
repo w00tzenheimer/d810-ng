@@ -16,6 +16,7 @@ ida_hexrays = pytest.importorskip("ida_hexrays")
 import idaapi
 
 from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
+from tests.system.runtime.mutation_gateway import make_mutation_gateway
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
 FUNCTION = "lab_flat_mini"
@@ -173,7 +174,7 @@ class TestInsertUnflattenMini:
         assert mba is not None
         plan, disp = _build_insert_plan(mba)
         assert len(plan) == 3 and disp >= 0, f"bad plan: {plan} disp={disp}"
-        mod = DeferredGraphModifier(mba)
+        mod = DeferredGraphModifier(mba, mutation_gateway=make_mutation_gateway(mba))
         for src, final, old in plan:
             mod.queue_create_and_redirect(src, final, [], old_target_serial=old)
         mod.coalesce()
@@ -231,7 +232,9 @@ class TestInsertUnflattenMini:
                 if len(plan) != 3 or disp < 0:
                     self.error = f"bad plan {plan} disp={disp}"
                     return 0
-                mod = DeferredGraphModifier(mba)
+                mod = DeferredGraphModifier(
+                    mba, mutation_gateway=make_mutation_gateway(mba)
+                )
                 for src, final, old in plan:
                     mod.queue_create_and_redirect(src, final, [], old_target_serial=old)
                 mod.coalesce()
@@ -309,7 +312,9 @@ class TestInsertUnflattenMini:
                     if len(plan) != 3 or disp < 0:
                         return 0
                     self.done = True  # one-shot; set before apply (re-entrancy)
-                    mod = DeferredGraphModifier(mba)
+                    mod = DeferredGraphModifier(
+                        mba, mutation_gateway=make_mutation_gateway(mba)
+                    )
                     for src, final, old in plan:
                         mod.queue_create_and_redirect(src, final, [], old_target_serial=old)
                     mod.coalesce()
@@ -550,7 +555,9 @@ class TestInsertUnflattenCond:
                             (h1, term, disp), (h2, term, disp)]
                     self.plan = plan
                     self.done = True
-                    mod = DeferredGraphModifier(mba)
+                    mod = DeferredGraphModifier(
+                        mba, mutation_gateway=make_mutation_gateway(mba)
+                    )
                     for src, final, old in plan:
                         mod.queue_create_and_redirect(src, final, [], old_target_serial=old)
                     mod.coalesce()
@@ -704,7 +711,9 @@ class TestInsertUnflattenShared:
                         return 0
                     disp = min(inter)
                     self.done = True
-                    mod = DeferredGraphModifier(mba)
+                    mod = DeferredGraphModifier(
+                        mba, mutation_gateway=make_mutation_gateway(mba)
+                    )
                     for arm in arms:
                         # Insert a private STATE-FREE copy of SHARED on each path.
                         mod.queue_create_and_redirect(
@@ -889,7 +898,9 @@ class TestInsertUnflattenLoop:
                         return 0
                     self.plan = plan
                     self.done = True
-                    mod = DeferredGraphModifier(mba)
+                    mod = DeferredGraphModifier(
+                        mba, mutation_gateway=make_mutation_gateway(mba)
+                    )
                     for src, final, old in plan:
                         mod.queue_create_and_redirect(
                             src, final, [], old_target_serial=old)
@@ -1101,7 +1112,9 @@ class TestInsertUnflattenJtbl:
                         return 0
                     self.plan = plan
                     self.done = True
-                    mod = DeferredGraphModifier(mba)
+                    mod = DeferredGraphModifier(
+                        mba, mutation_gateway=make_mutation_gateway(mba)
+                    )
                     for src, final, old in plan:
                         mod.queue_create_and_redirect(
                             src, final, [], old_target_serial=old)
@@ -1261,7 +1274,9 @@ class TestInsertUnflattenBranchless:
                     if or_ea is None or cond is None:
                         return 0
                     self.done = True
-                    mod = DeferredGraphModifier(mba)
+                    mod = DeferredGraphModifier(
+                        mba, mutation_gateway=make_mutation_gateway(mba)
+                    )
                     # Drain the dispatcher: entry routes to H0, the two arms exit.
                     mod.queue_create_and_redirect(entry, h0, [], old_target_serial=disp)
                     mod.queue_create_and_redirect(h1, term, [], old_target_serial=disp)
@@ -1525,7 +1540,9 @@ class TestInsertUnflattenRegion:
                         return 0
                     self.plan = plan
                     self.done = True
-                    mod = DeferredGraphModifier(mba)
+                    mod = DeferredGraphModifier(
+                        mba, mutation_gateway=make_mutation_gateway(mba)
+                    )
                     for src, final, old in plan:
                         mod.queue_create_and_redirect(
                             src, final, [], old_target_serial=old)
@@ -1644,7 +1661,9 @@ class TestInsertUnflattenRegion:
                                          cond_t=cond_t, ft=ft,
                                          ent_writers={hex(k): v for k, v in writers.items()})
                         self.phase = 1
-                        mod = DeferredGraphModifier(mba)
+                        mod = DeferredGraphModifier(
+                            mba, mutation_gateway=make_mutation_gateway(mba)
+                        )
                         # Drain the entry: entry-state writer -> entry handler, and
                         # the entry handler's arms -> A / B.
                         for k in (STATE_KENTRY, STATE_K0, STATE_K1):
@@ -1690,7 +1709,9 @@ class TestInsertUnflattenRegion:
                                          payload=[x.dstr() for x in payload], term=term)
                         if len(preds) < 2:
                             return 0
-                        mod = DeferredGraphModifier(mba)
+                        mod = DeferredGraphModifier(
+                            mba, mutation_gateway=make_mutation_gateway(mba)
+                        )
                         for P in preds:
                             mod.queue_create_and_redirect(
                                 P, term, list(payload), old_target_serial=best)
