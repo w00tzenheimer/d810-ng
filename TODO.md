@@ -759,24 +759,24 @@ derives summaries/hints.  The coordinator invokes both in the defined order,
 then hands hints to `RuleScopeRuntime`.  Mutation remains in the existing
 optimizer/pass/importer layers.
 
-- [ ] Use the lifecycle codemod to rename every production import, field,
+- [x] Use the lifecycle codemod to rename every production import, field,
   factory, configuration key, test fixture, and log prefix from `Recon*` to its
   replacement.  Remove `recon` aliases and compatibility exports in the same
   commit.
-- [ ] Split the existing mixed runtime at the current fact-persistence boundary:
+- [x] Split the existing mixed runtime at the current fact-persistence boundary:
   move collector registration, maturity capture, deduplication, and persistence
   to `PreanalysisRuntime`; move `analyze_and_persist`, validated-view lookup,
   hint derivation, and consumer-outcome recording to
   `DecompilationAnalysisRuntime`.
-- [ ] Update every injected consumer to request the smallest interface it
+- [x] Update every injected consumer to request the smallest interface it
   needs: preanalysis collector provider, validated-fact-view provider, analysis
   outcome sink, or rule-scope service.  No adapter receives the whole manager,
   phase, and runtime trio.
-- [ ] Add negative architecture tests: a preanalysis module may not import
+- [x] Add negative architecture tests: a preanalysis module may not import
   optimizer mutation code; an analysis module may not import Hex-Rays live MBA
   APIs; a mutation module may consume validated facts but may not write
   preanalysis persistence directly.
-- [ ] Update graphify inventory and confirm that no production module, config
+- [x] Update graphify inventory and confirm that no production module, config
   key, public property, test helper, log namespace, or documentation still uses
   the `recon` term after the breaking rename.
 
@@ -800,13 +800,14 @@ optimizer/pass/importer layers.
   `tools/scripts/codemod_reports/decompilation_lifecycle_full_inventory.json`;
   `lifecycle_migration_manifest.json` uses it as the no-new-manual-boundary
   baseline until each migration batch removes its own candidates.
-- [ ] Run the codemod in report mode after every migration task.  The final
+- [x] Run the codemod in report mode after every migration task.  The final
   report must contain zero references to removed `STARTED`/`FINISHED` events,
   adapter-owned `reset_for_func`/`analyze_and_persist` calls, and removed
   resolver lifecycle globals.
-- [ ] Use `graphify update .` after each codemod batch, then run a second graph
-  query.  The expected graph has one manager-owned coordinator connected to
-  hooks, recon runtime, rule scope, native-preanalysis facts, and resolver;
+- [x] Use `graphify update .` after the final codemod batch, then run a second
+  graph query.  The expected graph has one manager-owned coordinator connected
+  to hooks, preanalysis runtime, analysis runtime, rule scope,
+  native-preanalysis facts, and resolver;
   instruction/block/ctree adapters consume a context provider rather than each
   holding injected recon/session objects.
 
@@ -1168,26 +1169,26 @@ finish(key: NativePreanalysisKey) -> None
 `merge_facts()` returns `True` only when normalized semantic evidence changed.
 It must reject a key mismatch and must not use a block serial as a merge key.
 
-- [ ] Write pure B1.0 tests for key equality, deterministic serialization,
+- [x] Write pure B1.0 tests for key equality, deterministic serialization,
   key mismatch rejection, and distinct input/profile/SDK identities.  Construct
   every field from real loader/profile/SDK inputs; do not invent placeholder
   fingerprints in production.
-- [ ] Land the IDA-free key in `d810.core.native_preanalysis_key` before
+- [x] Land the IDA-free key in `d810.core.native_preanalysis_key` before
   changing `StableBlockIdentity`.
-- [ ] Write pure unit tests for `ensure`, idempotent merge, changed merge,
+- [x] Write pure unit tests for `ensure`, idempotent merge, changed merge,
   key mismatch rejection, exact-once PREOPT binding, and finish cleanup.
-- [ ] Implement `NativePreanalysisFacts` and session state in the analysis
+- [x] Implement `NativePreanalysisFacts` and session state in the analysis
   layer using only core/IR/analysis dependencies.  Do not import IDA,
   Hex-Rays, UI, or optimizer modules there.
-- [ ] Implement these operations on `DecompilationLifecycleCoordinator`; do
+- [x] Implement these operations on `DecompilationLifecycleCoordinator`; do
   not add an independently subscribed registry for `STARTED`, `FINISHED`, or
   maturity events.
-- [ ] Move `_RESOLUTIONS_BY_EA`, `_MATERIALIZATION_SESSIONS`,
+- [x] Move `_RESOLUTIONS_BY_EA`, `_MATERIALIZATION_SESSIONS`,
   `_PREOPT_UNION_PREPARATIONS`, `_PREPATCH_PREOPT_UNION_SOURCES`, and
   materialized-transfer accumulation into resolver-owned session state.  Update
   every caller in one codemod batch, then delete the old globals and their
   getters; do not leave compatibility aliases.
-- [ ] Add tests that simulate `MERR_REDO`: the session survives an internal
+- [x] Add tests that simulate `MERR_REDO`: the session survives an internal
   rebuild, increments evidence epoch only for changed evidence, and releases
   all live-only state at `DecompilationEvent.SESSION_FINISHED`.
 
@@ -1382,14 +1383,14 @@ captured and validated.  A failed write leaves the previous valid entry intact.
 
 #### C2. Existing-family regression gates
 
-- [ ] Run stack-state and indirect-dispatch goldens for Hodur/sub_7FFD,
+- [x] Run stack-state and indirect-dispatch goldens for Hodur/sub_7FFD,
   Approov, and Tigress.  New cache/session code must be inert unless the
   computed-goto PREOPT profile explicitly opts in.
-- [ ] Run focused unit tests for every changed module, then the complete unit
+- [x] Run focused unit tests for every changed module, then the complete unit
   suite, then the relevant IDA runtime/system suites.
-- [ ] Run `PYTHONPATH=src lint-imports --config .importlinter` and
+- [x] Run `PYTHONPATH=src lint-imports --config .importlinter` and
   `sg scan --config sgconfig.yml --report-style short` from this worktree.
-- [ ] Run `graphify update .` after implementation changes.
+- [x] Run `graphify update .` after implementation changes.
 - [ ] Update the Rhad investigation README, the ticket notes, and the blog only
   after the verified implementation proves a reusable behavior.  Do not claim
   cross-IDB persistence or cache equivalence before the cache-on/cache-off
