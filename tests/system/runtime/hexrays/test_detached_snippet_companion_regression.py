@@ -12,6 +12,7 @@ from d810.hexrays.mutation import detached_handler_island
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
+from tests.native_preanalysis import make_native_key
 from tests.system.runtime.hexrays.test_detached_snippet_import import (
     _Block,
     _install_runtime_fakes,
@@ -161,6 +162,7 @@ def test_companion_preparer_is_inert_without_profile_evidence(monkeypatch) -> No
     from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
 
     session = SimpleNamespace(
+        native_key=make_native_key(),
         native_preanalysis=NativePreanalysisSessionState(),
         extensions={},
     )
