@@ -188,6 +188,37 @@ def test_actual_hook_lifecycle_order_is_stable_across_merr_redo(monkeypatch) -> 
     ]
 
 
+def test_prolog_opens_diagnostics_for_top_level_session_owner(monkeypatch) -> None:
+    """Nested PREOPT generation must not name the DB after its range entry."""
+    import d810.core.observability as observability
+
+    opened: list[int] = []
+    reobserved: list[int] = []
+    session = SimpleNamespace(function_ea=0x40A560)
+    hook = SimpleNamespace(
+        _decompilation_lifecycle=SimpleNamespace(
+            reobserve_active_diagnostic_session=reobserved.append,
+        )
+    )
+    mba = SimpleNamespace(entry_ea=0x40C898, maturity=1)
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_function_owner_ea",
+        staticmethod(lambda _mba: 0x40C898),
+    )
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_ensure_lifecycle_session",
+        staticmethod(lambda _hook, _mba, **_kwargs: session),
+    )
+    monkeypatch.setattr(observability, "open_observability_session", opened.append)
+
+    assert HexraysDecompilationHook.prolog(hook, mba, object(), object(), 0) == 0
+
+    assert opened == [0x40A560]
+    assert reobserved == [0x40A560]
+
+
 def test_every_resolver_callback_receives_the_lifecycle_session_decision() -> None:
     build_callinfo = _method_source(_HOOK, "HexraysDecompilationHook", "build_callinfo")
     stkpnts = _method_source(_HOOK, "HexraysDecompilationHook", "stkpnts")

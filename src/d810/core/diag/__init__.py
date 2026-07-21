@@ -8,6 +8,7 @@ Session lifecycle:
     get_diag_db()                -- returns the session's connection (or None)
     close_diag_session()         -- called on DecompilationEvent.SESSION_FINISHED
 """
+
 from __future__ import annotations
 
 import os
@@ -18,6 +19,7 @@ from pathlib import Path
 
 from d810._vendor.peewee import SqliteDatabase
 from d810.core.diag.models import MODELS  # noqa: F401  (re-export; also suppresses
+
 # the implicit ``models -> diag`` parent edge that would otherwise close a
 # spurious diag -> schema -> models -> diag cycle, since ``schema`` imports
 # ``models`` and ``__init__`` imports ``schema``).
@@ -171,9 +173,7 @@ def register_lineage_drainer(
     _lineage_drainer = drainer
 
 
-def drain_lineage_into_snapshot(
-    conn: sqlite3.Connection, snapshot_id: int
-) -> int:
+def drain_lineage_into_snapshot(conn: sqlite3.Connection, snapshot_id: int) -> int:
     """Drain any registered cfg-layer lineage drainer; no-op if unregistered."""
     drainer = _lineage_drainer
     if drainer is None:
@@ -226,30 +226,46 @@ def _resolve_log_dir(log_dir: str | None = None) -> Path:
     return Path(log_dir or os.path.expanduser("~/.idapro/logs/d810_logs"))
 
 
-def find_latest_diag_db_path(func_ea: int = 0, log_dir: str | None = None) -> Path | None:
-    """Return the newest non-empty diag DB path for a function, if any."""
+def find_latest_diag_db_path(
+    func_ea: int = 0, log_dir: str | None = None
+) -> Path | None:
+    """Return the newest v2 DB owned by a lifecycle session for a function."""
     base = _resolve_log_dir(log_dir)
     if not base.exists():
         return None
-    pattern = f"{int(func_ea):016x}_*.diag.sqlite3" if func_ea else "*.diag.sqlite3"
-    candidates = sorted(base.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
-    best_with_snapshots: Path | None = None
+    candidates = sorted(
+        base.glob("*.diag.sqlite3"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
     for path in candidates:
         try:
-            conn = sqlite3.connect(str(path))
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
             try:
-                row = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()
-                count = int(row[0]) if row is not None and row[0] is not None else 0
+                schema_row = conn.execute(
+                    "SELECT version FROM diagnostic_schema WHERE singleton=1"
+                ).fetchone()
+                if (
+                    schema_row is None
+                    or int(schema_row[0]) != DIAGNOSTIC_SCHEMA_VERSION
+                ):
+                    continue
+                if func_ea:
+                    owner_row = conn.execute(
+                        "SELECT 1 FROM diagnostic_sessions WHERE func_ea_i64=? LIMIT 1",
+                        (int(func_ea),),
+                    ).fetchone()
+                else:
+                    owner_row = conn.execute(
+                        "SELECT 1 FROM diagnostic_sessions LIMIT 1"
+                    ).fetchone()
             finally:
                 conn.close()
         except Exception:
             continue
-        if count > 0:
-            best_with_snapshots = path
-            break
-    if best_with_snapshots is not None:
-        return best_with_snapshots
-    return candidates[0] if candidates else None
+        if owner_row is not None:
+            return path
+    return None
 
 
 def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
@@ -286,6 +302,7 @@ def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
     # here would create a cycle that the dep-scanner rejects.
     try:
         import importlib
+
         importlib.import_module(
             "d810.core.diag.event_handlers"
         ).install_diag_event_handlers()
@@ -306,6 +323,7 @@ def close_diag_session() -> None:
     # in `open_diag_session` above.
     try:
         import importlib
+
         importlib.import_module(
             "d810.core.diag.event_handlers"
         ).uninstall_diag_event_handlers()
