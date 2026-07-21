@@ -125,9 +125,11 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     find_unique_target_block,
     find_unique_target_entry_block,
     is_conditional_handler_bridge_kind,
+    plan_terminal_return_carrier_requests_from_native_routes,
     route_materialized_transfer_chain,
     route_transfer_target_through_condition_chain,
     unique_materialized_equality_target_eas,
+    unique_materialized_state_register,
 )
 from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.analyses.control_flow.semantic_transition import StateWriteAnchor
@@ -4512,6 +4514,7 @@ def _build_materialized_state_routes(
     terminal_target_resolver=None,
     state_register_name: str | None = None,
     condition_chain_dag: DecisionDag | None = None,
+    applied_direct_boundary_evidence: tuple[object, ...] = (),
 ) -> tuple[MaterializedStateRoute, ...]:
     """Build exact per-state logical-CFG routes from microcode snapshots.
 
@@ -5238,6 +5241,46 @@ def _build_materialized_state_routes(
                         and not exact_target_authoritative
                     ):
                         continue
+                    terminal_target_eas = {
+                        int(transfer.target_eas[0])
+                        for transfer in transfers
+                        if transfer.resolver_kind == "static_handler_exit_route"
+                        and int(transfer.source_block_ea) == source_entry_ea
+                        and transfer.selector_state_var_reg is not None
+                        and int(transfer.selector_state_var_reg) == int(state_var_reg)
+                        and transfer.selector_state_constant is not None
+                        and (
+                            int(transfer.selector_state_constant) & _MASK32
+                        )
+                        == state_constant
+                        and len(transfer.target_eas) == 1
+                    }
+                    terminal_target_ea = (
+                        next(iter(terminal_target_eas))
+                        if len(terminal_target_eas) == 1
+                        else None
+                    )
+                    target_block = flow_graph.get_block(int(target_serial))
+                    terminal_route_target_serial: int | None = None
+                    if terminal_target_ea is not None and target_block is not None:
+                        try:
+                            if terminal_target_resolver(terminal_target_ea):
+                                if target_block.nsucc == 0:
+                                    terminal_route_target_serial = int(target_serial)
+                                elif target_block.nsucc == 1:
+                                    successor_serial = int(target_block.succs[0])
+                                    successor_block = flow_graph.get_block(
+                                        successor_serial
+                                    )
+                                    if (
+                                        successor_block is not None
+                                        and successor_block.kind is BlockKind.STOP
+                                        and successor_block.nsucc == 0
+                                    ):
+                                        terminal_route_target_serial = successor_serial
+                        except Exception:
+                            terminal_route_target_serial = None
+                    terminal_route = terminal_route_target_serial is not None
                     routes.add(
                         MaterializedStateRoute(
                             source_block_serial=int(
@@ -5246,11 +5289,105 @@ def _build_materialized_state_routes(
                                 else source_serial
                             ),
                             state_constant=state_constant,
-                            target_handler_serial=int(target_serial),
+                            target_handler_serial=(
+                                int(terminal_route_target_serial)
+                                if terminal_route_target_serial is not None
+                                else int(target_serial)
+                            ),
                             source_handler_serial=int(source_serial),
                             handler_exit_proven=bool(replay_exit_proven),
+                            proof_kind=(
+                                "terminal_state_route"
+                                if terminal_route
+                                else "state_route"
+                            ),
+                            source_native_ea=(
+                                source_entry_ea if terminal_route else None
+                            ),
+                            target_native_ea=(
+                                terminal_target_ea if terminal_route else None
+                            ),
                         )
                     )
+    stop_serials = {
+        int(serial)
+        for serial, block in flow_graph.blocks.items()
+        if block.kind is BlockKind.STOP and block.nsucc == 0
+    }
+    if len(stop_serials) == 1:
+        terminal_stop_serial = next(iter(stop_serials))
+        for transfer in transfers:
+            if (
+                transfer.resolver_kind != "static_handler_exit_route"
+                or transfer.selector_state_var_reg is None
+                or int(transfer.selector_state_var_reg) != int(state_var_reg)
+                or transfer.selector_state_constant is None
+                or len(transfer.target_eas) != 1
+            ):
+                continue
+            state_constant = int(transfer.selector_state_constant) & _MASK32
+            target_native_ea = int(transfer.target_eas[0])
+            try:
+                if not terminal_target_resolver(target_native_ea):
+                    continue
+            except Exception:
+                continue
+            receipt_sources: set[int] = set()
+            for applied in applied_direct_boundary_evidence:
+                port = getattr(applied, "port", None)
+                if (
+                    port is None
+                    or str(getattr(port, "delivery_mode", "")) != "terminal_goto"
+                    or int(getattr(port, "source_block_ea", 0) or 0)
+                    != int(transfer.source_block_ea)
+                    or int(getattr(port, "endpoint_block_ea", 0) or 0)
+                    != int(transfer.source_block_ea)
+                    or int(getattr(port, "target_ea", 0) or 0)
+                    != target_native_ea
+                    or (
+                        getattr(port, "state_register", None) is not None
+                        and int(port.state_register) != int(state_var_reg)
+                    )
+                    or (
+                        getattr(port, "state_constant", None) is not None
+                        and (int(port.state_constant) & _MASK32) != state_constant
+                    )
+                ):
+                    continue
+                endpoint_anchors = {
+                    int(ea)
+                    for ea in getattr(applied, "endpoint_anchor_eas", ())
+                    if int(ea) > 0
+                }
+                if not endpoint_anchors:
+                    continue
+                receipt_sources.update(
+                    int(block.serial)
+                    for block in flow_graph.blocks.values()
+                    if any(
+                        int(instruction.ea) in endpoint_anchors
+                        for instruction in block.insn_snapshots
+                    )
+                )
+            if len(receipt_sources) != 1:
+                continue
+            source_serial = next(iter(receipt_sources))
+            source_block = flow_graph.get_block(source_serial)
+            if source_block is None or source_block.nsucc != 1:
+                continue
+            routes.add(
+                MaterializedStateRoute(
+                    source_block_serial=source_serial,
+                    state_constant=state_constant,
+                    target_handler_serial=terminal_stop_serial,
+                    source_handler_serial=source_serial,
+                    handler_exit_proven=True,
+                    proof_kind="terminal_state_route",
+                    source_native_ea=int(transfer.source_block_ea),
+                    target_native_ea=target_native_ea,
+                )
+            )
+
     canonical_routes: set[MaterializedStateRoute] = set()
     exact_handlers: dict[int, int | None] = {}
     for route in routes:
@@ -11796,6 +11933,16 @@ def prepare_preopt_union_closure(
         finally:
             state.finish_snippet_capture()
 
+    state_var_reg = unique_materialized_state_register(transfers)
+    if state_var_reg is not None:
+        state.native_preanalysis.merge_terminal_return_carrier_requests(
+            state.native_key,
+            plan_terminal_return_carrier_requests_from_native_routes(
+                transfers,
+                boundary_ports.direct,
+                state_var_reg=int(state_var_reg),
+            ),
+        )
     _merge_native_facts(
         state,
         native_cfg=native_cfg,

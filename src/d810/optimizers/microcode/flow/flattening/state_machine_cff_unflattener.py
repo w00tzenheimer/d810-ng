@@ -44,6 +44,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     native_origin_blocks_in_ranges,
     override_materialized_handler_targets,
     plan_terminal_return_carrier_requests,
+    plan_terminal_return_carrier_requests_from_native_routes,
     select_materialized_handler_owner_serial,
     unique_materialized_conditional_handler_entry_eas,
     unique_materialized_equality_target_eas,
@@ -679,6 +680,7 @@ def _bind_materialized_handler_targets(
     entry_route_source_eas: ABCMapping[int, int] | None = None,
     entry_route_region_identities: ABCMapping[int, StableBlockIdentity] | None = None,
     live_block_for_region_identity=None,
+    live_block_for_applied_exit_receipt=None,
 ) -> tuple[dict[int, int], dict[int, int], tuple[tuple[int, int], ...]]:
     """Rebind serial-free state routes to blocks in the current MBA.
 
@@ -706,6 +708,8 @@ def _bind_materialized_handler_targets(
             region_identity = entry_route_region_identities.get(state_constant)
             if region_identity is not None:
                 live_block = live_block_for_region_identity(region_identity)
+        if live_block is None and callable(live_block_for_applied_exit_receipt):
+            live_block = live_block_for_applied_exit_receipt(target_ea)
         if live_block is None and entry_route_source_eas is not None:
             source_ea = entry_route_source_eas.get(state_constant)
             if source_ea is not None:
@@ -729,6 +733,27 @@ def _bind_materialized_handler_targets(
             handler_entry_eas.pop(target_serial, None)
             ambiguous_entry_serials.add(target_serial)
     return handler_targets, handler_entry_eas, tuple(missing)
+
+
+def _instruction_backed_portable_handler_overrides(
+    flow_graph: object,
+    equality_target_eas: ABCMapping[int, int],
+    portable_handler_targets: ABCMapping[int, int],
+) -> dict[int, int]:
+    """Keep current-MBA portable handler bindings through live-map recovery."""
+    get_block = getattr(flow_graph, "get_block", None)
+    if not callable(get_block):
+        return {}
+    return {
+        int(state) & 0xFFFFFFFF: int(portable_handler_targets[int(state)])
+        for state in equality_target_eas
+        if int(state) in portable_handler_targets
+        and (
+            (block := get_block(int(portable_handler_targets[int(state)])))
+            is not None
+        )
+        and bool(getattr(block, "insn_snapshots", ()))
+    }
 
 
 def _unique_materialized_handler_entry_route_source_eas(
@@ -1785,6 +1810,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         materialized_state_routes = ()
         legacy_handler_by_state: dict[int, int] = {}
         handler_targets: dict[int, int] = {}
+        portable_handler_targets: dict[int, int] = {}
         materialized_handler_entry_eas: dict[int, int] = {}
         authoritative_handler_serials: frozenset[int] = frozenset()
         unmapped_materialized_handler_targets: tuple[tuple[int, int], ...] = ()
@@ -1796,6 +1822,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             dict(imported_detached_snippet_instruction_origins(mba))
             if materialized_computed_goto_profile
             else {}
+        )
+        imported_direct_boundary_evidence = (
+            imported_detached_snippet_direct_boundary_evidence(mba)
+            if materialized_computed_goto_profile
+            else ()
         )
         imported_native_eas_by_serial = {
             int(block.serial): frozenset(
@@ -1882,6 +1913,38 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     native_key=current_identity_index.native_key,
                 )
             )
+
+            def live_block_for_applied_exit_receipt(target_ea: int):
+                candidate_serials: set[int] = set()
+                for applied in imported_direct_boundary_evidence:
+                    port = getattr(applied, "port", None)
+                    if (
+                        port is None
+                        or int(getattr(port, "source_block_ea", 0) or 0)
+                        != int(target_ea)
+                        or int(getattr(port, "endpoint_block_ea", 0) or 0)
+                        != int(target_ea)
+                        or str(getattr(port, "delivery_mode", ""))
+                        != "terminal_goto"
+                    ):
+                        continue
+                    anchors = {
+                        int(ea)
+                        for ea in getattr(applied, "endpoint_anchor_eas", ())
+                        if int(ea) > 0
+                    }
+                    candidate_serials.update(
+                        int(block.serial)
+                        for block in source.flow_graph.blocks.values()
+                        if any(
+                            int(instruction.ea) in anchors
+                            for instruction in block.insn_snapshots
+                        )
+                    )
+                if len(candidate_serials) != 1:
+                    return None
+                return mba.get_mblock(next(iter(candidate_serials)))
+
             (
                 handler_targets,
                 materialized_handler_entry_eas,
@@ -1903,10 +1966,14 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         identity
                     ).block
                 ),
+                live_block_for_applied_exit_receipt=(
+                    live_block_for_applied_exit_receipt
+                ),
             )
             authoritative_handler_serials = frozenset(
                 int(serial) for serial in handler_targets.values()
             )
+            portable_handler_targets = dict(handler_targets)
             (
                 materialized_dispatcher_entry_serial,
                 materialized_dispatcher_router_serials,
@@ -2036,7 +2103,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 materialized_state_var_reg,
                 validated_candidate_target_eas=imported_target_eas,
             )
-            materialized_handler_overrides: dict[int, int] = {}
+            materialized_handler_overrides = (
+                _instruction_backed_portable_handler_overrides(
+                    source.flow_graph,
+                    equality_target_eas,
+                    portable_handler_targets,
+                )
+            )
             materialized_handler_owners = (
                 instruction_backed_materialized_handler_owners(
                     equality_target_eas,
@@ -2044,6 +2117,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     source.flow_graph,
                 )
             )
+            materialized_handler_owners.update(materialized_handler_overrides)
             imported_handler_serials: set[int] = set()
             for state_constant, target_ea in equality_target_eas.items():
                 target_block = find_materialized_handler_block_by_native_ea(
@@ -2265,6 +2339,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 condition_chain_dag=(
                     range_evidence.decision_dag if range_evidence is not None else None
                 ),
+                applied_direct_boundary_evidence=(
+                    imported_direct_boundary_evidence
+                ),
             )
             terminal_state_targets: list[tuple[int, int]] = []
             for route in materialized_state_routes:
@@ -2296,10 +2373,24 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         for state, target_ea in unmapped_materialized_handler_targets
                     ),
                 )
-            terminal_carrier_requests = plan_terminal_return_carrier_requests(
-                source.flow_graph,
-                materialized_state_routes,
-                state_var_reg=materialized_state_var_reg,
+            terminal_carrier_requests = tuple(
+                dict.fromkeys(
+                    (
+                        *plan_terminal_return_carrier_requests(
+                            source.flow_graph,
+                            materialized_state_routes,
+                            state_var_reg=materialized_state_var_reg,
+                        ),
+                        *plan_terminal_return_carrier_requests_from_native_routes(
+                            materialized_indirect_transfers,
+                            tuple(
+                                applied.port
+                                for applied in imported_direct_boundary_evidence
+                            ),
+                            state_var_reg=materialized_state_var_reg,
+                        ),
+                    )
+                )
             )
             if terminal_carrier_requests:
                 resolver_state = self.current_resolver_session_state()
@@ -2452,11 +2543,6 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         materialized_indirect_transfers
                     )
                 )
-        imported_direct_boundary_evidence = (
-            imported_detached_snippet_direct_boundary_evidence(mba)
-            if materialized_computed_goto_profile
-            else ()
-        )
         portable_state_route_evidence = ()
         if (
             materialized_computed_goto_profile

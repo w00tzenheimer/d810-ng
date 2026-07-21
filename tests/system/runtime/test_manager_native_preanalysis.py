@@ -75,6 +75,11 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
     )
     monkeypatch.setattr(
         computed_goto_resolver,
+        "prepare_terminal_return_carrier_templates",
+        lambda state: calls.append(("prepare-carriers", state)) or 2,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
         "discover_static_native_bootstrap_routes",
         lambda function_ea, state: calls.append(
             ("discover-bootstrap", function_ea, state)
@@ -82,7 +87,7 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
         or True,
     )
 
-    assert manager.prepare_native_preanalysis(0x401000) == 3
+    assert manager.prepare_native_preanalysis(0x401000) == 5
 
     state = resolver_session_state(session)
     # Session events belong to the coordinator. The manager must not mirror
@@ -96,6 +101,7 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
         ("stage", state),
         ("preanalysis.begin", session),
         ("discover-bootstrap", 0x401000, state),
+        ("prepare-carriers", state),
         ("prepare", state),
         ("preanalysis.finish", session),
     ]

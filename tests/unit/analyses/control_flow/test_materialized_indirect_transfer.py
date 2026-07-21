@@ -1,6 +1,8 @@
 """Tests for resolver-proven computed-goto transfer evidence."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
@@ -25,6 +27,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     materialized_terminal_target_eas_by_source,
     missing_materialized_handler_targets,
     plan_terminal_return_carrier_requests,
+    plan_terminal_return_carrier_requests_from_native_routes,
     plan_resolver_proven_indirect_call_neutralizations,
     route_materialized_transfer_chain,
     route_transfer_target_through_condition_chain,
@@ -921,6 +924,45 @@ def test_terminal_route_uses_native_identities_when_live_blocks_are_synthetic() 
         TerminalReturnCarrierRequest(
             source_handler_ea=0x40CC1C,
             terminal_target_ea=0x40CD8C,
+            state_var_reg=20,
+            state_constant=state,
+        ),
+    )
+
+
+def test_native_exit_and_applied_port_request_return_carrier() -> None:
+    state = 0x69225E4
+    handler_ea = 0x40CC1C
+    terminal_ea = 0x40CD8C
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40CC34,
+            source_block_ea=handler_ea,
+            materialized_anchor_eas=(),
+            target_eas=(terminal_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=state,
+            resolver_kind="static_handler_exit_route",
+        ),
+    )
+    direct_ports = (
+        SimpleNamespace(
+            source_block_ea=handler_ea,
+            endpoint_block_ea=handler_ea,
+            target_ea=terminal_ea,
+            old_successor_eas=(),
+            delivery_mode="terminal_goto",
+        ),
+    )
+
+    assert plan_terminal_return_carrier_requests_from_native_routes(
+        transfers,
+        direct_ports,
+        state_var_reg=20,
+    ) == (
+        TerminalReturnCarrierRequest(
+            source_handler_ea=handler_ea,
+            terminal_target_ea=terminal_ea,
             state_var_reg=20,
             state_constant=state,
         ),

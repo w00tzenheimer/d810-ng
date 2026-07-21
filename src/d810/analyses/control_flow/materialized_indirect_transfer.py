@@ -427,6 +427,68 @@ def plan_terminal_return_carrier_requests(
     )
 
 
+def plan_terminal_return_carrier_requests_from_native_routes(
+    transfers: Sequence[MaterializedIndirectTransfer],
+    direct_boundary_ports: Sequence[object],
+    *,
+    state_var_reg: int,
+) -> tuple[TerminalReturnCarrierRequest, ...]:
+    """Join native handler-exit facts to applied terminal-goto receipts.
+
+    This path remains serial-free.  The IDA-backed carrier producer separately
+    verifies that each requested target is a real return epilogue before it
+    captures any microcode.
+    """
+    states_by_route: dict[tuple[int, int], set[int]] = {}
+    for transfer in transfers:
+        if (
+            transfer.resolver_kind != "static_handler_exit_route"
+            or transfer.selector_state_var_reg is None
+            or int(transfer.selector_state_var_reg) != int(state_var_reg)
+            or transfer.selector_state_constant is None
+            or len(transfer.target_eas) != 1
+        ):
+            continue
+        states_by_route.setdefault(
+            (int(transfer.source_block_ea), int(transfer.target_eas[0])),
+            set(),
+        ).add(int(transfer.selector_state_constant) & 0xFFFFFFFF)
+
+    terminal_targets_by_handler: dict[int, set[int]] = {}
+    for port in direct_boundary_ports:
+        source_ea = int(getattr(port, "source_block_ea", 0) or 0)
+        endpoint_ea = int(getattr(port, "endpoint_block_ea", 0) or 0)
+        target_ea = int(getattr(port, "target_ea", 0) or 0)
+        if (
+            source_ea <= 0
+            or endpoint_ea != source_ea
+            or target_ea <= 0
+            or target_ea == source_ea
+            or tuple(getattr(port, "old_successor_eas", ()))
+            or str(getattr(port, "delivery_mode", "")) != "terminal_goto"
+        ):
+            continue
+        terminal_targets_by_handler.setdefault(source_ea, set()).add(target_ea)
+
+    requests: list[TerminalReturnCarrierRequest] = []
+    for handler_ea, target_eas in sorted(terminal_targets_by_handler.items()):
+        if len(target_eas) != 1:
+            continue
+        target_ea = next(iter(target_eas))
+        state_constants = states_by_route.get((handler_ea, target_ea), ())
+        if len(state_constants) != 1:
+            continue
+        requests.append(
+            TerminalReturnCarrierRequest(
+                source_handler_ea=handler_ea,
+                terminal_target_ea=target_ea,
+                state_var_reg=int(state_var_reg),
+                state_constant=next(iter(state_constants)),
+            )
+        )
+    return tuple(requests)
+
+
 @dataclass(frozen=True, slots=True)
 class ResidualIndirectCallNeutralizationPlan:
     """One native indirect jump that Hex-Rays mis-lifted as a call.
@@ -1467,6 +1529,7 @@ __all__ = [
     "override_materialized_handler_targets",
     "plan_resolver_proven_indirect_call_neutralizations",
     "plan_terminal_return_carrier_requests",
+    "plan_terminal_return_carrier_requests_from_native_routes",
     "route_materialized_transfer_chain",
     "route_transfer_target_through_condition_chain",
     "unique_materialized_conditional_handler_entry_eas",
