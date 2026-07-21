@@ -383,6 +383,16 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             fn_name = idaapi.get_func_name(function_ea)
         prologue = f"{fn_name} @ {hex(function_ea)}"
         main_logger.info("Starting decompilation of function %s", prologue)
+        session = HexraysDecompilationHook._ensure_lifecycle_session(
+            self,
+            mba,
+            structural_callback=True,
+        )
+        diagnostic_owner_ea = int(
+            getattr(session, "function_ea", function_ea)
+            if session is not None
+            else function_ea
+        )
         try:
             from d810.core.observability import open_observability_session
 
@@ -390,21 +400,16 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             # (idempotent re-installation on re-decompilation) by
             # delegating to the registered backend; nothing here
             # imports d810.core.diag.
-            open_observability_session(function_ea)
+            open_observability_session(diagnostic_owner_ea)
         except Exception:
             pass  # diagnostic, never gates decompilation
-        session = HexraysDecompilationHook._ensure_lifecycle_session(
-            self,
-            mba,
-            structural_callback=True,
-        )
         reobserve = getattr(
             getattr(self, "_decompilation_lifecycle", None),
             "reobserve_active_diagnostic_session",
             None,
         )
         if session is not None and callable(reobserve):
-            reobserve(function_ea)
+            reobserve(diagnostic_owner_ea)
         return 0
 
     def maturity(self, cfunc, new_maturity: int) -> int:
