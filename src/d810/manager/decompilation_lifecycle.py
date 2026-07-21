@@ -19,6 +19,12 @@ from d810.core.native_preanalysis_key import (
     NativePreanalysisKeyMismatch,
 )
 from d810.core.provider_phase import ProviderPhaseSnapshot
+from d810.core.observability import emit as emit_diagnostic
+from d810.core.observability_events import (
+    DiagnosticSessionObserved,
+    EvidenceGenerationObserved,
+    LifecycleEventObserved,
+)
 
 logger = getLogger("D810.decompilation_lifecycle")
 
@@ -117,6 +123,51 @@ class DecompilationLifecycleCoordinator:
         init=False,
         repr=False,
     )
+
+    @property
+    def has_active_sessions(self) -> bool:
+        return bool(self._active_sessions)
+
+    @staticmethod
+    def _observe_session(session: DecompilationSessionContext, status: str) -> None:
+        emit_diagnostic(
+            DiagnosticSessionObserved(
+                session_id=session.identity_key,
+                func_ea=int(session.function_ea),
+                top_level_epoch=int(session.top_level_epoch),
+                native_key_json=session.native_key.to_json(),
+                status=status,
+            )
+        )
+        emit_diagnostic(
+            LifecycleEventObserved(
+                session_id=session.identity_key,
+                func_ea=int(session.function_ea),
+                event_kind=f"session_{status}",
+                evidence_generation=int(
+                    session.native_preanalysis.evidence_generation
+                ),
+                mba_generation_before=int(session.current_mba_generation),
+                mba_generation_after=int(session.current_mba_generation),
+                summary=f"decompilation session {status}",
+            )
+        )
+
+    @staticmethod
+    def _observe_evidence_transition(session, transition) -> None:
+        emit_diagnostic(
+            EvidenceGenerationObserved(
+                session_id=session.identity_key,
+                func_ea=int(session.function_ea),
+                operation=transition.operation,
+                previous_generation=int(transition.previous_generation),
+                resulting_generation=int(transition.resulting_generation),
+                evidence_family=transition.evidence_family,
+                outcome=transition.outcome,
+                owner="native_preanalysis",
+                reason=transition.reason,
+            )
+        )
 
     def ensure(
         self,
@@ -282,6 +333,12 @@ class DecompilationLifecycleCoordinator:
             top_level_epoch=epoch,
             native_key=self.native_preanalysis_key_provider(function_ea),
         )
+        session.native_preanalysis.event_observer = (
+            lambda transition, owned_session=session: self._observe_evidence_transition(
+                owned_session,
+                transition,
+            )
+        )
         self._active_sessions.append(
             _SessionActivation(session=session, owns_session=True)
         )
@@ -302,6 +359,7 @@ class DecompilationLifecycleCoordinator:
                 )
                 raise
 
+        self._observe_session(session, "active")
         self._emit_session_event(DecompilationEvent.SESSION_STARTED, session.event)
 
         preanalysis_runtime = self.preanalysis_runtime
@@ -726,6 +784,7 @@ class DecompilationLifecycleCoordinator:
                     "analysis runtime session finish failed for func=0x%x",
                     session.function_ea,
                 )
+        self._observe_session(session, "finished")
         self._emit_session_event(DecompilationEvent.SESSION_FINISHED, session.event)
         return None
 

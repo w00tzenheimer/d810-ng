@@ -145,6 +145,59 @@ class LifecycleEvent(BaseModel):
         )
 
 
+class EvidenceGenerationEvent(BaseModel):
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    operation = TextField()
+    previous_generation = IntegerField()
+    resulting_generation = IntegerField()
+    evidence_family = TextField()
+    outcome = TextField()
+    owner = TextField()
+    reason = TextField()
+
+    class Meta:
+        table_name = "evidence_generation_events"
+
+
+class IdentityDecision(BaseModel):
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    decision_kind = TextField()
+    consumer = TextField()
+    identity_role = TextField()
+    native_key_json = TextField()
+    exact_eas_json = TextField()
+    native_ranges_json = TextField()
+    primary_anchor_ea_hex = TextField()
+    primary_anchor_ea_i64 = IntegerField()
+    current_serial = IntegerField(null=True)
+    mba_generation = IntegerField()
+    evidence_generation = IntegerField()
+    outcome = TextField()
+    candidates_json = TextField(default="[]")
+    reason = TextField()
+
+    class Meta:
+        table_name = "identity_decisions"
+        indexes = (
+            (("primary_anchor_ea_i64", "outcome"), False),
+            (("mba_generation", "evidence_generation"), False),
+        )
+
+
 class SnapshotMaturity(BaseModel):
     snapshot = ForeignKeyField(
         Snapshot,
@@ -958,6 +1011,8 @@ MODELS = (
     DiagnosticSession,
     Snapshot,
     LifecycleEvent,
+    EvidenceGenerationEvent,
+    IdentityDecision,
     SnapshotMaturity,
     # Layer 1
     Block,

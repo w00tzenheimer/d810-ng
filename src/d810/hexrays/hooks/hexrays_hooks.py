@@ -437,18 +437,19 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
 
         @param ct: (control_graph_t *)"""
         main_logger.info("Structural analysis has been finished")
-        try:
-            from d810.core.observability import close_observability_session
-
-            # close_observability_session unsubscribes event-handler
-            # subscribers and closes the diag DB via the registered
-            # backend; nothing here imports d810.core.diag.
-            close_observability_session()
-        except Exception:
-            pass  # diagnostic, never gates decompilation
         lifecycle = self._decompilation_lifecycle
         if lifecycle is not None:
             lifecycle.finish_hexrays_session()
+        if lifecycle is None or not lifecycle.has_active_sessions:
+            try:
+                from d810.core.observability import close_observability_session
+
+                # Finish emits the terminal event while the diagnostic sink is
+                # still live. A controlled redo retains both lifecycle owner
+                # and database until the final structural callback.
+                close_observability_session()
+            except Exception:
+                pass  # diagnostic, never gates decompilation
         return 0
 
     def func_printed(self, cfunc: ida_hexrays.cfunc_t) -> int:

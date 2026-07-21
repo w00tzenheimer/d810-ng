@@ -460,3 +460,25 @@ def test_index_keeps_evidence_and_mutation_generations_independent() -> None:
 
     assert index.evidence_generation == 4
     assert index.rebind_identity(source).block.generation == 1
+
+
+def test_rebind_observer_receives_portable_identity_and_generations() -> None:
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
+    )
+    observed = []
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=5,
+        evidence_generation=3,
+        bindings=((source, 17),),
+        native_key=NATIVE_KEY,
+        decision_observer=observed.append,
+    )
+
+    assert index.rebind_identity(source).status is RebindStatus.BOUND
+    assert len(observed) == 1
+    row = observed[0]
+    assert row.identity == source
+    assert row.result.block.serial == 17
+    assert row.mba_generation == 5
+    assert row.evidence_generation == 3

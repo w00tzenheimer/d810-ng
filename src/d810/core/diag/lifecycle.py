@@ -8,6 +8,8 @@ import time
 
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
+    EvidenceGenerationObserved,
+    IdentityDecisionObserved,
     LifecycleEventObserved,
 )
 
@@ -89,3 +91,95 @@ def persist_lifecycle_event(
 
 
 __all__ = ["persist_diagnostic_session", "persist_lifecycle_event"]
+
+
+def persist_evidence_generation(
+    conn: sqlite3.Connection,
+    event: EvidenceGenerationObserved,
+    *,
+    snapshot_id: int | None,
+) -> int:
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="evidence_generation",
+            snapshot=event.snapshot,
+            provider=event.provider,
+            maturity=event.maturity,
+            phase=event.phase,
+            evidence_generation=event.resulting_generation,
+            summary=f"{event.evidence_family}: {event.operation} {event.outcome}",
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=snapshot_id,
+    )
+    conn.execute(
+        "INSERT INTO evidence_generation_events VALUES (?,?,?,?,?,?,?,?)",
+        (
+            event_id,
+            event.operation,
+            int(event.previous_generation),
+            int(event.resulting_generation),
+            event.evidence_family,
+            event.outcome,
+            event.owner,
+            event.reason,
+        ),
+    )
+    return event_id
+
+
+def persist_identity_decision(
+    conn: sqlite3.Connection,
+    event: IdentityDecisionObserved,
+    *,
+    snapshot_id: int | None,
+) -> int:
+    anchor = int(event.primary_anchor_ea)
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="identity_decision",
+            snapshot=event.snapshot,
+            maturity=event.maturity,
+            evidence_generation=event.evidence_generation,
+            mba_generation_before=event.mba_generation,
+            mba_generation_after=event.mba_generation,
+            summary=f"{event.consumer}: {event.decision_kind} {event.outcome}",
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=snapshot_id,
+    )
+    conn.execute(
+        "INSERT INTO identity_decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            event_id,
+            event.decision_kind,
+            event.consumer,
+            event.identity_role,
+            event.native_key_json,
+            event.exact_eas_json,
+            event.native_ranges_json,
+            f"0x{anchor & 0xFFFFFFFFFFFFFFFF:016x}",
+            anchor,
+            event.current_serial,
+            int(event.mba_generation),
+            int(event.evidence_generation),
+            event.outcome,
+            event.candidates_json,
+            event.reason,
+        ),
+    )
+    return event_id
+
+
+__all__ = [
+    "persist_diagnostic_session",
+    "persist_evidence_generation",
+    "persist_identity_decision",
+    "persist_lifecycle_event",
+]
