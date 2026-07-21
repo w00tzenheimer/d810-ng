@@ -64,6 +64,19 @@ def test_changed_route_evidence_advances_once_and_binds_once() -> None:
     assert state.bound_preopt_generation == 1
 
 
+def test_evidence_observer_sees_generation_and_preopt_bind_transitions() -> None:
+    observed = []
+    state = NativePreanalysisSessionState(event_observer=observed.append)
+
+    state.mark_evidence_changed()
+    state.mark_preopt_bound()
+
+    assert [(row.operation, row.previous_generation, row.resulting_generation) for row in observed] == [
+        ("evidence_changed", 0, 1),
+        ("preopt_bound", 1, 1),
+    ]
+
+
 def test_first_pass_native_evidence_coalesces_until_preopt_binds() -> None:
     source = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x401020, 0x401021),), native_key=NATIVE_KEY

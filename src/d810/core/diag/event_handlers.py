@@ -37,6 +37,8 @@ from d810.core.diag import active_diag_db, diag_models_on, get_diag_conn
 from d810.core.diag.models import CfgProvenance, FactConsumer, Snapshot
 from d810.core.diag.lifecycle import (
     persist_diagnostic_session,
+    persist_evidence_generation,
+    persist_identity_decision,
     persist_lifecycle_event,
 )
 from d810.core.formatting import format_block_id
@@ -80,6 +82,7 @@ from d810.core.observability_events import (
     DagLocalFactsObserved,
     DagObserved,
     DiagnosticSessionObserved,
+    EvidenceGenerationObserved,
     FactConflictsObserved,
     FactConsumersForLatestSnapshot,
     FactConsumersObserved,
@@ -87,6 +90,7 @@ from d810.core.observability_events import (
     FactObservationsObserved,
     ModificationsObserved,
     LifecycleEventObserved,
+    IdentityDecisionObserved,
     ReachabilityObserved,
     RenderedProgramObserved,
     StateDispatcherRowsObserved,
@@ -230,6 +234,28 @@ def _handle_lifecycle_event(ev: LifecycleEventObserved) -> None:
         None if ev.snapshot is None else _resolve_snapshot_id(ev.snapshot)
     )
     persist_lifecycle_event(conn, ev, snapshot_id=snapshot_id)
+
+
+def _handle_evidence_generation(ev: EvidenceGenerationObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is None:
+        return
+    snapshot_id = None if ev.snapshot is None else _resolve_snapshot_id(ev.snapshot)
+    persist_evidence_generation(conn, ev, snapshot_id=snapshot_id)
+
+
+def _handle_identity_decision(ev: IdentityDecisionObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is None:
+        return
+    snapshot_id = None if ev.snapshot is None else _resolve_snapshot_id(ev.snapshot)
+    persist_identity_decision(conn, ev, snapshot_id=snapshot_id)
 
 
 def _handle_dag(ev: DagObserved) -> None:
@@ -800,6 +826,8 @@ def _provenance_extra_json(
 _HANDLERS: tuple[tuple[type, object], ...] = (
     (DiagnosticSessionObserved, _handle_diagnostic_session),
     (LifecycleEventObserved, _handle_lifecycle_event),
+    (EvidenceGenerationObserved, _handle_evidence_generation),
+    (IdentityDecisionObserved, _handle_identity_decision),
     (CaptureMbaSnapshotRequested, _handle_capture_mba),
     (ConditionChainIntervalDispatcherObserved, _handle_condition_chain_interval_dispatcher),
     (StateDispatcherRowsObserved, _handle_state_dispatcher_rows),

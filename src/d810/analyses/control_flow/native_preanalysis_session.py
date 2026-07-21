@@ -33,7 +33,7 @@ from d810.core.native_preanalysis_key import (
     NativePreanalysisKeyMismatch,
 )
 from d810.core import getLogger
-from d810.core.typing import Mapping, NamedTuple, Protocol, runtime_checkable
+from d810.core.typing import Callable, Mapping, NamedTuple, Protocol, runtime_checkable
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 
 logger = getLogger(__name__)
@@ -325,6 +325,16 @@ class ResolverPortableEvidence:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class EvidenceLifecycleTransition:
+    operation: str
+    previous_generation: int
+    resulting_generation: int
+    evidence_family: str
+    outcome: str
+    reason: str
+
+
 @dataclass(slots=True)
 class NativePreanalysisSessionState:
     """First-class portable evidence and epoch authority for a lifecycle."""
@@ -350,6 +360,37 @@ class NativePreanalysisSessionState:
     )
     redo_generation: int | None = None
     pending_generated_restart_generation: int | None = None
+    event_observer: Callable[[EvidenceLifecycleTransition], None] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def _observe_transition(
+        self,
+        *,
+        operation: str,
+        previous_generation: int,
+        evidence_family: str,
+        outcome: str = "accepted",
+        reason: str = "",
+    ) -> None:
+        observer = self.event_observer
+        if observer is None:
+            return
+        try:
+            observer(
+                EvidenceLifecycleTransition(
+                    operation=operation,
+                    previous_generation=int(previous_generation),
+                    resulting_generation=int(self.evidence_generation),
+                    evidence_family=evidence_family,
+                    outcome=outcome,
+                    reason=reason,
+                )
+            )
+        except Exception:
+            logger.debug("evidence lifecycle observer failed", exc_info=True)
 
     def _resolver_evidence_for(
         self,
@@ -792,13 +833,26 @@ class NativePreanalysisSessionState:
         bound that generation, a later fact is a real new epoch and may request
         its own controlled redo.
         """
+        previous_generation = int(self.evidence_generation)
         if self.bound_preopt_generation is None and self.evidence_generation > 0:
+            self._observe_transition(
+                operation="evidence_coalesced",
+                previous_generation=previous_generation,
+                evidence_family="native_preanalysis",
+                reason="first-pass evidence shares the pending PREOPT generation",
+            )
             return
         restart_pending = self.pending_generated_restart_generation is not None
         self.evidence_generation += 1
         self.redo_generation = None
         self.pending_generated_restart_generation = (
             self.evidence_generation if restart_pending else None
+        )
+        self._observe_transition(
+            operation="evidence_changed",
+            previous_generation=previous_generation,
+            evidence_family="native_preanalysis",
+            reason="portable evidence changed",
         )
 
     def merge_bootstrap_route(self, evidence: BootstrapRouteEvidence) -> bool:
@@ -910,7 +964,14 @@ class NativePreanalysisSessionState:
         """Record the current generation's exact-once PREOPT bind."""
         if not self.needs_preopt_binding():
             return False
+        previous_generation = int(self.evidence_generation)
         self.bound_preopt_generation = self.evidence_generation
+        self._observe_transition(
+            operation="preopt_bound",
+            previous_generation=previous_generation,
+            evidence_family="preopt_binding",
+            reason="PREOPT bound the current evidence generation",
+        )
         return True
 
 

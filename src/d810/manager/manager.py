@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import importlib
+import json
 import pathlib
 
 from d810.core import (
@@ -112,6 +113,49 @@ def _build_current_mba_identity_index(*, session, mba):
     imported_instruction_origins = dict(
         imported_detached_snippet_instruction_origins(mba)
     )
+    from d810.core.maturity_labels import mmat_label
+    from d810.core.observability import emit as emit_diagnostic
+    from d810.core.observability_events import IdentityDecisionObserved
+
+    maturity = mmat_label(int(getattr(mba, "maturity", 0) or 0))
+
+    def _observe_identity(observation):
+        identity = observation.identity
+        anchor_ea = min(
+            identity.exact_instruction_eas,
+            default=identity.native_ranges.intervals[0].start_ea,
+        )
+        block = observation.result.block
+        emit_diagnostic(
+            IdentityDecisionObserved(
+                session_id=session.identity_key,
+                func_ea=int(session.function_ea),
+                decision_kind=observation.decision_kind,
+                consumer="current_mba_identity_index",
+                identity_role="block",
+                native_key_json=identity.native_key.to_json(),
+                exact_eas_json=json.dumps(sorted(identity.exact_instruction_eas)),
+                native_ranges_json=json.dumps(
+                    [
+                        {
+                            "start_ea": interval.start_ea,
+                            "end_ea": interval.end_ea,
+                        }
+                        for interval in identity.native_ranges.intervals
+                    ],
+                    sort_keys=True,
+                ),
+                primary_anchor_ea=int(anchor_ea),
+                current_serial=None if block is None else int(block.serial),
+                mba_generation=int(observation.mba_generation),
+                evidence_generation=int(observation.evidence_generation),
+                maturity=maturity,
+                outcome=observation.result.status.name.lower(),
+                candidates_json="[]",
+                reason="current MBA stable-identity lookup",
+            )
+        )
+
     index = MbaBlockIdentityIndex.from_mba(
         mba,
         generation=0,
@@ -119,6 +163,7 @@ def _build_current_mba_identity_index(*, session, mba):
         evidence_generation=session.native_preanalysis.evidence_generation,
         session_id=session.identity_key,
         imported_instruction_origins=imported_instruction_origins,
+        decision_observer=_observe_identity,
     )
     state.bind_current_mba(index)
     return index

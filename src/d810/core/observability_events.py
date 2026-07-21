@@ -64,6 +64,54 @@ class LifecycleEventObserved:
     timestamp: float = 0.0
 
 
+@dataclass(frozen=True)
+class EvidenceGenerationObserved:
+    session_id: str
+    func_ea: int
+    operation: str
+    previous_generation: int
+    resulting_generation: int
+    evidence_family: str
+    outcome: str
+    owner: str
+    reason: str
+    snapshot: SnapshotRef | None = None
+    provider: str | None = None
+    maturity: str | None = None
+    phase: str | None = None
+    timestamp: float = 0.0
+
+
+@dataclass(frozen=True)
+class IdentityDecisionObserved:
+    session_id: str
+    func_ea: int
+    decision_kind: str
+    consumer: str
+    identity_role: str
+    native_key_json: str
+    exact_eas_json: str
+    native_ranges_json: str
+    primary_anchor_ea: int | None
+    current_serial: int | None
+    mba_generation: int
+    evidence_generation: int
+    maturity: str
+    outcome: str
+    candidates_json: str
+    reason: str
+    snapshot: SnapshotRef | None = None
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.current_serial is not None and self.primary_anchor_ea is None:
+            raise ValueError("a serial identity decision requires an EA anchor")
+        if self.primary_anchor_ea is None:
+            raise ValueError("an identity decision requires an EA anchor")
+        if int(self.mba_generation) < 0 or int(self.evidence_generation) < 0:
+            raise ValueError("identity decision generations must be non-negative")
+
+
 # ---------------------------------------------------------------------------
 # Preanalysis domain
 # ---------------------------------------------------------------------------

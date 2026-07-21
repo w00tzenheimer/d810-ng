@@ -11,7 +11,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from d810.core.typing import Iterable, Mapping
+from d810.core.typing import Callable, Iterable, Mapping
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import (
     BlockHandleProvenance,
@@ -23,6 +23,15 @@ from d810.ir.block_identity import (
     stable_block_identity_from_snapshot,
 )
 from d810.ir.flowgraph import FlowGraph
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityRebindObservation:
+    decision_kind: str
+    identity: StableBlockIdentity
+    result: RebindResult
+    mba_generation: int
+    evidence_generation: int
 
 
 @dataclass(slots=True)
@@ -37,6 +46,10 @@ class MbaBlockIdentityIndex:
     native_key: NativePreanalysisKey
     generation: int = 0
     evidence_generation: int | None = None
+    decision_observer: Callable[[IdentityRebindObservation], None] | None = field(
+        default=None,
+        repr=False,
+    )
     _handles_by_token: dict[str, MbaBlockHandle] = field(
         default_factory=dict,
         init=False,
@@ -90,9 +103,11 @@ class MbaBlockIdentityIndex:
         evidence_generation: int | None = None,
         bindings: Iterable[tuple[StableBlockIdentity, int]],
         session_id: str = "identity-index",
+        decision_observer: Callable[[IdentityRebindObservation], None] | None = None,
     ) -> MbaBlockIdentityIndex:
         index = cls(
             session_id=session_id,
+            decision_observer=decision_observer,
             native_key=native_key,
             generation=generation,
             evidence_generation=evidence_generation,
@@ -111,6 +126,7 @@ class MbaBlockIdentityIndex:
         evidence_generation: int | None = None,
         session_id: str = "live-mba",
         imported_instruction_origins: Mapping[int, int] | None = None,
+        decision_observer: Callable[[IdentityRebindObservation], None] | None = None,
     ) -> MbaBlockIdentityIndex:
         """Build current bindings directly from a callback-local live MBA.
 
@@ -123,6 +139,7 @@ class MbaBlockIdentityIndex:
         """
         index = cls(
             session_id=session_id,
+            decision_observer=decision_observer,
             native_key=native_key,
             generation=generation,
             evidence_generation=evidence_generation,
@@ -498,17 +515,43 @@ class MbaBlockIdentityIndex:
 
     def rebind_identity(self, identity: StableBlockIdentity) -> RebindResult:
         """Rebind any unique current translation of portable native identity."""
-        return self._rebind_identity(identity, provenance=None)
+        result = self._rebind_identity(identity, provenance=None)
+        self._observe_decision("rebind", identity, result)
+        return result
 
     def rebind_imported_identity(
         self,
         identity: StableBlockIdentity,
     ) -> RebindResult:
         """Rebind only a unique importer-published native translation."""
-        return self._rebind_identity(
+        result = self._rebind_identity(
             identity,
             provenance=BlockHandleProvenance.IMPORTED_NATIVE,
         )
+        self._observe_decision("rebind_imported", identity, result)
+        return result
+
+    def _observe_decision(
+        self,
+        decision_kind: str,
+        identity: StableBlockIdentity,
+        result: RebindResult,
+    ) -> None:
+        observer = self.decision_observer
+        if observer is None:
+            return
+        try:
+            observer(
+                IdentityRebindObservation(
+                    decision_kind=decision_kind,
+                    identity=identity,
+                    result=result,
+                    mba_generation=int(self.generation),
+                    evidence_generation=int(self.evidence_generation),
+                )
+            )
+        except Exception:
+            return
 
     def rebind_imported_region_entry(
         self,
