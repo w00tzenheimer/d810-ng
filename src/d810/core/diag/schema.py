@@ -36,6 +36,37 @@ SELECT i.*, b.succs, b.preds
 FROM instructions i
 JOIN blocks b ON i.snapshot_id = b.snapshot_id AND i.block_serial = b.serial
 WHERE i.dest_type = 'mop_S';
+
+-- Event-native authority timeline. Snapshot ids are optional correlations;
+-- the lifecycle event sequence is the ordering authority.
+CREATE VIEW IF NOT EXISTS lifecycle_timeline AS
+SELECT
+    le.*,
+    COALESCE(
+        (SELECT e.outcome FROM evidence_generation_events e
+         WHERE e.event_id = le.event_id),
+        (SELECT i.outcome FROM identity_decisions i
+         WHERE i.event_id = le.event_id),
+        (SELECT r.outcome FROM mutation_receipts r
+         WHERE r.event_id = le.event_id),
+        (SELECT p.disposition FROM mutation_plan_items p
+         WHERE p.event_id = le.event_id ORDER BY p.item_index LIMIT 1)
+    ) AS outcome,
+    COALESCE(
+        (SELECT i.primary_anchor_ea_hex FROM identity_decisions i
+         WHERE i.event_id = le.event_id),
+        (SELECT p.source_anchor_ea_hex FROM mutation_plan_items p
+         WHERE p.event_id = le.event_id ORDER BY p.item_index LIMIT 1),
+        (SELECT r.primary_anchor_ea_hex FROM mutation_receipt_identities r
+         WHERE r.event_id = le.event_id ORDER BY r.identity_index LIMIT 1)
+    ) AS ea_anchor_hex
+    ,COALESCE(
+        (SELECT i.current_serial FROM identity_decisions i
+         WHERE i.event_id = le.event_id),
+        (SELECT p.source_serial FROM mutation_plan_items p
+         WHERE p.event_id = le.event_id ORDER BY p.item_index LIMIT 1)
+    ) AS block_serial
+FROM lifecycle_events le;
 """
 
 
