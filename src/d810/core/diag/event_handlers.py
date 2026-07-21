@@ -35,6 +35,10 @@ from d810._vendor.peewee import fn
 from d810.core import logging as _d810_logging
 from d810.core.diag import active_diag_db, diag_models_on, get_diag_conn
 from d810.core.diag.models import CfgProvenance, FactConsumer, Snapshot
+from d810.core.diag.lifecycle import (
+    persist_diagnostic_session,
+    persist_lifecycle_event,
+)
 from d810.core.formatting import format_block_id
 from d810.core.diag.snapshot import (
     _dual,
@@ -75,12 +79,14 @@ from d810.core.observability_events import (
     DagFrontierClosureDiagnosticsObserved,
     DagLocalFactsObserved,
     DagObserved,
+    DiagnosticSessionObserved,
     FactConflictsObserved,
     FactConsumersForLatestSnapshot,
     FactConsumersObserved,
     FactMappingsObserved,
     FactObservationsObserved,
     ModificationsObserved,
+    LifecycleEventObserved,
     ReachabilityObserved,
     RenderedProgramObserved,
     StateDispatcherRowsObserved,
@@ -202,6 +208,28 @@ def _handle_capture_mba(ev: CaptureMbaSnapshotRequested) -> None:
     # Block-lineage drain is fired by snapshot_mba via
     # BlockLineageDrainRequested(conn, snap_id); cfg.block_lineage's
     # subscriber writes the rows. No explicit invocation here.
+
+
+def _handle_diagnostic_session(ev: DiagnosticSessionObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is not None:
+        persist_diagnostic_session(conn, ev)
+
+
+def _handle_lifecycle_event(ev: LifecycleEventObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is None:
+        return
+    snapshot_id = (
+        None if ev.snapshot is None else _resolve_snapshot_id(ev.snapshot)
+    )
+    persist_lifecycle_event(conn, ev, snapshot_id=snapshot_id)
 
 
 def _handle_dag(ev: DagObserved) -> None:
@@ -770,6 +798,8 @@ def _provenance_extra_json(
 # (event_type, handler) tuples. Tracked in install/uninstall so the
 # subscriber registration is symmetric.
 _HANDLERS: tuple[tuple[type, object], ...] = (
+    (DiagnosticSessionObserved, _handle_diagnostic_session),
+    (LifecycleEventObserved, _handle_lifecycle_event),
     (CaptureMbaSnapshotRequested, _handle_capture_mba),
     (ConditionChainIntervalDispatcherObserved, _handle_condition_chain_interval_dispatcher),
     (StateDispatcherRowsObserved, _handle_state_dispatcher_rows),
