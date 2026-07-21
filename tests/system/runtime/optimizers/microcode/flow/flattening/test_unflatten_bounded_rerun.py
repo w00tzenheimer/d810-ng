@@ -24,6 +24,7 @@ from d810.optimizers.microcode.flow.flattening.state_machine_cff_unflattener imp
     StateMachineCffUnflattener,
     _bind_materialized_dispatcher_identity,
     _bind_materialized_handler_targets,
+    _instruction_backed_portable_handler_overrides,
     _materialized_identity_evidence_ready,
     _portable_materialized_state_route_evidence,
     _rebind_portable_materialized_state_routes,
@@ -1209,6 +1210,37 @@ def test_materialized_handler_target_rebinds_through_owned_native_region() -> No
     assert targets == {state: 44}
     assert entries == {44: 0x40E242}
     assert missing == ()
+
+
+def test_materialized_handler_target_rebinds_through_applied_exit_receipt() -> None:
+    """A fully folded entry may use its mutation-attached live exit block."""
+    state = 0xEDDB30C6
+    blocks = {44: SimpleNamespace(insn_snapshots=(object(),))}
+    flow_graph = SimpleNamespace(get_block=blocks.get)
+
+    targets, entries, missing = _bind_materialized_handler_targets(
+        flow_graph,
+        {state: 0x40CB95},
+        live_block_for_ea=lambda _ea: None,
+        live_block_for_applied_exit_receipt=lambda target_ea: (
+            SimpleNamespace(serial=44) if target_ea == 0x40CB95 else None
+        ),
+    )
+
+    assert targets == {state: 44}
+    assert entries == {44: 0x40CB95}
+    assert missing == ()
+
+
+def test_portable_handler_binding_survives_live_dispatch_map_recovery() -> None:
+    state = 0xEDDB30C6
+    blocks = {44: SimpleNamespace(insn_snapshots=(object(),))}
+
+    assert _instruction_backed_portable_handler_overrides(
+        SimpleNamespace(get_block=blocks.get),
+        {state: 0x40CB95},
+        {state: 44},
+    ) == {state: 44}
 
 
 def test_complete_materialized_identity_evidence_reopens_the_family_gate(

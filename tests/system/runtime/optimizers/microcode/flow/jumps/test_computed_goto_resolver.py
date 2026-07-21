@@ -6161,6 +6161,91 @@ def test_materialized_state_routes_prefer_live_tail_over_intermediate_replay():
     )
 
 
+def test_materialized_handler_exit_route_marks_replayed_return_terminal():
+    final_state = 0x69225E4
+    source_native_ea = 0x40CC1C
+    terminal_native_ea = 0x40CD8C
+    graph = FlowGraph(
+        blocks={
+            8: _block(8, 0x40C9DB),
+            118: _block(118, source_native_ea, (source_native_ea,), succs=(74,)),
+            74: BlockSnapshot(
+                serial=74,
+                block_type=1,
+                succs=(178,),
+                preds=(118,),
+                flags=0,
+                start_ea=terminal_native_ea,
+                insn_snapshots=(),
+                kind=BlockKind.ONE_WAY,
+            ),
+            178: BlockSnapshot(
+                serial=178,
+                block_type=7,
+                succs=(),
+                preds=(74,),
+                flags=0,
+                start_ea=0xFFFFFFFFFFFFFFFF,
+                insn_snapshots=(),
+                kind=BlockKind.STOP,
+            ),
+        },
+        entry_serial=118,
+        func_ea=0x40C8B0,
+    )
+    terminal_exit = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40CC34,
+        source_block_ea=source_native_ea,
+        materialized_anchor_eas=(),
+        target_eas=(terminal_native_ea,),
+        selector_state_var_reg=20,
+        selector_state_constant=final_state,
+        resolver_kind="static_handler_exit_route",
+    )
+    applied_exit = SimpleNamespace(
+        port=SimpleNamespace(
+            source_block_ea=source_native_ea,
+            endpoint_block_ea=source_native_ea,
+            target_ea=terminal_native_ea,
+            state_register=None,
+            state_constant=None,
+            delivery_mode="terminal_goto",
+        ),
+        endpoint_anchor_eas=(source_native_ea,),
+        target_anchor_eas=(terminal_native_ea,),
+    )
+
+    routes = _build_materialized_state_routes(
+        graph,
+        state_write_anchors=(),
+        out_reg_maps={},
+        dispatcher_entry_serial=8,
+        state_var_reg=20,
+        handler_serials=frozenset({74, 118}),
+        dispatcher_block_serials=frozenset({8}),
+        transfers=(terminal_exit,),
+        handler_states={},
+        handler_targets={final_state: 74},
+        handler_entry_eas_by_serial={118: source_native_ea},
+        terminal_target_resolver=lambda ea: int(ea) == terminal_native_ea,
+        state_register_name="ebx",
+        applied_direct_boundary_evidence=(applied_exit,),
+    )
+
+    assert routes == (
+        MaterializedStateRoute(
+            118,
+            final_state,
+            178,
+            source_handler_serial=118,
+            handler_exit_proven=True,
+            proof_kind="terminal_state_route",
+            source_native_ea=source_native_ea,
+            target_native_ea=terminal_native_ea,
+        ),
+    )
+
+
 def test_live_tail_state_preserves_precise_replayed_exit_owner():
     incoming_state = 0x1F0B7687
     final_state = 0xB34CE2DF
@@ -7648,6 +7733,8 @@ def _install_preopt_union_success_harness(
         materialized_anchor_eas=(),
         target_eas=(seed_ea,),
         resolver_kind="static_handler_entry_route",
+        selector_state_var_reg=8,
+        selector_state_constant=0x12345678,
     )
     cut = MaterializedIndirectTransfer(
         source_jmp_ea=cut_ea,
@@ -7656,10 +7743,19 @@ def _install_preopt_union_success_harness(
         target_eas=tuple(sorted(live_eas)),
         resolver_kind="detached_static_fixpoint",
     )
+    exit_route = MaterializedIndirectTransfer(
+        source_jmp_ea=cut_ea,
+        source_block_ea=seed_ea,
+        materialized_anchor_eas=(),
+        target_eas=(0x1100,),
+        resolver_kind="static_handler_exit_route",
+        selector_state_var_reg=8,
+        selector_state_constant=0x87654321,
+    )
     _session, state = _resolver_session(resolution)
     state.materialized = True
     assert state.native_preanalysis.merge_materialized_transfers(
-        state.native_key, (route, cut)
+        state.native_key, (route, cut, exit_route)
     )
     monkeypatch.setattr(
         computed_goto_resolver,
@@ -7824,6 +7920,16 @@ def test_prepare_preopt_union_closure_publishes_one_idempotent_union(
     )
     assert len(facts.boundary_ports.direct) == 1
     assert facts.boundary_ports.conditional == ()
+    resolver_evidence = harness["state"].native_preanalysis.resolver_evidence
+    assert resolver_evidence is not None
+    assert resolver_evidence.terminal_return_carrier_requests == (
+        TerminalReturnCarrierRequest(
+            source_handler_ea=harness["seed_ea"],
+            terminal_target_ea=0x1100,
+            state_var_reg=8,
+            state_constant=0x87654321,
+        ),
+    )
     assert len(harness["captures"]) == 1
 
 
@@ -7853,6 +7959,7 @@ def test_prepare_preopt_union_recovers_live_conditional_bridges_before_ports(
     assert observed[0][1] is harness["live_mba"]
     assert {transfer.resolver_kind for transfer in observed[0][0]} == {
         "static_handler_entry_route",
+        "static_handler_exit_route",
         "detached_static_fixpoint",
     }
 

@@ -275,6 +275,7 @@ class D810Manager:
                 _has_unresolved_computed_goto,
                 discover_static_native_bootstrap_routes,
                 prepare_detached_handler_snippets,
+                prepare_terminal_return_carrier_templates,
                 stage_computed_goto_preanalysis,
             )
             from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
@@ -299,7 +300,9 @@ class D810Manager:
             lifecycle.begin_native_preanalysis(session)
             try:
                 discover_static_native_bootstrap_routes(function_ea, state)
-                return prepare_detached_handler_snippets(state)
+                prepared_carriers = prepare_terminal_return_carrier_templates(state)
+                prepared_snippets = prepare_detached_handler_snippets(state)
+                return int(prepared_carriers) + int(prepared_snippets)
             finally:
                 lifecycle.finish_native_preanalysis(session)
         except Exception:
