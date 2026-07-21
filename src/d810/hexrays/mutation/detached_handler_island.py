@@ -5035,6 +5035,7 @@ def _rebind_boundary_port_block(
     created: Mapping[tuple[int, int], object],
     *,
     exact_instruction_ea: int | None = None,
+    exact_instruction_opcodes: Collection[int] | None = None,
     instruction_origins: Mapping[tuple[int, int], int] | None = None,
     templates_by_target: Mapping[int, DetachedSnippetTemplate] | None = None,
 ) -> object | None:
@@ -5061,6 +5062,15 @@ def _rebind_boundary_port_block(
         current = find_unique_live_block_by_ea(mba, int(binding.native_ea))
     if exact_instruction_ea is not None:
         mba_identity = stable_mba_identity(mba)
+        accepted_opcodes = (
+            {int(opcode) for opcode in exact_instruction_opcodes}
+            if exact_instruction_opcodes is not None
+            else (
+                None
+                if binding.exact_instruction_opcode is None
+                else {int(binding.exact_instruction_opcode)}
+            )
+        )
         exact_matches = tuple(
             block
             for serial in range(int(mba.qty))
@@ -5074,8 +5084,8 @@ def _rebind_boundary_port_block(
                 )
                 == int(exact_instruction_ea)
                 for instruction in _instructions(block)
-                if binding.exact_instruction_opcode is None
-                or int(instruction.opcode) == int(binding.exact_instruction_opcode)
+                if accepted_opcodes is None
+                or int(instruction.opcode) in accepted_opcodes
             )
         )
         current = exact_matches[0] if len(exact_matches) == 1 else None
@@ -5459,10 +5469,54 @@ def _apply_boundary_port_batch(
         if len(delivery_modes) != 1:
             return None
         delivery_mode = next(iter(delivery_modes))
-        endpoint = _resolve_boundary_port_block(mutation.endpoint, created)
-        target = _resolve_boundary_port_block(mutation.target, created)
+        source_instruction_eas = {
+            int(record.port.source_instruction_ea) for record in mutation.records
+        }
+        endpoint_instruction_ea = (
+            next(iter(source_instruction_eas))
+            if delivery_mode == "terminal_goto"
+            and len(source_instruction_eas) == 1
+            and all(
+                int(record.port.endpoint_block_ea)
+                == int(record.port.source_block_ea)
+                for record in mutation.records
+            )
+            else None
+        )
+        resolver_transfer_opcodes = {
+            int(ida_hexrays.m_mov),
+            int(ida_hexrays.m_call),
+            int(ida_hexrays.m_icall),
+            int(ida_hexrays.m_ijmp),
+        }
+        endpoint = _rebind_boundary_port_block(
+            mba,
+            mutation.endpoint,
+            created,
+            exact_instruction_ea=endpoint_instruction_ea,
+            exact_instruction_opcodes=(
+                resolver_transfer_opcodes
+                if endpoint_instruction_ea is not None
+                else None
+            ),
+            instruction_origins=instruction_origins,
+            templates_by_target=templates_by_target,
+        )
+        target = _rebind_boundary_port_block(
+            mba,
+            mutation.target,
+            created,
+            instruction_origins=instruction_origins,
+            templates_by_target=templates_by_target,
+        )
         old_targets = tuple(
-            _resolve_boundary_port_block(binding, created)
+            _rebind_boundary_port_block(
+                mba,
+                binding,
+                created,
+                instruction_origins=instruction_origins,
+                templates_by_target=templates_by_target,
+            )
             for binding in mutation.old_targets
         )
         if (
@@ -5513,9 +5567,6 @@ def _apply_boundary_port_batch(
             mutation_gateway=mutation_gateway.new_transaction(),
         )
         if delivery_mode == "terminal_goto" and not old_successors:
-            source_instruction_eas = {
-                int(record.port.source_instruction_ea) for record in mutation.records
-            }
             if len(source_instruction_eas) != 1:
                 return None
             source_instruction_ea = next(iter(source_instruction_eas))
@@ -5527,18 +5578,7 @@ def _apply_boundary_port_batch(
                     or instruction_origins.get((mba_identity, int(instruction.ea)))
                     == source_instruction_ea
                 )
-                and int(instruction.opcode)
-                in {
-                    int(ida_hexrays.m_mov),
-                    int(ida_hexrays.m_call),
-                    int(ida_hexrays.m_icall),
-                    int(ida_hexrays.m_ijmp),
-                }
-                and (
-                    mutation.endpoint.exact_instruction_opcode is None
-                    or int(instruction.opcode)
-                    == int(mutation.endpoint.exact_instruction_opcode)
-                )
+                and int(instruction.opcode) in resolver_transfer_opcodes
             )
             logger.info(
                 "resolver-cut call lowering preflight: "

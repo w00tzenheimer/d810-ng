@@ -3586,6 +3586,7 @@ def test_empty_nonadjacent_fallthrough_can_be_made_explicit(
 def _direct_boundary_port(
     *,
     source_block_ea: int,
+    source_instruction_ea: int | None = None,
     endpoint_block_ea: int,
     old_successor_eas: tuple[int, ...],
     target_ea: int,
@@ -3602,7 +3603,11 @@ def _direct_boundary_port(
 
     return DetachedSnippetDirectBoundaryPort(
         source_block_ea=source_block_ea,
-        source_instruction_ea=source_block_ea,
+        source_instruction_ea=(
+            source_block_ea
+            if source_instruction_ea is None
+            else source_instruction_ea
+        ),
         endpoint_block_ea=endpoint_block_ea,
         old_successor_eas=old_successor_eas,
         target_ea=target_ea,
@@ -7654,6 +7659,101 @@ def test_resolver_cut_port_replaces_synthetic_return_envelope(
     assert int(source.tail.l.b) == int(target.serial)
     assert int(source.serial) not in synthetic_return.predset
     assert int(source.serial) in target.predset
+
+
+def test_resolver_cut_port_rebinds_split_imported_endpoint_by_origin(
+    monkeypatch,
+) -> None:
+    """A post-import split must not strand the resolver-cut instruction."""
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    source_ea = 0x40CADE
+    resolver_ea = 0x40CAF7
+    synthetic_resolver_ea = 0xF1C0030C
+    target_ea = 0x40CD8C
+    imported_key = (source_ea, 7)
+
+    imported_root = _Block(
+        0,
+        source_ea,
+        (_Instruction(ida_hexrays.m_mov, source_ea),),
+        (1,),
+    )
+    imported_root.type = int(ida_hexrays.BLT_1WAY)
+    split_endpoint = _Block(
+        1,
+        source_ea,
+        (_Instruction(ida_hexrays.m_ijmp, synthetic_resolver_ea),),
+        (2,),
+    )
+    split_endpoint.type = int(ida_hexrays.BLT_1WAY)
+    target = _Block(
+        2,
+        target_ea,
+        (_Instruction(ida_hexrays.m_nop, target_ea),),
+    )
+    imported_root.predset = _SerialList()
+    split_endpoint.predset.push_back(int(imported_root.serial))
+    target.predset.push_back(int(split_endpoint.serial))
+    destination = _MBA(
+        (imported_root, split_endpoint, target),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    port = _direct_boundary_port(
+        source_block_ea=source_ea,
+        source_instruction_ea=resolver_ea,
+        endpoint_block_ea=source_ea,
+        old_successor_eas=(),
+        target_ea=target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        delivery_mode="terminal_goto",
+    )
+    record = detached_handler_island.DetachedSnippetTemplateDirectBoundaryPort(
+        port=port,
+        source_serial=7,
+        endpoint_serial=7,
+        target_serial=None,
+    )
+    batch = detached_handler_island._BoundaryPortMutationBatch(
+        direct=(
+            detached_handler_island._DirectBoundaryPortMutation(
+                records=(record,),
+                endpoint=detached_handler_island._BoundaryPortBlockBinding(
+                    native_ea=source_ea,
+                    imported_key=imported_key,
+                    exact_instruction_opcode=int(ida_hexrays.m_icall),
+                ),
+                old_targets=(),
+                target=detached_handler_island._BoundaryPortBlockBinding(
+                    native_ea=target_ea,
+                    live_block=target,
+                ),
+            ),
+        ),
+        conditional=(),
+    )
+    applied = detached_handler_island._apply_boundary_port_batch(
+        destination,
+        batch,
+        {imported_key: imported_root},
+        pending_instruction_origins={
+            (
+                detached_handler_island.stable_mba_identity(destination),
+                synthetic_resolver_ea,
+            ): resolver_ea
+        },
+        mutation_gateway=make_mutation_gateway(destination),
+    )
+
+    assert applied is not None
+    assert len(applied) == 1
+    assert tuple(split_endpoint.succset) == (int(target.serial),)
+    assert int(split_endpoint.tail.opcode) == int(ida_hexrays.m_goto)
 
 
 def test_exact_state_route_collapses_two_way_dispatcher_envelope(
