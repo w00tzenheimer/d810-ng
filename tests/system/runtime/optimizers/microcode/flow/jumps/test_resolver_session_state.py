@@ -6,6 +6,8 @@ import importlib.util
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 from d810.analyses.control_flow.detached_handler_island import (
     DetachedSnippetBoundaryPorts,
 )
@@ -796,6 +798,10 @@ def test_preopt_route_consumption_uses_the_injected_mutation_gateway(
     assert queued == []
     assert session.native_preanalysis.bound_preopt_generation is None
     state.preopt_union_import_active = False
+    # The union importer binds the evidence generation before the later
+    # bootstrap handler gets its turn.  Route rebinding is independently
+    # pending and must still run in that same PREOPT callback.
+    assert session.native_preanalysis.mark_preopt_bound()
 
     _on_preopt_bootstrap_route(
         function_ea=0x401000,
@@ -1316,7 +1322,14 @@ def test_preflight_bootstrap_discovery_uses_the_portable_selector(
     monkeypatch.setattr(
         resolver,
         "_native_entry_bootstrap_seeds",
-        lambda function_ea, selector_mregs: ((0x40D348, 28, 0x699BC698),),
+        lambda function_ea, selector_mregs: (
+            resolver.NativeEntryBootstrapSeed(
+                source_anchor_ea=0x40D348,
+                direct_target_ea=0x40D370,
+                state_mreg=28,
+                state_constant=0x699BC698,
+            ),
+        ),
     )
     monkeypatch.setattr(
         resolver,
@@ -1331,6 +1344,138 @@ def test_preflight_bootstrap_discovery_uses_the_portable_selector(
     route = next(iter(state.native_preanalysis.bootstrap_routes.values()))
     assert route.source_anchor_ea == 0x40D348
     assert route.handler_anchor_ea == 0x40EAA7
+
+
+def test_native_entry_bootstrap_scan_crosses_calls_before_selector_assignment(
+    monkeypatch,
+) -> None:
+    """A returned prologue call cannot erase a later callee-saved seed."""
+    import ida_ua
+    import idaapi
+    import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as resolver
+
+    function_ea = 0x40A560
+    mnemonics = {
+        function_ea: "call",
+        function_ea + 5: "mov",
+        function_ea + 10: "jmp",
+    }
+
+    def decode(instruction, ea: int) -> int:
+        destination = instruction.ops[0]
+        source = instruction.ops[1]
+        destination.type = idaapi.o_void
+        source.type = idaapi.o_void
+        if ea == function_ea:
+            destination.type = idaapi.o_near
+            destination.addr = 0x40F830
+            return 5
+        if ea == function_ea + 5:
+            destination.type = idaapi.o_reg
+            destination.reg = 3
+            source.type = idaapi.o_imm
+            source.value = 0xABB95547
+            return 5
+        if ea == function_ea + 10:
+            destination.type = idaapi.o_near
+            destination.addr = 0x40A5F0
+            return 5
+        return 0
+
+    monkeypatch.setattr(ida_ua, "decode_insn", decode)
+    monkeypatch.setattr(
+        idaapi,
+        "print_insn_mnem",
+        lambda ea: mnemonics.get(int(ea), ""),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_native_register_mreg",
+        lambda name: 20 if name == "ebx" else None,
+    )
+
+    assert resolver._native_entry_bootstrap_seeds(
+        function_ea,
+        frozenset({20}),
+    ) == (
+        resolver.NativeEntryBootstrapSeed(
+            source_anchor_ea=function_ea + 10,
+            direct_target_ea=0x40A5F0,
+            state_mreg=20,
+            state_constant=0xABB95547,
+        ),
+    )
+
+
+def test_preflight_bootstrap_discovery_replays_a_proven_dispatcher_entry_target(
+    monkeypatch,
+) -> None:
+    """A known dispatcher entry is navigation, not the state-specific handler."""
+    import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as resolver
+
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(),
+        resolver_attachment=None,
+        native_key=NATIVE_KEY,
+    )
+    state = resolver_session_state(session)
+    state.begin_materialization(
+        ComputedGotoResolution(
+            function_ea=0x40A560,
+            jmp_targets={0x40A5E3: (0x40A5F0, 0x40C898)},
+            reachable_eas=(),
+            arch="x86",
+            executed_insns=1,
+            seeds_run=0,
+            block_entries=(0x40A5F0, 0x40A70E),
+        )
+    )
+    state.native_preanalysis.merge_materialized_transfers(
+        state.native_key,
+        (
+            MaterializedIndirectTransfer(
+                source_jmp_ea=0x40A5E3,
+                source_block_ea=0x40A5CA,
+                materialized_anchor_eas=(0x40A5E3,),
+                target_eas=(0x40A5F0, 0x40C898),
+                selector_state_var_reg=20,
+            ),
+            MaterializedIndirectTransfer(
+                source_jmp_ea=0x40A5C8,
+                source_block_ea=0x40A5C8,
+                materialized_anchor_eas=(),
+                target_eas=(0x40A70E,),
+                selector_state_var_reg=20,
+                selector_state_constant=0x357A351E,
+                resolver_kind="static_handler_entry_route",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_native_entry_bootstrap_seeds",
+        lambda function_ea, selector_mregs: (
+            resolver.NativeEntryBootstrapSeed(
+                source_anchor_ea=0x40A5C8,
+                direct_target_ea=0x40A5F0,
+                state_mreg=20,
+                state_constant=0xABB95547,
+            ),
+        ),
+    )
+    replay_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        resolver,
+        "_resolve_concrete_dispatch_corridor",
+        lambda *args, **kwargs: replay_calls.append((args, kwargs)) or 0x40A70E,
+    )
+
+    assert discover_static_native_bootstrap_routes(0x40A560, state)
+    assert len(replay_calls) == 1
+    route = next(iter(state.native_preanalysis.bootstrap_routes.values()))
+    assert route.source_anchor_ea == 0x40A5C8
+    assert route.state == 0xABB95547
+    assert route.handler_anchor_ea == 0x40A70E
 
 
 def test_calls_done_uses_serial_free_native_discovery_as_fallback(monkeypatch) -> None:

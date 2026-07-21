@@ -991,6 +991,14 @@ class NativePreanalysisSessionState:
     def needs_preopt_binding(self) -> bool:
         return self.bound_preopt_generation != self.evidence_generation
 
+    def needs_bootstrap_route_binding(self) -> bool:
+        """Whether a current portable route still lacks a live PREOPT bind."""
+        return any(
+            key not in self.conflicted_bootstrap_keys
+            and self.rebound_bootstrap_generations.get(key) != self.evidence_generation
+            for key in self.bootstrap_routes
+        )
+
     def mark_preopt_bound(self) -> bool:
         """Record the current generation's exact-once PREOPT bind."""
         if not self.needs_preopt_binding():
