@@ -6560,6 +6560,63 @@ def test_stack_carried_state_selector_lowers_at_handler_consumer(_seam) -> None:
         == portable_expected
     )
 
+    # Later maturities can coalesce the stack reload into a register alias
+    # before copying it to the state register.  The native store/load identity
+    # still owns the selector and supplies the current VD stack offset.
+    coalesced_blocks = dict(detached_graph.blocks)
+    coalesced_blocks[10] = _b(
+        10,
+        (4, 6),
+        (21,),
+        (
+            InsnSnapshot(
+                opcode=_OP_MOV,
+                ea=0xF1C00180,
+                operands=(),
+                l=MopSnapshot(
+                    t=_T_REG,
+                    size=4,
+                    reg=8,
+                    kind=OperandKind.REGISTER,
+                ),
+                d=MopSnapshot(
+                    t=_T_REG,
+                    size=4,
+                    reg=state_reg,
+                    kind=OperandKind.REGISTER,
+                ),
+                kind=InsnKind.MOV,
+            ),
+            replace(
+                consumer_tail,
+                ea=0xF1C0019C,
+                l=MopSnapshot(kind=OperandKind.SUBINSN),
+                r=None,
+            ),
+        ),
+    )
+    coalesced_graph = FlowGraph(
+        blocks=coalesced_blocks,
+        entry_serial=10,
+        func_ea=fg.func_ea,
+    )
+    assert build_stack_carried_state_selector_lowerings(
+        coalesced_graph,
+        dispatcher,
+        state_var_reg=state_reg,
+        dispatcher_region_serials=frozenset({3, 4, 5}),
+        handler_serials=frozenset({10, 21, 22}),
+        materialized_indirect_transfers=(portable_choice,),
+        handler_entry_eas_by_serial={21: 0x2100, 22: 0x2200},
+        state_carrier_vd_stkoffs_by_store_ea={predicate_ea + 3: carrier_stkoff},
+        native_carrier_consumer_serials_by_load_ea={consumer_ea: 10},
+    ) == [
+        replace(
+            portable_expected[0],
+            rewrite_from_ea=0xF1C0019C,
+        )
+    ]
+
     # PREOPT can lower the terminal computed jump to an exact conditional
     # after importing the native pointer-selection envelope.  The original
     # stack selector then has two pure arms which converge on that applied
@@ -7150,6 +7207,51 @@ def test_stack_carried_state_selector_lowers_at_handler_consumer(_seam) -> None:
     assert (
         build_stack_carried_state_selector_lowerings(
             graph_with_dead_copy,
+            dispatcher,
+            state_var_reg=state_reg,
+            dispatcher_region_serials=frozenset({3, 4, 5}),
+            handler_serials=frozenset({10, 21, 22}),
+        )
+        == expected
+    )
+
+    # A dead address formation feeding only the replaced router is equally
+    # transparent.  Its destination remains subject to the same handler
+    # liveness veto as an ordinary register copy.
+    blocks_with_dead_address = dict(fg.blocks)
+    blocks_with_dead_address[6] = _b(
+        6,
+        (5,),
+        (10,),
+        (
+            InsnSnapshot(
+                opcode=_OP_MOV,
+                ea=router_ea + 4,
+                operands=(),
+                l=MopSnapshot(
+                    size=4,
+                    value=0x48B918,
+                    kind=OperandKind.ADDRESS,
+                ),
+                d=MopSnapshot(
+                    t=_T_REG,
+                    size=4,
+                    reg=12,
+                    kind=OperandKind.REGISTER,
+                ),
+                kind=InsnKind.MOV,
+            ),
+            fg.blocks[6].insn_snapshots[-1],
+        ),
+    )
+    graph_with_dead_address = FlowGraph(
+        blocks=blocks_with_dead_address,
+        entry_serial=fg.entry_serial,
+        func_ea=fg.func_ea,
+    )
+    assert (
+        build_stack_carried_state_selector_lowerings(
+            graph_with_dead_address,
             dispatcher,
             state_var_reg=state_reg,
             dispatcher_region_serials=frozenset({3, 4, 5}),

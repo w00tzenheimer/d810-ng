@@ -793,6 +793,7 @@ def unique_materialized_equality_target_eas(
     """
     primary: dict[int, set[int]] = {}
     fallback: dict[int, set[int]] = {}
+    validated_handler_entries: dict[int, set[int]] = {}
     expected_register = int(state_var_reg)
     dispatcher_router_eas = frozenset(
         int(router_ea)
@@ -861,6 +862,11 @@ def unique_materialized_equality_target_eas(
             else primary
         )
         candidates.setdefault(state, set()).add(int(target))
+        if (
+            transfer.resolver_kind == "static_handler_entry_route"
+            and int(target) in validated_candidate_target_eas
+        ):
+            validated_handler_entries.setdefault(state, set()).add(int(target))
 
     result: dict[int, int] = {}
     for state in primary.keys() | fallback.keys():
@@ -868,6 +874,12 @@ def unique_materialized_equality_target_eas(
         if primary_targets:
             if len(primary_targets) == 1:
                 result[state] = next(iter(primary_targets))
+                continue
+            validated_targets = (
+                validated_handler_entries.get(state, set()) & primary_targets
+            )
+            if len(validated_targets) == 1:
+                result[state] = next(iter(validated_targets))
             continue
         fallback_targets = fallback.get(state, set())
         if len(fallback_targets) == 1:

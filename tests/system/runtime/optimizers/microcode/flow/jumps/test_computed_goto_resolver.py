@@ -6161,19 +6161,26 @@ def test_materialized_state_routes_prefer_live_tail_over_intermediate_replay():
     )
 
 
-def test_materialized_handler_exit_route_marks_replayed_return_terminal():
+def test_materialized_handler_exit_route_preserves_live_terminal_corridor():
+    incoming_state = 0x96397DAD
     final_state = 0x69225E4
     source_native_ea = 0x40CC1C
     terminal_native_ea = 0x40CD8C
     graph = FlowGraph(
         blocks={
             8: _block(8, 0x40C9DB),
-            118: _block(118, source_native_ea, (source_native_ea,), succs=(74,)),
+            118: _block(118, source_native_ea, (source_native_ea,), succs=(119,)),
+            119: _block(
+                119,
+                source_native_ea + 1,
+                (source_native_ea + 1,),
+                succs=(74,),
+            ),
             74: BlockSnapshot(
                 serial=74,
                 block_type=1,
                 succs=(178,),
-                preds=(118,),
+                preds=(119,),
                 flags=0,
                 start_ea=terminal_native_ea,
                 insn_snapshots=(),
@@ -6202,19 +6209,6 @@ def test_materialized_handler_exit_route_marks_replayed_return_terminal():
         selector_state_constant=final_state,
         resolver_kind="static_handler_exit_route",
     )
-    applied_exit = SimpleNamespace(
-        port=SimpleNamespace(
-            source_block_ea=source_native_ea,
-            endpoint_block_ea=source_native_ea,
-            target_ea=terminal_native_ea,
-            state_register=None,
-            state_constant=None,
-            delivery_mode="terminal_goto",
-        ),
-        endpoint_anchor_eas=(source_native_ea,),
-        target_anchor_eas=(terminal_native_ea,),
-    )
-
     routes = _build_materialized_state_routes(
         graph,
         state_write_anchors=(),
@@ -6224,17 +6218,19 @@ def test_materialized_handler_exit_route_marks_replayed_return_terminal():
         handler_serials=frozenset({74, 118}),
         dispatcher_block_serials=frozenset({8}),
         transfers=(terminal_exit,),
-        handler_states={},
+        handler_states={118: (incoming_state,)},
         handler_targets={final_state: 74},
         handler_entry_eas_by_serial={118: source_native_ea},
+        handler_exit_state_resolver=(
+            lambda _block, *, state_var_reg, incoming_state: final_state
+        ),
         terminal_target_resolver=lambda ea: int(ea) == terminal_native_ea,
         state_register_name="ebx",
-        applied_direct_boundary_evidence=(applied_exit,),
     )
 
     assert routes == (
         MaterializedStateRoute(
-            118,
+            119,
             final_state,
             178,
             source_handler_serial=118,
