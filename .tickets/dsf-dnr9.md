@@ -2,7 +2,7 @@
 id: dsf-dnr9
 status: closed
 deps: []
-links: []
+links: [dsf-katd]
 created: 2026-07-18T23:53:24Z
 type: epic
 priority: 1
