@@ -266,6 +266,11 @@ def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
     global _current_db, _current_conn, _current_func_ea
     if not get_settings().diag_snapshots:
         return
+    if _current_db is not None and not _current_db.is_closed():
+        # Generated/PREOPT re-entry and nested Hex-Rays callbacks are part of
+        # the active top-level authority. Rotating the sink here would split a
+        # mutation plan from its later receipt and lose pre-prolog ownership.
+        return
     close_diag_session()  # close any stale session
     resolved_log_dir = _resolve_log_dir(log_dir)
     resolved_log_dir.mkdir(parents=True, exist_ok=True)

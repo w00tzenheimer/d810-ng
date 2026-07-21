@@ -48,6 +48,17 @@ def test_lifecycle_events_are_session_ordered_and_snapshot_correlation_is_explic
             status="active",
         )
     )
+    # Re-observation after the diagnostic sink opens is idempotent. This is
+    # the native-preflight-before-prolog ordering exercised by live Hex-Rays.
+    emit(
+        DiagnosticSessionObserved(
+            session_id="session-1",
+            func_ea=0x40C8B0,
+            top_level_epoch=7,
+            native_key_json='{"schema_version":1}',
+            status="active",
+        )
+    )
     emit(
         LifecycleEventObserved(
             session_id="session-1",
@@ -109,7 +120,32 @@ def test_lifecycle_events_are_session_ordered_and_snapshot_correlation_is_explic
         "FROM lifecycle_events ORDER BY event_seq"
     ).fetchall()
     assert rows == [
-        (1, "evidence_published", None, 3, 8, 8),
-        (2, "preopt_bound", 1, 3, 8, 9),
-        (3, "calls_consumed", None, 4, 9, 9),
+        (1, "session_active", None, None, None, None),
+        (2, "evidence_published", None, 3, 8, 8),
+        (3, "preopt_bound", 1, 3, 8, 9),
+        (4, "calls_consumed", None, 4, 9, 9),
+    ]
+
+
+def test_session_status_transitions_are_owned_by_one_event(diag_conn) -> None:
+    active = DiagnosticSessionObserved(
+        "session-1", 0x40C8B0, 7, '{"schema_version":1}', "active", 10.0
+    )
+    emit(active)
+    emit(active)
+    emit(DiagnosticSessionObserved(
+        "session-1", 0x40C8B0, 7, '{"schema_version":1}', "finished", 20.0
+    ))
+    emit(DiagnosticSessionObserved(
+        "session-1", 0x40C8B0, 7, '{"schema_version":1}', "finished", 30.0
+    ))
+
+    assert diag_conn.execute(
+        "SELECT status,started_at,finished_at FROM diagnostic_sessions"
+    ).fetchone() == ("finished", 10.0, 20.0)
+    assert diag_conn.execute(
+        "SELECT event_seq,event_kind,timestamp FROM lifecycle_events ORDER BY event_seq"
+    ).fetchall() == [
+        (1, "session_active", 10.0),
+        (2, "session_finished", 20.0),
     ]

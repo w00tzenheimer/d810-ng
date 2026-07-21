@@ -4408,6 +4408,65 @@ class DeferredGraphModifier:
         transactional: bool = False,
         staged_atomic: bool = False,
     ) -> int:
+        """Apply queued work and close its receipt on every exit path."""
+        try:
+            return self._apply(
+                run_optimize_local=run_optimize_local,
+                run_deep_cleaning=run_deep_cleaning,
+                verify_each_mod=verify_each_mod,
+                rollback_on_verify_failure=rollback_on_verify_failure,
+                continue_on_verify_failure=continue_on_verify_failure,
+                defer_post_apply_maintenance=defer_post_apply_maintenance,
+                enable_snapshot_rollback=enable_snapshot_rollback,
+                post_apply_hook=post_apply_hook,
+                transactional=transactional,
+                staged_atomic=staged_atomic,
+            )
+        except BaseException as exc:
+            self._abort_open_mutation_batch(
+                f"apply raised {type(exc).__name__}: {exc}"
+            )
+            raise
+
+    def _abort_open_mutation_batch(self, reason: str) -> None:
+        gateway = self._mutation_gateway
+        if gateway is None or not gateway.active:
+            return
+        try:
+            gateway.abort(reason=str(reason))
+        except Exception:
+            logger.debug("failed to abort open mutation batch", exc_info=True)
+
+    def _record_snapshot_rollback(self, reason: str) -> None:
+        """Publish rollback as either an abort or a compensating generation."""
+        gateway = self._mutation_gateway
+        if gateway is None:
+            return
+        if gateway.active:
+            gateway.abort(reason=str(reason))
+            return
+        gateway.begin_batch(
+            StructuralMutationKind.BLOCK_REPLACE,
+            serial_quantity=int(self.mba.qty),
+            description=f"snapshot rollback: {reason}",
+            planned_operation_count=1,
+        )
+        gateway.record_unknown_sdk_operation(self.mba)
+        gateway.commit()
+
+    def _apply(
+        self,
+        run_optimize_local: bool = True,
+        run_deep_cleaning: bool = False,
+        verify_each_mod: bool = False,
+        rollback_on_verify_failure: bool = False,
+        continue_on_verify_failure: bool = False,
+        defer_post_apply_maintenance: bool = False,
+        enable_snapshot_rollback: bool = False,
+        post_apply_hook: Callable[[], None] | None = None,
+        transactional: bool = False,
+        staged_atomic: bool = False,
+    ) -> int:
         """
         Apply all queued modifications in priority order.
 
@@ -5229,6 +5288,13 @@ class DeferredGraphModifier:
             successful, total_mod_count, failed, rolled_back
         )
 
+        if successful > 0:
+            # Publish the structural receipt before diagnostic capture,
+            # cleanup, or Hex-Rays re-entry can transfer control away from this
+            # Python frame. A later snapshot restore is a distinct compensating
+            # mutation and receives its own generation/receipt.
+            self._finish_mutation_batch(successful)
+
         _capture_phase_snapshot("post_loop")
 
         # Final watch-block audit: if any watched block drifted from its last
@@ -5298,6 +5364,7 @@ class DeferredGraphModifier:
                     self._pre_snapshot.num_blocks,
                 )
                 if self._restore_from_snapshot(self._pre_snapshot):
+                    self._record_snapshot_rollback("transactional mid-batch abort")
                     self.verify_failed = False
                     logger.warning(
                         "TRANSACTIONAL: rollback succeeded — returning 0"
@@ -5415,6 +5482,7 @@ class DeferredGraphModifier:
                             self._pre_snapshot.num_blocks,
                         )
                         if self._restore_from_snapshot(self._pre_snapshot):
+                            self._record_snapshot_rollback("post-apply hook failure")
                             self.verify_failed = False
                             logger.warning(
                                 "Successfully restored MBA from snapshot after "
@@ -5516,6 +5584,7 @@ class DeferredGraphModifier:
                         self._pre_snapshot.num_blocks,
                     )
                     if self._restore_from_snapshot(self._pre_snapshot):
+                        self._record_snapshot_rollback("post-apply verify failure")
                         self.verify_failed = False
                         logger.warning(
                             "Successfully restored MBA from snapshot after verify failure"
@@ -6831,7 +6900,10 @@ class DeferredGraphModifier:
         created: MbaBlockHandle | None = None,
     ) -> None:
         """Synchronously publish the +1 insertion shift to the gateway."""
-        if self._mutation_gateway is None or not self._mutation_gateway.active:
+        started_batch = (
+            self._mutation_gateway is None or not self._mutation_gateway.active
+        )
+        if started_batch:
             self._begin_mutation_batch(
                 serial_quantity=int(old_qty),
                 kind=StructuralMutationKind.BLOCK_INSERT,
@@ -6845,6 +6917,8 @@ class DeferredGraphModifier:
             returned_serial=int(insertion_serial),
             created=created,
         )
+        if started_batch:
+            gateway.commit()
 
     def _record_realized_serial(
         self,

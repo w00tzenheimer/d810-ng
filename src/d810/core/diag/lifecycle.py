@@ -52,6 +52,37 @@ def persist_diagnostic_session(
     )
 
 
+def persist_diagnostic_session_transition(
+    conn: sqlite3.Connection,
+    event: DiagnosticSessionObserved,
+) -> bool:
+    """Persist one status transition and its authoritative timeline event.
+
+    Re-observing the same status is intentionally idempotent. Native preflight
+    can create the lifecycle owner before Hex-Rays prolog opens the diagnostic
+    sink; prolog republishes the active state so the DB cannot miss its owner.
+    """
+    existing = conn.execute(
+        "SELECT status FROM diagnostic_sessions WHERE session_id=?",
+        (str(event.session_id),),
+    ).fetchone()
+    if existing is not None and str(existing[0]) == str(event.status):
+        return False
+    persist_diagnostic_session(conn, event)
+    persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind=f"session_{event.status}",
+            summary=f"decompilation session {event.status}",
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=None,
+    )
+    return True
+
+
 def persist_lifecycle_event(
     conn: sqlite3.Connection,
     event: LifecycleEventObserved,
@@ -92,7 +123,11 @@ def persist_lifecycle_event(
     return int(cursor.lastrowid)
 
 
-__all__ = ["persist_diagnostic_session", "persist_lifecycle_event"]
+__all__ = [
+    "persist_diagnostic_session",
+    "persist_diagnostic_session_transition",
+    "persist_lifecycle_event",
+]
 
 
 def persist_evidence_generation(
@@ -181,6 +216,7 @@ def persist_identity_decision(
 
 __all__ = [
     "persist_diagnostic_session",
+    "persist_diagnostic_session_transition",
     "persist_evidence_generation",
     "persist_identity_decision",
     "persist_lifecycle_event",

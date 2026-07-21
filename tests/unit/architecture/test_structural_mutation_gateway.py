@@ -217,6 +217,67 @@ def test_production_has_no_adapter_local_serial_maps() -> None:
     assert violations == []
 
 
+def test_deferred_gateway_batches_close_on_exception_and_implicit_insert() -> None:
+    path = SRC_ROOT / "hexrays/mutation/deferred_modifier.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    modifier_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "DeferredGraphModifier"
+    )
+    functions = {
+        node.name: node
+        for node in modifier_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    apply = functions["apply"]
+    apply_calls = {
+        node.func.attr
+        for node in ast.walk(apply)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    insertion = functions["_record_serial_insertion"]
+    insertion_calls = {
+        node.func.attr
+        for node in ast.walk(insertion)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    assert "_apply" in apply_calls
+    assert "_abort_open_mutation_batch" in apply_calls
+    assert "commit" in insertion_calls
+
+    apply_impl = functions["_apply"]
+    receipt_lines = [
+        node.lineno
+        for node in ast.walk(apply_impl)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_finish_mutation_batch"
+    ]
+    post_loop_snapshot_lines = [
+        node.lineno
+        for node in ast.walk(apply_impl)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_capture_phase_snapshot"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "post_loop"
+    ]
+    assert min(receipt_lines) < min(post_loop_snapshot_lines)
+    rollback = functions["_record_snapshot_rollback"]
+    rollback_calls = {
+        node.func.attr
+        for node in ast.walk(rollback)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert {"abort", "begin_batch", "record_unknown_sdk_operation", "commit"} <= (
+        rollback_calls
+    )
+
+
 def test_migrated_structural_entrypoints_require_the_gateway_port() -> None:
     violations = []
     for relative, names in GATEWAY_REQUIRED_ENTRYPOINTS.items():

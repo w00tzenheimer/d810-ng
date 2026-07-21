@@ -23,7 +23,6 @@ from d810.core.observability import emit as emit_diagnostic
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
-    LifecycleEventObserved,
 )
 
 logger = getLogger("D810.decompilation_lifecycle")
@@ -139,19 +138,12 @@ class DecompilationLifecycleCoordinator:
                 status=status,
             )
         )
-        emit_diagnostic(
-            LifecycleEventObserved(
-                session_id=session.identity_key,
-                func_ea=int(session.function_ea),
-                event_kind=f"session_{status}",
-                evidence_generation=int(
-                    session.native_preanalysis.evidence_generation
-                ),
-                mba_generation_before=int(session.current_mba_generation),
-                mba_generation_after=int(session.current_mba_generation),
-                summary=f"decompilation session {status}",
-            )
-        )
+
+    def reobserve_active_diagnostic_session(self, function_ea: int) -> None:
+        """Republish an active owner after the diagnostic sink is opened."""
+        session = self.current_session(int(function_ea))
+        if session is not None:
+            self._observe_session(session, "active")
 
     @staticmethod
     def _observe_evidence_transition(session, transition) -> None:
