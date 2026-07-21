@@ -118,16 +118,24 @@ def main() -> None:
             from d810.analyses.control_flow.native_preanalysis_session import (
                 NativePreanalysisSessionState,
             )
+            from d810.backends.hexrays.native_preanalysis_key import (
+                build_native_preanalysis_key,
+            )
             from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
                 resolver_session_state,
             )
 
             resolution = cg.resolve_computed_gotos_static(FUNCTION_EA)
             assert resolution is not None
+            native_key = build_native_preanalysis_key(
+                FUNCTION_EA,
+                profile_config={},
+            )
             resolver_state = resolver_session_state(
                 SimpleNamespace(
                     native_preanalysis=NativePreanalysisSessionState(),
-                    extensions={},
+                    native_key=native_key,
+                    resolver_attachment=None,
                 )
             )
             materialized = cg.materialize_computed_gotos(

@@ -453,8 +453,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         if (
             lifecycle is None
             or emitter is None
-            or int(getattr(mba, "maturity", -1))
-            != int(ida_hexrays.MMAT_PREOPTIMIZED)
+            or int(getattr(mba, "maturity", -1)) != int(ida_hexrays.MMAT_PREOPTIMIZED)
         ):
             optimizer_logger.debug(
                 "instruction PREOPT seam abstain: func=0x%x reason=missing_port "
@@ -473,9 +472,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 function_ea,
             )
             return False
-        native_preanalysis_depth = int(
-            getattr(session, "native_preanalysis_depth", 0)
-        )
+        native_preanalysis_depth = int(session.native_preanalysis_depth)
         if native_preanalysis_depth > 0:
             optimizer_logger.debug(
                 "instruction PREOPT seam abstain: func=0x%x "
@@ -536,10 +533,12 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             function_ea,
             bool(decision.get("microcode_modified")),
             bool(decision.get("request_redo")),
-            len(getattr(emitter, "_listeners", {}).get(
-                DecompilationEvent.HEXRAYS_PREOPT_READY,
-                (),
-            )),
+            len(
+                getattr(emitter, "_listeners", {}).get(
+                    DecompilationEvent.HEXRAYS_PREOPT_READY,
+                    (),
+                )
+            ),
         )
         if bool(decision.get("request_redo")):
             optimizer_logger.warning(
@@ -563,9 +562,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             "consume_current_preopt_microcode_modified",
             None,
         )
-        if callable(consume_modified) and consume_modified(
-            consumer="instruction"
-        ):
+        if callable(consume_modified) and consume_modified(consumer="instruction"):
             # ``hxe_preoptimized`` may have replaced blocks or instructions
             # after Hex-Rays captured this callback's operand.  Do not run
             # even maturity-change analysis before Hex-Rays revisits the MBA
@@ -625,10 +622,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     mba, self.log_dir, "input_instruction_optimizer"
                 )
 
-        if (
-            mba is not None
-            and int(getattr(mba, "maturity", -1))
-            == int(ida_hexrays.MMAT_PREOPTIMIZED)
+        if mba is not None and int(getattr(mba, "maturity", -1)) == int(
+            ida_hexrays.MMAT_PREOPTIMIZED
         ):
             preopt_modified = self._emit_top_level_preopt_ready(mba)
 

@@ -11,6 +11,10 @@ import pytest
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
 )
+from d810.analyses.control_flow.native_preanalysis_session import (
+    CallResultCarrier,
+    NativePreanalysisSessionState,
+)
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from tests.native_preanalysis import make_native_key
 from tests.system.runtime.mutation_gateway import make_mutation_gateway
@@ -1987,11 +1991,7 @@ def test_locopt_preanalysis_imports_before_call_analysis_without_requesting_redo
     session = SimpleNamespace(
         native_preanalysis=resolver_state.native_preanalysis,
         native_key=NATIVE_KEY,
-        extensions={
-            "d810.optimizers.microcode.flow.jumps.resolver_session_state": (
-                resolver_state
-            )
-        },
+        resolver_attachment=resolver_state,
     )
     monkeypatch.setattr(
         island_rule,
@@ -2139,7 +2139,13 @@ def test_preoptimized_hook_suppresses_manager_native_preanalysis_snippet() -> No
     from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 
     mba = SimpleNamespace(entry_ea=0x40D48E, maturity=1)
-    session = SimpleNamespace(native_preanalysis_depth=1)
+    session = SimpleNamespace(
+        native_preanalysis_depth=1,
+        native_preanalysis=NativePreanalysisSessionState(),
+        native_key=NATIVE_KEY,
+        resolver_attachment=None,
+        identity_key="sample.i64:0x40D48E:1",
+    )
     events: list[object] = []
     lifecycle = SimpleNamespace(
         ensure_hexrays_session=lambda **kwargs: (session, False),
@@ -2181,8 +2187,7 @@ def test_hexrays_hooks_own_the_preopt_generation_guard() -> None:
             ("begin", function_ea)
         ),
         mark_preopt_ready_emitted=(
-            lambda *, function_ea, microcode_modified,
-            callback_pointer_refresh_required: lifecycle_calls.append(
+            lambda *, function_ea, microcode_modified, callback_pointer_refresh_required: lifecycle_calls.append(
                 (
                     "preopt",
                     function_ea,
@@ -2352,7 +2357,17 @@ def test_island_rule_materializes_semantic_island_before_other_bridges(
     independent_bridge = SimpleNamespace(source_predicate_ea=0x40C404)
     island_attempts: list[int] = []
     bridge_attempts: list[tuple[object, ...]] = []
-    captured_carriers = (object(),)
+    captured_carriers = (
+        CallResultCarrier(
+            call_ea=0x40C500,
+            carrier_ea=0x40C505,
+            branch_ea=0x40C510,
+            callee_ea=0x404000,
+            carrier_ida_stkoff=-4,
+            value_size=4,
+            branch_opcode=1,
+        ),
+    )
 
     monkeypatch.setattr(
         island_rule,
@@ -2428,7 +2443,11 @@ def test_island_rule_materializes_semantic_island_before_other_bridges(
     assert rule.optimize(SimpleNamespace(mba=mba)) == 2
     assert island_attempts == [id(mba)]
     assert bridge_attempts == [(independent_bridge,)]
-    assert resolver_state.call_result_carriers == captured_carriers
+    assert resolver_state.native_preanalysis.resolver_evidence is not None
+    assert (
+        resolver_state.native_preanalysis.resolver_evidence.call_result_carriers
+        == captured_carriers
+    )
     assert not hasattr(rule, "_call_result_carriers")
 
 

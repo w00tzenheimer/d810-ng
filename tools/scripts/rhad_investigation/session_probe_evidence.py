@@ -2,13 +2,31 @@
 
 from __future__ import annotations
 
+from d810.analyses.control_flow.native_preanalysis_session import (
+    PreoptUnionPreparationResult,
+    ResolverEvidenceAttachment,
+)
+
+
+def _resolver_attachment(state: object | None) -> ResolverEvidenceAttachment | None:
+    if state is None:
+        return None
+    if not isinstance(state, ResolverEvidenceAttachment):
+        raise TypeError("Rhad probe evidence requires a typed resolver attachment")
+    return state
+
 
 def capture_preopt_union_preparation(
     state: object,
     captured: list[object],
 ) -> None:
     """Capture live PREOPT preparation before lifecycle cleanup."""
-    preparation = getattr(state, "preopt_union_preparation", None)
+    attachment = _resolver_attachment(state)
+    if attachment is None:
+        return
+    preparation = attachment.native_preanalysis.resolver_evidence_for(
+        attachment.native_key
+    ).preopt_union_preparation
     if preparation is not None:
         captured[:] = [preparation]
 
@@ -16,21 +34,27 @@ def capture_preopt_union_preparation(
 def latest_preopt_union_preparation(
     state: object | None,
     captured: list[object],
-) -> object | None:
+) -> PreoptUnionPreparationResult | None:
     """Return PREOPT preparation visible to a completed probe."""
-    live = getattr(state, "preopt_union_preparation", None)
-    if live is not None:
-        return live
-    return captured[-1] if captured else None
+    attachment = _resolver_attachment(state)
+    if attachment is not None:
+        live = attachment.native_preanalysis.resolver_evidence_for(
+            attachment.native_key
+        ).preopt_union_preparation
+        if live is not None:
+            return live
+    captured_preparation = captured[-1] if captured else None
+    if captured_preparation is None:
+        return None
+    if not isinstance(captured_preparation, PreoptUnionPreparationResult):
+        raise TypeError("captured PREOPT preparation has the wrong typed payload")
+    return captured_preparation
 
 
 def native_preanalysis_boundary_port_count(state: object | None) -> int:
     """Count canonical portable boundary facts without a live preparation."""
-    native_preanalysis = getattr(state, "native_preanalysis", None)
-    facts = getattr(native_preanalysis, "facts", None)
-    ports = getattr(facts, "boundary_ports", None)
-    if ports is None:
+    attachment = _resolver_attachment(state)
+    if attachment is None or attachment.native_preanalysis.facts is None:
         return 0
-    return len(getattr(ports, "direct", ())) + len(
-        getattr(ports, "conditional", ())
-    )
+    ports = attachment.native_preanalysis.facts.boundary_ports
+    return len(ports.direct) + len(ports.conditional)

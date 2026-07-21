@@ -39,6 +39,7 @@ discovery + delivery because both differ fundamentally:
   strips the dead ``cmp/cmov`` and collapses the tree to a single comparison
   (verified). The delivery mechanism is a property of the topology, not a knob.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -47,6 +48,9 @@ from dataclasses import dataclass
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     TerminalReturnCarrierRequest,
+)
+from d810.analyses.control_flow.native_preanalysis_session import (
+    ResolverEvidenceAttachment,
 )
 from d810.core.logging import getLogger
 
@@ -118,12 +122,13 @@ def plan_indirect_label_materialization(
     label_start = int(configured_label_start or min(unique_targets))
     if configured_label_end is not None:
         label_end = int(configured_label_end)
-    elif discovered_function_end is not None and int(discovered_function_end) > max(unique_targets):
-        label_end = int(discovered_function_end)
-    elif (
-        discovered_next_function_start is not None
-        and int(discovered_next_function_start) > max(unique_targets)
+    elif discovered_function_end is not None and int(discovered_function_end) > max(
+        unique_targets
     ):
+        label_end = int(discovered_function_end)
+    elif discovered_next_function_start is not None and int(
+        discovered_next_function_start
+    ) > max(unique_targets):
         label_end = int(discovered_next_function_start)
     else:
         return None
@@ -144,9 +149,8 @@ def _target_owner_matches(func: object, target_ea: int) -> bool:
         import ida_funcs  # type: ignore[import-untyped]
 
         owner = ida_funcs.get_func(int(target_ea))
-        return (
-            owner is not None
-            and int(getattr(owner, "start_ea", -1)) == int(getattr(func, "start_ea", -2))
+        return owner is not None and int(getattr(owner, "start_ea", -1)) == int(
+            getattr(func, "start_ea", -2)
         )
     except Exception:
         return False
@@ -211,9 +215,7 @@ def create_dispatcher_target_instructions(targets: Sequence[int]) -> None:
                 # Undefine a stale data head so the byte can be re-decoded as the
                 # handler's first instruction; address-agnostic (driven by the
                 # discovered table targets, not any hard-coded label EA).
-                ida_bytes.del_items(
-                    int(target), ida_bytes.DELIT_SIMPLE, 1
-                )
+                ida_bytes.del_items(int(target), ida_bytes.DELIT_SIMPLE, 1)
             idaapi.create_insn(int(target))
         except Exception:
             logger.debug("failed creating instruction at 0x%X", target, exc_info=True)
@@ -560,7 +562,9 @@ def _reanalyze_range(function_ea: int, start: int, end: int) -> None:
     try:
         idaapi.auto_wait()
     except Exception:
-        logger.debug("auto_wait failed after indirect-label materialization", exc_info=True)
+        logger.debug(
+            "auto_wait failed after indirect-label materialization", exc_info=True
+        )
     try:
         if hasattr(idaapi, "mark_cfunc_dirty"):
             idaapi.mark_cfunc_dirty(int(function_ea), False)
@@ -660,8 +664,8 @@ def materialize_indirect_label_targets(
     create_dispatcher_target_instructions(plan.target_eas)
     indirect_jump_ea = (
         int(dispatch_jump_ea)
-        if dispatch_jump_ea is not None else
-        _find_indirect_jump_ea(function_ea, plan.label_end)
+        if dispatch_jump_ea is not None
+        else _find_indirect_jump_ea(function_ea, plan.label_end)
     )
     jump_xref_count = _add_jump_target_crefs(indirect_jump_ea, plan.target_eas)
     resolved_state_xref_count = _add_resolved_state_write_crefs(
@@ -710,7 +714,9 @@ def materialize_indirect_label_targets(
                 )
                 _reanalyze_range(function_ea, plan.label_start, plan.label_end)
             func = ida_funcs.get_func(function_ea) or idaapi.get_func(function_ea)
-    after = _count_materialized_targets(func, plan.target_eas) if func is not None else 0
+    after = (
+        _count_materialized_targets(func, plan.target_eas) if func is not None else 0
+    )
     success = after == len(plan.target_eas)
     reason = "materialized" if success else "targets_still_missing"
     logger.info(
@@ -800,7 +806,9 @@ def materialize_indirect_label_targets_for_function(
     """
     info = goto_table_info if isinstance(goto_table_info, Mapping) else {}
     cfg = _config_for_function_ea(info, int(function_ea))
-    cfg_table_address = _parse_int(cfg.get("table_address")) if cfg is not None else None
+    cfg_table_address = (
+        _parse_int(cfg.get("table_address")) if cfg is not None else None
+    )
     cfg_table_count = (
         _parse_int(cfg.get("table_nb_elt"), default=0) if cfg is not None else 0
     )
@@ -946,20 +954,25 @@ def merge_materialized_indirect_transfers(
     transfers: tuple[MaterializedIndirectTransfer, ...],
 ) -> bool:
     """Merge resolver proof through its owning lifecycle session."""
-    merge = getattr(state, "merge_materialized_transfers", None)
-    if not callable(merge):
+    if not isinstance(state, ResolverEvidenceAttachment):
         raise TypeError("materialized transfers require ResolverSessionState")
-    return bool(merge(transfers))
+    changed = state.native_preanalysis.merge_materialized_transfers(
+        state.native_key,
+        transfers,
+    )
+    if changed:
+        state.invalidate_current_mba_binding()
+    return changed
 
 
 def materialized_indirect_transfers(
     state: object,
 ) -> tuple[MaterializedIndirectTransfer, ...]:
     """Return session-owned computed-goto proof for the active callback."""
-    transfers = getattr(state, "materialized_transfers", None)
-    if not isinstance(transfers, tuple):
+    if not isinstance(state, ResolverEvidenceAttachment):
         raise TypeError("materialized transfers require ResolverSessionState")
-    return transfers
+    facts = state.native_preanalysis.facts
+    return () if facts is None else facts.transfers
 
 
 def merge_terminal_return_carrier_requests(
@@ -967,20 +980,22 @@ def merge_terminal_return_carrier_requests(
     requests: tuple[TerminalReturnCarrierRequest, ...],
 ) -> bool:
     """Merge exact carrier requests through their lifecycle owner."""
-    merge = getattr(state, "merge_terminal_return_carrier_requests", None)
-    if not callable(merge):
+    if not isinstance(state, ResolverEvidenceAttachment):
         raise TypeError("terminal carrier requests require ResolverSessionState")
-    return bool(merge(requests))
+    return state.native_preanalysis.merge_terminal_return_carrier_requests(
+        state.native_key,
+        requests,
+    )
 
 
 def terminal_return_carrier_requests(
     state: object,
 ) -> tuple[TerminalReturnCarrierRequest, ...]:
     """Return session-owned terminal-carrier proof for the active callback."""
-    requests = getattr(state, "terminal_return_carrier_requests", None)
-    if not isinstance(requests, tuple):
+    if not isinstance(state, ResolverEvidenceAttachment):
         raise TypeError("terminal carrier requests require ResolverSessionState")
-    return requests
+    evidence = state.native_preanalysis.resolver_evidence
+    return () if evidence is None else evidence.terminal_return_carrier_requests
 
 
 def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) -> None:
@@ -1052,10 +1067,12 @@ def run_indirect_materialization_for_function(
     """
     if not _INDIRECT_MATERIALIZATION_REGISTERED:
         return None
+    if not isinstance(state, ResolverEvidenceAttachment):
+        raise TypeError("indirect materialization requires ResolverSessionState")
     key = int(function_ea)
-    if bool(getattr(state, "indirect_label_materialized", False)):
+    if state.indirect_label_materialized:
         return None
-    setattr(state, "indirect_label_materialized", True)
+    state.indirect_label_materialized = True
     try:
         result = materialize_indirect_label_targets_for_function(
             key,
@@ -1069,7 +1086,7 @@ def run_indirect_materialization_for_function(
         )
         return None
     if result is not None:
-        setattr(state, "indirect_dispatcher_materialized", True)
+        state.indirect_dispatcher_materialized = True
         logger.info(
             "Tigress indirect flowchart materialization 0x%X: success=%s "
             "targets=%d/%d jump_xrefs=%d reason=%s",
@@ -1085,12 +1102,16 @@ def run_indirect_materialization_for_function(
 
 def is_materialized_indirect_dispatcher(state: object) -> bool:
     """Return the active session's structural indirect-dispatcher marker."""
-    return bool(getattr(state, "indirect_dispatcher_materialized", False))
+    if not isinstance(state, ResolverEvidenceAttachment):
+        raise TypeError("indirect dispatcher marker requires ResolverSessionState")
+    return state.indirect_dispatcher_materialized
 
 
 def mark_indirect_dispatcher(state: object) -> None:
     """Mark the active lifecycle session as an indirect dispatcher profile."""
-    setattr(state, "indirect_dispatcher_materialized", True)
+    if not isinstance(state, ResolverEvidenceAttachment):
+        raise TypeError("indirect dispatcher marker requires ResolverSessionState")
+    state.indirect_dispatcher_materialized = True
 
 
 __all__ = [

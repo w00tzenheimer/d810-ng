@@ -99,6 +99,14 @@ from d810.analyses.control_flow.native_semantic_closure import (
     plan_native_generation_ranges,
     plan_native_semantic_closure,
 )
+from d810.analyses.control_flow.native_preanalysis_session import (
+    BootstrapRouteBindingEvidence,
+    ComputedGotoPatchPlan,
+    ComputedGotoResolution,
+    PreoptUnionPreparationResult,
+    PrepatchPreoptUnionSource,
+    ResolverLifecycleSession,
+)
 from d810.analyses.control_flow.preopt_union_region import (
     PreoptUnionRegionPlan,
     plan_preopt_union_region,
@@ -177,10 +185,41 @@ from d810.hexrays.preanalysis.indirect_jump_labels import (
     create_dispatcher_target_instructions,
 )
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
-    BootstrapRouteBindingEvidence,
     ResolverSessionState,
     resolver_session_state,
 )
+
+_PatchPlan = ComputedGotoPatchPlan
+_PrepatchPreoptUnionSource = PrepatchPreoptUnionSource
+
+
+def _merge_materialized_transfers(
+    state: ResolverSessionState,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+) -> bool:
+    """Publish portable transfers and discard any prior live-MBA binding."""
+    changed = state.native_preanalysis.merge_materialized_transfers(
+        state.native_key,
+        transfers,
+    )
+    if changed:
+        state.invalidate_current_mba_binding()
+    return changed
+
+
+def _merge_native_facts(
+    state: ResolverSessionState,
+    **facts: object,
+) -> bool:
+    """Publish portable native facts and invalidate the old live-MBA index."""
+    changed = state.native_preanalysis.merge_native_facts(
+        state.native_key,
+        **facts,
+    )
+    if changed:
+        state.invalidate_current_mba_binding()
+    return changed
+
 
 try:
     from d810.speedups.cythxr._chexrays_api import (
@@ -205,92 +244,6 @@ _DEFAULT_MAX_INSTRUCTIONS = 20000
 _STACK_BASE = 0x00F00000
 _STACK_SIZE = 0x00040000
 _STACK_TOP = _STACK_BASE + _STACK_SIZE // 2
-
-
-@dataclass(frozen=True)
-class ComputedGotoResolution:
-    """Targets discovered for a function's register-computed ``jmp reg`` sites."""
-
-    function_ea: int
-    jmp_targets: Mapping[int, tuple[int, ...]]
-    reachable_eas: tuple[int, ...]
-    arch: str
-    executed_insns: int
-    seeds_run: int
-    stop_reasons: tuple[str, ...] = field(default_factory=tuple)
-    #: Pre-baked byte patches (static x86 fixpoint path only; empty for concolic).
-    patch_plans: tuple["_PatchPlan", ...] = field(default_factory=tuple)
-    #: Every block leader discovered by the static fixpoint (orphan-absorb set).
-    block_entries: tuple[int, ...] = field(default_factory=tuple)
-    #: Register constants invariant across every defined static-fixpoint state.
-    #: Residual microcode fragments may consume these only when they have no
-    #: local writer for the register; absent, Top, or multi-valued states are
-    #: intentionally excluded.
-    function_context_register_values: tuple[tuple[str, int], ...] = field(
-        default_factory=tuple
-    )
-    #: Exact singleton native-register snapshots at static-fixpoint block
-    #: entries.  These refill only missing cells during concrete corridor replay.
-    corridor_register_snapshots: tuple[tuple[int, tuple[tuple[str, int], ...]], ...] = (
-        field(default_factory=tuple)
-    )
-    #: Register values proven identical at every byte-materialized dispatcher
-    #: site.  This narrower consensus can seed detached leaves even when the
-    #: value is Top in unrelated pre-definition function states.
-    dispatcher_context_register_values: tuple[tuple[str, int], ...] = field(
-        default_factory=tuple
-    )
-    #: Native instruction EA -> stable IDA-frame offsets captured before byte
-    #: delivery and function-tail reanalysis can change the owning function's
-    #: transient SP model.  Detached explicit-range MBAs consume this evidence
-    #: instead of their standalone-frame annotations.
-    native_stack_frame_offsets: tuple[tuple[int, tuple[int, ...]], ...] = field(
-        default_factory=tuple
-    )
-    #: Native compare/CMOV choices whose two concrete values may be dispatcher
-    #: states.  Targets remain unresolved here; the prepatch evidence stage
-    #: publishes a bridge only when both states map to unique handlers.
-    conditional_state_choices: tuple[MaterializedIndirectTransfer, ...] = field(
-        default_factory=tuple
-    )
-
-    @property
-    def site_count(self) -> int:
-        return len(self.jmp_targets)
-
-    @property
-    def target_count(self) -> int:
-        return sum(len(v) for v in self.jmp_targets.values())
-
-
-@dataclass(frozen=True, slots=True)
-class PreoptUnionPreparationResult:
-    """EA-keyed outcome of one production PREOPT union preparation."""
-
-    function_ea: int
-    prepared: bool
-    published: bool
-    primary_seed_ea: int | None = None
-    seed_eas: tuple[int, ...] = ()
-    native_ranges: tuple[tuple[int, int], ...] = ()
-    imported_block_entry_eas: tuple[int, ...] = ()
-    abstention_reasons: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class _PrepatchPreoptUnionSource:
-    """PREOPT source captured before resolver byte delivery changes reachability."""
-
-    primary_seed_ea: int
-    seed_eas: tuple[int, ...]
-    seed_native_ranges: tuple[
-        tuple[int, tuple[tuple[int, int], ...]],
-        ...,
-    ]
-    native_ranges: tuple[tuple[int, int], ...]
-    imported_block_entry_eas: tuple[int, ...]
-    cfg: NativeCfg
-    closure: NativeSemanticClosure
 
 
 # --------------------------------------------------------------------------- #
@@ -1604,28 +1557,6 @@ def _residual_predicate_inherited_states(
         for predicate_ea, states in candidates.items()
         if len(states) == 1
     }
-
-
-class _PatchPlan(NamedTuple):
-    """A pre-baked condition-preserving byte-patch for one computed-goto site."""
-
-    jmp_ea: int
-    block_entry: int
-    patch_start: int
-    patch_bytes: bytes  # E9 / 0F8x rewrite, NOP-padded to region_end
-    region_end: int
-    insn_heads: tuple[int, ...]  # create_insn heads after del_items
-    new_block_eas: tuple[int, ...]  # newly-created jcc/jmp leaders to absorb
-    #: Resolver proof retained through byte-patch delivery.  Defaults preserve
-    #: existing test construction and make unproven plans fail closed.
-    target_eas: tuple[int, ...] = ()
-    condition_code: int | None = None
-    true_target_ea: int | None = None
-    false_target_ea: int | None = None
-    selector_register_name: str | None = None
-    selector_compare_constant: int | None = None
-    selector_state_on_left: bool | None = None
-    source_register_values: tuple[tuple[str, int], ...] = ()
 
 
 class _NativeEqualityRow(NamedTuple):
@@ -8746,7 +8677,8 @@ def _materialize_static(
         ida_funcs.reanalyze_function(func)
     if seg is not None:
         ida_auto.plan_and_wait(seg.start_ea, seg.end_ea)
-    state.merge_materialized_transfers(
+    _merge_materialized_transfers(
+        state,
         (
             *resolution.conditional_state_choices,
             *_static_materialized_transfer_batch(
@@ -8760,7 +8692,7 @@ def _materialize_static(
                 native_handler_entry_routes=native_handler_entry_routes,
                 static_handler_exit_routes=static_handler_exit_routes,
             ),
-        )
+        ),
     )
     return len(resolution.patch_plans) + int(equality_count)
 
@@ -9171,7 +9103,7 @@ def capture_detached_route_callinfo_templates(
     import ida_hexrays  # type: ignore[import-untyped]
     import idaapi  # type: ignore[import-untyped]
 
-    resolution = state.resolution
+    resolution = state.portable_evidence.computed_goto_resolution
     if not isinstance(resolution, ComputedGotoResolution):
         return ()
     key = int(resolution.function_ea)
@@ -9357,11 +9289,16 @@ def _capture_terminal_return_carrier_requests(
 
 def prepare_terminal_return_carrier_templates(state: ResolverSessionState) -> int:
     """Consume pending CALLS carrier evidence between decompilations."""
-    resolution = state.resolution
+    resolution = state.portable_evidence.computed_goto_resolution
     if not isinstance(resolution, ComputedGotoResolution):
         return 0
     key = int(resolution.function_ea)
-    requests = state.terminal_return_carrier_requests
+    resolver_evidence = state.native_preanalysis.resolver_evidence
+    requests = (
+        ()
+        if resolver_evidence is None
+        else resolver_evidence.terminal_return_carrier_requests
+    )
     if not requests or state.snippet_capture_active:
         return 0
     if not state.begin_snippet_capture(key):
@@ -9438,7 +9375,7 @@ def get_prepared_preopt_union_closure(
     state: ResolverSessionState,
 ) -> PreoptUnionPreparationResult | None:
     """Return this lifecycle session's published PREOPT union preparation."""
-    prepared = state.preopt_union_preparation
+    prepared = state.portable_evidence.preopt_union_preparation
     return prepared if isinstance(prepared, PreoptUnionPreparationResult) else None
 
 
@@ -9580,8 +9517,9 @@ def _capture_prepatch_preopt_union_source(
     :func:`prepare_preopt_union_closure`.
     """
     key = int(resolution.function_ea)
-    if state.prepatch_preopt_union_source is not None or state.snippet_capture_active:
-        return state.prepatch_preopt_union_source is not None
+    prepatch_source = state.portable_evidence.prepatch_preopt_union_source
+    if prepatch_source is not None or state.snippet_capture_active:
+        return prepatch_source is not None
 
     def abstain(reason: str, detail: object = ()) -> bool:
         logger.info(
@@ -9763,12 +9701,16 @@ def _capture_prepatch_preopt_union_source(
         cfg=cfg_result.cfg,
         closure=closure,
     )
-    state.merge_native_facts(
+    _merge_native_facts(
+        state,
         native_cfg=source.cfg,
         semantic_closure=source.closure,
         transfers=enriched,
     )
-    state.prepatch_preopt_union_source = source
+    state.native_preanalysis.set_prepatch_preopt_union_source(
+        state.native_key,
+        source,
+    )
     logger.info(
         "PREOPT prepatch source captured: func=0x%X primary=0x%X "
         "seeds=%s ranges=%s owned_entries=%s",
@@ -11468,11 +11410,11 @@ def prepare_preopt_union_closure(
     refresh_baseline_boundary_ports: DetachedSnippetBoundaryPorts | None = None,
 ) -> PreoptUnionPreparationResult:
     """Prepare one resolver-proven native closure for PREOPT import."""
-    resolution = state.resolution
+    resolution = state.portable_evidence.computed_goto_resolution
     if not isinstance(resolution, ComputedGotoResolution):
         return _preopt_union_abstention(0, "missing_session_resolution")
     key = int(resolution.function_ea)
-    cached = state.preopt_union_preparation
+    cached = state.portable_evidence.preopt_union_preparation
     if isinstance(cached, PreoptUnionPreparationResult):
         return replace(cached, published=False)
     if (
@@ -11523,7 +11465,7 @@ def prepare_preopt_union_closure(
             for transfer in live_conditional_bridges
             if transfer not in transfers
         )
-    prepatch_source = state.prepatch_preopt_union_source
+    prepatch_source = state.portable_evidence.prepatch_preopt_union_source
     if prepatch_source is not None and not isinstance(
         prepatch_source, _PrepatchPreoptUnionSource
     ):
@@ -11854,13 +11796,17 @@ def prepare_preopt_union_closure(
         finally:
             state.finish_snippet_capture()
 
-    state.merge_native_facts(
+    _merge_native_facts(
+        state,
         native_cfg=native_cfg,
         semantic_closure=effective_closure,
         transfers=transfers,
         boundary_ports=boundary_ports,
     )
-    state.preopt_union_preparation = result
+    state.native_preanalysis.set_preopt_union_preparation(
+        state.native_key,
+        result,
+    )
     logger.info(
         "PREOPT union prepared: func=0x%X primary=0x%X seeds=%s "
         "ranges=%s owned_entries=%s direct_ports=%d conditional_ports=%d",
@@ -11881,15 +11827,18 @@ def _refresh_preopt_union_from_calls_evidence(
 ) -> bool:
     """Rebind the pristine PREOPT template for a newer CALLS evidence epoch."""
 
-    resolution = state.resolution
+    resolution = state.portable_evidence.computed_goto_resolution
     if not isinstance(resolution, ComputedGotoResolution):
         return False
     key = int(resolution.function_ea)
-    previous = state.preopt_union_preparation
-    state.preopt_union_preparation = None
+    previous = state.portable_evidence.preopt_union_preparation
+    state.native_preanalysis.set_preopt_union_preparation(state.native_key, None)
     if not isinstance(previous, PreoptUnionPreparationResult) or not previous.prepared:
         if isinstance(previous, PreoptUnionPreparationResult):
-            state.preopt_union_preparation = previous
+            state.native_preanalysis.set_preopt_union_preparation(
+                state.native_key,
+                previous,
+            )
         return False
     refreshed = prepare_preopt_union_closure(
         state,
@@ -11898,7 +11847,10 @@ def _refresh_preopt_union_from_calls_evidence(
         refresh_baseline_boundary_ports=state.boundary_ports,
     )
     if not refreshed.prepared:
-        state.preopt_union_preparation = previous
+        state.native_preanalysis.set_preopt_union_preparation(
+            state.native_key,
+            previous,
+        )
         return False
     # The portable port set can remain byte-for-byte identical while CALLS
     # publishes newer session evidence consumed by downstream routing.  A
@@ -11922,7 +11874,7 @@ def prepare_detached_handler_snippets(
     """
     import ida_hexrays  # type: ignore[import-untyped]
 
-    resolution = state.resolution
+    resolution = state.portable_evidence.computed_goto_resolution
     if (
         not isinstance(resolution, ComputedGotoResolution)
         or state.snippet_capture_active
@@ -11936,7 +11888,7 @@ def prepare_detached_handler_snippets(
         if transfer not in transfers
     )
     if handler_entry_routes:
-        state.merge_materialized_transfers(handler_entry_routes)
+        _merge_materialized_transfers(state, handler_entry_routes)
         transfers = state.materialized_transfers
     if state.pending_preopt_reimport:
         state.pending_preopt_reimport = False
@@ -12110,7 +12062,7 @@ def _callinfo_profile_resolution(
 ) -> tuple[int, ComputedGotoResolution | None]:
     """Resolve callback-local callinfo through this session's native profile."""
     key = int(function_ea)
-    resolution = state.resolution
+    resolution = state.portable_evidence.computed_goto_resolution
     if not isinstance(resolution, ComputedGotoResolution):
         return key, None
     profile_key = int(resolution.function_ea)
@@ -12187,7 +12139,7 @@ def _on_stkpnts(
     state = _resolver_state_from_decision(decision)
     if state is None:
         return
-    resolution = state.resolution
+    resolution = state.portable_evidence.computed_goto_resolution
     if (
         not isinstance(resolution, ComputedGotoResolution)
         or resolution.arch != "x86"
@@ -12326,7 +12278,12 @@ def _on_build_callinfo(
     if indirect_call:
         if has_operand_type:
             return
-        cached_proof = state.call_abi_proofs.get(call_ea)
+        resolver_evidence = state.native_preanalysis.resolver_evidence
+        cached_proof = (
+            None
+            if resolver_evidence is None
+            else dict(resolver_evidence.call_abi_proofs).get(call_ea)
+        )
         if cached_proof is not None and apply_three_argument_stdcall_type(
             call_type,
             cached_proof,
@@ -12365,7 +12322,7 @@ def _on_build_callinfo(
                 entry_context_transfers=recorded_transfers,
             )
             if local_transfers:
-                state.merge_materialized_transfers(local_transfers)
+                _merge_materialized_transfers(state, local_transfers)
                 combined_transfers = state.materialized_transfers
                 proven_reentry_eas = _proven_callinfo_reentry_eas(
                     resolution,
@@ -12396,7 +12353,11 @@ def _on_build_callinfo(
         )
         if prepared_callinfo is None:
             return
-        state.call_abi_proofs[call_ea] = proof
+        state.native_preanalysis.merge_call_abi_proof(
+            state.native_key,
+            call_ea=call_ea,
+            proof=proof,
+        )
         decision["callinfo"] = prepared_callinfo
         logger.info(
             "computed-goto indirect call prototype stabilized: "
@@ -12550,7 +12511,7 @@ def discover_static_native_bootstrap_routes(
     constant selector at the first direct jump.  Concrete corridor replay must
     then reach one of those known entries before a portable route is accepted.
     """
-    resolution = state.resolution
+    resolution = state.portable_evidence.computed_goto_resolution
     if not isinstance(resolution, ComputedGotoResolution):
         logger.debug(
             "native preflight bootstrap abstain: func=0x%X reason=no_resolution",
@@ -12629,7 +12590,8 @@ def discover_static_native_bootstrap_routes(
         ):
             continue
         discovered = (
-            state.discover_static_native_bootstrap_route(
+            state.native_preanalysis.discover_static_native_bootstrap_route(
+                state.native_key,
                 source_anchor_ea=int(source_anchor_ea),
                 state_constant=int(state_constant),
                 handler_anchor_ea=int(handler_anchor_ea),
@@ -12757,7 +12719,11 @@ def _discover_static_native_bootstrap_routes(
     if not candidates:
         return False
     session = decision.get("session")
-    session_id = str(getattr(session, "identity_key", "resolver-bootstrap"))
+    session_id = (
+        session.identity_key
+        if isinstance(session, ResolverLifecycleSession)
+        else "resolver-bootstrap"
+    )
     index = MbaBlockIdentityIndex.from_flow_graph(
         generation=0,
         native_key=state.native_key,
@@ -12769,8 +12735,8 @@ def _discover_static_native_bootstrap_routes(
     discovered = False
     for source_anchor_ea, state_constant, handler_anchor_ea in candidates:
         discovered = (
-            state.discover_static_native_bootstrap_route(
-                index,
+            state.native_preanalysis.discover_static_native_bootstrap_route(
+                state.native_key,
                 source_anchor_ea=int(source_anchor_ea),
                 state_constant=int(state_constant),
                 handler_anchor_ea=int(handler_anchor_ea),
@@ -13227,7 +13193,10 @@ def _on_preopt_bootstrap_route(
         )
         binding = bootstrap_bindings.get(route.evidence.key)
         if binding is not None:
-            state.record_bootstrap_route_binding(binding)
+            state.native_preanalysis.record_bootstrap_route_binding(
+                state.native_key,
+                binding,
+            )
         if not newly_rebound:
             continue
         logger.info(
@@ -13321,7 +13290,7 @@ def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) 
                 return
             if (
                 discover_static_native_bootstrap_routes(key, state)
-                and state.request_controlled_redo()
+                and state.native_preanalysis.request_controlled_redo()
             ):
                 request_hexrays_redo(
                     decision,
@@ -13358,7 +13327,7 @@ def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) 
             resolution.arch,
         )
         discover_static_native_bootstrap_routes(key, state)
-        if not state.request_controlled_redo():
+        if not state.native_preanalysis.request_controlled_redo():
             return
         request_hexrays_redo(
             decision,
@@ -13399,7 +13368,7 @@ def _on_calls_done_preanalysis(
         imported_predicate_eas = frozenset(imported_origins)
 
         def request_generated_restart(reason: str, **details: object) -> bool:
-            if not state.request_generated_restart():
+            if not state.native_preanalysis.request_generated_restart():
                 return False
             decision["defer_generated_restart"] = True
             request_hexrays_redo(
@@ -13419,7 +13388,7 @@ def _on_calls_done_preanalysis(
             )
             if handler_evidence:
                 changed = (
-                    state.merge_materialized_transfers(handler_evidence) or changed
+                    _merge_materialized_transfers(state, handler_evidence) or changed
                 )
                 transfers = state.materialized_transfers
             bridge_kwargs = {
@@ -13432,7 +13401,7 @@ def _on_calls_done_preanalysis(
             )
             if conditional_bridges:
                 changed = (
-                    state.merge_materialized_transfers(conditional_bridges) or changed
+                    _merge_materialized_transfers(state, conditional_bridges) or changed
                 )
             return changed
 
@@ -13448,7 +13417,7 @@ def _on_calls_done_preanalysis(
                 evidence_generation=state.evidence_generation,
             ):
                 return
-            if state.request_controlled_redo():
+            if state.native_preanalysis.request_controlled_redo():
                 request_hexrays_redo(
                     decision,
                     "computed_goto_calls_evidence",
@@ -13469,7 +13438,7 @@ def _on_calls_done_preanalysis(
             mba,
         )
         if produced:
-            state.merge_materialized_transfers(produced)
+            _merge_materialized_transfers(state, produced)
             transfers = state.materialized_transfers
 
         calls_evidence_changed = merge_calls_evidence()
@@ -13496,7 +13465,7 @@ def _on_calls_done_preanalysis(
         )
         if imported_conditional_bridges:
             calls_evidence_changed = (
-                state.merge_materialized_transfers(imported_conditional_bridges)
+                _merge_materialized_transfers(state, imported_conditional_bridges)
                 or calls_evidence_changed
             )
             transfers = state.materialized_transfers
@@ -13512,7 +13481,7 @@ def _on_calls_done_preanalysis(
             )
             if bridge_count:
                 materialization.entry_bridge_materialized = True
-                state.merge_materialized_transfers(bridge_transfers)
+                _merge_materialized_transfers(state, bridge_transfers)
                 materialization.rounds += 1
                 request_hexrays_redo(
                     decision,
@@ -13529,7 +13498,7 @@ def _on_calls_done_preanalysis(
             mba,
         )
         if route_count:
-            state.merge_materialized_transfers(route_transfers)
+            _merge_materialized_transfers(state, route_transfers)
             route_evidence = state.materialized_transfers
             try:
                 conditional_bridges = (
@@ -13550,7 +13519,7 @@ def _on_calls_done_preanalysis(
                 )
                 conditional_bridges = ()
             if conditional_bridges:
-                state.merge_materialized_transfers(conditional_bridges)
+                _merge_materialized_transfers(state, conditional_bridges)
             materialization.state_route_rounds += 1
             materialization.rounds += 1
             if _refresh_preopt_union_from_calls_evidence(state, mba):

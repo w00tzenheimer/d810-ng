@@ -219,7 +219,7 @@ def test_native_fact_finish_releases_live_indexes_and_attachments() -> None:
     )
     released: list[bool] = []
     session.current_mba_identity_index = object()
-    session.extensions["resolver"] = type(
+    session.resolver_attachment = type(
         "Attachment",
         (),
         {"release_live_bindings": lambda self: released.append(True)},
@@ -229,7 +229,7 @@ def test_native_fact_finish_releases_live_indexes_and_attachments() -> None:
 
     assert coordinator.get(NATIVE_KEY) is None
     assert session.current_mba_identity_index is None
-    assert session.extensions == {}
+    assert session.resolver_attachment is None
     assert released == [True]
 
 
@@ -339,11 +339,27 @@ def test_repeated_ensure_for_same_top_level_decompilation_reuses_epoch() -> None
     ]
 
 
-def test_new_session_initializes_injected_extensions_exactly_once() -> None:
+def test_new_session_initializes_injected_resolver_attachment_exactly_once() -> None:
     calls: list[tuple[str, object]] = []
     coordinator, _runtime = _coordinator(calls)
     initialized: list[object] = []
-    coordinator.session_extension_initializer = initialized.append
+
+    def initialize(session: object) -> object:
+        initialized.append(session)
+        return type(
+            "ResolverAttachment",
+            (),
+            {
+                "native_preanalysis": session.native_preanalysis,
+                "native_key": session.native_key,
+                "indirect_label_materialized": False,
+                "indirect_dispatcher_materialized": False,
+                "invalidate_current_mba_binding": lambda self: None,
+                "release_live_bindings": lambda self: None,
+            },
+        )()
+
+    coordinator.resolver_attachment_initializer = initialize
 
     session, created = coordinator.ensure_hexrays_session(
         function_ea=0x401000,
@@ -372,7 +388,7 @@ def test_lifecycle_context_owns_portable_preanalysis_state_directly() -> None:
     assert session.native_preanalysis.evidence_generation == 0
     assert created is True
     assert session.native_preanalysis.bound_preopt_generation is None
-    assert session.extensions == {}
+    assert session.resolver_attachment is None
 
 
 def test_rebound_bootstrap_fact_is_published_once_on_a_real_snapshot(

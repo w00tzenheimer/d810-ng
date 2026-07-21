@@ -86,7 +86,7 @@ def _build_native_preanalysis_key(*, function_ea, profile_config):
     )
 
 
-def _initialize_resolver_session_extension(session):
+def _initialize_resolver_attachment(session):
     """Create the optimizer-owned attachment before lower callbacks consume it."""
     from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
         resolver_session_state,
@@ -284,7 +284,7 @@ class D810Manager:
             state = resolver_session_state(session)
             if state.snippet_capture_active:
                 return 0
-            resolution = state.resolution
+            resolution = state.portable_evidence.computed_goto_resolution
             if resolution is None:
                 if not _has_unresolved_computed_goto(function_ea):
                     return 0
@@ -643,7 +643,7 @@ class D810Manager:
             event_emitter=self.event_emitter,
             current_mba_identity_index_builder=_build_current_mba_identity_index,
             mba_mutation_gateway_factory=_new_current_mba_mutation_gateway,
-            session_extension_initializer=_initialize_resolver_session_extension,
+            resolver_attachment_initializer=_initialize_resolver_attachment,
         )
 
         # The lifecycle coordinator owns top-level reset, capture, analysis,

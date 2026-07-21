@@ -33,6 +33,7 @@ from d810.analyses.control_flow.detached_handler_island import (
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     TerminalReturnCarrierRequest,
 )
+from d810.analyses.control_flow.native_preanalysis_session import CallResultCarrier
 from d810.core.logging import getLogger
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
@@ -710,17 +711,6 @@ class _AnalyzedCallResultDefinition:
     callee_ea: int | None
     result_mreg: int
     result_size: int
-
-
-@dataclass(frozen=True, slots=True)
-class CallResultCarrier:
-    call_ea: int
-    carrier_ea: int
-    branch_ea: int
-    callee_ea: int
-    carrier_ida_stkoff: int
-    value_size: int
-    branch_opcode: int
 
 
 @dataclass(frozen=True, slots=True)
