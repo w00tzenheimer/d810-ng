@@ -37,6 +37,7 @@ from d810.backends.llvm import (
     verify_llvm_ir,
 )
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+from tests.system.runtime.mutation_gateway import make_mutation_gateway
 from d810.ir import Space, Varnode
 from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
 from tests.system.runtime.hexrays.lowering_catalog import (
@@ -661,7 +662,9 @@ def _lift_post_d810_branchless(func_ea) -> dict[str, object]:
                 if plan is None:
                     return 0
                 box["done"] = True
-                mod = DeferredGraphModifier(mba)
+                mod = DeferredGraphModifier(
+                    mba, mutation_gateway=make_mutation_gateway(mba)
+                )
                 lower_conditional_synthesize(mod, plan)
                 mod.coalesce()
                 box["applied"] = mod.apply(run_optimize_local=True)
