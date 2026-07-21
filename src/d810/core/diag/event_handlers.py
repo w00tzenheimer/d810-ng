@@ -40,6 +40,8 @@ from d810.core.diag.lifecycle import (
     persist_evidence_generation,
     persist_identity_decision,
     persist_lifecycle_event,
+    persist_mutation_plan,
+    persist_mutation_receipt,
 )
 from d810.core.formatting import format_block_id
 from d810.core.diag.snapshot import (
@@ -91,6 +93,8 @@ from d810.core.observability_events import (
     ModificationsObserved,
     LifecycleEventObserved,
     IdentityDecisionObserved,
+    MutationPlanObserved,
+    MutationReceiptObserved,
     ReachabilityObserved,
     RenderedProgramObserved,
     StateDispatcherRowsObserved,
@@ -256,6 +260,24 @@ def _handle_identity_decision(ev: IdentityDecisionObserved) -> None:
         return
     snapshot_id = None if ev.snapshot is None else _resolve_snapshot_id(ev.snapshot)
     persist_identity_decision(conn, ev, snapshot_id=snapshot_id)
+
+
+def _handle_mutation_plan(ev: MutationPlanObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is not None:
+        persist_mutation_plan(conn, ev)
+
+
+def _handle_mutation_receipt(ev: MutationReceiptObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is not None:
+        persist_mutation_receipt(conn, ev)
 
 
 def _handle_dag(ev: DagObserved) -> None:
@@ -828,6 +850,8 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (LifecycleEventObserved, _handle_lifecycle_event),
     (EvidenceGenerationObserved, _handle_evidence_generation),
     (IdentityDecisionObserved, _handle_identity_decision),
+    (MutationPlanObserved, _handle_mutation_plan),
+    (MutationReceiptObserved, _handle_mutation_receipt),
     (CaptureMbaSnapshotRequested, _handle_capture_mba),
     (ConditionChainIntervalDispatcherObserved, _handle_condition_chain_interval_dispatcher),
     (StateDispatcherRowsObserved, _handle_state_dispatcher_rows),

@@ -877,6 +877,139 @@ class D810Manager:
         self.block_optimizer.report_perf_counters()
         self._stop_timer()
 
+    @staticmethod
+    def _stable_identity_anchor(identity) -> int:
+        return int(
+            min(
+                identity.exact_instruction_eas,
+                default=identity.native_ranges.intervals[0].start_ea,
+            )
+        )
+
+    @staticmethod
+    def _on_mutation_planned(event) -> None:
+        from d810.core.maturity_labels import mmat_label
+        from d810.core.observability import emit as emit_diagnostic
+        from d810.core.observability_events import (
+            MutationPlanItemObserved,
+            MutationPlanObserved,
+        )
+
+        items = []
+        for item in event.items:
+            source_anchor = item.source_anchor_ea
+            if source_anchor is None and item.source_identity is not None:
+                source_anchor = D810Manager._stable_identity_anchor(
+                    item.source_identity
+                )
+            target_anchor = item.target_anchor_ea
+            if target_anchor is None and item.target_identity is not None:
+                target_anchor = D810Manager._stable_identity_anchor(
+                    item.target_identity
+                )
+            items.append(
+                MutationPlanItemObserved(
+                    item_index=int(item.item_index),
+                    mutation_kind=item.mutation_kind,
+                    source_serial=(
+                        int(item.source_serial)
+                        if item.source_serial is not None and source_anchor is not None
+                        else None
+                    ),
+                    source_anchor_ea=source_anchor,
+                    source_identity_json=(
+                        None
+                        if item.source_identity is None
+                        else json.dumps(item.source_identity.to_dict(), sort_keys=True)
+                    ),
+                    target_serial=(
+                        int(item.target_serial)
+                        if item.target_serial is not None and target_anchor is not None
+                        else None
+                    ),
+                    target_anchor_ea=target_anchor,
+                    target_identity_json=(
+                        None
+                        if item.target_identity is None
+                        else json.dumps(item.target_identity.to_dict(), sort_keys=True)
+                    ),
+                    disposition=item.disposition,
+                    reason=item.reason,
+                )
+            )
+        emit_diagnostic(
+            MutationPlanObserved(
+                session_id=event.session_id,
+                func_ea=int(event.function_ea),
+                mutation_batch_id=event.mutation_batch_id,
+                mutation_kind=event.kind.value,
+                planned_operation_count=int(event.planned_operation_count),
+                mba_generation=int(event.mba_generation),
+                evidence_generation=int(event.evidence_generation),
+                maturity=mmat_label(int(event.maturity)),
+                description=event.description,
+                items=tuple(items),
+            )
+        )
+
+    @staticmethod
+    def _on_mutation_committed(event) -> None:
+        from d810.core.maturity_labels import mmat_label
+        from d810.core.observability import emit as emit_diagnostic
+        from d810.core.observability_events import MutationReceiptObserved
+
+        receipt = event.receipt
+        identities = tuple(receipt.affected_identities)
+        emit_diagnostic(
+            MutationReceiptObserved(
+                session_id=event.session_id,
+                func_ea=int(event.function_ea),
+                mutation_batch_id=receipt.mutation_batch_id,
+                mutation_kind=receipt.kind.value,
+                pre_generation=int(receipt.pre_generation),
+                post_generation=int(receipt.post_generation),
+                planned_operation_count=int(receipt.planned_operation_count),
+                applied_operation_count=int(receipt.operation_count),
+                evidence_generation=int(event.evidence_generation),
+                maturity=mmat_label(int(event.maturity)),
+                outcome="committed",
+                description=receipt.description,
+                reason="",
+                affected_identity_json=tuple(
+                    json.dumps(identity.to_dict(), sort_keys=True)
+                    for identity in identities
+                ),
+                affected_anchor_eas=tuple(
+                    D810Manager._stable_identity_anchor(identity)
+                    for identity in identities
+                ),
+            )
+        )
+
+    @staticmethod
+    def _on_mutation_aborted(event) -> None:
+        from d810.core.maturity_labels import mmat_label
+        from d810.core.observability import emit as emit_diagnostic
+        from d810.core.observability_events import MutationReceiptObserved
+
+        emit_diagnostic(
+            MutationReceiptObserved(
+                session_id=event.session_id,
+                func_ea=int(event.function_ea),
+                mutation_batch_id=event.mutation_batch_id,
+                mutation_kind=event.kind.value,
+                pre_generation=int(event.mba_generation),
+                post_generation=int(event.mba_generation),
+                planned_operation_count=int(event.planned_operation_count),
+                applied_operation_count=0,
+                evidence_generation=int(event.evidence_generation),
+                maturity=mmat_label(int(event.maturity)),
+                outcome="aborted",
+                description=event.description,
+                reason=event.reason,
+            )
+        )
+
     def _capture_flowgraph_ready(
         self,
         *,
@@ -908,6 +1041,15 @@ class D810Manager:
         )
 
     def _install_hooks(self):
+        from d810.hexrays.mutation.mba_mutation_events import (
+            MbaMutationAborted,
+            MbaMutationCommitted,
+            MbaMutationPlanned,
+        )
+
+        self.event_emitter.on(MbaMutationPlanned, self._on_mutation_planned)
+        self.event_emitter.on(MbaMutationCommitted, self._on_mutation_committed)
+        self.event_emitter.on(MbaMutationAborted, self._on_mutation_aborted)
         self.event_emitter.on(
             DecompilationEvent.SESSION_STARTED,
             self._on_session_started,

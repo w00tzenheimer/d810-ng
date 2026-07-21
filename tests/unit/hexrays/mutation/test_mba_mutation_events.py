@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from d810.core.events import EventEmitter
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import (
+    MbaMutationAborted,
     MbaMutationCommitted,
     MbaMutationGateway,
+    MbaMutationPlanned,
     StructuralMutationKind,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
@@ -99,9 +101,59 @@ def test_gateway_shifts_live_bindings_before_emitting_its_commit_receipt() -> No
             maturity=4,
             mba_generation_before=7,
             mba_generation_after=8,
+            evidence_generation=7,
             receipt=receipt,
         )
     ]
+
+
+def test_gateway_correlates_plan_commit_and_abort_with_batch_ids() -> None:
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=2,
+        bindings=(),
+        native_key=NATIVE_KEY,
+    )
+    emitter = EventEmitter()
+    planned = []
+    committed = []
+    aborted = []
+    emitter.on(MbaMutationPlanned, planned.append)
+    emitter.on(MbaMutationCommitted, committed.append)
+    emitter.on(MbaMutationAborted, aborted.append)
+    gateway = MbaMutationGateway(
+        generation=2,
+        session_id="mutation-session",
+        function_ea=0x40D200,
+        maturity=4,
+        identity_index=index,
+        event_emitter=emitter,
+        native_key=NATIVE_KEY,
+    )
+
+    gateway.begin_batch(
+        StructuralMutationKind.EDGE_REDIRECT,
+        planned_operation_count=1,
+    )
+    first_batch = planned[-1].mutation_batch_id
+    gateway.record_edge_redirect()
+    receipt = gateway.commit()
+
+    assert receipt.mutation_batch_id == first_batch
+    assert receipt.planned_operation_count == 1
+    assert committed[-1].receipt == receipt
+
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_REPLACE,
+        planned_operation_count=2,
+    )
+    second_batch = planned[-1].mutation_batch_id
+    gateway.abort(reason="preflight rejected")
+
+    assert second_batch != first_batch
+    assert aborted[-1].mutation_batch_id == second_batch
+    assert aborted[-1].reason == "preflight rejected"
+    assert index.generation == 3
 
 
 def test_gateway_creates_independent_transactions_over_the_same_live_index() -> None:

@@ -112,6 +112,73 @@ class IdentityDecisionObserved:
             raise ValueError("identity decision generations must be non-negative")
 
 
+@dataclass(frozen=True)
+class MutationPlanItemObserved:
+    item_index: int
+    mutation_kind: str
+    source_serial: int | None
+    source_anchor_ea: int | None
+    source_identity_json: str | None
+    target_serial: int | None
+    target_anchor_ea: int | None
+    target_identity_json: str | None
+    disposition: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        if self.source_serial is not None and self.source_anchor_ea is None:
+            raise ValueError("a planned source serial requires an EA anchor")
+        if self.target_serial is not None and self.target_anchor_ea is None:
+            raise ValueError("a planned target serial requires an EA anchor")
+
+
+@dataclass(frozen=True)
+class MutationPlanObserved:
+    session_id: str
+    func_ea: int
+    mutation_batch_id: str
+    mutation_kind: str
+    planned_operation_count: int
+    mba_generation: int
+    evidence_generation: int
+    maturity: str
+    description: str
+    items: tuple[MutationPlanItemObserved, ...] = ()
+    timestamp: float = 0.0
+
+
+@dataclass(frozen=True)
+class MutationReceiptObserved:
+    session_id: str
+    func_ea: int
+    mutation_batch_id: str
+    mutation_kind: str
+    pre_generation: int
+    post_generation: int
+    planned_operation_count: int
+    applied_operation_count: int
+    evidence_generation: int
+    maturity: str
+    outcome: str
+    description: str
+    reason: str
+    affected_identity_json: tuple[str, ...] = ()
+    affected_anchor_eas: tuple[int, ...] = ()
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.outcome == "committed" and int(self.post_generation) != int(
+            self.pre_generation
+        ) + 1:
+            raise ValueError("a committed receipt must advance one MBA generation")
+        if self.outcome == "aborted" and int(self.post_generation) != int(
+            self.pre_generation
+        ):
+            raise ValueError("an aborted receipt cannot advance the MBA generation")
+        if len(self.affected_identity_json) != len(self.affected_anchor_eas):
+            raise ValueError("receipt identities and EA anchors must align")
+
+
 # ---------------------------------------------------------------------------
 # Preanalysis domain
 # ---------------------------------------------------------------------------
