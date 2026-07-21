@@ -4810,6 +4810,8 @@ def test_preopt_import_preserves_fresh_live_predicate_for_imported_arms(
 def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
     monkeypatch,
 ) -> None:
+    import d810.core.observability as observability
+
     from d810.analyses.control_flow.detached_handler_island import (
         DetachedSnippetBoundaryPortOwner,
     )
@@ -4831,29 +4833,36 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
             ida_hexrays.mop_d,
             nested=_Instruction(ida_hexrays.m_ldx, predicate_ea),
         ),
-        dest=_Operand(ida_hexrays.mop_b, block_ref=1),
+        dest=_Operand(ida_hexrays.mop_b, block_ref=2),
     )
     source = _MBA(
         (
             _Block(
                 0,
                 source_block_ea,
-                (_Instruction(ida_hexrays.m_mov, source_block_ea), predicate),
-                (1, 2),
+                (_Instruction(ida_hexrays.m_mov, source_block_ea),),
+                (1,),
             ),
             _Block(
                 1,
+                source_block_ea + 4,
+                (predicate,),
+                (2, 3),
+            ),
+            _Block(
+                2,
                 taken_target_ea,
                 (_Instruction(ida_hexrays.m_nop, taken_target_ea),),
             ),
             _Block(
-                2,
+                3,
                 fallthrough_target_ea,
                 (_Instruction(ida_hexrays.m_nop, fallthrough_target_ea),),
             ),
         )
     )
-    source.get_mblock(0).type = int(ida_hexrays.BLT_2WAY)
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+    source.get_mblock(1).type = int(ida_hexrays.BLT_2WAY)
     destination = _MBA(
         (
             _Block(
@@ -4890,6 +4899,8 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
         boundary_ports=(port,),
         owned_block_entry_eas=(
             source_block_ea,
+            source_block_ea + 4,
+            predicate_ea,
             taken_target_ea,
             fallthrough_target_ea,
         ),
@@ -4897,17 +4908,45 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
     template = detached_handler_island._DETACHED_SNIPPET_TEMPLATES[
         (function_ea, source_block_ea)
     ]
+    record = template.boundary_ports.conditional[0]
+    assert record.source_serial == 1
+    imported_source = detached_handler_island._BoundaryPortBlockBinding(
+        native_ea=source_block_ea,
+        imported_key=(source_block_ea, 1),
+    )
+    assert (
+        detached_handler_island._exact_imported_predicate_true_is_taken(
+            port,
+            imported_source,
+            templates_by_target={source_block_ea: template},
+        )
+        is True
+    )
 
+    identity_events: list[object] = []
+    monkeypatch.setattr(
+        observability,
+        "emit",
+        identity_events.append,
+    )
     batch = detached_handler_island._preflight_boundary_port_batch(
         destination,
         (template,),
+        mutation_gateway=make_mutation_gateway(destination),
     )
 
     assert batch is not None
     assert len(batch.conditional) == 1
     mutation = batch.conditional[0]
-    assert mutation.source.imported_key == (source_block_ea, 0)
+    assert mutation.source.imported_key == (source_block_ea, 1)
     assert mutation.preserve_live_predicate is True
+    assert identity_events
+    assert all(event.primary_anchor_ea is not None for event in identity_events)
+    assert all(
+        event.current_serial is None or event.primary_anchor_ea is not None
+        for event in identity_events
+    )
+    assert {event.consumer for event in identity_events} == {"detached_snippet_import"}
 
 
 def test_preopt_import_preserves_inverted_signed_live_predicate(
