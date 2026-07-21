@@ -4807,6 +4807,109 @@ def test_preopt_import_preserves_fresh_live_predicate_for_imported_arms(
     assert applied is not None
 
 
+def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    source_block_ea = 0x1000
+    predicate_ea = 0x1008
+    taken_target_ea = 0x1100
+    fallthrough_target_ea = 0x1180
+    predicate = _Instruction(
+        ida_hexrays.m_jz,
+        predicate_ea,
+        left=_Operand(
+            ida_hexrays.mop_d,
+            nested=_Instruction(ida_hexrays.m_ldx, predicate_ea),
+        ),
+        right=_Operand(
+            ida_hexrays.mop_d,
+            nested=_Instruction(ida_hexrays.m_ldx, predicate_ea),
+        ),
+        dest=_Operand(ida_hexrays.mop_b, block_ref=1),
+    )
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_block_ea,
+                (_Instruction(ida_hexrays.m_mov, source_block_ea), predicate),
+                (1, 2),
+            ),
+            _Block(
+                1,
+                taken_target_ea,
+                (_Instruction(ida_hexrays.m_nop, taken_target_ea),),
+            ),
+            _Block(
+                2,
+                fallthrough_target_ea,
+                (_Instruction(ida_hexrays.m_nop, fallthrough_target_ea),),
+            ),
+        )
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_2WAY)
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    port = _conditional_boundary_port(
+        source_block_ea=source_block_ea,
+        predicate_ea=predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=taken_target_ea,
+        fallthrough_target_ea=fallthrough_target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        logical_source_anchor_ea=predicate_ea,
+        condition_code=4,
+        predicate_true_is_taken=True,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        source_block_ea,
+        source,
+        (
+            (source_block_ea, source_block_ea + 0x10),
+            (taken_target_ea, taken_target_ea + 1),
+            (fallthrough_target_ea, fallthrough_target_ea + 1),
+        ),
+        boundary_ports=(port,),
+        owned_block_entry_eas=(
+            source_block_ea,
+            taken_target_ea,
+            fallthrough_target_ea,
+        ),
+    )
+    template = detached_handler_island._DETACHED_SNIPPET_TEMPLATES[
+        (function_ea, source_block_ea)
+    ]
+
+    batch = detached_handler_island._preflight_boundary_port_batch(
+        destination,
+        (template,),
+    )
+
+    assert batch is not None
+    assert len(batch.conditional) == 1
+    mutation = batch.conditional[0]
+    assert mutation.source.imported_key == (source_block_ea, 0)
+    assert mutation.preserve_live_predicate is True
+
+
 def test_preopt_import_preserves_inverted_signed_live_predicate(
     monkeypatch,
 ) -> None:

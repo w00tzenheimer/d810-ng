@@ -3869,11 +3869,48 @@ def exact_live_predicate_true_is_taken(
             # branch either to that copy or around it to the join.
             return taken_serial == copy_candidates[0]
 
+    return _exact_jcc_predicate_true_is_taken(
+        predicate,
+        successor_count=int(block.nsucc()),
+        predicate_ea=predicate_ea,
+        condition_code=condition_code,
+        predicate_register=predicate_register,
+        predicate_size=predicate_size,
+        predicate_constant=predicate_constant,
+        condition_opcodes=condition_opcodes,
+    )
+
+
+def _exact_jcc_predicate_true_is_taken(
+    predicate: object | None,
+    *,
+    successor_count: int,
+    predicate_ea: int,
+    condition_code: int,
+    predicate_register: int | None,
+    predicate_size: int | None,
+    predicate_constant: int | None,
+    condition_opcodes: dict[int, tuple[int, int]] | None = None,
+) -> bool | None:
+    """Orient an exact two-way jcc without depending on block ownership."""
+    if condition_opcodes is None:
+        condition_opcodes = {
+            2: (int(ida_hexrays.m_jb), int(ida_hexrays.m_jae)),
+            3: (int(ida_hexrays.m_jae), int(ida_hexrays.m_jb)),
+            4: (int(ida_hexrays.m_jz), int(ida_hexrays.m_jnz)),
+            5: (int(ida_hexrays.m_jnz), int(ida_hexrays.m_jz)),
+            6: (int(ida_hexrays.m_jbe), int(ida_hexrays.m_ja)),
+            7: (int(ida_hexrays.m_ja), int(ida_hexrays.m_jbe)),
+            12: (int(ida_hexrays.m_jl), int(ida_hexrays.m_jge)),
+            13: (int(ida_hexrays.m_jge), int(ida_hexrays.m_jl)),
+            14: (int(ida_hexrays.m_jle), int(ida_hexrays.m_jg)),
+            15: (int(ida_hexrays.m_jg), int(ida_hexrays.m_jle)),
+        }
     opcodes = condition_opcodes.get(int(condition_code))
     if (
         opcodes is None
         or predicate is None
-        or int(block.nsucc()) != 2
+        or int(successor_count) != 2
         or int(predicate.ea) != int(predicate_ea)
         or int(predicate.opcode) not in opcodes
     ):
@@ -3915,6 +3952,42 @@ def _exact_live_predicate_true_is_taken(
         return None
     return exact_live_predicate_true_is_taken(
         source.live_block,
+        predicate_ea=int(port.predicate_ea),
+        condition_code=int(port.condition_code),
+        predicate_register=port.predicate_register,
+        predicate_size=port.predicate_size,
+        predicate_constant=port.predicate_constant,
+    )
+
+
+def _exact_imported_predicate_true_is_taken(
+    port: DetachedSnippetConditionalBoundaryPort,
+    source: _BoundaryPortBlockBinding | None,
+    *,
+    templates_by_target: dict[int, DetachedSnippetTemplate],
+) -> bool | None:
+    """Orient an exact jcc retained in an imported PREOPT template."""
+    if (
+        source is None
+        or source.imported_key is None
+        or source.live_block is not None
+        or port.source_owner != DetachedSnippetBoundaryPortOwner.IMPORTED
+        or port.condition_code is None
+    ):
+        return None
+    template_target_ea, source_serial = source.imported_key
+    template = templates_by_target.get(int(template_target_ea))
+    block = (
+        None
+        if template is None
+        else _template_block_by_serial(template, int(source_serial))
+    )
+    predicate = (
+        None if block is None or not block.instructions else block.instructions[-1]
+    )
+    return _exact_jcc_predicate_true_is_taken(
+        predicate,
+        successor_count=(0 if block is None else len(block.successor_serials)),
         predicate_ea=int(port.predicate_ea),
         condition_code=int(port.condition_code),
         predicate_register=port.predicate_register,
@@ -4225,14 +4298,18 @@ def _preflight_boundary_port_batch(
             live_block=live,
         )
 
-    def preserves_exact_live_predicate(
+    def preserves_exact_predicate(
         port: DetachedSnippetConditionalBoundaryPort,
         source: _BoundaryPortBlockBinding | None,
     ) -> bool:
-        return port.predicate_true_is_taken in (
-            True,
-            False,
-        ) and _exact_live_predicate_true_is_taken(port, source) is bool(
+        orientation = _exact_live_predicate_true_is_taken(port, source)
+        if orientation is None:
+            orientation = _exact_imported_predicate_true_is_taken(
+                port,
+                source,
+                templates_by_target=template_by_target,
+            )
+        return port.predicate_true_is_taken in (True, False) and orientation is bool(
             port.predicate_true_is_taken
         )
 
@@ -4262,6 +4339,17 @@ def _preflight_boundary_port_batch(
                     int(ida_hexrays.m_call),
                     int(ida_hexrays.m_icall),
                     int(ida_hexrays.m_ijmp),
+                    int(ida_hexrays.m_jcnd),
+                    int(ida_hexrays.m_jz),
+                    int(ida_hexrays.m_jnz),
+                    int(ida_hexrays.m_jae),
+                    int(ida_hexrays.m_jb),
+                    int(ida_hexrays.m_ja),
+                    int(ida_hexrays.m_jbe),
+                    int(ida_hexrays.m_jg),
+                    int(ida_hexrays.m_jge),
+                    int(ida_hexrays.m_jl),
+                    int(ida_hexrays.m_jle),
                 }
             )
             if port.predicate_register is not None
@@ -4317,7 +4405,9 @@ def _preflight_boundary_port_batch(
         return (
             source,
             materialize_logical_source,
-            source is not None and resolver_cut_complete,
+            source is not None
+            and resolver_cut_complete
+            and not preserves_exact_predicate(port, source),
         )
 
     conditional_source_resolutions: dict[
@@ -4601,7 +4691,7 @@ def _preflight_boundary_port_batch(
                 materialize_logical_source,
                 materialize_resolver_cut,
             ) = conditional_source_resolutions[(id(template), id(record))]
-            preserve_live_predicate = preserves_exact_live_predicate(
+            preserve_live_predicate = preserves_exact_predicate(
                 port,
                 source,
             )
