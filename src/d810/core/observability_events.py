@@ -32,6 +32,38 @@ class CaptureMbaSnapshotRequested:
     blocks: tuple[BlockSnapshot, ...]
 
 
+@dataclass(frozen=True)
+class DiagnosticSessionObserved:
+    """Manager-owned decompilation session entered or changed terminal state."""
+
+    session_id: str
+    func_ea: int
+    top_level_epoch: int
+    native_key_json: str
+    status: str
+    timestamp: float = 0.0
+
+
+@dataclass(frozen=True)
+class LifecycleEventObserved:
+    """Portable event-native diagnostic record with optional snapshot context."""
+
+    session_id: str
+    func_ea: int
+    event_kind: str
+    snapshot: SnapshotRef | None = None
+    provider: str | None = None
+    maturity: str | None = None
+    phase: str | None = None
+    evidence_generation: int | None = None
+    mba_generation_before: int | None = None
+    mba_generation_after: int | None = None
+    correlation_id: str | None = None
+    summary: str = ""
+    payload: dict[str, Any] = field(default_factory=dict)
+    timestamp: float = 0.0
+
+
 # ---------------------------------------------------------------------------
 # Preanalysis domain
 # ---------------------------------------------------------------------------

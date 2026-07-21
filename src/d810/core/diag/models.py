@@ -54,6 +54,23 @@ class DiagnosticSchemaVersion(BaseModel):
         table_name = "diagnostic_schema"
 
 
+class DiagnosticSession(BaseModel):
+    session_id = TextField(primary_key=True)
+    func_ea_hex = TextField()
+    func_ea_i64 = IntegerField()
+    top_level_epoch = IntegerField()
+    native_key_json = TextField()
+    started_at = FloatField()
+    finished_at = FloatField(null=True)
+    status = TextField(
+        constraints=[Check("status IN ('active','finished','failed')")]
+    )
+    diagnostic_error_count = IntegerField(default=0)
+
+    class Meta:
+        table_name = "diagnostic_sessions"
+
+
 def _snapshot_fk() -> ForeignKeyField:
     """``snapshot_id INTEGER NOT NULL REFERENCES snapshots(id)`` with no FK index."""
     return ForeignKeyField(
@@ -86,6 +103,46 @@ class Snapshot(BaseModel):
 
     class Meta:
         table_name = "snapshots"
+
+
+class LifecycleEvent(BaseModel):
+    event_id = AutoField()
+    session = ForeignKeyField(
+        DiagnosticSession,
+        field="session_id",
+        column_name="session_id",
+        index=False,
+        null=False,
+    )
+    event_seq = IntegerField()
+    timestamp = FloatField()
+    event_kind = TextField()
+    snapshot = ForeignKeyField(
+        Snapshot,
+        field="id",
+        column_name="snapshot_id",
+        index=False,
+        null=True,
+    )
+    func_ea_hex = TextField()
+    func_ea_i64 = IntegerField()
+    provider = TextField(null=True)
+    maturity = TextField(null=True)
+    phase = TextField(null=True)
+    evidence_generation = IntegerField(null=True)
+    mba_generation_before = IntegerField(null=True)
+    mba_generation_after = IntegerField(null=True)
+    correlation_id = TextField(null=True)
+    summary = TextField()
+    payload_json = TextField(default="{}")
+
+    class Meta:
+        table_name = "lifecycle_events"
+        indexes = (
+            (("session", "event_seq"), True),
+            (("func_ea_i64", "event_kind"), False),
+            (("correlation_id",), False),
+        )
 
 
 class SnapshotMaturity(BaseModel):
@@ -898,7 +955,9 @@ class TerminalTailDceCause(BaseModel):
 # ``snapshot_id`` FK points only at Snapshot, so the remaining order is free.
 MODELS = (
     DiagnosticSchemaVersion,
+    DiagnosticSession,
     Snapshot,
+    LifecycleEvent,
     SnapshotMaturity,
     # Layer 1
     Block,
