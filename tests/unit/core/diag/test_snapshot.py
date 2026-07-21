@@ -1320,7 +1320,7 @@ class TestSnapshotModifications:
             """
             SELECT mod_type, status, source_block_label, target_block_label,
                    old_target_label
-            FROM modifications
+            FROM snapshot_modifications
             WHERE snapshot_id=?
             ORDER BY mod_index
             """,
@@ -1344,7 +1344,7 @@ class TestSnapshotModifications:
 
         ea_rows = conn.execute(
             "SELECT source_block_ea_hex, target_block_ea_hex, old_target_ea_hex "
-            "FROM modifications WHERE snapshot_id=? "
+            "FROM snapshot_modifications WHERE snapshot_id=? "
             "ORDER BY mod_index",
             (snap_id,),
         ).fetchall()
@@ -1362,7 +1362,7 @@ class TestSnapshotModifications:
         )
         snapshot_modifications(conn, 1, [])
         count = conn.execute(
-            "SELECT COUNT(*) FROM modifications WHERE snapshot_id=1"
+            "SELECT COUNT(*) FROM snapshot_modifications WHERE snapshot_id=1"
         ).fetchone()[0]
         assert count == 0
 
