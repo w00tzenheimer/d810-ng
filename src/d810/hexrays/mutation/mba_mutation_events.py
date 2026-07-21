@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import uuid
 
 from d810.core.events import EventEmitter
 from d810.core.native_preanalysis_key import NativePreanalysisKey
@@ -25,11 +26,13 @@ class StructuralMutationKind(Enum):
 class MbaMutationReceipt:
     """Post-commit record for one atomic structural mutation batch."""
 
+    mutation_batch_id: str
     kind: StructuralMutationKind
     pre_generation: int
     post_generation: int
     affected_identities: tuple[StableBlockIdentity, ...]
     operation_count: int = 0
+    planned_operation_count: int = 0
     description: str = ""
 
     def __post_init__(self) -> None:
@@ -39,9 +42,18 @@ class MbaMutationReceipt:
             raise ValueError("a mutation receipt must advance exactly one generation")
         if int(self.operation_count) < 0:
             raise ValueError("a mutation receipt cannot have negative operations")
+        if not str(self.mutation_batch_id):
+            raise ValueError("a mutation receipt requires a batch id")
+        if int(self.planned_operation_count) < int(self.operation_count):
+            raise ValueError("applied operations cannot exceed the planned count")
         object.__setattr__(self, "pre_generation", pre_generation)
         object.__setattr__(self, "post_generation", post_generation)
         object.__setattr__(self, "operation_count", int(self.operation_count))
+        object.__setattr__(
+            self,
+            "planned_operation_count",
+            int(self.planned_operation_count),
+        )
         object.__setattr__(
             self,
             "affected_identities",
@@ -58,7 +70,50 @@ class MbaMutationCommitted:
     maturity: int
     mba_generation_before: int
     mba_generation_after: int
+    evidence_generation: int
     receipt: MbaMutationReceipt
+
+
+@dataclass(frozen=True, slots=True)
+class MbaMutationPlanItem:
+    item_index: int
+    mutation_kind: str
+    source_serial: int | None = None
+    source_anchor_ea: int | None = None
+    source_identity: StableBlockIdentity | None = None
+    target_serial: int | None = None
+    target_anchor_ea: int | None = None
+    target_identity: StableBlockIdentity | None = None
+    disposition: str = "planned"
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class MbaMutationPlanned:
+    session_id: str
+    function_ea: int
+    maturity: int
+    mba_generation: int
+    evidence_generation: int
+    mutation_batch_id: str
+    kind: StructuralMutationKind
+    planned_operation_count: int
+    description: str
+    items: tuple[MbaMutationPlanItem, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MbaMutationAborted:
+    session_id: str
+    function_ea: int
+    maturity: int
+    mba_generation: int
+    evidence_generation: int
+    mutation_batch_id: str
+    kind: StructuralMutationKind
+    planned_operation_count: int
+    description: str
+    reason: str
 
 
 @dataclass(slots=True)
@@ -87,6 +142,8 @@ class MbaMutationGateway:
         repr=False,
     )
     _operation_count: int = field(default=0, init=False)
+    _active_batch_id: str | None = field(default=None, init=False)
+    _planned_operation_count: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         self.generation = int(self.generation)
@@ -136,6 +193,8 @@ class MbaMutationGateway:
         *,
         serial_quantity: int | None = None,
         description: str = "",
+        planned_operation_count: int = 1,
+        plan_items: Iterable[MbaMutationPlanItem] = (),
     ) -> None:
         if self.active:
             raise RuntimeError("a structural mutation batch is already active")
@@ -143,8 +202,28 @@ class MbaMutationGateway:
             self.identity_index.begin_transaction(int(serial_quantity))
         self._active_kind = kind
         self._active_description = str(description)
+        self._active_batch_id = uuid.uuid4().hex
+        self._planned_operation_count = int(planned_operation_count)
+        if self._planned_operation_count < 0:
+            raise ValueError("planned operation count must be non-negative")
         self._affected_identities.clear()
         self._operation_count = 0
+        if self.event_emitter is not None:
+            self.event_emitter.emit(
+                MbaMutationPlanned,
+                MbaMutationPlanned(
+                    session_id=self.session_id,
+                    function_ea=int(self.function_ea),
+                    maturity=int(self.maturity),
+                    mba_generation=int(self.identity_index.generation),
+                    evidence_generation=int(self.identity_index.evidence_generation),
+                    mutation_batch_id=self._active_batch_id,
+                    kind=kind,
+                    planned_operation_count=self._planned_operation_count,
+                    description=self._active_description,
+                    items=tuple(plan_items),
+                ),
+            )
 
     def _require_active(self) -> None:
         if not self.active:
@@ -281,17 +360,24 @@ class MbaMutationGateway:
         pre_generation = self.identity_index.generation
         post_generation = self.identity_index.advance_generation()
         receipt = MbaMutationReceipt(
+            mutation_batch_id=str(self._active_batch_id),
             kind=self._active_kind,
             pre_generation=pre_generation,
             post_generation=post_generation,
             affected_identities=tuple(self._affected_identities),
             operation_count=self._operation_count,
+            planned_operation_count=max(
+                self._planned_operation_count,
+                self._operation_count,
+            ),
             description=self._active_description,
         )
         self.generation = post_generation
         self._receipts.append(receipt)
         self._active_kind = None
         self._active_description = ""
+        self._active_batch_id = None
+        self._planned_operation_count = 0
         self._affected_identities.clear()
         self._operation_count = 0
         committed = MbaMutationCommitted(
@@ -300,16 +386,35 @@ class MbaMutationGateway:
             maturity=int(self.maturity),
             mba_generation_before=pre_generation,
             mba_generation_after=post_generation,
+            evidence_generation=int(self.identity_index.evidence_generation),
             receipt=receipt,
         )
         if self.event_emitter is not None:
             self.event_emitter.emit(MbaMutationCommitted, committed)
         return receipt
 
-    def abort(self) -> None:
+    def abort(self, *, reason: str = "aborted") -> None:
         """Forget an uncommitted batch; callers must rebuild after SDK failure."""
+        if self.active and self.event_emitter is not None:
+            self.event_emitter.emit(
+                MbaMutationAborted,
+                MbaMutationAborted(
+                    session_id=self.session_id,
+                    function_ea=int(self.function_ea),
+                    maturity=int(self.maturity),
+                    mba_generation=int(self.identity_index.generation),
+                    evidence_generation=int(self.identity_index.evidence_generation),
+                    mutation_batch_id=str(self._active_batch_id),
+                    kind=self._active_kind,
+                    planned_operation_count=int(self._planned_operation_count),
+                    description=self._active_description,
+                    reason=str(reason),
+                ),
+            )
         self._active_kind = None
         self._active_description = ""
+        self._active_batch_id = None
+        self._planned_operation_count = 0
         self._affected_identities.clear()
         self._operation_count = 0
 
@@ -321,7 +426,11 @@ class MbaMutationGateway:
         description: str = "",
     ) -> MbaMutationReceipt:
         """Record one already-applied structural mutation as a one-op batch."""
-        self.begin_batch(kind, description=description)
+        self.begin_batch(
+            kind,
+            description=description,
+            planned_operation_count=1,
+        )
         self._affected_identities.update(affected_identities)
         self._operation_count = 1
         return self.commit()
@@ -329,7 +438,10 @@ class MbaMutationGateway:
 
 __all__ = [
     "MbaMutationCommitted",
+    "MbaMutationAborted",
     "MbaMutationGateway",
+    "MbaMutationPlanItem",
+    "MbaMutationPlanned",
     "MbaMutationReceipt",
     "StructuralMutationKind",
 ]

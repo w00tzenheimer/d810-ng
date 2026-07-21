@@ -198,6 +198,75 @@ class IdentityDecision(BaseModel):
         )
 
 
+class MutationPlanItem(BaseModel):
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        index=False,
+        null=False,
+    )
+    mutation_batch_id = TextField()
+    item_index = IntegerField()
+    mutation_kind = TextField()
+    source_serial = IntegerField(null=True)
+    source_anchor_ea_hex = TextField(null=True)
+    source_anchor_ea_i64 = IntegerField(null=True)
+    source_identity_json = TextField(null=True)
+    target_serial = IntegerField(null=True)
+    target_anchor_ea_hex = TextField(null=True)
+    target_anchor_ea_i64 = IntegerField(null=True)
+    target_identity_json = TextField(null=True)
+    disposition = TextField()
+    reason = TextField()
+
+    class Meta:
+        table_name = "mutation_plan_items"
+        primary_key = CompositeKey("event", "item_index")
+        indexes = ((('mutation_batch_id', 'item_index'), True),)
+
+
+class MutationReceipt(BaseModel):
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    mutation_batch_id = TextField(unique=True)
+    mutation_kind = TextField()
+    pre_generation = IntegerField()
+    post_generation = IntegerField()
+    planned_operation_count = IntegerField()
+    applied_operation_count = IntegerField()
+    outcome = TextField()
+    description = TextField()
+    reason = TextField()
+
+    class Meta:
+        table_name = "mutation_receipts"
+
+
+class MutationReceiptIdentity(BaseModel):
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        index=False,
+        null=False,
+    )
+    identity_index = IntegerField()
+    identity_json = TextField()
+    primary_anchor_ea_hex = TextField()
+    primary_anchor_ea_i64 = IntegerField()
+
+    class Meta:
+        table_name = "mutation_receipt_identities"
+        primary_key = CompositeKey("event", "identity_index")
+
+
 class SnapshotMaturity(BaseModel):
     snapshot = ForeignKeyField(
         Snapshot,
@@ -1013,6 +1082,9 @@ MODELS = (
     LifecycleEvent,
     EvidenceGenerationEvent,
     IdentityDecision,
+    MutationPlanItem,
+    MutationReceipt,
+    MutationReceiptIdentity,
     SnapshotMaturity,
     # Layer 1
     Block,

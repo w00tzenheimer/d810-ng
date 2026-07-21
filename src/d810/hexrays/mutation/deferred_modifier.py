@@ -195,7 +195,7 @@ import hashlib
 import re
 import uuid
 
-from d810.core.typing import TYPE_CHECKING, Callable
+from d810.core.typing import TYPE_CHECKING, Callable, Iterable
 import os
 import time
 
@@ -206,6 +206,7 @@ from d810.core import getLogger
 from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
+    MbaMutationPlanItem,
     StructuralMutationKind,
 )
 from d810.hexrays.mutation.cfg_verify import (
@@ -4722,7 +4723,10 @@ class DeferredGraphModifier:
             + pre_rejected_trampolines
         )
         total_mod_count = len(sorted_mods) + pre_rejected
-        self._begin_mutation_batch()
+        self._begin_mutation_batch(
+            planned_operation_count=len(sorted_mods),
+            plan_items=self._build_mutation_plan_items(sorted_mods),
+        )
 
         logger.info("Applying %d queued graph modifications", total_mod_count)
 
@@ -6735,6 +6739,8 @@ class DeferredGraphModifier:
         serial_quantity: int | None = None,
         kind: StructuralMutationKind = StructuralMutationKind.BLOCK_REPLACE,
         description: str = "deferred graph modifier apply",
+        planned_operation_count: int = 1,
+        plan_items: Iterable[MbaMutationPlanItem] = (),
     ) -> None:
         """Create the sole serial-binding authority for this apply batch."""
         if self._mutation_gateway is not None and self._mutation_gateway.active:
@@ -6750,7 +6756,63 @@ class DeferredGraphModifier:
                 int(self.mba.qty) if serial_quantity is None else int(serial_quantity)
             ),
             description=description,
+            planned_operation_count=int(planned_operation_count),
+            plan_items=tuple(plan_items),
         )
+
+    def _build_mutation_plan_items(
+        self,
+        modifications: Iterable[GraphModification],
+    ) -> tuple[MbaMutationPlanItem, ...]:
+        gateway = self._mutation_gateway
+        if gateway is None:
+            return ()
+
+        def _identity_and_anchor(serial: int | None):
+            if serial is None:
+                return None, None
+            handle = gateway.identity_index.handle_for_serial(int(serial))
+            identity = None if handle is None else handle.stable_identity
+            if identity is not None:
+                anchor = min(
+                    identity.exact_instruction_eas,
+                    default=identity.native_ranges.intervals[0].start_ea,
+                )
+                return identity, int(anchor)
+            block = self.mba.get_mblock(int(serial))
+            if block is None:
+                return None, None
+            anchor = int(getattr(block, "start", -1) or -1)
+            if anchor < 0 or anchor >= 0xFFFFFFFFFFFFFFFF:
+                head = getattr(block, "head", None)
+                anchor = int(getattr(head, "ea", -1) or -1)
+            return (None, anchor) if 0 <= anchor < 0xFFFFFFFFFFFFFFFF else (None, None)
+
+        items = []
+        for item_index, modification in enumerate(modifications):
+            source_serial = int(modification.block_serial)
+            target_serial = (
+                None
+                if modification.new_target is None
+                else int(modification.new_target)
+            )
+            source_identity, source_anchor = _identity_and_anchor(source_serial)
+            target_identity, target_anchor = _identity_and_anchor(target_serial)
+            items.append(
+                MbaMutationPlanItem(
+                    item_index=item_index,
+                    mutation_kind=modification.mod_type.name.lower(),
+                    source_serial=(source_serial if source_anchor is not None else None),
+                    source_anchor_ea=source_anchor,
+                    source_identity=source_identity,
+                    target_serial=(target_serial if target_anchor is not None else None),
+                    target_anchor_ea=target_anchor,
+                    target_identity=target_identity,
+                    disposition="planned",
+                    reason="post-filter deferred plan",
+                )
+            )
+        return tuple(items)
 
     def _finish_mutation_batch(self, applied: int) -> None:
         gateway = self._mutation_gateway
