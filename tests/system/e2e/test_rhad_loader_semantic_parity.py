@@ -80,6 +80,21 @@ def _run_worker(binary: pathlib.Path, output_path: pathlib.Path) -> None:
         finally:
             headless.stop()
     finally:
+        # A Hex-Rays failure can abort before the structural callback that
+        # normally closes and checkpoints the WAL-backed diagnostic session.
+        # Close it explicitly so the preserved main database is self-contained.
+        from d810.core.observability import close_observability_session
+
+        close_observability_session()
+        diag_output = os.environ.get("RHAD_TRANSFER_DIAG_OUTPUT")
+        if diag_output:
+            from d810.core.diag import find_latest_diag_db_path
+
+            diag_path = find_latest_diag_db_path(_FUNCTION_EA)
+            if diag_path is not None:
+                destination = pathlib.Path(diag_output).resolve()
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(diag_path, destination)
         idapro.close_database(False)
 
     output_path.write_text(recovered, encoding="utf-8")
@@ -90,6 +105,7 @@ def test_real_loader_matches_reachable_semantic_oracle(tmp_path) -> None:
     """The reusable pipeline preserves every oracle-visible side effect."""
     binary = tmp_path / _BINARY.name
     output_path = tmp_path / "sub_40A560.c"
+    diag_path = tmp_path / "sub_40A560.diag.sqlite3"
     shutil.copy2(_BINARY, binary)
     _clear_ida_sidecars(binary)
 
@@ -101,6 +117,15 @@ def test_real_loader_matches_reachable_semantic_oracle(tmp_path) -> None:
             str(_REPO / "tests"),
             env.get("PYTHONPATH", ""),
         )
+    )
+    env.update(
+        {
+            "RHAD_TRANSFER_DIAG_OUTPUT": str(diag_path),
+            "D810_DIAG_SNAPSHOT": "1",
+            "RHAD_TRANSFER_TRACE_STACK_SELECTORS": "1",
+            "RHAD_TRANSFER_TRACE_HANDLER_ROUTES": "1",
+            "RHAD_TRANSFER_TRACE_SESSION_STATE": "1",
+        }
     )
     result = subprocess.run(
         [
