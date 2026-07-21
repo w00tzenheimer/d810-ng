@@ -5,6 +5,7 @@ materialization makes that transfer visible to Hex-Rays.  This module keeps that
 proof independent of IDA and maps it back onto a post-materialization FlowGraph
 only when both the source anchor and the target block are unambiguous.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -135,6 +136,84 @@ class MaterializedIndirectTransfer:
     #: adapter converts it to the current top-level MBA offset at lowering time.
     state_carrier_ida_stkoff: int | None = None
 
+    def diagnostic_payload(
+        self,
+        *,
+        generation: int,
+        inventory_revision: int,
+    ) -> dict[str, object]:
+        """Return the complete portable proof in DB-queryable form.
+
+        Native addresses and state constants are rendered as hexadecimal text
+        so they remain unambiguous in SQLite JSON queries and diagnostic
+        exports.  Live MBA serials are deliberately absent because this object
+        crosses maturity and regeneration boundaries.
+        """
+
+        def optional_hex(value: int | None) -> str | None:
+            return None if value is None else f"0x{int(value):X}"
+
+        def register_values(
+            values: tuple[tuple[int, int], ...],
+        ) -> list[list[object]]:
+            return [[int(register), f"0x{int(value):X}"] for register, value in values]
+
+        return {
+            "generation": int(generation),
+            "inventory_revision": int(inventory_revision),
+            "resolver_kind": str(self.resolver_kind),
+            "source_jmp_ea": f"0x{int(self.source_jmp_ea):X}",
+            "source_block_ea": f"0x{int(self.source_block_ea):X}",
+            "materialized_anchor_eas": [
+                f"0x{int(ea):X}" for ea in self.materialized_anchor_eas
+            ],
+            "target_eas": [f"0x{int(ea):X}" for ea in self.target_eas],
+            "next_target_ea": optional_hex(self.next_target_ea),
+            "condition_code": self.condition_code,
+            "true_target_ea": optional_hex(self.true_target_ea),
+            "false_target_ea": optional_hex(self.false_target_ea),
+            "selector_state_constant": optional_hex(self.selector_state_constant),
+            "selector_state_var_reg": self.selector_state_var_reg,
+            "selector_compare_constant": optional_hex(self.selector_compare_constant),
+            "selector_state_on_left": self.selector_state_on_left,
+            "context_register_values": register_values(self.context_register_values),
+            "source_register_values": register_values(self.source_register_values),
+            "target_register_values": register_values(self.target_register_values),
+            "corridor_register_snapshots": [
+                [f"0x{int(ea):X}", register_values(values)]
+                for ea, values in self.corridor_register_snapshots
+            ],
+            "materialized_region_end_ea": optional_hex(self.materialized_region_end_ea),
+            "owned_native_ranges": [
+                [f"0x{int(start):X}", f"0x{int(end):X}"]
+                for start, end in self.owned_native_ranges
+            ],
+            "predicate_register": self.predicate_register,
+            "predicate_size": self.predicate_size,
+            "predicate_compare_register": self.predicate_compare_register,
+            "predicate_compare_constant": optional_hex(self.predicate_compare_constant),
+            "predicate_predecessor_ea": optional_hex(self.predicate_predecessor_ea),
+            "predicate_true_state": optional_hex(self.predicate_true_state),
+            "predicate_false_state": optional_hex(self.predicate_false_state),
+            "predicate_true_is_taken": self.predicate_true_is_taken,
+            "predicate_preserve_live": bool(self.predicate_preserve_live),
+            "dispatcher_entry_ea": optional_hex(self.dispatcher_entry_ea),
+            "dispatcher_router_eas": [
+                f"0x{int(ea):X}" for ea in self.dispatcher_router_eas
+            ],
+            "dispatcher_envelope_target_eas": [
+                f"0x{int(ea):X}" for ea in self.dispatcher_envelope_target_eas
+            ],
+            "state_carrier_store_ea": optional_hex(self.state_carrier_store_ea),
+            "state_carrier_stack_displacement": optional_hex(
+                self.state_carrier_stack_displacement
+            ),
+            "state_carrier_consumer_load_eas": [
+                f"0x{int(ea):X}" for ea in self.state_carrier_consumer_load_eas
+            ],
+            "state_carrier_ida_stkoff": self.state_carrier_ida_stkoff,
+        }
+
 
 _MUTATION_AUTHORITATIVE_TRANSFER_KINDS = frozenset(
     {
@@ -233,17 +312,15 @@ def mutation_authoritative_materialized_transfers(
     for transfer in entry_routes:
         semantic_key = _handler_entry_route_semantic_key(transfer)
         assert semantic_key is not None
-        entry_semantics_by_source.setdefault(
-            int(transfer.source_block_ea), set()
-        ).add(semantic_key)
+        entry_semantics_by_source.setdefault(int(transfer.source_block_ea), set()).add(
+            semantic_key
+        )
     navigation_sources = frozenset(
         source_ea
         for source_ea, semantics in entry_semantics_by_source.items()
         if len(semantics) != 1
     )
-    entry_candidates: dict[
-        tuple[int, int, int], set[MaterializedIndirectTransfer]
-    ] = {}
+    entry_candidates: dict[tuple[int, int, int], set[MaterializedIndirectTransfer]] = {}
     for transfer in entry_routes:
         if int(transfer.source_block_ea) in navigation_sources:
             continue
@@ -275,10 +352,7 @@ def mutation_authoritative_materialized_transfers(
         ranked: dict[tuple[int, int], set[MaterializedIndirectTransfer]] = {}
         for transfer in candidates:
             rank = (
-                int(
-                    transfer.resolver_kind
-                    == "static_conditional_state_choice_bridge"
-                ),
+                int(transfer.resolver_kind == "static_conditional_state_choice_bridge"),
                 len(frozenset(int(ea) for ea in transfer.materialized_anchor_eas)),
             )
             ranked.setdefault(rank, set()).add(transfer)
@@ -504,9 +578,7 @@ class ResidualIndirectCallNeutralizationPlan:
     redirected_target_serial: int
 
 
-_NATIVE_JUMP_RESOLVER_KINDS = frozenset(
-    {"static_fixpoint", "detached_static_fixpoint"}
-)
+_NATIVE_JUMP_RESOLVER_KINDS = frozenset({"static_fixpoint", "detached_static_fixpoint"})
 
 _EXACT_STATE_SELECTOR_RESOLVER_KINDS = frozenset(
     {
@@ -588,9 +660,7 @@ def unique_materialized_conditional_handler_entry_eas(
         ):
             if state_constant is None or target_ea is None:
                 continue
-            target_serial = handler_targets.get(
-                int(state_constant) & 0xFFFFFFFF
-            )
+            target_serial = handler_targets.get(int(state_constant) & 0xFFFFFFFF)
             if target_serial is None:
                 continue
             candidates.setdefault(int(target_serial), set()).add(int(target_ea))
@@ -662,9 +732,7 @@ def plan_resolver_proven_indirect_call_neutralizations(
             continue
         redirected_targets = {
             int(target)
-            for target in redirected_targets_by_source.get(
-                int(source.serial), ()
-            )
+            for target in redirected_targets_by_source.get(int(source.serial), ())
         }
         if len(redirected_targets) != 1:
             continue
@@ -742,9 +810,7 @@ def plan_residual_state_route_bridges(
         )
         by_source.setdefault(int(source_serial), set()).add(plan)
     unambiguous_sources = tuple(
-        next(iter(plans))
-        for plans in by_source.values()
-        if len(plans) == 1
+        next(iter(plans)) for plans in by_source.values() if len(plans) == 1
     )
     by_state_target: dict[
         tuple[int, int],
@@ -832,8 +898,7 @@ def unique_materialized_equality_target_eas(
             if (
                 transfer.selector_state_constant is not None
                 and len(transfer.target_eas) == 1
-                and int(transfer.target_eas[0])
-                in validated_candidate_target_eas
+                and int(transfer.target_eas[0]) in validated_candidate_target_eas
             ):
                 state = int(transfer.selector_state_constant) & 0xFFFFFFFF
                 target = int(transfer.target_eas[0])
@@ -910,8 +975,7 @@ def materialized_dispatcher_router_native_ranges(
                 for transfer in transfers
                 if (
                     int(transfer.source_block_ea) in router_eas
-                    and int(transfer.source_jmp_ea)
-                    >= int(transfer.source_block_ea)
+                    and int(transfer.source_jmp_ea) >= int(transfer.source_block_ea)
                 )
             }
         )
@@ -1030,8 +1094,7 @@ def merge_materialized_handler_maps(
     for state, handler in handler_targets.items():
         states_by_handler.setdefault(int(handler), []).append(int(state))
     handler_states = {
-        handler: tuple(sorted(states))
-        for handler, states in states_by_handler.items()
+        handler: tuple(sorted(states)) for handler, states in states_by_handler.items()
     }
     return handler_states, handler_targets, handler_serials
 
@@ -1062,8 +1125,7 @@ def override_materialized_handler_targets(
     for state, handler in updated_targets.items():
         states_by_handler.setdefault(int(handler), []).append(int(state))
     updated_states = {
-        handler: tuple(sorted(states))
-        for handler, states in states_by_handler.items()
+        handler: tuple(sorted(states)) for handler, states in states_by_handler.items()
     }
     return (
         updated_states,
@@ -1088,9 +1150,7 @@ def missing_materialized_handler_targets(
     block.  Comparing the two maps therefore checks handler-map completeness
     without conflating it with reachability from one particular function input.
     """
-    mapped_states = {
-        int(state) & 0xFFFFFFFF for state in live_handler_owners
-    }
+    mapped_states = {int(state) & 0xFFFFFFFF for state in live_handler_owners}
     terminals = {
         (int(state) & 0xFFFFFFFF, int(target_ea))
         for state, target_ea in terminal_state_targets
@@ -1227,7 +1287,9 @@ def _block_eas(block) -> frozenset[int]:
     tail = getattr(block, "tail", None)
     if tail is not None:
         eas.add(int(tail.ea))
-    eas.update(int(insn.ea) for insn in tuple(getattr(block, "insn_snapshots", ()) or ()))
+    eas.update(
+        int(insn.ea) for insn in tuple(getattr(block, "insn_snapshots", ()) or ())
+    )
     return frozenset(eas)
 
 

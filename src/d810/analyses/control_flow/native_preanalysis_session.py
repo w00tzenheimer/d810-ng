@@ -358,6 +358,8 @@ class NativePreanalysisSessionState:
     published_bootstrap_keys: set[tuple[StableBlockIdentity, int]] = field(
         default_factory=set
     )
+    transfer_inventory_revision: int = 0
+    published_transfer_inventory_revision: int | None = None
     redo_generation: int | None = None
     pending_generated_restart_generation: int | None = None
     event_observer: Callable[[EvidenceLifecycleTransition], None] | None = field(
@@ -820,7 +822,13 @@ class NativePreanalysisSessionState:
         facts.require_key(key)
         if self.facts == facts:
             return False
+        if self.facts is None:
+            transfer_inventory_changed = bool(facts.transfers)
+        else:
+            transfer_inventory_changed = self.facts.transfers != facts.transfers
         self.facts = facts
+        if transfer_inventory_changed:
+            self.transfer_inventory_revision += 1
         self.mark_evidence_changed()
         return True
 
@@ -925,6 +933,29 @@ class NativePreanalysisSessionState:
                 and key not in self.conflicted_bootstrap_keys
             ):
                 self.published_bootstrap_keys.add(key)
+
+    def pending_materialized_transfers_for_publication(
+        self,
+    ) -> tuple[MaterializedIndirectTransfer, ...]:
+        """Return the current complete inventory once per evidence generation."""
+        if (
+            self.published_transfer_inventory_revision
+            == self.transfer_inventory_revision
+            or self.facts is None
+            or not self.facts.transfers
+        ):
+            return ()
+        return self.facts.transfers
+
+    def mark_materialized_transfers_published(
+        self,
+        transfers: tuple[MaterializedIndirectTransfer, ...],
+    ) -> None:
+        """Acknowledge only an event containing the exact current inventory."""
+        if self.facts is not None and transfers == self.facts.transfers:
+            self.published_transfer_inventory_revision = (
+                self.transfer_inventory_revision
+            )
 
     def request_controlled_redo(self) -> bool:
         """Allow exactly one redo request for a changed evidence generation."""

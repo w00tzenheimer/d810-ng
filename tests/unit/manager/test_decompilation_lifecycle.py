@@ -12,6 +12,9 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 from d810.analyses.control_flow.detached_handler_island import (
     DetachedSnippetBoundaryPorts,
 )
+from d810.analyses.control_flow.materialized_indirect_transfer import (
+    MaterializedIndirectTransfer,
+)
 from d810.analyses.control_flow.native_semantic_closure import NativeBlock, NativeCfg
 from d810.core.native_preanalysis_key import NativePreanalysisKeyMismatch
 from d810.core.provider_phase import ProviderPhaseSnapshot
@@ -155,12 +158,12 @@ def _flowgraph_payload(
     )
 
 
-def _native_facts(*, key=NATIVE_KEY, blocks=()) -> NativePreanalysisFacts:
+def _native_facts(*, key=NATIVE_KEY, blocks=(), transfers=()) -> NativePreanalysisFacts:
     return NativePreanalysisFacts(
         key=key,
         native_cfg=NativeCfg({block.start_ea: block for block in blocks}),
         semantic_closure=None,
-        transfers=(),
+        transfers=transfers,
         boundary_ports=DetachedSnippetBoundaryPorts((), ()),
     )
 
@@ -436,6 +439,77 @@ def test_rebound_bootstrap_fact_is_published_once_on_a_real_snapshot(
         "proof_kind": "static_native",
         "rebound": True,
     }
+
+
+def test_materialized_transfer_inventory_is_published_once_per_generation(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+    session, _created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x401020,
+        source_block_ea=0x401010,
+        materialized_anchor_eas=(0x401020,),
+        target_eas=(0x401100, 0x401200),
+        true_target_ea=0x401100,
+        false_target_ea=0x401200,
+        predicate_true_state=0x11111111,
+        predicate_false_state=0x22222222,
+        selector_state_var_reg=20,
+        resolver_kind="static_conditional_state_choice",
+    )
+    assert session.native_preanalysis.merge_native_facts(
+        NATIVE_KEY,
+        native_cfg=NativeCfg({}),
+        transfers=(transfer,),
+        boundary_ports=DetachedSnippetBoundaryPorts((), ()),
+    )
+    published: list[object] = []
+    import d810.core.observability as observability
+
+    monkeypatch.setattr(observability, "emit", published.append)
+
+    coordinator.capture_flowgraph(_flowgraph_payload(snapshot="snapshot"))
+    coordinator.capture_flowgraph(_flowgraph_payload(snapshot="snapshot"))
+
+    assert len(published) == 1
+    event = published[0]
+    assert len(event.observations) == 1
+    observation = event.observations[0]
+    assert observation.kind == "ResolverTransferEvidenceFact"
+    assert observation.source_block is None
+    assert observation.payload["generation"] == 1
+    assert observation.payload["inventory_revision"] == 1
+    assert observation.payload["source_jmp_ea"] == "0x401020"
+    assert observation.payload["target_eas"] == ["0x401100", "0x401200"]
+    assert observation.payload["predicate_true_state"] == "0x11111111"
+    assert observation.payload["predicate_false_state"] == "0x22222222"
+
+    later_transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x401030,
+        source_block_ea=0x401030,
+        materialized_anchor_eas=(),
+        target_eas=(0x401300,),
+        resolver_kind="static_handler_entry_route",
+    )
+    assert session.native_preanalysis.merge_materialized_transfers(
+        NATIVE_KEY,
+        (later_transfer,),
+    )
+    assert session.native_preanalysis.evidence_generation == 1
+
+    coordinator.capture_flowgraph(_flowgraph_payload(snapshot="later-snapshot"))
+
+    assert len(published) == 2
+    later_event = published[1]
+    assert len(later_event.observations) == 2
+    assert {
+        item.payload["inventory_revision"] for item in later_event.observations
+    } == {2}
 
 
 def test_lifecycle_releases_current_mba_identity_index_when_session_finishes() -> None:
