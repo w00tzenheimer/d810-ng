@@ -211,6 +211,11 @@ def persist_mutation_plan(
             summary=(
                 f"{event.mutation_kind}: {event.planned_operation_count} planned"
             ),
+            payload={
+                "description": event.description,
+                "mutation_kind": event.mutation_kind,
+                "planned_operation_count": int(event.planned_operation_count),
+            },
             timestamp=event.timestamp,
         ),
         snapshot_id=None,

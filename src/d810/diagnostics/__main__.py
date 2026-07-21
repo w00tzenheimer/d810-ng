@@ -102,6 +102,14 @@ from d810.diagnostics.query import (
     state_local,
     var_writes,
 )
+from d810.diagnostics.lifecycle_timeline import (
+    evidence_lineage,
+    lifecycle_timeline,
+    mutation_batch,
+    render_evidence_lineage,
+    render_mutation_batch,
+    render_timeline,
+)
 
 
 
@@ -1138,6 +1146,34 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="command")
 
+    p_timeline = sub.add_parser(
+        "timeline", parents=[common],
+        help="Show the event-native lifecycle timeline",
+    )
+    p_timeline.add_argument("--session", help="Restrict to one diagnostic session")
+    p_timeline.add_argument(
+        "--func", type=lambda value: int(value, 0),
+        help="Restrict to one function EA",
+    )
+
+    p_mutation_batch = sub.add_parser(
+        "mutation-batch", parents=[common],
+        help="Correlate a mutation plan, its items, and its receipt",
+    )
+    p_mutation_batch.add_argument("batch_id")
+
+    p_evidence_lineage = sub.add_parser(
+        "evidence-lineage", parents=[common],
+        help="Show evidence-generation and identity-rebinding lineage",
+    )
+    p_evidence_lineage.add_argument(
+        "--session", help="Restrict to one diagnostic session"
+    )
+    p_evidence_lineage.add_argument(
+        "--func", type=lambda value: int(value, 0),
+        help="Restrict to one function EA",
+    )
+
     p_chain = sub.add_parser("chain", parents=[common], help="Trace a block chain")
     p_chain.add_argument("serials", nargs="+", type=int)
 
@@ -2081,6 +2117,9 @@ def main(argv: list[str] | None = None) -> int:
     # carry snapshot_id directly and may not require any snapshots row
     # to exist (e.g. REF-only persistence ahead of D810 runs).
     if args.command in (
+        "timeline",
+        "mutation-batch",
+        "evidence-lineage",
         "region-shape",
         "terminal-tail-dce",
         "hcc-byte-cascade-trace",
@@ -2101,7 +2140,30 @@ def main(argv: list[str] | None = None) -> int:
             phase=getattr(args, "phase", None),
         )
 
-    if args.command == "chain":
+    if args.command == "timeline":
+        write_output(
+            get_output(args),
+            render_timeline(lifecycle_timeline(
+                conn,
+                session_id=args.session,
+                func_ea=args.func,
+            )),
+        )
+    elif args.command == "mutation-batch":
+        write_output(
+            get_output(args),
+            render_mutation_batch(mutation_batch(conn, args.batch_id)),
+        )
+    elif args.command == "evidence-lineage":
+        write_output(
+            get_output(args),
+            render_evidence_lineage(evidence_lineage(
+                conn,
+                session_id=args.session,
+                func_ea=args.func,
+            )),
+        )
+    elif args.command == "chain":
         write_output(get_output(args), _snapshot_header(conn, snap_id))
         result = chain(conn, snap_id, args.serials)
         write_output(get_output(args), _format_chain(result, _block_identity_lookup(conn, snap_id)))
