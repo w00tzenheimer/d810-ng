@@ -507,26 +507,36 @@ def plan_terminal_return_carrier_requests_from_native_routes(
     *,
     state_var_reg: int,
 ) -> tuple[TerminalReturnCarrierRequest, ...]:
-    """Join native handler-exit facts to applied terminal-goto receipts.
+    """Join native terminal identity to applied terminal-goto receipts.
 
     This path remains serial-free.  The IDA-backed carrier producer separately
-    verifies that each requested target is a real return epilogue before it
-    captures any microcode.
+    verifies the requested source's exact state write and return-register
+    assignment before it captures any microcode.  A source-specific handler
+    exit is strongest; when it is absent, one unique state-to-terminal entry
+    route still identifies the terminal state without claiming source-local
+    instruction semantics.
     """
     states_by_route: dict[tuple[int, int], set[int]] = {}
+    states_by_terminal_target: dict[int, set[int]] = {}
     for transfer in transfers:
         if (
-            transfer.resolver_kind != "static_handler_exit_route"
-            or transfer.selector_state_var_reg is None
+            transfer.selector_state_var_reg is None
             or int(transfer.selector_state_var_reg) != int(state_var_reg)
             or transfer.selector_state_constant is None
             or len(transfer.target_eas) != 1
         ):
             continue
-        states_by_route.setdefault(
-            (int(transfer.source_block_ea), int(transfer.target_eas[0])),
-            set(),
-        ).add(int(transfer.selector_state_constant) & 0xFFFFFFFF)
+        state_constant = int(transfer.selector_state_constant) & 0xFFFFFFFF
+        target_ea = int(transfer.target_eas[0])
+        if transfer.resolver_kind == "static_handler_exit_route":
+            states_by_route.setdefault(
+                (int(transfer.source_block_ea), target_ea),
+                set(),
+            ).add(state_constant)
+        elif transfer.resolver_kind == "static_handler_entry_route":
+            states_by_terminal_target.setdefault(target_ea, set()).add(
+                state_constant
+            )
 
     terminal_targets_by_handler: dict[int, set[int]] = {}
     for port in direct_boundary_ports:
@@ -550,6 +560,8 @@ def plan_terminal_return_carrier_requests_from_native_routes(
             continue
         target_ea = next(iter(target_eas))
         state_constants = states_by_route.get((handler_ea, target_ea), ())
+        if not state_constants:
+            state_constants = states_by_terminal_target.get(target_ea, ())
         if len(state_constants) != 1:
             continue
         requests.append(
@@ -559,6 +571,56 @@ def plan_terminal_return_carrier_requests_from_native_routes(
                 state_var_reg=int(state_var_reg),
                 state_constant=next(iter(state_constants)),
             )
+        )
+    return tuple(requests)
+
+
+def plan_terminal_return_carrier_requests_from_state_writes(
+    transfers: Sequence[MaterializedIndirectTransfer],
+    state_write_eas_by_state: Mapping[int, Sequence[int]],
+    terminal_target_eas: Sequence[int],
+    *,
+    state_var_reg: int,
+) -> tuple[TerminalReturnCarrierRequest, ...]:
+    """Project early PREOPT state writers through unique terminal identities.
+
+    The caller supplies only live native write anchors and independently proven
+    return epilogues.  This pure planner requires one exact entry-route target
+    per state.  The later carrier producer still validates the source block's
+    state write and ABI return assignment before retaining any template.
+    """
+    terminal_targets = frozenset(int(ea) for ea in terminal_target_eas)
+    targets_by_state: dict[int, set[int]] = {}
+    for transfer in transfers:
+        if (
+            transfer.resolver_kind != "static_handler_entry_route"
+            or transfer.selector_state_var_reg is None
+            or int(transfer.selector_state_var_reg) != int(state_var_reg)
+            or transfer.selector_state_constant is None
+            or len(transfer.target_eas) != 1
+        ):
+            continue
+        target_ea = int(transfer.target_eas[0])
+        if target_ea not in terminal_targets:
+            continue
+        state = int(transfer.selector_state_constant) & 0xFFFFFFFF
+        targets_by_state.setdefault(state, set()).add(target_ea)
+
+    requests: list[TerminalReturnCarrierRequest] = []
+    for state, source_eas in sorted(state_write_eas_by_state.items()):
+        normalized_state = int(state) & 0xFFFFFFFF
+        targets = targets_by_state.get(normalized_state, set())
+        if len(targets) != 1:
+            continue
+        target_ea = next(iter(targets))
+        requests.extend(
+            TerminalReturnCarrierRequest(
+                source_handler_ea=int(source_ea),
+                terminal_target_ea=target_ea,
+                state_var_reg=int(state_var_reg),
+                state_constant=normalized_state,
+            )
+            for source_ea in sorted({int(ea) for ea in source_eas if int(ea) > 0})
         )
     return tuple(requests)
 
@@ -1604,6 +1666,7 @@ __all__ = [
     "plan_resolver_proven_indirect_call_neutralizations",
     "plan_terminal_return_carrier_requests",
     "plan_terminal_return_carrier_requests_from_native_routes",
+    "plan_terminal_return_carrier_requests_from_state_writes",
     "route_materialized_transfer_chain",
     "route_transfer_target_through_condition_chain",
     "unique_materialized_conditional_handler_entry_eas",

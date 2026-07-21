@@ -28,6 +28,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     missing_materialized_handler_targets,
     plan_terminal_return_carrier_requests,
     plan_terminal_return_carrier_requests_from_native_routes,
+    plan_terminal_return_carrier_requests_from_state_writes,
     plan_resolver_proven_indirect_call_neutralizations,
     route_materialized_transfer_chain,
     route_transfer_target_through_condition_chain,
@@ -966,6 +967,70 @@ def test_native_exit_and_applied_port_request_return_carrier() -> None:
             state_var_reg=20,
             state_constant=state,
         ),
+    )
+
+
+def test_terminal_target_identity_requests_validated_source_carrier() -> None:
+    state = 0x19A7218A
+    terminal_ea = 0x40C898
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40A5CA,
+            source_block_ea=0x40A5CA,
+            materialized_anchor_eas=(),
+            target_eas=(terminal_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=state,
+            resolver_kind="static_handler_entry_route",
+        ),
+    )
+    direct_ports = (
+        SimpleNamespace(
+            source_block_ea=0x40C7E5,
+            endpoint_block_ea=0x40C7E5,
+            target_ea=terminal_ea,
+            old_successor_eas=(),
+            delivery_mode="terminal_goto",
+        ),
+    )
+
+    assert plan_terminal_return_carrier_requests_from_native_routes(
+        transfers,
+        direct_ports,
+        state_var_reg=20,
+    ) == (
+        TerminalReturnCarrierRequest(
+            source_handler_ea=0x40C7E5,
+            terminal_target_ea=terminal_ea,
+            state_var_reg=20,
+            state_constant=state,
+        ),
+    )
+
+
+def test_preopt_state_writes_request_only_unique_terminal_identity() -> None:
+    state = 0x19A7218A
+    terminal_ea = 0x40C898
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40A5CA,
+            source_block_ea=0x40A5CA,
+            materialized_anchor_eas=(),
+            target_eas=(terminal_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=state,
+            resolver_kind="static_handler_entry_route",
+        ),
+    )
+
+    assert plan_terminal_return_carrier_requests_from_state_writes(
+        transfers,
+        {state: (0x40A5D0, 0x40C7E5)},
+        (terminal_ea,),
+        state_var_reg=20,
+    ) == (
+        TerminalReturnCarrierRequest(0x40A5D0, terminal_ea, 20, state),
+        TerminalReturnCarrierRequest(0x40C7E5, terminal_ea, 20, state),
     )
 
 
