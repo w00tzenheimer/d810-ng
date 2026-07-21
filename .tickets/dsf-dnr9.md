@@ -1,6 +1,6 @@
 ---
 id: dsf-dnr9
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-07-18T23:53:24Z
@@ -39,3 +39,7 @@ Baseline: direct Docker Hodur/Sub7ffd gate passed (3 passed, 26.78s). A fresh ca
 **2026-07-20**
 
 Scope correction: A0 is now green on the foundation branch, but the portable contracts remain incomplete. The ticket is re-scoped to strict foundation closure before any A1/A2 work. The dependency contradiction is resolved by placing `NativePreanalysisKey` in `d810.core.native_preanalysis_key`, below both `d810.ir` and `d810.analyses`. Execution and commit boundaries are recorded in `docs/superpowers/plans/2026-07-20-decomp-session-foundation-closure.md`.
+
+**2026-07-21T02:26:06Z**
+
+2026-07-20 closure evidence: lifecycle codemod dry-run reports candidates=0, rewritten=0, unknown=0 across production, configuration, documentation, source, tests, and tools; lifecycle_migration_manifest has zero temporary_internal_ports and zero bridges. sg scan passed and import-linter kept 14/14 contracts. graphify update . succeeded with 42,879 nodes, 107,450 edges, and 1,177 communities; graph paths show DecompilationLifecycleCoordinator directly uses NativePreanalysisSessionState, StableBlockIdentity uses NativePreanalysisKey, and the mutation gateway shares that native key. Complete unit suite: 5,935 passed, 29 skipped, 162 subtests passed. Clean Docker complete runtime: 2,860 passed, 30 skipped, 1 expected xfail. Ownership/cache parity: Python 4 passed; compiled Cython 10 passed. Docker Rhad bootstrap: 1 passed in 141.69s; full sub_40D200 semantic oracle: 1 passed in 150.60s; protected Hodur, Sub7ffd, Tigress, and Approov matrix: 7 passed in 49.86s. Final identity repair is 81cf4eff7; runtime fixture migrations are 73803b678, 8855545a3, and 5868c9d13; TODO closeout is 675d09e07. Foundation is clean at 675d09e07. Donor diff/rhad-preopt-import-spike remains at aa0438157 with only its pre-existing TODO.md edit; no donor files were modified by this work.
