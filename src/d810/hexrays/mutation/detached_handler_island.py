@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import json
 
 import ida_bytes
 import ida_frame
@@ -4196,6 +4197,8 @@ def _conditional_fallthrough_serial(block: object) -> int | None:
 def _preflight_boundary_port_batch(
     mba: object,
     selected: tuple[DetachedSnippetTemplate, ...],
+    *,
+    mutation_gateway: MbaMutationGateway | None = None,
 ) -> _BoundaryPortMutationBatch | None:
     imported_by_ea: dict[int, list[tuple[int, int]]] = {}
     template_by_target = {int(template.target_ea): template for template in selected}
@@ -4205,7 +4208,7 @@ def _preflight_boundary_port_batch(
                 (int(template.target_ea), int(block.source_serial))
             )
 
-    def bind(
+    def resolve_binding(
         owner: DetachedSnippetBoundaryPortOwner,
         native_ea: int,
         *,
@@ -4280,6 +4283,87 @@ def _preflight_boundary_port_batch(
             native_ea=int(native_ea),
             live_block=live,
         )
+
+    def bind(
+        owner: DetachedSnippetBoundaryPortOwner,
+        native_ea: int,
+        *,
+        template: DetachedSnippetTemplate,
+        template_serial: int | None,
+        exact_instruction_ea: int | None = None,
+        exact_instruction_opcodes: Collection[int] | None = None,
+    ) -> _BoundaryPortBlockBinding | None:
+        binding = resolve_binding(
+            owner,
+            native_ea,
+            template=template,
+            template_serial=template_serial,
+            exact_instruction_ea=exact_instruction_ea,
+            exact_instruction_opcodes=exact_instruction_opcodes,
+        )
+        if mutation_gateway is not None:
+            try:
+                from d810.core.maturity_labels import mmat_label
+                from d810.core.observability import emit as emit_diagnostic
+                from d810.core.observability_events import IdentityDecisionObserved
+
+                live_serial = (
+                    None
+                    if binding is None or binding.live_block is None
+                    else int(binding.live_block.serial)
+                )
+                candidate = (
+                    None
+                    if binding is None
+                    else {
+                        "anchor_ea": f"0x{int(binding.native_ea):X}",
+                        "imported_key": binding.imported_key,
+                        "serial": live_serial,
+                    }
+                )
+                emit_diagnostic(
+                    IdentityDecisionObserved(
+                        session_id=mutation_gateway.session_id,
+                        func_ea=int(mutation_gateway.function_ea),
+                        decision_kind="boundary_port_bind",
+                        consumer="detached_snippet_import",
+                        identity_role=owner.value,
+                        native_key_json=mutation_gateway.native_key.to_json(),
+                        exact_eas_json=json.dumps([int(native_ea)]),
+                        native_ranges_json=json.dumps(
+                            [
+                                {
+                                    "start_ea": int(native_ea),
+                                    "end_ea": int(native_ea) + 1,
+                                }
+                            ],
+                            sort_keys=True,
+                        ),
+                        primary_anchor_ea=int(native_ea),
+                        current_serial=live_serial,
+                        mba_generation=int(mutation_gateway.identity_index.generation),
+                        evidence_generation=int(
+                            mutation_gateway.identity_index.evidence_generation
+                        ),
+                        maturity=mmat_label(int(mutation_gateway.maturity)),
+                        outcome="bound" if binding is not None else "unbound",
+                        candidates_json=json.dumps(
+                            [] if candidate is None else [candidate],
+                            sort_keys=True,
+                        ),
+                        reason=(
+                            "exact boundary-port ownership bind"
+                            if binding is not None
+                            else "boundary-port ownership bind rejected"
+                        ),
+                    )
+                )
+            except Exception:
+                logger.debug(
+                    "boundary-port identity observation failed",
+                    exc_info=True,
+                )
+        return binding
 
     def bind_existing(native_ea: int) -> _BoundaryPortBlockBinding | None:
         imported = imported_by_ea.get(int(native_ea), ())
@@ -4358,11 +4442,22 @@ def _preflight_boundary_port_batch(
             and port.old_fallthrough_target_ea is None
             else None
         )
+        source_serial = record.source_serial
+        if port.source_owner == DetachedSnippetBoundaryPortOwner.IMPORTED:
+            exact_source_serial = _select_template_block_serial_by_native_ea(
+                template.blocks,
+                template.owned_ranges,
+                int(port.source_block_ea),
+                exact_instruction_ea=int(port.predicate_ea),
+                exact_instruction_opcodes=resolver_cut_opcodes,
+            )
+            if exact_source_serial is not None:
+                source_serial = int(exact_source_serial)
         source = bind(
             port.source_owner,
             int(port.source_block_ea),
             template=template,
-            template_serial=record.source_serial,
+            template_serial=source_serial,
             exact_instruction_ea=port.predicate_ea,
             exact_instruction_opcodes=resolver_cut_opcodes,
         )
@@ -4970,6 +5065,8 @@ def _preflight_boundary_port_batch(
                     "detached snippet boundary-port preflight abstained: "
                     "kind=conditional source=0x%X predicate=0x%X "
                     "old_taken=%s old_fallthrough=%s "
+                    "source_bound=%s preserve_exact=%s "
+                    "materialize_logical=%s materialize_cut=%s "
                     "reason=conditional_binding",
                     int(port.source_block_ea),
                     int(port.predicate_ea),
@@ -4983,6 +5080,10 @@ def _preflight_boundary_port_batch(
                         if port.old_fallthrough_target_ea is None
                         else f"0x{int(port.old_fallthrough_target_ea):X}"
                     ),
+                    source is not None,
+                    preserve_live_predicate,
+                    materialize_logical_source,
+                    materialize_resolver_cut,
                 )
                 return None
             if (
@@ -6670,7 +6771,11 @@ def _materialize_detached_snippet_templates(
                     return {}
                 live_target_serials[int(external_ea)] = int(live.serial)
 
-    boundary_port_batch = _preflight_boundary_port_batch(mba, selected)
+    boundary_port_batch = _preflight_boundary_port_batch(
+        mba,
+        selected,
+        mutation_gateway=mutation_gateway,
+    )
     if boundary_port_batch is None:
         logger.info(
             "detached snippet import abstained: reason=boundary_port_batch_preflight"
