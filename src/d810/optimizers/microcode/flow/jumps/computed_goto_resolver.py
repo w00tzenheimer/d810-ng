@@ -126,6 +126,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     find_unique_target_entry_block,
     is_conditional_handler_bridge_kind,
     plan_terminal_return_carrier_requests_from_native_routes,
+    plan_terminal_return_carrier_requests_from_state_writes,
     route_materialized_transfer_chain,
     route_transfer_target_through_condition_chain,
     unique_materialized_equality_target_eas,
@@ -9511,6 +9512,83 @@ def prepare_terminal_return_carrier_templates(state: ResolverSessionState) -> in
         state.finish_snippet_capture()
 
 
+def _capture_preopt_union_terminal_return_carriers(
+    state: ResolverSessionState,
+    *,
+    function_ea: int,
+    mba: object,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+) -> int:
+    """Capture exact terminal carriers while the pristine union MBA is live."""
+    state_var_reg = unique_materialized_state_register(transfers)
+    if state_var_reg is None:
+        return 0
+    terminal_target_eas = tuple(
+        sorted(
+            {
+                int(transfer.target_eas[0])
+                for transfer in transfers
+                if transfer.resolver_kind == "static_handler_entry_route"
+                and transfer.selector_state_var_reg is not None
+                and int(transfer.selector_state_var_reg) == int(state_var_reg)
+                and transfer.selector_state_constant is not None
+                and len(transfer.target_eas) == 1
+                and _native_target_is_return_epilogue(int(transfer.target_eas[0]))
+            }
+        )
+    )
+    if not terminal_target_eas:
+        return 0
+
+    from d810.hexrays.mutation.detached_handler_island import (
+        capture_terminal_return_carrier_template,
+    )
+    from d810.hexrays.mutation.ir_translator import lift
+
+    flow_graph = lift(mba)
+    write_sites = _exact_register_state_write_sites(
+        flow_graph,
+        state_var_reg=int(state_var_reg),
+        maturity=int(mba.maturity),
+    )
+    write_eas_by_state: dict[int, list[int]] = {}
+    for (_serial, state_constant), write_ea in write_sites.items():
+        write_eas_by_state.setdefault(int(state_constant), []).append(int(write_ea))
+    requests = plan_terminal_return_carrier_requests_from_state_writes(
+        transfers,
+        write_eas_by_state,
+        terminal_target_eas,
+        state_var_reg=int(state_var_reg),
+    )
+    captured_requests = tuple(
+        request
+        for request in requests
+        if capture_terminal_return_carrier_template(
+            int(function_ea),
+            request,
+            mba,
+        )
+    )
+    if not captured_requests:
+        return 0
+    state.native_preanalysis.merge_terminal_return_carrier_requests(
+        state.native_key,
+        captured_requests,
+    )
+    logger.info(
+        "PREOPT union captured terminal return carriers: %s",
+        [
+            (
+                hex(int(request.source_handler_ea)),
+                hex(int(request.terminal_target_ea)),
+                hex(int(request.state_constant)),
+            )
+            for request in captured_requests
+        ],
+    )
+    return len(captured_requests)
+
+
 def _unique_native_register_indirect_exit(
     ranges: tuple[tuple[int, int], ...],
 ) -> tuple[int, int] | None:
@@ -9653,7 +9731,15 @@ def _enrich_preopt_union_route_ranges(
     resolution: ComputedGotoResolution,
     transfers: tuple[MaterializedIndirectTransfer, ...],
 ) -> tuple[MaterializedIndirectTransfer, ...]:
-    """Attach native ranges to EA-keyed handler routes before pure planning."""
+    """Attach stable native ownership to EA-keyed handler routes.
+
+    Multiple proofs may route the same state to the same native handler.  Once
+    one proof owns that target's native corridor, reuse its portable ranges for
+    an otherwise range-less duplicate.  Re-deriving ownership from a later,
+    already-mutated native CFG can incorrectly absorb the dispatcher.  If
+    existing proofs conflict, preserve the missing claim so downstream binding
+    abstains instead of manufacturing a third identity.
+    """
     missing_targets = {
         int(transfer.target_eas[0])
         for transfer in transfers
@@ -9676,8 +9762,33 @@ def _enrich_preopt_union_route_ranges(
         )
         + 0x100
     )
-    ranges_by_target = {
-        target_ea: merge_detached_snippet_ranges(
+    existing_ranges_by_target: dict[
+        int, set[tuple[tuple[int, int], ...]]
+    ] = {}
+    for transfer in transfers:
+        if (
+            transfer.resolver_kind != "static_handler_entry_route"
+            or len(transfer.target_eas) != 1
+            or not transfer.owned_native_ranges
+        ):
+            continue
+        target_ea = int(transfer.target_eas[0])
+        existing_ranges_by_target.setdefault(target_ea, set()).add(
+            tuple(
+                (int(start_ea), int(end_ea))
+                for start_ea, end_ea in transfer.owned_native_ranges
+            )
+        )
+
+    ranges_by_target: dict[int, tuple[tuple[int, int], ...]] = {}
+    for target_ea in sorted(missing_targets):
+        existing_claims = existing_ranges_by_target.get(target_ea, set())
+        if len(existing_claims) == 1:
+            ranges_by_target[target_ea] = next(iter(existing_claims))
+            continue
+        if existing_claims:
+            continue
+        ranges_by_target[target_ea] = merge_detached_snippet_ranges(
             _native_residual_fragment_ranges(
                 target_ea,
                 envelope_start_ea=int(resolution.function_ea),
@@ -9690,13 +9801,14 @@ def _enrich_preopt_union_route_ranges(
                 require_indirect=False,
             )
         )
-        for target_ea in sorted(missing_targets)
-    }
     return tuple(
         (
             replace(
                 transfer,
-                owned_native_ranges=ranges_by_target[int(transfer.target_eas[0])],
+                owned_native_ranges=ranges_by_target.get(
+                    int(transfer.target_eas[0]),
+                    (),
+                ),
             )
             if transfer.resolver_kind == "static_handler_entry_route"
             and len(transfer.target_eas) == 1
@@ -9883,6 +9995,12 @@ def _capture_prepatch_preopt_union_source(
             authoritative_stack_frame_offsets_by_ea=(authoritative_stack_offsets),
         ):
             return abstain("preopt_capture_failed")
+        _capture_preopt_union_terminal_return_carriers(
+            state,
+            function_ea=key,
+            mba=preopt_mba,
+            transfers=enriched,
+        )
     except Exception:
         logger.info(
             "PREOPT prepatch source capture failed: func=0x%X ranges=%s",

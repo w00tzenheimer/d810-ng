@@ -64,6 +64,7 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     _recover_condition_chain_handler_transfers_from_mba,
     _recover_static_handler_entry_route_transfers,
     _recover_static_choice_handler_entry_routes,
+    _enrich_preopt_union_route_ranges,
     _resolve_native_setcc_route_facts,
     _select_register_indirect_patch_region,
     _choose_dispatch_patch_region,
@@ -96,6 +97,119 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedStateRoute,
     TerminalReturnCarrierRequest,
 )
+
+
+def test_preopt_union_range_enrichment_reuses_existing_target_ownership(
+    monkeypatch,
+) -> None:
+    precise_ranges = (
+        (0x40C10A, 0x40C132),
+        (0x40C132, 0x40C144),
+    )
+    precise = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40C0F0,
+        source_block_ea=0x40C0F0,
+        materialized_anchor_eas=(),
+        target_eas=(0x40C10A,),
+        selector_state_var_reg=20,
+        selector_state_constant=0x886CCA9F,
+        resolver_kind="static_handler_entry_route",
+        owned_native_ranges=precise_ranges,
+    )
+    duplicate = replace(
+        precise,
+        source_jmp_ea=0x40A5C8,
+        source_block_ea=0x40A5C8,
+        owned_native_ranges=(),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_residual_fragment_ranges",
+        lambda *_args, **_kwargs: pytest.fail(
+            "stable target ownership must win over regenerated native CFG"
+        ),
+    )
+
+    enriched = _enrich_preopt_union_route_ranges(
+        SimpleNamespace(
+            function_ea=0x40A560,
+            reachable_eas=(0x40A560,),
+            block_entries=(0x40A560,),
+        ),
+        (precise, duplicate),
+    )
+
+    assert enriched[0].owned_native_ranges == precise_ranges
+    assert enriched[1].owned_native_ranges == precise_ranges
+
+
+def test_preopt_union_captures_terminal_carrier_into_session(
+    monkeypatch,
+) -> None:
+    state_constant = 0x19A7218A
+    terminal_ea = 0x40C898
+    source_ea = 0x40C7E5
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40A5CA,
+        source_block_ea=0x40A5CA,
+        materialized_anchor_eas=(),
+        target_eas=(terminal_ea,),
+        selector_state_var_reg=20,
+        selector_state_constant=state_constant,
+        resolver_kind="static_handler_entry_route",
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={},
+        reachable_eas=(0x40A560,),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    _session, state = _resolver_session(resolution)
+    captured = []
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_target_is_return_epilogue",
+        lambda target_ea: int(target_ea) == terminal_ea,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_exact_register_state_write_sites",
+        lambda *_args, **_kwargs: {(17, state_constant): source_ea},
+    )
+    from d810.hexrays.mutation import detached_handler_island, ir_translator
+
+    monkeypatch.setattr(ir_translator, "lift", lambda _mba: object())
+
+    monkeypatch.setattr(
+        detached_handler_island,
+        "capture_terminal_return_carrier_template",
+        lambda function_ea, request, _mba: (
+            captured.append((function_ea, request)) or True
+        ),
+    )
+
+    assert computed_goto_resolver._capture_preopt_union_terminal_return_carriers(
+        state,
+        function_ea=0x40A560,
+        mba=SimpleNamespace(maturity=IDA_MMAT_PREOPTIMIZED),
+        transfers=(transfer,),
+    ) == 1
+    assert captured == [
+        (
+            0x40A560,
+            TerminalReturnCarrierRequest(
+                source_handler_ea=source_ea,
+                terminal_target_ea=terminal_ea,
+                state_var_reg=20,
+                state_constant=state_constant,
+            ),
+        )
+    ]
+    assert state.portable_evidence.terminal_return_carrier_requests == (
+        captured[0][1],
+    )
 
 
 def test_branch_state_choice_recovers_default_and_overriding_dispatch_states() -> None:
