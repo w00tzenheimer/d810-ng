@@ -307,6 +307,7 @@ class ResolverPortableEvidence:
     terminal_return_carrier_requests: tuple[TerminalReturnCarrierRequest, ...] = ()
     call_result_carriers: tuple[CallResultCarrier, ...] = ()
     call_abi_proofs: tuple[tuple[int, StackCallAbiProof], ...] = ()
+    imported_instruction_origins: tuple[tuple[int, int], ...] = ()
     bootstrap_route_bindings: tuple[
         tuple[tuple[StableBlockIdentity, int], BootstrapRouteBindingEvidence], ...
     ] = ()
@@ -536,6 +537,31 @@ class NativePreanalysisSessionState:
             key,
             advance_generation=False,
             call_result_carriers=(),
+        )
+
+    def set_imported_instruction_origins(
+        self,
+        key: NativePreanalysisKey,
+        origins: tuple[tuple[int, int], ...],
+    ) -> bool:
+        """Retain the synthetic-EA to native-EA map across MBA regeneration."""
+        native_ea_by_imported_ea: dict[int, int] = {}
+        for imported_ea, native_ea in origins:
+            imported_ea = int(imported_ea)
+            native_ea = int(native_ea)
+            if imported_ea <= 0 or native_ea <= 0:
+                raise ValueError("imported instruction origins require positive EAs")
+            previous_native_ea = native_ea_by_imported_ea.get(imported_ea)
+            if previous_native_ea is not None and previous_native_ea != native_ea:
+                raise ValueError(
+                    "one imported instruction EA cannot have multiple native origins"
+                )
+            native_ea_by_imported_ea[imported_ea] = native_ea
+        normalized = tuple(sorted(native_ea_by_imported_ea.items()))
+        return self._replace_resolver_evidence(
+            key,
+            advance_generation=False,
+            imported_instruction_origins=normalized,
         )
 
     def set_computed_goto_resolution(
