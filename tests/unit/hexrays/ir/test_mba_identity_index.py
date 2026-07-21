@@ -304,7 +304,7 @@ def test_imported_native_origins_replace_synthetic_snapshot_identity() -> None:
     assert index.rebind_imported_identity(identity).block.serial == 40
 
 
-def test_imported_region_rebinds_to_earliest_surviving_native_anchor() -> None:
+def test_region_rebinds_to_earliest_surviving_imported_native_anchor() -> None:
     blocks = {
         serial: BlockSnapshot(
             serial=serial,
@@ -334,7 +334,7 @@ def test_imported_region_rebinds_to_earliest_surviving_native_anchor() -> None:
         (NativeEaInterval(0x40E242, 0x40E280),), native_key=NATIVE_KEY
     )
 
-    rebound = index.rebind_imported_region_entry(handler_region)
+    rebound = index.rebind_region_entry(handler_region)
 
     assert rebound.status is RebindStatus.BOUND
     assert rebound.block is not None
@@ -367,7 +367,7 @@ def test_imported_region_rebind_abstains_on_duplicate_earliest_anchor() -> None:
     )
 
 
-def test_imported_region_exit_rebinds_to_latest_surviving_native_anchor() -> None:
+def test_region_exit_rebinds_to_latest_surviving_imported_native_anchor() -> None:
     blocks = {
         serial: BlockSnapshot(
             serial=serial,
@@ -397,14 +397,14 @@ def test_imported_region_exit_rebinds_to_latest_surviving_native_anchor() -> Non
         (NativeEaInterval(0x40E242, 0x40E280),), native_key=NATIVE_KEY
     )
 
-    rebound = index.rebind_imported_region_exit(handler_region)
+    rebound = index.rebind_region_exit(handler_region)
 
     assert rebound.status is RebindStatus.BOUND
     assert rebound.block is not None
     assert rebound.block.serial == 41
 
 
-def test_imported_region_exit_abstains_on_duplicate_latest_anchor() -> None:
+def test_region_exit_abstains_on_duplicate_latest_anchor() -> None:
     blocks = {
         serial: BlockSnapshot(
             serial=serial,
@@ -432,7 +432,7 @@ def test_imported_region_exit_abstains_on_duplicate_latest_anchor() -> None:
     )
 
     assert (
-        index.rebind_imported_region_exit(handler_region).status
+        index.rebind_region_exit(handler_region).status
         is RebindStatus.AMBIGUOUS
     )
     handler_region = StableBlockIdentity.from_intervals(
@@ -440,9 +440,41 @@ def test_imported_region_exit_abstains_on_duplicate_latest_anchor() -> None:
     )
 
     assert (
-        index.rebind_imported_region_entry(handler_region).status
+        index.rebind_region_entry(handler_region).status
         is RebindStatus.AMBIGUOUS
     )
+
+
+def test_region_entry_rebinds_to_earliest_surviving_native_anchor() -> None:
+    early = StableBlockIdentity.from_instruction_eas(
+        (0x40A910, 0x40A915),
+        native_key=NATIVE_KEY,
+    )
+    late = StableBlockIdentity.from_instruction_eas(
+        (0x40A92F,),
+        native_key=NATIVE_KEY,
+    )
+    region = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40A903, 0x40A93C),),
+        native_key=NATIVE_KEY,
+    )
+    observed = []
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=3,
+        native_key=NATIVE_KEY,
+        bindings=((early, 34), (late, 35)),
+        decision_observer=observed.append,
+    )
+
+    rebound = index.rebind_region_entry(region)
+
+    assert rebound.status is RebindStatus.BOUND
+    assert rebound.block is not None
+    assert rebound.block.serial == 34
+    assert len(observed) == 1
+    assert observed[0].decision_kind == "rebind_region_entry"
+    assert observed[0].identity == region
+    assert observed[0].result == rebound
 
 
 def test_index_keeps_evidence_and_mutation_generations_independent() -> None:

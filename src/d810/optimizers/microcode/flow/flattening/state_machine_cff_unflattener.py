@@ -507,15 +507,15 @@ def _rebind_portable_materialized_state_routes(
             # A replay-proven handler exit is a region-boundary fact.  The
             # mutation-time split identity can still rebind uniquely after a
             # rebuild, but to an interior block that no longer owns the exit.
-            # Prefer the last surviving imported anchor in the owned handler
+            # Prefer the last surviving native anchor in the owned handler
             # region; an exact applied boundary receipt remains stronger.
-            source = identity_index.rebind_imported_region_exit(
+            source = identity_index.rebind_region_exit(
                 portable.source_handler_region_identity
             ).block
         if source is None:
             source = identity_index.rebind_identity(portable.source_identity).block
         if source is None and portable.source_handler_region_identity is not None:
-            source = identity_index.rebind_imported_region_exit(
+            source = identity_index.rebind_region_exit(
                 portable.source_handler_region_identity
             ).block
         if source is None and receipt_candidates:
@@ -552,7 +552,7 @@ def _rebind_portable_materialized_state_routes(
             # particular split block that happened to carry the old replay
             # object.  Across LOCOPT/CALLS that split can survive as a unique
             # but interior identity and misattribute the route to a sibling.
-            source_handler = identity_index.rebind_imported_region_entry(
+            source_handler = identity_index.rebind_region_entry(
                 portable.source_handler_region_identity
             ).block
         if source_handler is None and portable.source_handler_identity is not None:
@@ -1971,7 +1971,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 live_block_for_region_identity=(
                     None
                     if current_identity_index is None
-                    else lambda identity: current_identity_index.rebind_imported_region_entry(
+                    else lambda identity: current_identity_index.rebind_region_entry(
                         identity
                     ).block
                 ),
