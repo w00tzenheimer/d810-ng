@@ -1871,13 +1871,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 _unique_materialized_handler_entry_route_source_eas(
                     materialized_indirect_transfers,
                     equality_target_eas,
-                    native_key=current_identity_index.native_key,
                 )
             )
             entry_route_region_identities = (
                 _unique_materialized_handler_region_identities(
                     materialized_indirect_transfers,
                     equality_target_eas,
+                    native_key=current_identity_index.native_key,
                 )
             )
             (

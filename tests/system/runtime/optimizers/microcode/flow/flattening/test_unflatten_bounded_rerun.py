@@ -39,6 +39,10 @@ from d810.ir.maturity import IRMaturity
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
+from d810.analyses.control_flow.materialized_indirect_transfer import (
+    MaterializedIndirectTransfer,
+)
+from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     ResolverSessionState,
 )
@@ -1037,6 +1041,96 @@ def test_materialized_handler_entry_route_rejects_shared_bootstrap_source() -> N
         state_a: 0x40E228,
         state_b: 0x40F113,
     }
+
+
+def test_materialized_recovery_builds_portable_entry_route_evidence(monkeypatch) -> None:
+    """The identity migration must not pass identity-only args to EA helpers."""
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40D348,
+        source_block_ea=0x40D348,
+        materialized_anchor_eas=(0x40D348,),
+        target_eas=(0x40EAA7,),
+        selector_state_constant=0x699BC698,
+        selector_state_var_reg=28,
+        resolver_kind="static_handler_entry_route",
+    )
+    native_preanalysis = NativePreanalysisSessionState()
+    resolver_state = ResolverSessionState(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        identity_index=MbaBlockIdentityIndex.from_bindings(
+            generation=0,
+            native_key=NATIVE_KEY,
+            bindings=(),
+        ),
+    )
+    resolver_state.merge_native_facts(transfers=(transfer,))
+
+    monkeypatch.setattr(unflattener, "recover_dispatcher", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        unflattener,
+        "_resolver_native_state_register",
+        lambda *_a, **_kw: 28,
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "materialized_state_register_candidates",
+        lambda _transfers: frozenset({28}),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "unique_materialized_state_register",
+        lambda _transfers: 28,
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "unique_materialized_equality_target_eas",
+        lambda *_a, **_kw: {},
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "imported_detached_snippet_target_eas",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "imported_detached_snippet_direct_boundary_evidence",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "imported_detached_snippet_conditional_boundary_evidence",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "recognize_residual_entry_bridge",
+        lambda _mba: None,
+    )
+
+    rule = StateMachineCffUnflattener.__new__(StateMachineCffUnflattener)
+    rule.config = {}
+    rule.flow_context = None
+    rule.current_resolver_session_state = lambda: resolver_state
+    rule._pass_manager = SimpleNamespace(
+        facts_for=lambda *_a, **_kw: SimpleNamespace()
+    )
+    flow_graph = SimpleNamespace(blocks={}, get_block=lambda _serial: None)
+    mba = SimpleNamespace(entry_ea=_EA, maturity=ida_hexrays.MMAT_CALLS)
+
+    _fact_view, _prelim, _range, seeds, _facts = rule._build_recovery_evidence(
+        mba,
+        SimpleNamespace(flow_graph=flow_graph),
+        materialized_computed_goto_profile=True,
+    )
+
+    assert seeds["materialized_state_var_reg"] == 28
+    assert seeds["materialized_handler_by_state"] == {}
 
 
 def test_materialized_handler_region_identity_survives_missing_entry_ea() -> None:
