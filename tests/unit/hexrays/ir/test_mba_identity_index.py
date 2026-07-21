@@ -181,6 +181,49 @@ def test_builds_from_live_mba_without_retaining_it_and_abstains_on_cloned_eas() 
     assert not hasattr(index, "mba")
 
 
+def test_live_mba_identity_scan_does_not_use_recycled_proxy_ids_as_cycles(
+    monkeypatch,
+) -> None:
+    import d810.hexrays.ir.mba_identity_index as identity_index_module
+
+    @dataclass
+    class Insn:
+        ea: int
+        proxy_id: int
+        next: object | None = None
+
+    tail = Insn(0x401020, 1)
+    head = Insn(0x401000, 1, Insn(0x401010, 2, tail))
+    block = type(
+        "Block",
+        (),
+        {"serial": 0, "start": 0x401000, "head": head},
+    )()
+    mba = type(
+        "Mba",
+        (),
+        {"qty": 1, "get_mblock": lambda self, serial: block},
+    )()
+    monkeypatch.setattr(
+        identity_index_module,
+        "id",
+        lambda instruction: int(instruction.proxy_id),
+        raising=False,
+    )
+
+    index = MbaBlockIdentityIndex.from_mba(
+        mba,
+        generation=3,
+        native_key=NATIVE_KEY,
+    )
+
+    tail_identity = StableBlockIdentity.from_instruction_eas(
+        (0x401020,),
+        native_key=NATIVE_KEY,
+    )
+    assert index.rebind_identity(tail_identity).block is not None
+
+
 def test_live_mba_identity_scan_uses_imported_eas_without_reading_operands() -> None:
     class Insn:
         def __init__(self, ea: int, next_insn=None) -> None:
