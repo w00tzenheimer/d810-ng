@@ -1855,7 +1855,7 @@ def test_stkpnts_projects_native_spd_to_imported_and_call_eas(
     assert decision["stack_points_modified"] == 3
 
 
-def test_stkpnts_prefers_detached_call_push_delta_over_stale_native_spd(
+def test_stkpnts_adds_detached_call_push_delta_to_native_frame_baseline(
     monkeypatch,
 ) -> None:
     import ida_frame
@@ -1908,7 +1908,7 @@ def test_stkpnts_prefers_detached_call_push_delta_over_stale_native_spd(
     monkeypatch.setattr(
         ida_frame,
         "get_spd",
-        lambda candidate, ea: 0 if candidate is function else 0,
+        lambda candidate, ea: -1168 if candidate is function else 0,
     )
     applied: list[tuple[object, int, int]] = []
     monkeypatch.setattr(
@@ -1927,9 +1927,9 @@ def test_stkpnts_prefers_detached_call_push_delta_over_stale_native_spd(
     )
 
     assert applied == [
-        (stack_points, native_call_ea, -4),
-        (stack_points, imported_call_ea, -4),
-        (stack_points, imported_body_ea, 0),
+        (stack_points, native_call_ea, -1172),
+        (stack_points, imported_call_ea, -1172),
+        (stack_points, imported_body_ea, -1168),
     ]
     assert decision == {"session": session, "stack_points_modified": 3}
 
