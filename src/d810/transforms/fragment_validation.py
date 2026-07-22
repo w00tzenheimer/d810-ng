@@ -216,12 +216,36 @@ class ProjectedRangeFact:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectedFallthroughHelper:
+    """Backend-owned adjacent helper for one semantic fallthrough arm."""
+
+    helper_block_id: str
+    operation_id: str
+    source_block_id: str
+    semantic_target_block_id: str
+
+    def __post_init__(self) -> None:
+        for field_name, description in (
+            ("helper_block_id", "projected fallthrough helper block"),
+            ("operation_id", "projected fallthrough operation"),
+            ("source_block_id", "projected fallthrough source"),
+            ("semantic_target_block_id", "projected fallthrough target"),
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _identifier(getattr(self, field_name), description),
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectedFragment:
     """Complete serial-free graph and semantic projection of a staged fragment."""
 
     entry_block_id: str
     blocks: tuple[ProjectedFragmentBlock, ...]
     identity_bindings: tuple[ProjectedIdentityBinding, ...]
+    fallthrough_helpers: tuple[ProjectedFallthroughHelper, ...] = ()
     data_flow_relations: tuple[ProjectedDataFlowRelation, ...] = ()
     value_ranges: tuple[ProjectedRangeFact, ...] = ()
 
@@ -232,6 +256,7 @@ class ProjectedFragment:
         )
         blocks = tuple(self.blocks)
         identity_bindings = tuple(self.identity_bindings)
+        fallthrough_helpers = tuple(self.fallthrough_helpers)
         data_flow_relations = tuple(self.data_flow_relations)
         value_ranges = tuple(self.value_ranges)
         if any(not isinstance(block, ProjectedFragmentBlock) for block in blocks):
@@ -242,6 +267,11 @@ class ProjectedFragment:
         ):
             raise TypeError("projection contains an invalid identity binding")
         if any(
+            not isinstance(helper, ProjectedFallthroughHelper)
+            for helper in fallthrough_helpers
+        ):
+            raise TypeError("projection contains an invalid fallthrough helper")
+        if any(
             not isinstance(relation, ProjectedDataFlowRelation)
             for relation in data_flow_relations
         ):
@@ -251,6 +281,7 @@ class ProjectedFragment:
         object.__setattr__(self, "entry_block_id", entry_block_id)
         object.__setattr__(self, "blocks", blocks)
         object.__setattr__(self, "identity_bindings", identity_bindings)
+        object.__setattr__(self, "fallthrough_helpers", fallthrough_helpers)
         object.__setattr__(self, "data_flow_relations", data_flow_relations)
         object.__setattr__(self, "value_ranges", value_ranges)
 
@@ -560,6 +591,7 @@ def _validate_reachability(
 def _validate_operation(
     operation: FragmentOperation,
     blocks: dict[str, ProjectedFragmentBlock],
+    helpers: tuple[ProjectedFallthroughHelper, ...],
     outcomes: list[FragmentValidationOutcome],
 ) -> None:
     source = blocks.get(operation.source_block_id)
@@ -568,11 +600,40 @@ def _validate_operation(
     expected_kind = (
         BlockKind.ONE_WAY if len(operation.edges) == 1 else BlockKind.TWO_WAY
     )
-    topology_valid = (
+    matching_helpers = tuple(
+        helper for helper in helpers if helper.operation_id == operation.operation_id
+    )
+    physical_targets = set(expected_targets)
+    helper = None
+    helper_block = None
+    fallthrough_target_id = None
+    if len(operation.edges) == 2:
+        fallthrough_target_id = next(
+            edge.target_block_id
+            for edge in operation.edges
+            if edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+        )
+        if len(matching_helpers) == 1:
+            helper = matching_helpers[0]
+            helper_block = blocks.get(helper.helper_block_id)
+            physical_targets.remove(fallthrough_target_id)
+            physical_targets.add(helper.helper_block_id)
+    topology_valid = bool(
         source is not None
         and source.kind is expected_kind
-        and actual_targets == expected_targets
+        and actual_targets == physical_targets
         and len(actual_targets) == len(operation.edges)
+        and (
+            not matching_helpers
+            if len(operation.edges) == 1
+            else helper is not None
+            and helper.source_block_id == operation.source_block_id
+            and helper.semantic_target_block_id == fallthrough_target_id
+            and helper_block is not None
+            and helper_block.kind is BlockKind.ONE_WAY
+            and helper_block.successors == (fallthrough_target_id,)
+            and helper_block.predecessors == (operation.source_block_id,)
+        )
     )
     _outcome(
         outcomes,
@@ -593,21 +654,27 @@ def _validate_operation(
     )
     if not fallthrough_edges:
         return
-    target = blocks.get(fallthrough_edges[0].target_block_id)
     passed = bool(
         source is not None
-        and target is not None
-        and target.physical_position == source.physical_position + 1
+        and helper is not None
+        and helper_block is not None
+        and helper.source_block_id == operation.source_block_id
+        and helper.semantic_target_block_id == fallthrough_edges[0].target_block_id
+        and helper_block.physical_position == source.physical_position + 1
+        and helper_block.kind is BlockKind.ONE_WAY
+        and helper_block.successors == (fallthrough_edges[0].target_block_id,)
+        and helper_block.predecessors == (operation.source_block_id,)
     )
     _outcome(
         outcomes,
         FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
         operation.operation_id,
         passed,
-        "conditional fallthrough is the physically adjacent target"
+        "conditional fallthrough uses one adjacent transparent helper"
         if passed
-        else "conditional fallthrough target is not physically adjacent",
+        else "conditional fallthrough helper is missing, nonadjacent, or nontransparent",
         operation.source_block_id,
+        "" if helper is None else helper.helper_block_id,
         fallthrough_edges[0].target_block_id,
     )
 
@@ -884,6 +951,37 @@ def _validate_identity(
                 block.block_id,
             )
 
+    for helper in projection.fallthrough_helpers:
+        binding = binding_by_id.get(helper.helper_block_id)
+        owner_valid = bool(
+            binding is not None
+            and binding.state is FragmentBindingState.STAGED
+            and binding.stable_identity is None
+        )
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+            helper.helper_block_id,
+            owner_valid,
+            "fallthrough helper has one staged synthetic owner"
+            if owner_valid
+            else "fallthrough helper lacks staged synthetic ownership",
+            helper.helper_block_id,
+        )
+        lineage_valid = bool(
+            binding is not None and binding.previous_version is None
+        )
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.VERSION_LINEAGE,
+            helper.helper_block_id,
+            lineage_valid,
+            "fallthrough helper starts a new logical lineage"
+            if lineage_valid
+            else "fallthrough helper incorrectly claims prior authority",
+            helper.helper_block_id,
+        )
+
 
 def validate_fragment_projection(
     plan: FragmentPlan,
@@ -899,8 +997,24 @@ def validate_fragment_projection(
     blocks = {block.block_id: block for block in projection.blocks}
     _validate_graph(projection, blocks, outcomes)
     _validate_reachability(plan, blocks, projection, outcomes)
+    known_operation_ids = {operation.operation_id for operation in plan.operations}
+    for helper in projection.fallthrough_helpers:
+        if helper.operation_id not in known_operation_ids:
+            _outcome(
+                outcomes,
+                FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
+                helper.helper_block_id,
+                False,
+                "fallthrough helper does not belong to a planned operation",
+                helper.helper_block_id,
+            )
     for operation in plan.operations:
-        _validate_operation(operation, blocks, outcomes)
+        _validate_operation(
+            operation,
+            blocks,
+            projection.fallthrough_helpers,
+            outcomes,
+        )
     for obligation in plan.data_flow_obligations:
         _validate_data_flow(
             obligation,
@@ -1071,6 +1185,7 @@ __all__ = [
     "FragmentValidationResult",
     "PublishedFragmentObservation",
     "ProjectedDataFlowRelation",
+    "ProjectedFallthroughHelper",
     "ProjectedFragment",
     "ProjectedFragmentBlock",
     "ProjectedIdentityBinding",

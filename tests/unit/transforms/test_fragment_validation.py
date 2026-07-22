@@ -25,6 +25,7 @@ from d810.transforms.fragment_validation import (
     FragmentValidationPostcondition,
     PublishedFragmentObservation,
     ProjectedDataFlowRelation,
+    ProjectedFallthroughHelper,
     ProjectedFragment,
     ProjectedFragmentBlock,
     ProjectedIdentityBinding,
@@ -197,16 +198,25 @@ def _projection(plan: FragmentPlan | None = None) -> ProjectedFragment:
             _projected_block(
                 "replacement",
                 BlockKind.TWO_WAY,
-                ("true", "false"),
+                ("condition.fallthrough", "true"),
                 ("entry",),
                 1,
                 instruction_eas=(0x1000, 0x1004),
                 flag_write_eas=frozenset({0x1000}),
             ),
-            _projected_block("false", BlockKind.ZERO_WAY, (), ("replacement",), 2),
-            _projected_block("true", BlockKind.ZERO_WAY, (), ("replacement",), 3),
-            _projected_block("original", BlockKind.ZERO_WAY, (), (), 4),
-            _projected_block("dispatcher", BlockKind.ZERO_WAY, (), (), 5),
+            _projected_block(
+                "condition.fallthrough",
+                BlockKind.ONE_WAY,
+                ("false",),
+                ("replacement",),
+                2,
+            ),
+            _projected_block(
+                "false", BlockKind.ZERO_WAY, (), ("condition.fallthrough",), 3
+            ),
+            _projected_block("true", BlockKind.ZERO_WAY, (), ("replacement",), 4),
+            _projected_block("original", BlockKind.ZERO_WAY, (), (), 5),
+            _projected_block("dispatcher", BlockKind.ZERO_WAY, (), (), 6),
         ),
         identity_bindings=(
             _binding(
@@ -242,6 +252,22 @@ def _projection(plan: FragmentPlan | None = None) -> ProjectedFragment:
                 0,
                 2,
                 FragmentBindingState.PUBLISHED,
+            ),
+            ProjectedIdentityBinding(
+                block_id="condition.fallthrough",
+                logical_owner_id="logical:condition-fallthrough",
+                version=0,
+                generation=3,
+                state=FragmentBindingState.STAGED,
+                stable_identity=None,
+            ),
+        ),
+        fallthrough_helpers=(
+            ProjectedFallthroughHelper(
+                helper_block_id="condition.fallthrough",
+                operation_id="condition",
+                source_block_id="replacement",
+                semantic_target_block_id="false",
             ),
         ),
         data_flow_relations=(
@@ -352,7 +378,7 @@ def test_operation_disconnected_from_fragment_roots_is_rejected() -> None:
                 BlockKind.ZERO_WAY,
                 (),
                 (),
-                6,
+                7,
             ),
         ),
         identity_bindings=projection.identity_bindings
@@ -424,7 +450,7 @@ def test_nonadjacent_conditional_fallthrough_is_rejected() -> None:
     projection = _projection()
     projection = _replace_blocks(
         projection,
-        replace(projection.block("false"), physical_position=3),
+        replace(projection.block("condition.fallthrough"), physical_position=4),
         replace(projection.block("true"), physical_position=2),
     )
 
@@ -432,6 +458,27 @@ def test_nonadjacent_conditional_fallthrough_is_rejected() -> None:
         _plan(),
         projection,
     )
+
+
+def test_fallthrough_helper_must_be_transparent_and_operation_owned() -> None:
+    projection = _projection()
+    projection = _replace_blocks(
+        projection,
+        replace(
+            projection.block("condition.fallthrough"),
+            successors=("true",),
+        ),
+        replace(projection.block("false"), predecessors=()),
+        replace(
+            projection.block("true"),
+            predecessors=("replacement", "condition.fallthrough"),
+        ),
+    )
+
+    failed = _failed_codes(_plan(), projection)
+
+    assert FragmentValidationPostcondition.OPERATION_TOPOLOGY in failed
+    assert FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY in failed
 
 
 def test_broken_use_def_and_def_use_relations_are_rejected() -> None:
