@@ -118,7 +118,9 @@ from d810.backends.hexrays.evidence.native_semantic_closure import (
 )
 from d810.backends.hexrays.evidence.residual_entry_bridge import (
     predicate_arm_reaches_ea,
+    recognize_preoptimized_residual_entry_bridge,
 )
+from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
@@ -7890,6 +7892,96 @@ def _exact_equality_native_target(
     return route[0] if route is not None else None
 
 
+def _preopt_entry_bridge_transfer(
+    evidence: EntryBridgeEvidence,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+) -> MaterializedIndirectTransfer | None:
+    """Bind one portable PREOPT entry predicate to two exact handler EAs."""
+    source_ea = evidence.predicate_block_ea
+    predicate_ea = evidence.conditional_tail_ea
+    state_register = unique_materialized_state_register(transfers)
+    state_targets = (
+        {}
+        if state_register is None
+        else _unique_static_equality_handler_targets(transfers, state_register)
+    )
+    taken_target = state_targets.get(
+        int(evidence.taken_state_constant) & _MASK32
+    )
+    fallthrough_target = state_targets.get(
+        int(evidence.fallthrough_state_constant) & _MASK32
+    )
+    if (
+        source_ea is None
+        or predicate_ea is None
+        or state_register is None
+        or taken_target is None
+        or fallthrough_target is None
+        or int(taken_target) == int(fallthrough_target)
+    ):
+        return None
+    return MaterializedIndirectTransfer(
+        source_jmp_ea=int(predicate_ea),
+        source_block_ea=int(source_ea),
+        materialized_anchor_eas=(int(evidence.source_store_ea),),
+        target_eas=(int(taken_target), int(fallthrough_target)),
+        condition_code=int(evidence.condition_code),
+        true_target_ea=int(taken_target),
+        false_target_ea=int(fallthrough_target),
+        selector_state_var_reg=int(state_register),
+        resolver_kind="static_conditional_state_choice_bridge",
+        predicate_true_state=int(evidence.taken_state_constant) & _MASK32,
+        predicate_false_state=(
+            int(evidence.fallthrough_state_constant) & _MASK32
+        ),
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+        state_carrier_store_ea=int(evidence.source_store_ea),
+        state_carrier_ida_stkoff=(
+            None
+            if evidence.canonical_stack_cell_identity is None
+            else int(evidence.canonical_stack_cell_identity[0])
+        ),
+    )
+
+
+def _preopt_entry_bridge_transfers(
+    evidence_rows: tuple[EntryBridgeEvidence, ...],
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Project one unambiguous PREOPT entry proof, or abstain."""
+    if len(evidence_rows) != 1:
+        return ()
+    transfer = _preopt_entry_bridge_transfer(evidence_rows[0], transfers)
+    return () if transfer is None else (transfer,)
+
+
+def _capture_preopt_entry_bridge_evidence(
+    state: ResolverSessionState,
+    mba: object,
+) -> bool:
+    """Publish the pristine PREOPT entry choice before any union mutation."""
+    evidence = recognize_preoptimized_residual_entry_bridge(mba)
+    if evidence is None:
+        return False
+    changed = state.native_preanalysis.merge_preopt_entry_bridge_evidence(
+        state.native_key,
+        evidence,
+    )
+    if changed:
+        state.invalidate_current_mba_binding()
+        logger.info(
+            "PREOPT entry bridge captured: predicate=0x%X source=0x%X "
+            "store=0x%X taken_state=0x%X fallthrough_state=0x%X",
+            int(evidence.conditional_tail_ea or evidence.predicate_ea),
+            int(evidence.predicate_block_ea or evidence.predicate_ea),
+            int(evidence.source_store_ea),
+            int(evidence.taken_state_constant) & _MASK32,
+            int(evidence.fallthrough_state_constant) & _MASK32,
+        )
+    return changed
+
+
 def _states_with_validated_exact_equality_routes(
     transfers: tuple[MaterializedIndirectTransfer, ...],
 ) -> frozenset[int]:
@@ -9946,12 +10038,15 @@ def _capture_prepatch_preopt_union_source(
         if cfg_result.cfg.blocks_by_ea[int(entry_ea)].terminal
         is NativeTerminalKind.RETURN
     )
-    generation_ranges = tuple(
-        (int(native_range.start_ea), int(native_range.end_ea))
-        for native_range in plan_native_generation_ranges(
-            closure,
-            required_entry_eas=terminal_return_entry_eas,
-        )
+    generation_ranges = _preopt_generation_ranges_with_entry_prefix(
+        key,
+        tuple(
+            (int(native_range.start_ea), int(native_range.end_ea))
+            for native_range in plan_native_generation_ranges(
+                closure,
+                required_entry_eas=terminal_return_entry_eas,
+            )
+        ),
     )
     ranges = ida_hexrays.mba_ranges_t()
     for start_ea, end_ea in generation_ranges:
@@ -9971,6 +10066,7 @@ def _capture_prepatch_preopt_union_source(
         if preopt_mba is None:
             return abstain("preopt_generation_failed", failure.desc())
         preopt_mba.build_graph()
+        _capture_preopt_entry_bridge_evidence(state, preopt_mba)
         authoritative_stack_offsets = _static_stack_carrier_frame_offset_overrides(
             resolution.conditional_state_choices,
             consumer_load_eas_by_displacement=(
@@ -10042,6 +10138,29 @@ def _capture_prepatch_preopt_union_source(
         [hex(int(entry_ea)) for entry_ea in closure.included_block_eas],
     )
     return True
+
+
+def _preopt_generation_ranges_with_entry_prefix(
+    function_ea: int,
+    generation_ranges: tuple[tuple[int, int], ...],
+) -> tuple[tuple[int, int], ...]:
+    """Generate the pristine entry corridor without importing it into union."""
+    normalized = tuple(
+        sorted(
+            set(
+                (int(start_ea), int(end_ea))
+                for start_ea, end_ea in generation_ranges
+                if int(end_ea) > int(start_ea)
+            )
+        )
+    )
+    if not normalized:
+        return ()
+    first_start = int(normalized[0][0])
+    entry_ea = int(function_ea)
+    if entry_ea >= first_start:
+        return normalized
+    return ((entry_ea, first_start), *normalized)
 
 
 def _static_prepatch_union_source_transfers(
@@ -11786,6 +11905,16 @@ def prepare_preopt_union_closure(
             for transfer in live_conditional_bridges
             if transfer not in transfers
         )
+    entry_bridge_transfers = _preopt_entry_bridge_transfers(
+        state.portable_evidence.preopt_entry_bridges,
+        transfers,
+    )
+    if entry_bridge_transfers:
+        transfers = transfers + tuple(
+            transfer
+            for transfer in entry_bridge_transfers
+            if transfer not in transfers
+        )
     prepatch_source = state.portable_evidence.prepatch_preopt_union_source
     if prepatch_source is not None and not isinstance(
         prepatch_source, _PrepatchPreoptUnionSource
@@ -13229,6 +13358,7 @@ def _on_preopt_bootstrap_route(
         != int(function_ea)
     ):
         return
+    _capture_preopt_entry_bridge_evidence(state, mba)
     if (
         not state.native_preanalysis.needs_preopt_binding()
         and not state.native_preanalysis.needs_bootstrap_route_binding()

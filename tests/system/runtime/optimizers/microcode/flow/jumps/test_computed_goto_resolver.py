@@ -97,6 +97,143 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedStateRoute,
     TerminalReturnCarrierRequest,
 )
+from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
+
+
+def test_preopt_entry_bridge_projects_exact_portable_state_targets() -> None:
+    taken_state = 0xA0716E5B
+    fallthrough_state = 0xEC71CA67
+    taken_target = 0x40C26D
+    fallthrough_target = 0x40B9A6
+    evidence = EntryBridgeEvidence(
+        predicate_ea=0x40A5A0,
+        condition_code=5,
+        predicate_stack_identity=(0x20, 4),
+        stack_cell_identity=(0x80, 4),
+        taken_state_constant=taken_state,
+        fallthrough_state_constant=fallthrough_state,
+        source_store_ea=0x40A5C0,
+        canonical_stack_cell_identity=(0x40, 4),
+        canonical_predicate_stack_identity=(-0x20, 4),
+        predicate_block_ea=0x40A560,
+        taken_arm_entry_ea=0x40A5C0,
+        fallthrough_arm_entry_ea=0x40A5B0,
+        conditional_tail_ea=0x40A5AB,
+    )
+    routes = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40C253,
+            source_block_ea=0x40C253,
+            materialized_anchor_eas=(),
+            target_eas=(taken_target,),
+            selector_state_var_reg=20,
+            selector_state_constant=taken_state,
+            resolver_kind="static_handler_entry_route",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40B98C,
+            source_block_ea=0x40B98C,
+            materialized_anchor_eas=(),
+            target_eas=(fallthrough_target,),
+            selector_state_var_reg=20,
+            selector_state_constant=fallthrough_state,
+            resolver_kind="static_handler_entry_route",
+        ),
+    )
+
+    transfer = computed_goto_resolver._preopt_entry_bridge_transfer(
+        evidence,
+        routes,
+    )
+
+    assert transfer == MaterializedIndirectTransfer(
+        source_jmp_ea=0x40A5AB,
+        source_block_ea=0x40A560,
+        materialized_anchor_eas=(0x40A5C0,),
+        target_eas=(taken_target, fallthrough_target),
+        condition_code=5,
+        true_target_ea=taken_target,
+        false_target_ea=fallthrough_target,
+        selector_state_var_reg=20,
+        resolver_kind="static_conditional_state_choice_bridge",
+        predicate_true_state=taken_state,
+        predicate_false_state=fallthrough_state,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+        state_carrier_store_ea=0x40A5C0,
+        state_carrier_ida_stkoff=0x40,
+    )
+
+
+def test_preopt_entry_bridge_capture_publishes_lifecycle_evidence(
+    monkeypatch,
+) -> None:
+    evidence = EntryBridgeEvidence(
+        predicate_ea=0x1004,
+        condition_code=5,
+        predicate_stack_identity=(0x20, 4),
+        stack_cell_identity=(0x80, 4),
+        taken_state_constant=0x11,
+        fallthrough_state_constant=0x22,
+        source_store_ea=0x1020,
+        predicate_block_ea=0x1000,
+        taken_arm_entry_ea=0x1020,
+        fallthrough_arm_entry_ea=0x1010,
+        conditional_tail_ea=0x1008,
+    )
+    _session, state = _resolver_session()
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "recognize_preoptimized_residual_entry_bridge",
+        lambda _mba: evidence,
+        raising=False,
+    )
+
+    assert computed_goto_resolver._capture_preopt_entry_bridge_evidence(
+        state,
+        object(),
+    )
+    assert not computed_goto_resolver._capture_preopt_entry_bridge_evidence(
+        state,
+        object(),
+    )
+    assert state.portable_evidence.preopt_entry_bridges == (evidence,)
+
+
+def test_preopt_entry_bridge_projection_abstains_on_conflicting_live_proofs() -> (
+    None
+):
+    first = EntryBridgeEvidence(
+        predicate_ea=0x1004,
+        condition_code=5,
+        predicate_stack_identity=(0x20, 4),
+        stack_cell_identity=(0x80, 4),
+        taken_state_constant=0x11,
+        fallthrough_state_constant=0x22,
+        source_store_ea=0x1020,
+        predicate_block_ea=0x1000,
+        conditional_tail_ea=0x1008,
+    )
+    second = replace(first, fallthrough_state_constant=0x33)
+
+    assert computed_goto_resolver._preopt_entry_bridge_transfers(
+        (first, second),
+        (),
+    ) == ()
+
+
+def test_prepatch_generation_retains_pristine_entry_prefix() -> None:
+    assert computed_goto_resolver._preopt_generation_ranges_with_entry_prefix(
+        0x40A560,
+        (
+            (0x40A5F0, 0x40A615),
+            (0x40A680, 0x40A69A),
+        ),
+    ) == (
+        (0x40A560, 0x40A5F0),
+        (0x40A5F0, 0x40A615),
+        (0x40A680, 0x40A69A),
+    )
 
 
 def test_preopt_union_range_enrichment_reuses_existing_target_ownership(
