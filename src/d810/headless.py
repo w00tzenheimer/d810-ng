@@ -141,8 +141,13 @@ def prepare_native_preanalysis(function_ea: int) -> int:
     return int(_state.manager.prepare_native_preanalysis(int(function_ea)))
 
 
-def decompile(function_ea: int) -> typing.Any:
-    """Decompile through the manager-owned bounded PREOPT restart controller."""
+def decompile(function_ea: int, *, failure: typing.Any | None = None) -> typing.Any:
+    """Decompile through the manager-owned bounded PREOPT restart controller.
+
+    ``failure`` is the optional caller-owned ``hexrays_failure_t`` output used
+    by headless regression probes that must distinguish a valid cfunc from a
+    decompiler failure carrying partial output.
+    """
     if not _configured or _state is None:
         raise RuntimeError(
             "d810 headless API is not configured. Call configure() first."
@@ -150,9 +155,15 @@ def decompile(function_ea: int) -> typing.Any:
     import ida_hexrays
 
     function_ea = int(function_ea)
+
+    def run_decompile() -> typing.Any:
+        if failure is None:
+            return ida_hexrays.decompile(function_ea)
+        return ida_hexrays.decompile(function_ea, failure)
+
     return _state.manager.decompile_with_native_preanalysis(
         function_ea,
-        lambda: ida_hexrays.decompile(function_ea),
+        run_decompile,
         ida_hexrays.clear_cached_cfuncs,
     )
 
