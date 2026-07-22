@@ -5926,6 +5926,51 @@ class DeferredGraphModifier:
             len(original_serial_to_copy), len(pending_rewires),
         )
 
+        # A copy staged later can introduce a new predecessor of an original
+        # whose predecessor snapshot was captured earlier in Phase 2.  Close
+        # those intra-batch dependencies before the swap: the target rewire
+        # must redirect both pre-existing predecessors and every staged copy
+        # that now points at the target original.  Otherwise the late copy
+        # keeps the original reachable and enters its unmodified topology even
+        # though the batch receipt reports every route as committed.
+        late_predecessor_count = 0
+        for target_rewire in pending_rewires:
+            try:
+                target_original_serial = int(target_rewire.original_blk.serial)
+            except Exception:
+                continue
+            known_predecessor_ids = {
+                id(predecessor) for predecessor in target_rewire.preds_to_redirect
+            }
+            late_predecessors = []
+            for source_rewire in pending_rewires:
+                predecessor = source_rewire.new_blk
+                if id(predecessor) in known_predecessor_ids:
+                    continue
+                try:
+                    successor_serials = {
+                        int(predecessor.succset[index])
+                        for index in range(int(predecessor.succset.size()))
+                    }
+                except Exception:
+                    continue
+                if target_original_serial not in successor_serials:
+                    continue
+                late_predecessors.append(predecessor)
+                known_predecessor_ids.add(id(predecessor))
+            if late_predecessors:
+                target_rewire.preds_to_redirect = (
+                    *target_rewire.preds_to_redirect,
+                    *late_predecessors,
+                )
+                late_predecessor_count += len(late_predecessors)
+        if late_predecessor_count:
+            logger.info(
+                "staged_atomic: closed %d intra-batch copy-to-original "
+                "dependencies before commit",
+                late_predecessor_count,
+            )
+
         def _maybe_redirect_to_copy(mod: "GraphModification") -> None:
             if mod.new_target is None:
                 return

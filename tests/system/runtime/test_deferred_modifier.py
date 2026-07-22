@@ -3624,6 +3624,77 @@ class TestStagedAtomicPendingRewire:
 class TestStagedAtomicApply:
     """Integration tests for DeferredGraphModifier.apply(staged_atomic=True)."""
 
+    def test_staged_atomic_remaps_late_copy_edge_to_earlier_target_copy(
+        self,
+        monkeypatch,
+    ):
+        """A staged route must target the staged version of another source.
+
+        Stage the target route first, then a source route that points at that
+        target.  The target's predecessor snapshot cannot contain the later
+        source copy, so the commit phase must explicitly close this intra-batch
+        edge over the final original-to-copy map.
+        """
+        mba = _StagedFakeMBA()
+        external_pred = _StagedFakeBlock(4, nsucc=1, succ_serial=5)
+        source = _StagedFakeBlock(5, nsucc=1, succ_serial=30)
+        source.predset.push_back(4)
+        target = _StagedFakeBlock(10, nsucc=1, succ_serial=30)
+        final = _StagedFakeBlock(20, nsucc=0)
+        dispatcher = _StagedFakeBlock(30, nsucc=0)
+        stop = _StagedFakeBlock(40, nsucc=0)
+        stop.type = ida_hexrays.BLT_STOP
+        dispatcher.predset.push_back(5)
+        dispatcher.predset.push_back(10)
+        mba.blocks.update(
+            {
+                4: external_pred,
+                5: source,
+                10: target,
+                20: final,
+                30: dispatcher,
+                40: stop,
+            }
+        )
+        mba.qty = max(mba.blocks) + 1
+
+        _staged_patch_wiring(monkeypatch, mba)
+        modifier = dm.DeferredGraphModifier(
+            mba,
+            mutation_gateway=make_mutation_gateway(mba),
+        )
+        modifier.modifications = [
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=10,
+                new_target=20,
+                description="target route",
+            ),
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=5,
+                new_target=10,
+                description="source route to staged target",
+            ),
+        ]
+
+        applied = modifier.apply(
+            run_optimize_local=False,
+            run_deep_cleaning=False,
+            transactional=True,
+            staged_atomic=True,
+        )
+
+        assert applied == 2
+        assert len(mba.copied_blocks) == 2
+        target_copy = mba.get_mblock(mba.copied_blocks[0][1])
+        source_copy = mba.get_mblock(mba.copied_blocks[1][1])
+        assert target_copy is not None
+        assert source_copy is not None
+        assert tuple(source_copy.succset) == (int(target_copy.serial),)
+        assert int(source_copy.serial) in tuple(target_copy.predset)
+        assert int(source_copy.serial) not in tuple(target.predset)
+
     def test_staged_atomic_goto_change_stages_copy_and_redirects_preds(
         self,
         monkeypatch,
