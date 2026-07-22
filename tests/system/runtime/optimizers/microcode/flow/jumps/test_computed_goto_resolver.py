@@ -1853,6 +1853,7 @@ def test_state_write_route_rebind_requires_live_dispatcher_successor() -> None:
             )
 
         rebind_identity = rebind_imported_identity
+        rebind_native_identity = rebind_imported_identity
 
     delivery = SimpleNamespace(
         serial=3,
@@ -1874,7 +1875,7 @@ def test_state_write_route_rebind_requires_live_dispatcher_successor() -> None:
             _Index(),
             (route,),
             dispatcher_router_eas=frozenset({0x40A5F0}),
-            prefer_imported=True,
+            union_imported=True,
         )
     )
 
@@ -1892,7 +1893,7 @@ def test_state_write_route_rebind_requires_live_dispatcher_successor() -> None:
             _Index(),
             (route,),
             dispatcher_router_eas=frozenset({0x40A5F0}),
-            prefer_imported=True,
+            union_imported=True,
             imported_instruction_origins={
                 imported_delivery_ea: route.delivery_ea,
             },
@@ -1912,7 +1913,7 @@ def test_state_write_route_rebind_requires_live_dispatcher_successor() -> None:
             _Index(),
             (route,),
             dispatcher_router_eas=frozenset({0x40A5F0}),
-            prefer_imported=True,
+            union_imported=True,
         )
     )
     assert len(pending) == 1
@@ -1930,7 +1931,7 @@ def test_state_write_route_rebind_requires_live_dispatcher_successor() -> None:
             _Index(),
             (route,),
             dispatcher_router_eas=frozenset({0x40A5F0}),
-            prefer_imported=True,
+            union_imported=True,
         )
     )
     assert pending == ()
@@ -1938,7 +1939,222 @@ def test_state_write_route_rebind_requires_live_dispatcher_successor() -> None:
     assert unbound == 1
 
 
-def test_reference_style_state_write_route_rebinds_conditional_dispatch_cut() -> None:
+def test_state_write_route_uses_native_source_and_imported_target() -> None:
+    import ida_hexrays
+
+    from d810.ir.block_identity import RebindResult
+
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    _session, state = _resolver_session(resolution)
+
+    def identity(ea: int) -> StableBlockIdentity:
+        return StableBlockIdentity.from_intervals(
+            (NativeEaInterval(ea, ea + 1),),
+            native_key=state.native_key,
+        )
+
+    write_ea = 0x40BC45
+    delivery_ea = 0x40BC5F
+    router_ea = 0x40B6C0
+    target_ea = 0x40C62F
+    route = PortableStateWriteRouteEvidence(
+        write_identity=identity(write_ea),
+        delivery_identity=identity(delivery_ea),
+        source_write_ea=write_ea,
+        delivery_ea=delivery_ea,
+        delivery_region_start_ea=delivery_ea,
+        delivery_region_end_ea=delivery_ea + 2,
+        corridor_instruction_eas=(write_ea, delivery_ea),
+        state_var_reg=20,
+        state_constant=0x0872BFF1,
+        target_identity=identity(target_ea),
+        target_ea=target_ea,
+        proof_kind="reference_style_immediate_flow_route",
+    )
+    native_handles = {
+        write_ea: SimpleNamespace(serial=3),
+        router_ea: SimpleNamespace(serial=5),
+    }
+    imported_handles = {
+        delivery_ea: SimpleNamespace(serial=7),
+        target_ea: SimpleNamespace(serial=9),
+    }
+
+    class _Index:
+        native_key = state.native_key
+
+        @staticmethod
+        def _anchor(candidate):
+            return candidate.native_ranges.intervals[0].start_ea
+
+        @classmethod
+        def rebind_native_identity(cls, candidate):
+            handle = native_handles.get(cls._anchor(candidate))
+            return (
+                RebindResult.bound(handle)
+                if handle is not None
+                else RebindResult.missing()
+            )
+
+        @classmethod
+        def rebind_imported_identity(cls, candidate):
+            handle = imported_handles.get(cls._anchor(candidate))
+            return (
+                RebindResult.bound(handle)
+                if handle is not None
+                else RebindResult.missing()
+            )
+
+        @staticmethod
+        def rebind_identity(_candidate):
+            return RebindResult.ambiguous()
+
+    delivery = SimpleNamespace(
+        serial=3,
+        start=0x40BC2D,
+        tail=SimpleNamespace(ea=0x40BC50, opcode=ida_hexrays.m_goto),
+        nsucc=lambda: 1,
+        succ=lambda _index: 5,
+    )
+    imported_delivery = SimpleNamespace(
+        serial=7,
+        start=0x40A560,
+        tail=SimpleNamespace(ea=delivery_ea, opcode=ida_hexrays.m_goto),
+        nsucc=lambda: 1,
+        succ=lambda _index: 9,
+    )
+    blocks = {
+        3: delivery,
+        5: SimpleNamespace(serial=5, start=router_ea),
+        7: imported_delivery,
+        9: SimpleNamespace(serial=9, start=target_ea),
+    }
+    mba = SimpleNamespace(get_mblock=lambda serial: blocks.get(int(serial)))
+
+    pending, already, unbound = (
+        computed_goto_resolver._classify_live_state_write_routes(
+            mba,
+            _Index(),
+            (route,),
+            dispatcher_router_eas=frozenset({router_ea}),
+            union_imported=True,
+        )
+    )
+
+    assert len(pending) == 1
+    assert pending[0].delivery.serial == 3
+    assert pending[0].target.serial == 9
+    assert already == ()
+    assert unbound == 0
+
+
+def test_state_write_route_uses_corridor_owner_and_imported_root_handle() -> None:
+    import ida_hexrays
+
+    from d810.ir.block_identity import RebindResult
+
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    _session, state = _resolver_session(resolution)
+
+    def identity(ea: int) -> StableBlockIdentity:
+        return StableBlockIdentity.from_intervals(
+            (NativeEaInterval(ea, ea + 1),),
+            native_key=state.native_key,
+        )
+
+    write_ea = 0x40A5B2
+    delivery_ea = 0x40A5C8
+    router_ea = 0x40A5F0
+    target_ea = 0x40BECC
+    route = PortableStateWriteRouteEvidence(
+        write_identity=identity(write_ea),
+        delivery_identity=identity(delivery_ea),
+        source_write_ea=write_ea,
+        delivery_ea=delivery_ea,
+        delivery_region_start_ea=delivery_ea,
+        delivery_region_end_ea=delivery_ea + 2,
+        corridor_instruction_eas=(write_ea, delivery_ea),
+        state_var_reg=20,
+        state_constant=0xABB95547,
+        target_identity=identity(target_ea),
+        target_ea=target_ea,
+        proof_kind="reference_style_immediate_flow_route",
+    )
+    corridor_bound = SimpleNamespace(serial=3)
+    router_bound = SimpleNamespace(serial=5)
+    target_bound = SimpleNamespace(serial=9)
+    imported_root_handle = object()
+
+    class _Index:
+        native_key = state.native_key
+
+        @staticmethod
+        def rebind_native_identity(candidate):
+            exact = frozenset(candidate.exact_instruction_eas)
+            anchor = candidate.native_ranges.intervals[0].start_ea
+            if exact == frozenset({write_ea, delivery_ea}):
+                return RebindResult.bound(corridor_bound)
+            if anchor == router_ea:
+                return RebindResult.bound(router_bound)
+            return RebindResult.ambiguous()
+
+        @staticmethod
+        def rebind_imported_identity(_candidate):
+            return RebindResult.ambiguous()
+
+        @staticmethod
+        def resolve(handle):
+            assert handle is imported_root_handle
+            return target_bound
+
+    delivery = SimpleNamespace(
+        serial=3,
+        start=0x40A59D,
+        tail=SimpleNamespace(ea=delivery_ea, opcode=ida_hexrays.m_goto),
+        nsucc=lambda: 1,
+        succ=lambda _index: 5,
+    )
+    blocks = {
+        3: delivery,
+        5: SimpleNamespace(serial=5, start=router_ea),
+        9: SimpleNamespace(serial=9, start=target_ea),
+    }
+    mba = SimpleNamespace(get_mblock=lambda serial: blocks.get(int(serial)))
+
+    pending, already, unbound = (
+        computed_goto_resolver._classify_live_state_write_routes(
+            mba,
+            _Index(),
+            (route,),
+            dispatcher_router_eas=frozenset({router_ea}),
+            union_imported=True,
+            imported_root_handles={target_ea: imported_root_handle},
+        )
+    )
+
+    assert len(pending) == 1
+    assert pending[0].write.serial == 3
+    assert pending[0].delivery.serial == 3
+    assert pending[0].target.serial == 9
+    assert already == ()
+    assert unbound == 0
+
+
+def test_reference_style_state_write_route_replaces_synthetic_conditional_cut() -> None:
     import ida_hexrays
 
     from d810.ir.block_identity import RebindResult, RebindStatus
@@ -1991,6 +2207,7 @@ def test_reference_style_state_write_route_rebinds_conditional_dispatch_cut() ->
             )
 
         rebind_identity = rebind_imported_identity
+        rebind_native_identity = rebind_imported_identity
 
     delivery = SimpleNamespace(
         serial=3,
@@ -2013,8 +2230,12 @@ def test_reference_style_state_write_route_rebinds_conditional_dispatch_cut() ->
             mba,
             _Index(),
             (route,),
-            dispatcher_router_eas=frozenset({0x40A5F0, 0x40A615}),
-            prefer_imported=True,
+            # The second arm is deliberately not a recognized router.  The
+            # portable reference proof says this native delivery is replaced
+            # by one unconditional semantic branch, so a synthetic live jcc
+            # at that exact delivery cannot retain either stale arm.
+            dispatcher_router_eas=frozenset({0x40A5F0}),
+            union_imported=True,
             diagnostic_rows=diagnostics,
         )
     )
@@ -2052,7 +2273,7 @@ def test_reference_style_state_write_route_rebinds_conditional_dispatch_cut() ->
             _Index(),
             (route,),
             dispatcher_router_eas=frozenset({0x40A5F0, 0x40A615}),
-            prefer_imported=True,
+            union_imported=True,
             diagnostic_rows=diagnostics,
         )
     )
@@ -2117,6 +2338,7 @@ def test_reference_style_route_rebinds_folded_delivery_at_write_owner() -> None:
             )
 
         rebind_identity = rebind_imported_identity
+        rebind_native_identity = rebind_imported_identity
 
     write_owner = SimpleNamespace(
         serial=30,
@@ -2159,7 +2381,7 @@ def test_reference_style_route_rebinds_folded_delivery_at_write_owner() -> None:
             _Index(),
             (route,),
             dispatcher_router_eas=frozenset({0x40A5CA}),
-            prefer_imported=True,
+            union_imported=True,
             diagnostic_rows=diagnostics,
         )
     )
@@ -2186,7 +2408,7 @@ def test_reference_style_route_rebinds_folded_delivery_at_write_owner() -> None:
             _Index(),
             (route,),
             dispatcher_router_eas=frozenset({0x40A5CA}),
-            prefer_imported=True,
+            union_imported=True,
             diagnostic_rows=diagnostics,
         )
     )
@@ -2246,6 +2468,7 @@ def test_reference_style_route_materializes_folded_zero_way_write_owner() -> Non
             )
 
         rebind_identity = rebind_imported_identity
+        rebind_native_identity = rebind_imported_identity
 
     write_owner = SimpleNamespace(
         serial=30,
@@ -2271,7 +2494,7 @@ def test_reference_style_route_materializes_folded_zero_way_write_owner() -> Non
             _Index(),
             (route,),
             dispatcher_router_eas=frozenset(),
-            prefer_imported=True,
+            union_imported=True,
             diagnostic_rows=diagnostics,
         )
     )
@@ -3128,9 +3351,7 @@ def test_stkpnts_merges_detached_call_push_delta_exactly_once(
         lambda candidate, ea: (
             native_call_spd
             if candidate is function and int(ea) == native_call_ea
-            else -1168
-            if candidate is function
-            else 0
+            else -1168 if candidate is function else 0
         ),
     )
     applied: list[tuple[object, int, int]] = []
