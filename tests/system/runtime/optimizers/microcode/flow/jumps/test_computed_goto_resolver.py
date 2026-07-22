@@ -2231,7 +2231,7 @@ def test_reference_style_route_materializes_folded_zero_way_write_owner() -> Non
         start=0x40B469,
         tail=SimpleNamespace(
             ea=0x40B49E,
-            opcode=ida_hexrays.m_ijmp,
+            opcode=ida_hexrays.m_call,
             d=SimpleNamespace(t=ida_hexrays.mop_z),
         ),
         nsucc=lambda: 0,
