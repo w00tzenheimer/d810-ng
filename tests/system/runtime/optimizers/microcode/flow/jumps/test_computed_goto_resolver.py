@@ -1917,6 +1917,94 @@ def test_state_write_route_rebind_requires_live_dispatcher_successor() -> None:
     assert unbound == 1
 
 
+def test_reference_style_state_write_route_rebinds_conditional_dispatch_cut() -> None:
+    import ida_hexrays
+
+    from d810.ir.block_identity import RebindResult, RebindStatus
+
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    _session, state = _resolver_session(resolution)
+    identity = lambda ea: StableBlockIdentity.from_intervals(
+        (NativeEaInterval(ea, ea + 1),), native_key=state.native_key
+    )
+    route = PortableStateWriteRouteEvidence(
+        write_identity=identity(0x40A7C2),
+        delivery_identity=identity(0x40A7DF),
+        source_write_ea=0x40A7C2,
+        delivery_ea=0x40A7DF,
+        delivery_region_start_ea=0x40A7DF,
+        delivery_region_end_ea=0x40A7E1,
+        corridor_instruction_eas=(0x40A7C2, 0x40A7D9, 0x40A7DF),
+        state_var_reg=20,
+        state_constant=0xB34CE2DF,
+        target_identity=identity(0x40BCAF),
+        target_ea=0x40BCAF,
+        proof_kind="reference_style_immediate_flow_route",
+    )
+    handles = {
+        0x40A7C2: SimpleNamespace(serial=3),
+        0x40A7DF: SimpleNamespace(serial=3),
+        0x40A5F0: SimpleNamespace(serial=5),
+        0x40A615: SimpleNamespace(serial=7),
+        0x40BCAF: SimpleNamespace(serial=9),
+    }
+
+    class _Index:
+        native_key = state.native_key
+
+        @staticmethod
+        def rebind_imported_identity(candidate):
+            anchor = candidate.native_ranges.intervals[0].start_ea
+            handle = handles.get(anchor)
+            return (
+                RebindResult(RebindStatus.BOUND, handle)
+                if handle is not None
+                else RebindResult.missing()
+            )
+
+        rebind_identity = rebind_imported_identity
+
+    delivery = SimpleNamespace(
+        serial=3,
+        start=0x40A7AE,
+        tail=SimpleNamespace(ea=0x40A7DF, opcode=ida_hexrays.m_jnz),
+        nsucc=lambda: 2,
+        succ=lambda index: (5, 7)[index],
+    )
+    blocks = {
+        3: delivery,
+        5: SimpleNamespace(serial=5, start=0x40A5F0),
+        7: SimpleNamespace(serial=7, start=0x40A615),
+        9: SimpleNamespace(serial=9, start=0x40BCAF),
+    }
+    mba = SimpleNamespace(get_mblock=lambda serial: blocks.get(int(serial)))
+
+    pending, already, unbound = (
+        computed_goto_resolver._classify_live_state_write_routes(
+            mba,
+            _Index(),
+            (route,),
+            dispatcher_router_eas=frozenset({0x40A5F0, 0x40A615}),
+            prefer_imported=True,
+        )
+    )
+
+    assert len(pending) == 1
+    assert pending[0].delivery.serial == 3
+    assert pending[0].target.serial == 9
+    assert pending[0].old_target_serial is None
+    assert pending[0].collapse_conditional is True
+    assert already == ()
+    assert unbound == 0
+
+
 def test_static_conditional_state_choice_maps_both_unique_handler_arms() -> None:
     choice = _make_static_conditional_state_choice(
         source_block_ea=0x40D252,

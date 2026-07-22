@@ -14288,6 +14288,7 @@ class _ReboundStateWriteRoute(NamedTuple):
     delivery: object
     target: object
     old_target_serial: int | None
+    collapse_conditional: bool
 
 
 def _rebind_route_identity(index, identity, *, prefer_imported: bool):
@@ -14385,12 +14386,26 @@ def _classify_live_state_write_routes(
             int(delivery.succ(successor_index))
             for successor_index in range(int(delivery.nsucc()))
         )
-        if (
-            tail is None
-            or int(tail.ea) != int(evidence.delivery_ea)
-            or int(tail.opcode) != int(ida_hexrays.m_goto)
-            or len(successors) not in (0, 1)
-        ):
+        is_direct_delivery = bool(
+            tail is not None
+            and int(tail.ea) == int(evidence.delivery_ea)
+            and int(tail.opcode) == int(ida_hexrays.m_goto)
+            and len(successors) in (0, 1)
+        )
+        is_reference_conditional_delivery = bool(
+            tail is not None
+            and int(tail.ea) == int(evidence.delivery_ea)
+            and evidence.proof_kind == "reference_style_immediate_flow_route"
+            and ida_hexrays.is_mcode_jcond(int(tail.opcode))
+            and len(successors) == 2
+            and router_serials
+            and all(
+                successor in router_serials
+                or successor == int(target_result.block.serial)
+                for successor in successors
+            )
+        )
+        if not is_direct_delivery and not is_reference_conditional_delivery:
             unbound += 1
             logger.debug(
                 "PREOPT state-write source-shape abstain: delivery=blk%d@0x%X "
@@ -14409,8 +14424,22 @@ def _classify_live_state_write_routes(
             write_result.block,
             delivery_result.block,
             target_result.block,
-            old_target_serial,
+            None if is_reference_conditional_delivery else old_target_serial,
+            bool(is_reference_conditional_delivery),
         )
+        if is_reference_conditional_delivery:
+            previous_target = delivery_targets.get(int(delivery.serial))
+            if previous_target is not None and previous_target != int(target.serial):
+                unbound += 1
+                pending = [
+                    route
+                    for route in pending
+                    if int(route.delivery.serial) != int(delivery.serial)
+                ]
+                continue
+            delivery_targets[int(delivery.serial)] = int(target.serial)
+            pending.append(rebound)
+            continue
         if old_target_serial == int(target_result.block.serial):
             already.append(rebound)
             continue
@@ -14951,7 +14980,13 @@ def _on_preopt_bootstrap_route(
                 f"state=0x{route.evidence.state_constant:X} "
                 f"handler@0x{route.evidence.target_ea:X}"
             )
-            if route.old_target_serial is None:
+            if route.collapse_conditional:
+                modifier.queue_convert_to_goto(
+                    block_serial=int(route.delivery.serial),
+                    goto_target=int(route.target.serial),
+                    description=description,
+                )
+            elif route.old_target_serial is None:
                 modifier.queue_terminal_goto_change(
                     block_serial=int(route.delivery.serial),
                     goto_target=int(route.target.serial),
