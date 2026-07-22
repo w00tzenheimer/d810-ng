@@ -210,6 +210,47 @@ def test_mutation_projection_prefers_stronger_equivalent_static_predicate() -> N
     ) == (stronger,)
 
 
+def test_mutation_projection_prefers_exact_live_shape_over_navigation_proof() -> None:
+    navigation = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40AC95,
+        source_block_ea=0x40AC70,
+        materialized_anchor_eas=(0x40AC95,),
+        target_eas=(0x40B0D6, 0x40C10A),
+        condition_code=5,
+        true_target_ea=0x40B0D6,
+        false_target_ea=0x40C10A,
+        selector_state_var_reg=20,
+        predicate_true_state=0x29947C85,
+        predicate_false_state=0x886CCA9F,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    exact_live = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40AC95,
+        source_block_ea=0x40AC81,
+        materialized_anchor_eas=(0x40AC95,),
+        target_eas=(0x40B0D6, 0x40C10A),
+        condition_code=5,
+        true_target_ea=0x40B0D6,
+        false_target_ea=0x40C10A,
+        selector_state_var_reg=20,
+        predicate_register=8,
+        predicate_size=4,
+        predicate_compare_constant=0x42,
+        predicate_predecessor_ea=0x40AC8E,
+        predicate_true_state=0x29947C85,
+        predicate_false_state=0x886CCA9F,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+
+    assert mutation_authoritative_materialized_transfers(
+        (navigation, exact_live)
+    ) == (exact_live,)
+
+
 def test_mutation_projection_rejects_shared_entry_dispatch_navigation_source() -> None:
     first_handler = MaterializedIndirectTransfer(
         0x5000,

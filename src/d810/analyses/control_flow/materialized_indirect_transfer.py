@@ -355,11 +355,19 @@ def mutation_authoritative_materialized_transfers(
             for transfer in candidates
         ):
             continue
-        ranked: dict[tuple[int, int], set[MaterializedIndirectTransfer]] = {}
+        ranked: dict[tuple[int, ...], set[MaterializedIndirectTransfer]] = {}
         for transfer in candidates:
+            live_shape_fields = (
+                transfer.predicate_register,
+                transfer.predicate_size,
+                transfer.predicate_predecessor_ea,
+                transfer.predicate_compare_register,
+                transfer.predicate_compare_constant,
+            )
             rank = (
                 int(transfer.resolver_kind == "static_conditional_state_choice_bridge"),
                 len(frozenset(int(ea) for ea in transfer.materialized_anchor_eas)),
+                sum(field is not None for field in live_shape_fields),
             )
             ranked.setdefault(rank, set()).add(transfer)
         strongest = ranked[max(ranked)]
