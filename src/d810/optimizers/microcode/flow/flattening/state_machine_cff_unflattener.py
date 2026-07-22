@@ -2293,6 +2293,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 target_block = find_materialized_handler_block_by_native_ea(
                     mba,
                     int(target_ea),
+                    required_native_eas=atomic_predicate_eas,
                 )
                 if target_block is None:
                     continue
@@ -2375,6 +2376,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 target_block = find_materialized_handler_block_by_native_ea(
                     mba,
                     int(target_ea),
+                    required_native_eas=atomic_predicate_eas,
                 )
                 if target_block is None or int(target_block.serial) != int(
                     target_serial
@@ -2585,6 +2587,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 target_block = find_materialized_handler_block_by_native_ea(
                     mba,
                     int(target_ea),
+                    required_native_eas=atomic_predicate_eas,
                 )
                 target_serial = (
                     int(target_block.serial) if target_block is not None else None

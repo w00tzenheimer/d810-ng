@@ -7635,6 +7635,54 @@ def test_materialized_handler_lookup_prefers_unique_exact_imported_owner(
     assert result is imported
 
 
+def test_materialized_handler_lookup_uses_exact_imported_range_when_entry_is_eliminated(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    native_entry_ea = 0x40B199
+    native_predicate_ea = 0x40B1B0
+    imported_entry_ea = 0xF1C00A60
+    imported_predicate_ea = 0xF1C00A74
+    live = _Block(
+        0,
+        0x40B18D,
+        (_Instruction(ida_hexrays.m_mov, native_entry_ea),),
+    )
+    imported = _Block(
+        1,
+        0x40A560,
+        (
+            _Instruction(ida_hexrays.m_mov, imported_entry_ea),
+            _Instruction(ida_hexrays.m_jnz, imported_predicate_ea),
+        ),
+    )
+    destination = _MBA((live, imported))
+    identity = detached_handler_island.stable_mba_identity(destination)
+    detached_handler_island._IMPORTED_NATIVE_BLOCK_RANGES[
+        (identity, native_entry_ea, native_predicate_ea + 2)
+    ] = (
+        detached_handler_island._ImportedSnippetRoot(
+            serial_hint=1,
+            anchor_eas=(imported_entry_ea, imported_predicate_ea),
+            owned_instruction_eas=(imported_entry_ea, imported_predicate_ea),
+        )
+    )
+    detached_handler_island._IMPORTED_INSTRUCTION_ORIGINS.update(
+        {
+            (identity, imported_entry_ea): 0x40B1A0,
+            (identity, imported_predicate_ea): native_predicate_ea,
+        }
+    )
+
+    result = detached_handler_island.find_materialized_handler_block_by_native_ea(
+        destination,
+        native_entry_ea,
+        required_native_eas=(native_predicate_ea,),
+    )
+
+    assert result is imported
+
+
 def test_materialized_handler_lookup_abstains_on_range_only_competitor(
     monkeypatch,
 ) -> None:

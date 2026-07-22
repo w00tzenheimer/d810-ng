@@ -9174,6 +9174,7 @@ def recover_conditional_handler_bridge_transfers_from_mba(
     imported_predicate_eas: frozenset[int] = frozenset(),
     imported_instruction_origins: Mapping[int, int] | None = None,
     arm_states_by_predicate_ea: Mapping[int, tuple[int, int]] | None = None,
+    native_cfg: NativeCfg | None = None,
 ) -> tuple[MaterializedIndirectTransfer, ...]:
     """Preserve live handler predicates before staged routing folds them.
 
@@ -9330,6 +9331,14 @@ def recover_conditional_handler_bridge_transfers_from_mba(
                         predicate_predecessor_ea,
                     )
                 )
+        if native_cfg is not None:
+            native_source_blocks = tuple(
+                block
+                for block in native_cfg.blocks_by_ea.values()
+                if int(block.start_ea) <= predicate_ea < int(block.end_ea)
+            )
+            if len(native_source_blocks) == 1:
+                source_block_ea = int(native_source_blocks[0].start_ea)
         arm_proofs = {
             (
                 int(row.true_state) & _MASK32,
@@ -12912,6 +12921,11 @@ def prepare_preopt_union_closure(
     ):
         return _preopt_union_abstention(key, "profile_not_eligible")
 
+    prepatch_source = state.portable_evidence.prepatch_preopt_union_source
+    if prepatch_source is not None and not isinstance(
+        prepatch_source, _PrepatchPreoptUnionSource
+    ):
+        return _preopt_union_abstention(key, "invalid_prepatch_source")
     imported_origins = dict(imported_detached_snippet_instruction_origins(live_mba))
     transfers = tuple(
         _canonicalize_imported_transfer_eas(transfer, imported_origins)
@@ -12930,6 +12944,7 @@ def prepare_preopt_union_closure(
         live_mba,
         imported_predicate_eas=frozenset(imported_origins),
         imported_instruction_origins=imported_origins,
+        native_cfg=(None if prepatch_source is None else prepatch_source.cfg),
     )
     logger.info(
         "PREOPT live conditional bridge recovery: func=0x%X rows=%s",
@@ -12961,11 +12976,6 @@ def prepare_preopt_union_closure(
         transfers = transfers + tuple(
             transfer for transfer in entry_bridge_transfers if transfer not in transfers
         )
-    prepatch_source = state.portable_evidence.prepatch_preopt_union_source
-    if prepatch_source is not None and not isinstance(
-        prepatch_source, _PrepatchPreoptUnionSource
-    ):
-        return _preopt_union_abstention(key, "invalid_prepatch_source")
     region = (
         PreoptUnionRegionPlan(
             seed_eas=prepatch_source.seed_eas,
@@ -15910,6 +15920,9 @@ def _on_calls_done_preanalysis(
             }
             if imported_origins:
                 bridge_kwargs["imported_instruction_origins"] = imported_origins
+            prepatch_source = state.portable_evidence.prepatch_preopt_union_source
+            if isinstance(prepatch_source, _PrepatchPreoptUnionSource):
+                bridge_kwargs["native_cfg"] = prepatch_source.cfg
             conditional_bridges = recover_conditional_handler_bridge_transfers_from_mba(
                 transfers, mba, **bridge_kwargs
             )
@@ -15962,6 +15975,9 @@ def _on_calls_done_preanalysis(
         bridge_kwargs = {"imported_predicate_eas": imported_predicate_eas}
         if imported_origins:
             bridge_kwargs["imported_instruction_origins"] = imported_origins
+        prepatch_source = state.portable_evidence.prepatch_preopt_union_source
+        if isinstance(prepatch_source, _PrepatchPreoptUnionSource):
+            bridge_kwargs["native_cfg"] = prepatch_source.cfg
         imported_conditional_bridges = (
             recover_conditional_handler_bridge_transfers_from_mba(
                 transfers, mba, **bridge_kwargs
@@ -16011,6 +16027,11 @@ def _on_calls_done_preanalysis(
                         mba,
                         imported_predicate_eas=imported_predicate_eas,
                         imported_instruction_origins=imported_origins,
+                        native_cfg=(
+                            prepatch_source.cfg
+                            if isinstance(prepatch_source, _PrepatchPreoptUnionSource)
+                            else None
+                        ),
                     )
                 )
             except Exception:

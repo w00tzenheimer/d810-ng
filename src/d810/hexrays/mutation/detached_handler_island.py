@@ -450,28 +450,90 @@ def _block_exactly_owns_native_ea(
 def find_materialized_handler_block_by_native_ea(
     mba: object,
     native_ea: int,
+    *,
+    required_native_eas: Sequence[int] = (),
 ) -> object | None:
     """Resolve duplicate translations of one proven materialized handler.
 
     A PREOPT union can retain the original live handler while also importing an
-    instruction-exact clone for the same resolver target.  Prefer that unique
-    imported owner only when every competitor independently owns the exact same
-    native entry.  A range-only collision remains ambiguous and must abstain.
+    instruction-exact clone for the same resolver target.  An imported-root or
+    exact-start native-range receipt remains exact authority when optimization
+    eliminated the entry instruction but preserved the rest of the fragment.
+    Prefer that unique imported owner only when it retains a required atomic
+    instruction and every competitor independently owns the exact same native
+    entry.  Without such a requirement, a range-only clone yields to the
+    surviving native owner.  A containing range whose start differs from the
+    target remains ambiguous and must abstain.
     """
     target_ea = int(native_ea)
     matches = _blocks_containing_native_ea(mba, target_ea)
     if len(matches) == 1:
         return matches[0]
     mba_identity = stable_mba_identity(mba)
-    exact_imported_matches = tuple(
-        block
+    required_eas = frozenset(
+        int(required_ea)
+        for required_ea in required_native_eas
+        if int(required_ea) > 0
+    )
+    imported_root = _IMPORTED_SNIPPET_ROOTS.get((mba_identity, target_ea))
+    relocated_imported_root = (
+        None if imported_root is None else _relocate_imported_owner(mba, imported_root)
+    )
+    exact_imported_matches_by_serial = {
+        int(block.serial): block
         for block in matches
         if any(
             _IMPORTED_INSTRUCTION_ORIGINS.get((mba_identity, int(instruction.ea)))
             == target_ea
             for instruction in _instructions(block)
         )
-    )
+    }
+    if (
+        relocated_imported_root is not None
+        and any(
+            int(block.serial) == int(relocated_imported_root.serial)
+            for block in matches
+        )
+        and any(
+            _block_exactly_owns_native_ea(mba, relocated_imported_root, required_ea)
+            for required_ea in required_eas
+        )
+    ):
+        exact_imported_matches_by_serial[int(relocated_imported_root.serial)] = (
+            relocated_imported_root
+        )
+    for (owner_identity, start_ea, _end_ea), owner in (
+        _IMPORTED_NATIVE_BLOCK_RANGES.items()
+    ):
+        if int(owner_identity) != int(mba_identity) or int(start_ea) != target_ea:
+            continue
+        relocated_range_owner = _relocate_imported_owner(mba, owner)
+        required_range_eas = tuple(
+            required_ea
+            for required_ea in required_eas
+            if int(start_ea) <= required_ea < int(_end_ea)
+        )
+        if (
+            relocated_range_owner is None
+            or not required_range_eas
+            or not all(
+                _block_exactly_owns_native_ea(
+                    mba,
+                    relocated_range_owner,
+                    required_ea,
+                )
+                for required_ea in required_range_eas
+            )
+            or not any(
+                int(block.serial) == int(relocated_range_owner.serial)
+                for block in matches
+            )
+        ):
+            continue
+        exact_imported_matches_by_serial[int(relocated_range_owner.serial)] = (
+            relocated_range_owner
+        )
+    exact_imported_matches = tuple(exact_imported_matches_by_serial.values())
     if not exact_imported_matches:
         exact_native_matches = tuple(
             block

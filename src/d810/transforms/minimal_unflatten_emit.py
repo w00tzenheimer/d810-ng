@@ -4984,6 +4984,15 @@ def build_materialized_conditional_handler_bridges(
             next_target_ea=next_entry_ea,
         )
 
+    def map_authoritative_handler_entry(target_ea: int) -> int | None:
+        matches = {
+            int(serial)
+            for serial, entry_ea in handler_entry_eas.items()
+            if int(entry_ea) == int(target_ea)
+            and flow_graph.get_block(int(serial)) is not None
+        }
+        return next(iter(matches)) if len(matches) == 1 else None
+
     candidates: dict[
         tuple[int, int, int],
         set[tuple[int, int, int, int]],
@@ -5059,7 +5068,35 @@ def build_materialized_conditional_handler_bridges(
             }
             if len(imported_predicate_matches) == 1:
                 predicate_matches = imported_predicate_matches
-        source_matches = predicate_matches or {
+        handler_source_matches = {
+            int(serial)
+            for serial, entry_ea in handler_entry_eas.items()
+            for block in (flow_graph.get_block(int(serial)),)
+            if int(entry_ea) == int(transfer.source_block_ea)
+            and block is not None
+            and block.insn_snapshots
+            and block.insn_snapshots[-1].is_conditional_jump
+            and (
+                int(transfer.source_jmp_ea)
+                in imported_native_eas.get(int(serial), frozenset())
+                or any(
+                    int(insn.ea) in predicate_anchor_eas
+                    for insn in block.insn_snapshots
+                )
+            )
+        }
+        # A native predicate and its imported semantic clone can both survive
+        # into CALLS.  The exact-EA copy is then often dispatcher residue,
+        # while ``handler_entry_eas`` identifies the clone that owns the live
+        # materialized handler.  Prefer that unique portable owner; otherwise
+        # the rewrite lands on a block Hex-Rays later deletes and leaves the
+        # reachable clone routed through stale state handlers.
+        authoritative_source_matches = (
+            handler_source_matches
+            if len(handler_source_matches) == 1
+            else set()
+        )
+        source_matches = authoritative_source_matches or predicate_matches or {
             int(block.serial)
             for block in flow_graph.blocks.values()
             if (
@@ -5099,6 +5136,10 @@ def build_materialized_conditional_handler_bridges(
             continue
         source_instructions = tuple(source_block.insn_snapshots)
         predicate_eas = [int(insn.ea) for insn in source_instructions]
+        authoritative_imported_source = bool(
+            int(source) in imported_native_eas
+            and int(transfer.source_jmp_ea) in imported_native_eas[int(source)]
+        )
         true_target_from_ea = map_target_entry(int(transfer.true_target_ea))
         false_target_from_ea = map_target_entry(int(transfer.false_target_ea))
         true_target_from_state = (
@@ -5150,6 +5191,11 @@ def build_materialized_conditional_handler_bridges(
             if len(route_candidates) == 1:
                 false_target_from_route = next(iter(route_candidates))
         if transfer.predicate_preserve_live:
+            # Only a source-keyed materialized route is contradictory
+            # evidence here.  A dispatcher lookup may merely be its broad
+            # default interval, so it cannot veto an exact handler-entry EA.
+            true_route_had_candidate = true_target_from_route is not None
+            false_route_had_candidate = false_target_from_route is not None
 
             def route_matches_exact_target(
                 route_serial: int | None,
@@ -5248,6 +5294,27 @@ def build_materialized_conditional_handler_bridges(
                 int(transfer.false_target_ea),
             ):
                 false_target_from_route = int(false_target_from_state)
+            # The portable handler-entry index is itself exact target-EA
+            # authority.  It is the reference-style fallback when a rebound
+            # imported predicate has no source-local state-route row.  Never
+            # use it to paper over a contradictory route candidate: that case
+            # remains an atomic abstention.
+            if (
+                true_target_from_route is None
+                and not true_route_had_candidate
+                and authoritative_imported_source
+            ):
+                true_target_from_route = map_authoritative_handler_entry(
+                    int(transfer.true_target_ea)
+                )
+            if (
+                false_target_from_route is None
+                and not false_route_had_candidate
+                and authoritative_imported_source
+            ):
+                false_target_from_route = map_authoritative_handler_entry(
+                    int(transfer.false_target_ea)
+                )
             if (
                 true_target_from_ea is not None
                 and true_target_from_route is not None

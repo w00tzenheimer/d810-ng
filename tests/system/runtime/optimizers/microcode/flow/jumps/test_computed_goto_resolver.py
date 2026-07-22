@@ -5228,6 +5228,87 @@ def test_conditional_handler_bridge_accepts_imported_predicate_with_exact_arms(
     assert block_owned_bridge.predicate_preserve_live is True
 
 
+def test_conditional_handler_bridge_canonicalizes_imported_source_with_native_cfg(
+    monkeypatch,
+) -> None:
+    state_register = 20
+    true_state = 0x65203D55
+    false_state = 0x4DFFC906
+    imported_predicate_ea = 0xF1C00A74
+    imported_predecessor_ea = 0xF1C00A68
+    native_source_entry_ea = 0x40B199
+    native_predecessor_ea = 0x40B1A7
+    native_predicate_ea = 0x40B1B0
+    true_target = 0x40A868
+    false_target = 0x40A9AE
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40A850,
+            source_block_ea=0x40A850,
+            materialized_anchor_eas=(),
+            target_eas=(true_target,),
+            selector_state_var_reg=state_register,
+            selector_state_constant=true_state,
+            resolver_kind="condition_chain_handler_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40A996,
+            source_block_ea=0x40A996,
+            materialized_anchor_eas=(),
+            target_eas=(false_target,),
+            selector_state_var_reg=state_register,
+            selector_state_constant=false_state,
+            resolver_kind="condition_chain_handler_evidence",
+        ),
+    )
+    bridge_module = ModuleType("d810.backends.hexrays.evidence.residual_entry_bridge")
+    bridge_module.recognize_conditional_handler_bridges = lambda *_args, **_kwargs: (
+        SimpleNamespace(
+            predicate_ea=imported_predicate_ea,
+            source_block_ea=0x40A560,
+            condition_code=5,
+            predicate_register=None,
+            predicate_size=4,
+            predicate_compare_register=None,
+            predicate_compare_constant=0x40,
+            predicate_predecessor_ea=imported_predecessor_ea,
+            true_state=true_state,
+            false_state=false_state,
+            true_target_ea=true_target,
+            false_target_ea=false_target,
+            true_is_taken=True,
+        ),
+    )
+    bridge_module.predicate_arm_reaches_ea = lambda *_args, **_kwargs: False
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.backends.hexrays.evidence.residual_entry_bridge",
+        bridge_module,
+    )
+
+    (bridge,) = recover_conditional_handler_bridge_transfers_from_mba(
+        transfers,
+        object(),
+        imported_predicate_eas=frozenset({imported_predicate_ea}),
+        imported_instruction_origins={
+            imported_predecessor_ea: native_predecessor_ea,
+            imported_predicate_ea: native_predicate_ea,
+        },
+        native_cfg=NativeCfg(
+            {
+                native_source_entry_ea: NativeBlock(
+                    native_source_entry_ea,
+                    0x40B1C4,
+                )
+            }
+        ),
+    )
+
+    assert bridge.source_block_ea == native_source_entry_ea
+    assert bridge.source_jmp_ea == native_predicate_ea
+    assert bridge.predicate_predecessor_ea == native_predecessor_ea
+
+
 def test_imported_predicate_accepts_static_equality_state_register_proof(
     monkeypatch,
 ) -> None:
