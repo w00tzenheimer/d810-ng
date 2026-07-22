@@ -217,6 +217,22 @@ def _connect(source: _Block, target: _Block) -> None:
     target.predset.push_back(source.serial)
 
 
+def _connect_conditional(
+    source: _Block,
+    *,
+    taken: _Block,
+    fallthrough: _Block,
+) -> None:
+    source.type = int(ida_hexrays.BLT_2WAY)
+    source.tail = _Instruction(ida_hexrays.m_jz, source.start)
+    source.tail.d.make_blkref(taken.serial)
+    source.head = source.tail
+    source.succset.push_back(fallthrough.serial)
+    source.succset.push_back(taken.serial)
+    fallthrough.predset.push_back(source.serial)
+    taken.predset.push_back(source.serial)
+
+
 def _create_fake_standalone_block(
     *,
     ref_blk: _Block,
@@ -277,6 +293,33 @@ def _change_fake_zero_way_successor(
     target = block.mba.get_mblock(target_serial)
     if target is not None:
         target.predset.push_back(block.serial)
+    block.mba.mark_chains_dirty()
+    return True
+
+
+def _change_fake_conditional_successor(
+    block: _Block,
+    target_serial: int,
+    *,
+    verify: bool = False,
+    old_target: int | None = None,
+) -> bool:
+    del verify
+    if block.nsucc() != 2 or block.tail is None:
+        return False
+    previous_serial = int(block.tail.d.b)
+    if old_target is not None and previous_serial != int(old_target):
+        return False
+    previous = block.mba.get_mblock(previous_serial)
+    target = block.mba.get_mblock(int(target_serial))
+    if previous is None or target is None:
+        return False
+    block.tail.d.erase()
+    block.tail.d.make_blkref(int(target_serial))
+    block.succset._del(previous_serial)
+    block.succset.push_back(int(target_serial))
+    previous.predset._del(block.serial)
+    target.predset.push_back(block.serial)
     block.mba.mark_chains_dirty()
     return True
 
@@ -350,6 +393,48 @@ def _plan(gateway, *, entry: int, original: int, target: int, dispatcher: int):
                     ),
                 ),
             ),
+        ),
+    )
+
+
+def _plan_with_conditional_predecessor(
+    gateway,
+    *,
+    entry: int,
+    predecessor: int,
+    sibling: int,
+    original: int,
+    target: int,
+    dispatcher: int,
+) -> FragmentPlan:
+    plan = _plan(
+        gateway,
+        entry=entry,
+        original=original,
+        target=target,
+        dispatcher=dispatcher,
+    )
+    index = gateway.identity_index
+
+    def _external(block_id: str, serial: int) -> FragmentBlock:
+        handle = index.handle_for_serial(serial)
+        assert handle is not None and handle.stable_identity is not None
+        rebound = index.resolve(handle)
+        assert rebound is not None and rebound.anchor_ea is not None
+        return FragmentBlock(
+            block_id=block_id,
+            role=FragmentBlockRole.EXTERNAL,
+            materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+            semantic_anchor_ea=int(rebound.anchor_ea),
+            stable_identity=handle.stable_identity,
+        )
+
+    return replace(
+        plan,
+        blocks=plan.blocks
+        + (
+            _external("predecessor", predecessor),
+            _external("sibling", sibling),
         ),
     )
 
@@ -558,6 +643,91 @@ def test_direct_root_partial_write_restores_previous_authority(monkeypatch) -> N
     assert tuple(original.succset) == (dispatcher.serial,)
     assert tuple(target.predset) == ()
     assert proxy.resolve() is published
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
+
+
+@pytest.mark.parametrize("fail_after_root_write", (False, True))
+def test_gateway_publishes_conditional_taken_fragment_root(
+    monkeypatch,
+    fail_after_root_write: bool,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    predecessor = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_2WAY)
+    sibling = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    original = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(5, start=0x401050, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(6, start=0x401060, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, predecessor)
+    _connect_conditional(predecessor, taken=original, fallthrough=sibling)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, predecessor, sibling, original, target, dispatcher, stop))
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    root_write_failed = False
+
+    def _conditional_successor(*args, **kwargs) -> bool:
+        nonlocal root_write_failed
+        changed = _change_fake_conditional_successor(*args, **kwargs)
+        if fail_after_root_write and not root_write_failed:
+            root_write_failed = True
+            raise RuntimeError("failure after conditional taken root write")
+        return changed
+
+    monkeypatch.setattr(
+        dm,
+        "change_2way_block_conditional_successor",
+        _conditional_successor,
+    )
+    plan = _plan_with_conditional_predecessor(
+        gateway,
+        entry=0,
+        predecessor=1,
+        sibling=2,
+        original=3,
+        target=4,
+        dispatcher=5,
+    )
+    original_handle = gateway.identity_index.handle_for_serial(3)
+    assert original_handle is not None
+    proxy = gateway.identity_index.logical_proxy_for_handle(original_handle)
+    assert proxy is not None
+    published = proxy.resolve()
+    assert published is not None
+
+    if fail_after_root_write:
+        with pytest.raises(
+            RuntimeError,
+            match="failure after conditional taken root write",
+        ):
+            gateway.publish_semantic_fragment(modifier, plan)
+        assert root_write_failed
+        assert mba.qty == 7
+        assert predecessor.tail.d.b == original.serial
+        assert tuple(predecessor.succset) == (sibling.serial, original.serial)
+        assert tuple(original.predset) == (predecessor.serial,)
+        assert tuple(sibling.predset) == (predecessor.serial,)
+        assert proxy.resolve() is published
+        assert gateway.active is False
+        assert modifier._semantic_fragment_state is None
+        return
+
+    receipt = gateway.publish_semantic_fragment(modifier, plan)
+
+    promoted = proxy.resolve()
+    assert promoted is not None and promoted is not published
+    promoted_binding = gateway.identity_index.resolve_logical_version(promoted)
+    assert promoted_binding is not None
+    replacement = mba.get_mblock(promoted_binding.serial)
+    assert replacement is not None
+    assert predecessor.tail.d.b == replacement.serial
+    assert tuple(predecessor.succset) == (sibling.serial, replacement.serial)
+    assert tuple(original.predset) == ()
+    assert tuple(replacement.predset) == (predecessor.serial,)
+    assert tuple(sibling.predset) == (predecessor.serial,)
+    assert receipt.root_publication_confirmed
+    assert receipt.postpublication_validation.passed
     assert gateway.active is False
     assert modifier._semantic_fragment_state is None
 
