@@ -660,6 +660,7 @@ _STAGED_ATOMIC_CLASS_MAP: "dict[ModificationType, StagedAtomicClassification]" =
     ModificationType.EDGE_REMOVE: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
     ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
     ModificationType.MATERIALIZE_ZERO_WAY_GOTO: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
+    ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
     # Additive: already create new blocks and defer the tail redirect.
     # Safe to apply through the default dispatcher during commit.
     ModificationType.BLOCK_CREATE_WITH_REDIRECT: StagedAtomicClassification.ADDITIVE,
@@ -676,7 +677,6 @@ _STAGED_ATOMIC_CLASS_MAP: "dict[ModificationType, StagedAtomicClassification]" =
     # BLOCK_FALLTHROUGH_CHANGE: not currently emitted anywhere — mark UNSUPPORTED
     # so staged_atomic falls back to sequential apply if it ever shows up.
     ModificationType.BLOCK_FALLTHROUGH_CHANGE: StagedAtomicClassification.UNSUPPORTED,
-    ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION: StagedAtomicClassification.UNSUPPORTED,
     ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT: StagedAtomicClassification.UNSUPPORTED,
     ModificationType.BYPASS_DISPATCHER_TRAMPOLINE: StagedAtomicClassification.UNSUPPORTED,
     ModificationType.CANONICALIZE_JTBL_CASE_OVERLAP: StagedAtomicClassification.UNSUPPORTED,
@@ -5841,6 +5841,7 @@ class DeferredGraphModifier:
                 if mod.mod_type in {
                     ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL,
                     ModificationType.MATERIALIZE_ZERO_WAY_GOTO,
+                    ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
                 }:
                     # This intent is only valid as copy-and-swap.  Falling back
                     # to the sequential mutator would expose a half-built
@@ -6428,6 +6429,21 @@ class DeferredGraphModifier:
                 copy_blk,
                 predicate_ea=mod.rewrite_from_ea,
                 target_serial=mod.new_target,
+            )
+        if mod.mod_type == ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION:
+            return self._apply_lower_conditional_state_transition(
+                copy_blk,
+                old_dispatcher_serial=mod.old_target,
+                rewrite_from_ea=mod.rewrite_from_ea,
+                condition_operand=mod.condition_operand,
+                false_target_serial=mod.false_target,
+                true_target_serial=mod.true_target,
+                state_register=mod.state_register,
+                state_size=mod.state_size,
+                false_state=mod.false_state,
+                true_state=mod.true_state,
+                false_state_write_ea=mod.false_state_write_ea,
+                true_state_write_ea=mod.true_state_write_ea,
             )
         if mod.mod_type == ModificationType.EDGE_REMOVE:
             return remove_block_edge(
