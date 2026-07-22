@@ -9203,26 +9203,19 @@ def test_preopt_union_classifies_one_native_return_arm_as_atomic_terminal_port()
 ):
     source_ea = 0x40A5CA
     resolver_ea = 0x40A5E3
+    live_predicate_ea = 0x40A5D0
     return_target_ea = 0x40C898
     sibling_target_ea = 0x40A5F0
     closure = SimpleNamespace(
-        included_block_eas=(source_ea, return_target_ea, sibling_target_ea),
-        proven_import_boundary_edges=tuple(
-            SimpleNamespace(
-                source_ea=source_ea,
-                source_instruction_ea=resolver_ea,
-                target_ea=target_ea,
-                kind=NativeEdgeKind.INDIRECT,
-                provenance="static_fixpoint",
-            )
-            for target_ea in (return_target_ea, sibling_target_ea)
-        ),
+        included_block_eas=(return_target_ea, sibling_target_ea),
+        proven_import_boundary_edges=(),
     )
     transfer = MaterializedIndirectTransfer(
         source_jmp_ea=resolver_ea,
         source_block_ea=source_ea,
-        materialized_anchor_eas=(source_ea,),
+        materialized_anchor_eas=(live_predicate_ea,),
         target_eas=(return_target_ea, sibling_target_ea),
+        materialized_predicate_ea=live_predicate_ea,
         condition_code=4,
         true_target_ea=return_target_ea,
         false_target_ea=sibling_target_ea,
@@ -9244,7 +9237,6 @@ def test_preopt_union_classifies_one_native_return_arm_as_atomic_terminal_port()
             ),
         }
     )
-
     ports = computed_goto_resolver._preopt_union_boundary_ports(
         closure,
         live_native_eas=frozenset(),
@@ -9262,6 +9254,10 @@ def test_preopt_union_classifies_one_native_return_arm_as_atomic_terminal_port()
     assert port.fallthrough_state is None
     assert port.taken_target_ea == return_target_ea
     assert port.fallthrough_target_ea == sibling_target_ea
+    assert port.source_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert port.source_block_ea == source_ea
+    assert port.predicate_ea == live_predicate_ea
+    assert port.predicate_true_is_taken is True
 
 
 def test_preopt_union_routes_live_one_way_state_tail_into_imported_handler() -> None:
