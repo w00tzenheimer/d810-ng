@@ -3993,6 +3993,21 @@ class TestStagedAtomicApply:
         mba.qty = max(mba.blocks) + 1
 
         changes = _staged_patch_wiring(monkeypatch, mba)
+        removed_copies: list[int] = []
+
+        def _strict_remove_block(self, block):
+            if block.succset.size() or block.predset.size():
+                raise RuntimeError(
+                    f"INTERR 51919: blk[{block.serial}] still has edges"
+                )
+            removed_copies.append(int(block.serial))
+            self.blocks.pop(int(block.serial), None)
+
+        monkeypatch.setattr(
+            _StagedFakeMBA,
+            "remove_block",
+            _strict_remove_block,
+        )
         gateway = make_mutation_gateway(mba)
         modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
         modifier.modifications = [
@@ -4026,6 +4041,7 @@ class TestStagedAtomicApply:
         assert all(
             copy_serial not in mba.blocks for _, copy_serial in mba.copied_blocks
         )
+        assert removed_copies
         assert gateway.receipts == ()
         assert gateway.active is False
 
