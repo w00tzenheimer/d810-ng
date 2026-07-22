@@ -10,6 +10,7 @@ from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.fragment_plan import (
     FragmentBlock,
+    FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentDataFlowObligation,
     FragmentDataFlowRole,
@@ -46,6 +47,11 @@ def _native_block(
     return FragmentBlock(
         block_id=block_id,
         role=role,
+        materialization=(
+            FragmentBlockMaterialization.CLONE_PUBLISHED
+            if role is FragmentBlockRole.REPLACEMENT
+            else FragmentBlockMaterialization.REUSE_PUBLISHED
+        ),
         semantic_anchor_ea=start_ea,
         stable_identity=_identity(start_ea, start_ea + 0x10),
         replaces_block_id=replaces,
@@ -61,6 +67,7 @@ def _valid_plan() -> FragmentPlan:
     replacement = FragmentBlock(
         block_id="predicate.replacement",
         role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
         semantic_anchor_ea=0x40BECC,
         stable_identity=original.stable_identity,
         replaces_block_id=original.block_id,
@@ -185,6 +192,37 @@ def test_fragment_plan_is_serial_free_and_groups_complete_conditional() -> None:
         assert forbidden_coordinate_names.isdisjoint(names)
 
 
+def test_fragment_block_materialization_is_explicit_and_role_complete() -> None:
+    plan = _valid_plan()
+
+    assert {
+        block.role: block.materialization
+        for block in plan.blocks
+    } == {
+        FragmentBlockRole.ORIGINAL: FragmentBlockMaterialization.REUSE_PUBLISHED,
+        FragmentBlockRole.REPLACEMENT: FragmentBlockMaterialization.CLONE_PUBLISHED,
+        FragmentBlockRole.EXTERNAL: FragmentBlockMaterialization.REUSE_PUBLISHED,
+    }
+
+    with pytest.raises(FragmentPlanRejected, match="replacement.*clone"):
+        FragmentBlock(
+            block_id="invalid.replacement",
+            role=FragmentBlockRole.REPLACEMENT,
+            materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+            semantic_anchor_ea=0x40BECC,
+            stable_identity=plan.block("predicate.original").stable_identity,
+            replaces_block_id="predicate.original",
+        )
+
+    with pytest.raises(FragmentPlanRejected, match="synthetic.*empty"):
+        FragmentBlock(
+            block_id="invalid.synthetic",
+            role=FragmentBlockRole.SYNTHETIC,
+            materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+            semantic_anchor_ea=0x40D000,
+        )
+
+
 def test_fragment_plan_rejects_partial_conditional_operation() -> None:
     with pytest.raises(FragmentPlanRejected, match="both conditional roles"):
         FragmentOperation(
@@ -221,6 +259,7 @@ def test_fragment_plan_requires_replacement_identity_to_match_original() -> None
     mismatched_replacement = FragmentBlock(
         block_id="predicate.replacement",
         role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
         semantic_anchor_ea=0x40D000,
         stable_identity=_identity(0x40D000, 0x40D010),
         replaces_block_id=original.block_id,
@@ -301,6 +340,7 @@ def test_fragment_plan_rejects_cross_function_stable_identity() -> None:
     foreign = FragmentBlock(
         block_id="foreign",
         role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
         semantic_anchor_ea=0x40D348,
         stable_identity=StableBlockIdentity.from_intervals(
             (NativeEaInterval(0x40D348, 0x40D349),),
