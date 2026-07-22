@@ -841,6 +841,74 @@ def test_preopt_union_capture_lowers_proven_zero_way_route_before_import(
     assert captured_source.instructions[-1].l.b == 1
 
 
+def test_preopt_union_capture_closes_proven_conditional_fallthrough_arm(
+    monkeypatch,
+) -> None:
+    """A proven state route may close one arm without collapsing its predicate."""
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    predicate_ea = 0x40B4DC
+    taken_ea = 0x40A7E5
+    false_target_ea = 0x40B758
+    synthetic_exit = 0xFFFFFFFFFFFFFFFF
+    source = _MBA(
+        (
+            _Block(
+                0,
+                predicate_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_jl,
+                        predicate_ea,
+                        dest=_Operand(ida_hexrays.mop_b, block_ref=1),
+                    ),
+                ),
+                (1, 2),
+            ),
+            _Block(
+                1,
+                taken_ea,
+                (_Instruction(ida_hexrays.m_nop, taken_ea),),
+            ),
+            _Block(2, synthetic_exit, ()),
+            _Block(
+                3,
+                false_target_ea,
+                (_Instruction(ida_hexrays.m_nop, false_target_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_2WAY)
+
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        predicate_ea,
+        source,
+        (
+            (predicate_ea, predicate_ea + 1),
+            (taken_ea, taken_ea + 1),
+            (false_target_ea, false_target_ea + 1),
+        ),
+        owned_block_entry_eas=(predicate_ea, taken_ea, false_target_ea),
+        resolver_proven_internal_successor_eas={
+            predicate_ea: false_target_ea,
+        },
+    )
+    template = detached_handler_island._PREOPT_UNION_SNIPPET_TEMPLATES[
+        (function_ea, predicate_ea)
+    ]
+    captured_source = next(
+        block for block in template.blocks if block.native_entry_ea == predicate_ea
+    )
+
+    assert captured_source.successor_serials == (1, 3)
+    assert captured_source.external_successor_eas == (0, 0)
+    assert captured_source.block_type == ida_hexrays.BLT_2WAY
+    assert captured_source.instructions[-1].opcode == ida_hexrays.m_jl
+    assert captured_source.instructions[-1].d.b == 1
+
+
 def test_range_capture_includes_resolver_created_leader_without_native_anchor(
     monkeypatch,
 ) -> None:

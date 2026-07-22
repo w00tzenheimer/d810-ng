@@ -2225,39 +2225,28 @@ def _capture_detached_snippet_template(
         template_block_type = int(block.type)
         template_block_flags = int(block.flags)
         if proven_internal_target_serial is not None:
-            incompatible_internal_successors = tuple(
-                successor
-                for successor in internal_successors
-                if int(successor) != int(proven_internal_target_serial)
-            )
-            incompatible_external_successors = tuple(
-                external_ea
-                for external_ea in external_successors
-                if int(external_ea) > 0
-            )
             tail = instructions[-1] if instructions else None
-            supported_tail = bool(
+            conditional_route_closed = bool(
                 tail is not None
                 and block.tail is not None
                 and int(tail.ea) == int(block.tail.ea)
-                and int(tail.opcode)
-                in {
-                    int(ida_hexrays.m_goto),
-                    int(ida_hexrays.m_icall),
-                    int(ida_hexrays.m_ijmp),
-                }
+                and ida_hexrays.is_mcode_jcond(int(tail.opcode))
+                and int(tail.d.t) == int(ida_hexrays.mop_b)
+                and int(block.nsucc()) == 2
+                and len(internal_successors) == 2
+                and len(external_successors) == 2
+                and len(
+                    set(zip(internal_successors, external_successors))
+                )
+                == 2
+                and int(proven_internal_target_serial) in internal_successors
+                and int(tail.d.b) in internal_successors
             )
-            if (
-                incompatible_internal_successors
-                or incompatible_external_successors
-                or int(block.nsucc()) > 1
-                or not supported_tail
-            ):
+            if conditional_route_closed:
                 logger.info(
-                    "detached snippet capture abstained: target=0x%X "
-                    "source=blk%d@0x%X resolver_ea=0x%X "
-                    "proven_target=0x%X internal=%s external=%s "
-                    "nsucc=%d opcode=%s reason=resolver_route_shape_conflict",
+                    "detached snippet preserved proven conditional route: "
+                    "target=0x%X source=blk%d@0x%X predicate=0x%X "
+                    "proven_target=0x%X successors=%s external=%s",
                     int(target_ea),
                     int(block.serial),
                     int(block.start),
@@ -2265,19 +2254,60 @@ def _capture_detached_snippet_template(
                     int(proven_internal_target_ea or 0),
                     tuple(internal_successors),
                     tuple(external_successors),
-                    int(block.nsucc()),
-                    None if tail is None else int(tail.opcode),
                 )
-                return False
-            assert tail is not None
-            tail.opcode = int(ida_hexrays.m_goto)
-            tail.l.make_blkref(int(proven_internal_target_serial))
-            tail.r.erase()
-            tail.d.erase()
-            internal_successors = [int(proven_internal_target_serial)]
-            external_successors = [0]
-            template_block_type = int(ida_hexrays.BLT_1WAY)
-            template_block_flags |= int(ida_hexrays.MBL_GOTO)
+            else:
+                incompatible_internal_successors = tuple(
+                    successor
+                    for successor in internal_successors
+                    if int(successor) != int(proven_internal_target_serial)
+                )
+                incompatible_external_successors = tuple(
+                    external_ea
+                    for external_ea in external_successors
+                    if int(external_ea) > 0
+                )
+                supported_tail = bool(
+                    tail is not None
+                    and block.tail is not None
+                    and int(tail.ea) == int(block.tail.ea)
+                    and int(tail.opcode)
+                    in {
+                        int(ida_hexrays.m_goto),
+                        int(ida_hexrays.m_icall),
+                        int(ida_hexrays.m_ijmp),
+                    }
+                )
+                if (
+                    incompatible_internal_successors
+                    or incompatible_external_successors
+                    or int(block.nsucc()) > 1
+                    or not supported_tail
+                ):
+                    logger.info(
+                        "detached snippet capture abstained: target=0x%X "
+                        "source=blk%d@0x%X resolver_ea=0x%X "
+                        "proven_target=0x%X internal=%s external=%s "
+                        "nsucc=%d opcode=%s reason=resolver_route_shape_conflict",
+                        int(target_ea),
+                        int(block.serial),
+                        int(block.start),
+                        int(block.tail.ea),
+                        int(proven_internal_target_ea or 0),
+                        tuple(internal_successors),
+                        tuple(external_successors),
+                        int(block.nsucc()),
+                        None if tail is None else int(tail.opcode),
+                    )
+                    return False
+                assert tail is not None
+                tail.opcode = int(ida_hexrays.m_goto)
+                tail.l.make_blkref(int(proven_internal_target_serial))
+                tail.r.erase()
+                tail.d.erase()
+                internal_successors = [int(proven_internal_target_serial)]
+                external_successors = [0]
+                template_block_type = int(ida_hexrays.BLT_1WAY)
+                template_block_flags |= int(ida_hexrays.MBL_GOTO)
         if (
             int(native_entry) in terminal_return_entries
             and not instructions
