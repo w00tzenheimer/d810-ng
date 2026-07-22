@@ -662,26 +662,57 @@ class MbaBlockIdentityIndex:
     ) -> tuple[LogicalBlockVersionTransition, ...]:
         """Promote every replacement staged by one gateway transaction."""
         transaction_id = str(transaction_id)
-        serials = self._serials_by_transaction.pop(transaction_id, None)
+        serials = self._serials_by_transaction.get(transaction_id)
         if serials is None:
             raise ValueError("identity transaction is not active")
+        proxy_tokens = tuple(
+            sorted(self._proxy_tokens_by_transaction.get(transaction_id, ()))
+        )
+        actions = self._proxy_actions_by_transaction.get(transaction_id, {})
+        future_versions: dict[str, LogicalBlockVersion | None] = {}
+        for proxy_token in proxy_tokens:
+            proxy = self._proxies_by_token[proxy_token]
+            action = actions.get(proxy_token)
+            published = proxy.resolve()
+            transaction_version = proxy.resolve(transaction_id=transaction_id)
+            if action == "retirement":
+                if published is None or transaction_version is not None:
+                    raise ValueError(
+                        "future retired logical block has inconsistent authority"
+                    )
+                future_versions[proxy_token] = None
+                continue
+            if action not in {"replacement", "new"} or transaction_version is None:
+                raise ValueError("future published logical block has no staged version")
+            expected_predecessor = None if published is None else published.version_id
+            if transaction_version.predecessor_version_id != expected_predecessor:
+                raise ValueError(
+                    "future published logical block has stale replacement lineage"
+                )
+            future_versions[proxy_token] = transaction_version
+
+        future_published_serials: dict[str, int] = {}
+        for proxy_token, proxy in self._proxies_by_token.items():
+            future = future_versions.get(proxy_token, proxy.resolve())
+            if future is None:
+                continue
+            serial = serials.get(future.handle.token)
+            if serial is None:
+                raise ValueError("future published logical block has no live serial")
+            future_published_serials[future.handle.token] = int(serial)
+
+        # All fallible consistency checks above run before the first proxy is
+        # promoted.  LogicalBlockProxy.commit only applies the already-proved
+        # staged transition, so this single-threaded section cannot discover a
+        # late missing binding after changing publication authority.
         transitions: list[LogicalBlockVersionTransition] = []
-        for proxy_token in sorted(
-            self._proxy_tokens_by_transaction.pop(transaction_id, ())
-        ):
+        for proxy_token in proxy_tokens:
             proxy = self._proxies_by_token[proxy_token]
             transition = proxy.commit(transaction_id)
             transitions.append(transition)
-        published_serials: dict[str, int] = {}
-        for proxy in self._proxies_by_token.values():
-            published = proxy.resolve()
-            if published is None:
-                continue
-            serial = serials.get(published.handle.token)
-            if serial is None:
-                raise ValueError("published logical block has no live serial")
-            published_serials[published.handle.token] = int(serial)
-        self._serial_by_token = published_serials
+        self._serials_by_transaction.pop(transaction_id)
+        self._proxy_tokens_by_transaction.pop(transaction_id, None)
+        self._serial_by_token = future_published_serials
         self._token_by_serial.clear()
         for token, serial in sorted(
             self._serial_by_token.items(),
