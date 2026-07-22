@@ -35,3 +35,7 @@ Reference parity audit on SHA256 244907...35e4c: unchanged ../cff/rhadamanthys-l
 **2026-07-22T20:19:34Z**
 
 2026-07-22 pivot: exact A560 at HEAD 8fd8e6b21 timed out after the 91-route fragment bound (event 2598) and its 92-item/93-operation live copy-and-swap receipt committed (event 2600), then stalled in later CALLS. This rejects large live-MBA repair on liveness even after fixing false fallthrough receipts. New design authority: lower reference state-write and entry-consumer routes into the detached template before publication; validate closed fragment ownership, reachability, original supersession, dispatcher exclusion, predicates, targets, terminal carriers, and returns; publish once at the root and receipt semantic publication, not API call count. Preserve committed identity/predicate/consumer/gateway fixes.
+
+**2026-07-22T21:27:09Z**
+
+Phase 1 migration checkpoint: the versioned-proxy bridge covers explicit replacement staging, transaction-local resolution, commit lineage, abort discard lineage, and deterministic native-EA ambiguity. It is not Phase 1 acceptance. Before architecture acceptance, migrate every initial binding and insert/split/clone/remove path to proxy authority, delete _stale_tokens and direct baseline-token mutation as semantic authority, and add an architecture test proving no structural mutation path bypasses proxy commit/abort. Exact A560 remains prohibited until that removal is complete.

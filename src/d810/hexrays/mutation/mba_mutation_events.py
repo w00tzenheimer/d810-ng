@@ -10,6 +10,11 @@ from d810.core.events import EventEmitter
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.typing import Iterable
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.hexrays.ir.logical_block_proxy import (
+    LogicalBlockVersion,
+    LogicalBlockVersionId,
+    LogicalBlockVersionTransition,
+)
 from d810.ir.block_identity import MbaBlockHandle, StableBlockIdentity
 
 
@@ -34,6 +39,7 @@ class MbaMutationReceipt:
     operation_count: int = 0
     planned_operation_count: int = 0
     description: str = ""
+    version_transitions: tuple[LogicalBlockVersionTransition, ...] = ()
 
     def __post_init__(self) -> None:
         pre_generation = int(self.pre_generation)
@@ -114,6 +120,7 @@ class MbaMutationAborted:
     planned_operation_count: int
     description: str
     reason: str
+    discarded_version_ids: tuple[LogicalBlockVersionId, ...] = ()
 
 
 @dataclass(slots=True)
@@ -251,6 +258,34 @@ class MbaMutationGateway:
         )
         return None if bound is None else bound.serial
 
+    def resolve_block(self, handle: MbaBlockHandle):
+        """Resolve through this transaction's staged logical version."""
+        self._require_active()
+        return self.identity_index.resolve(
+            handle,
+            transaction_id=str(self._active_batch_id),
+        )
+
+    def stage_replacement(
+        self,
+        *,
+        original: MbaBlockHandle,
+        replacement: MbaBlockHandle,
+        returned_serial: int,
+    ) -> LogicalBlockVersion:
+        """Stage one replacement without changing published authority."""
+        self._require_active()
+        staged = self.identity_index.stage_replacement(
+            transaction_id=str(self._active_batch_id),
+            original=original,
+            replacement=replacement,
+            returned_serial=int(returned_serial),
+        )
+        self._record_handle(original)
+        self._record_handle(replacement)
+        self._operation_count += 1
+        return staged
+
     def record_insert(
         self,
         *,
@@ -377,6 +412,9 @@ class MbaMutationGateway:
 
     def commit(self) -> MbaMutationReceipt:
         self._require_active()
+        version_transitions = self.identity_index.commit_proxy_transaction(
+            str(self._active_batch_id)
+        )
         pre_generation = self.identity_index.generation
         post_generation = self.identity_index.advance_generation()
         receipt = MbaMutationReceipt(
@@ -391,6 +429,7 @@ class MbaMutationGateway:
                 self._operation_count,
             ),
             description=self._active_description,
+            version_transitions=version_transitions,
         )
         self.generation = post_generation
         self._receipts.append(receipt)
@@ -415,6 +454,9 @@ class MbaMutationGateway:
 
     def abort(self, *, reason: str = "aborted") -> None:
         """Forget an uncommitted batch; callers must rebuild after SDK failure."""
+        discarded_version_ids = self.identity_index.abort_proxy_transaction(
+            str(self._active_batch_id)
+        ) if self.active else ()
         if self.active and self.event_emitter is not None:
             self.event_emitter.emit(
                 MbaMutationAborted,
@@ -429,6 +471,7 @@ class MbaMutationGateway:
                     planned_operation_count=int(self._planned_operation_count),
                     description=self._active_description,
                     reason=str(reason),
+                    discarded_version_ids=discarded_version_ids,
                 ),
             )
         self._active_kind = None

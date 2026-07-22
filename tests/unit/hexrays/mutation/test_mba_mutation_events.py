@@ -429,3 +429,90 @@ def test_unknown_sdk_effect_refreshes_before_commit_and_stales_synthetic_handles
     assert index.resolve(original).serial == 1
     assert index.resolve(synthetic) is None
     assert observed_serials == [1]
+
+
+def test_gateway_replacement_is_transaction_local_until_commit() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=((identity, 5),),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(5)
+    assert original is not None
+    replacement = index.create_native_handle(identity)
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_REPLACE,
+        serial_quantity=6,
+    )
+    staged = gateway.stage_replacement(
+        original=original,
+        replacement=replacement,
+        returned_serial=5,
+    )
+
+    assert index.resolve(original).handle is original
+    assert gateway.resolve_block(original).handle is replacement
+    assert staged.handle is replacement
+
+    receipt = gateway.commit()
+
+    assert index.resolve(original).handle is replacement
+    assert index.resolve(original).generation == 4
+    assert len(receipt.version_transitions) == 1
+    transition = receipt.version_transitions[0]
+    assert transition.retired_version_id is not None
+    assert transition.promoted_version_id == staged.version_id
+
+
+def test_gateway_abort_discards_staged_version_and_preserves_published_authority() -> (
+    None
+):
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=((identity, 5),),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(5)
+    assert original is not None
+    replacement = index.create_native_handle(identity)
+    emitter = EventEmitter()
+    aborted: list[MbaMutationAborted] = []
+    emitter.on(MbaMutationAborted, aborted.append)
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        event_emitter=emitter,
+        native_key=NATIVE_KEY,
+    )
+
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_REPLACE,
+        serial_quantity=6,
+    )
+    staged = gateway.stage_replacement(
+        original=original,
+        replacement=replacement,
+        returned_serial=5,
+    )
+    gateway.abort(reason="projected graph rejected")
+
+    assert index.resolve(original).handle is original
+    assert index.resolve(original).generation == 3
+    assert index.generation == 3
+    assert aborted[-1].discarded_version_ids == (staged.version_id,)

@@ -23,6 +23,12 @@ from d810.ir.block_identity import (
     stable_block_identity_from_snapshot,
 )
 from d810.ir.flowgraph import FlowGraph
+from d810.hexrays.ir.logical_block_proxy import (
+    LogicalBlockProxy,
+    LogicalBlockVersion,
+    LogicalBlockVersionId,
+    LogicalBlockVersionTransition,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +83,22 @@ class MbaBlockIdentityIndex:
     )
     _stale_tokens: set[str] = field(default_factory=set, init=False, repr=False)
     _next_token: int = field(default=0, init=False, repr=False)
+    _next_proxy_token: int = field(default=0, init=False, repr=False)
+    _proxies_by_token: dict[str, LogicalBlockProxy] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _proxy_token_by_handle_token: dict[str, str] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _proxy_tokens_by_transaction: dict[str, set[str]] = field(
+        default_factory=lambda: defaultdict(set),
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.session_id = str(self.session_id)
@@ -422,23 +444,125 @@ class MbaBlockIdentityIndex:
             return None
         return self._handles_by_token[token]
 
-    def resolve(self, handle: MbaBlockHandle) -> BoundBlock | None:
+    def resolve(
+        self,
+        handle: MbaBlockHandle,
+        *,
+        transaction_id: str | None = None,
+    ) -> BoundBlock | None:
         """Resolve one unbroken current-generation handle, never by guessing."""
-        if handle.session_id != self.session_id or handle.token in self._stale_tokens:
+        if handle.session_id != self.session_id:
             return None
-        serial = self._serial_by_token.get(handle.token)
+        resolved_handle = handle
+        proxy_token = self._proxy_token_by_handle_token.get(handle.token)
+        if proxy_token is not None:
+            version = self._proxies_by_token[proxy_token].resolve(
+                transaction_id=transaction_id
+            )
+            if version is None:
+                return None
+            resolved_handle = version.handle
+        if resolved_handle.token in self._stale_tokens:
+            return None
+        serial = self._serial_by_token.get(resolved_handle.token)
         if serial is None:
             return None
-        identity = handle.stable_identity
+        identity = resolved_handle.stable_identity
         anchor_ea = None
         if identity is not None and identity.native_ranges.intervals:
             anchor_ea = identity.native_ranges.intervals[0].start_ea
         return BoundBlock(
-            handle=handle,
+            handle=resolved_handle,
             serial=serial,
             generation=self.generation,
             anchor_ea=anchor_ea,
         )
+
+    def _ensure_logical_proxy(self, handle: MbaBlockHandle) -> LogicalBlockProxy:
+        proxy_token = self._proxy_token_by_handle_token.get(handle.token)
+        if proxy_token is not None:
+            return self._proxies_by_token[proxy_token]
+        if self.resolve(handle) is None:
+            raise ValueError("cannot proxy an unbound or stale block handle")
+        proxy_token = f"logical:{self._next_proxy_token}"
+        self._next_proxy_token += 1
+        proxy = LogicalBlockProxy.with_published(
+            proxy_token=proxy_token,
+            handle=handle,
+            generation=self.generation,
+        )
+        self._proxies_by_token[proxy_token] = proxy
+        self._proxy_token_by_handle_token[handle.token] = proxy_token
+        return proxy
+
+    def stage_replacement(
+        self,
+        *,
+        transaction_id: str,
+        original: MbaBlockHandle,
+        replacement: MbaBlockHandle,
+        returned_serial: int,
+    ) -> LogicalBlockVersion:
+        """Stage one physical replacement behind its logical proxy."""
+        transaction_id = str(transaction_id)
+        proxy = self._ensure_logical_proxy(original)
+        staged = proxy.stage(
+            transaction_id=transaction_id,
+            handle=replacement,
+            generation=self.generation + 1,
+        )
+        self._proxy_token_by_handle_token[replacement.token] = proxy.proxy_token
+        self._serial_by_token[replacement.token] = int(returned_serial)
+        self._proxy_tokens_by_transaction[transaction_id].add(proxy.proxy_token)
+        return staged
+
+    def commit_proxy_transaction(
+        self,
+        transaction_id: str,
+    ) -> tuple[LogicalBlockVersionTransition, ...]:
+        """Promote every replacement staged by one gateway transaction."""
+        transaction_id = str(transaction_id)
+        transitions: list[LogicalBlockVersionTransition] = []
+        for proxy_token in sorted(
+            self._proxy_tokens_by_transaction.pop(transaction_id, ())
+        ):
+            proxy = self._proxies_by_token[proxy_token]
+            retired = proxy.resolve()
+            transition = proxy.commit(transaction_id)
+            promoted = proxy.resolve()
+            if retired is not None:
+                retired_serial = self._serial_by_token.pop(
+                    retired.handle.token,
+                    None,
+                )
+                self._stale_tokens.add(retired.handle.token)
+                if retired_serial is not None:
+                    self._refresh_primary_serial(retired_serial)
+            if promoted is not None:
+                promoted_serial = self._serial_by_token.get(promoted.handle.token)
+                if promoted_serial is None:
+                    raise ValueError("promoted logical block has no live serial")
+                self._stale_tokens.discard(promoted.handle.token)
+                self._token_by_serial[promoted_serial] = promoted.handle.token
+            transitions.append(transition)
+        return tuple(transitions)
+
+    def abort_proxy_transaction(
+        self,
+        transaction_id: str,
+    ) -> tuple[LogicalBlockVersionId, ...]:
+        """Discard staged physical versions without changing publication."""
+        transaction_id = str(transaction_id)
+        discarded: list[LogicalBlockVersionId] = []
+        for proxy_token in sorted(
+            self._proxy_tokens_by_transaction.pop(transaction_id, ())
+        ):
+            proxy = self._proxies_by_token[proxy_token]
+            staged = proxy.abort(transaction_id)
+            self._serial_by_token.pop(staged.handle.token, None)
+            self._stale_tokens.add(staged.handle.token)
+            discarded.append(staged.version_id)
+        return tuple(discarded)
 
     def _bound_for_tokens(self, tokens: Iterable[str]) -> RebindResult:
         current = [
@@ -644,6 +768,35 @@ class MbaBlockIdentityIndex:
             if identity.native_ranges.contains(int(anchor_ea))
         )
         return matches[0] if len(matches) == 1 else None
+
+    def rebind_native_ea(
+        self,
+        anchor_ea: int,
+        *,
+        owner: MbaBlockHandle | None = None,
+    ) -> RebindResult:
+        """Resolve one EA only when exact instruction or ownership proves it."""
+        anchor_ea = int(anchor_ea)
+        candidates = tuple(
+            (identity, token)
+            for identity, tokens in self._tokens_by_identity.items()
+            if identity.native_ranges.contains(anchor_ea)
+            for token in tokens
+            if self.resolve(self._handles_by_token[token]) is not None
+        )
+        if owner is not None:
+            if not any(token == owner.token for _identity, token in candidates):
+                return RebindResult.missing()
+            bound = self.resolve(owner)
+            return RebindResult.missing() if bound is None else RebindResult.bound(bound)
+        exact_tokens = tuple(
+            token
+            for identity, token in candidates
+            if anchor_ea in identity.exact_instruction_eas
+        )
+        if exact_tokens:
+            return self._bound_for_tokens(exact_tokens)
+        return self._bound_for_tokens(token for _identity, token in candidates)
 
     def record_insert(
         self,
