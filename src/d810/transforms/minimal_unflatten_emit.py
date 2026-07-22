@@ -839,6 +839,7 @@ def _recover_register_conditional_entry(
     state_var_reg: int,
     materialized_indirect_transfers: tuple[MaterializedIndirectTransfer, ...] = (),
     materialized_state_routes: tuple[MaterializedStateRoute, ...] = (),
+    materialized_handler_by_state: Mapping[int, int] | None = None,
     condition_chain_handlers: frozenset[int] = frozenset(),
     entry_bridge_evidence: EntryBridgeEvidence | None = None,
 ) -> list[tuple[int, int, int]]:
@@ -960,8 +961,24 @@ def _recover_register_conditional_entry(
             candidates.add(int(target))
         return next(iter(candidates)) if len(candidates) == 1 else None
 
+    def _portable_handler_target(state: int) -> int | None:
+        if not materialized_handler_by_state:
+            return None
+        target = materialized_handler_by_state.get(int(state) & 0xFFFFFFFF)
+        if target is None:
+            return None
+        target = int(target)
+        target_block = flow_graph.get_block(target)
+        if target_block is None or target_block.kind is BlockKind.EXTERNAL:
+            return None
+        if condition_chain_handlers and target not in condition_chain_handlers:
+            return None
+        return target
+
     def _resolve_state_target(value: int) -> int | None:
         handler = _exact_equality_target(int(value))
+        if handler is None:
+            handler = _portable_handler_target(int(value))
         if handler is None:
             handler = dispatcher.lookup(int(value) & 0xFFFFFFFF)
             if (
@@ -2657,6 +2674,7 @@ def build_state_write_redirects(
     entry_bridge_cut_exit_path_uses: bool = False,
     materialized_state_routes: tuple[MaterializedStateRoute, ...] = (),
     materialized_indirect_transfers: tuple[MaterializedIndirectTransfer, ...] = (),
+    materialized_handler_by_state: Mapping[int, int] | None = None,
     condition_chain_handlers: frozenset[int] = frozenset(),
     infer_unmatched_returns: bool = True,
     entry_bridge_evidence: EntryBridgeEvidence | None = None,
@@ -3007,6 +3025,7 @@ def build_state_write_redirects(
             state_var_reg=int(state_var_reg),
             materialized_indirect_transfers=materialized_indirect_transfers,
             materialized_state_routes=materialized_state_routes,
+            materialized_handler_by_state=materialized_handler_by_state,
             condition_chain_handlers=condition_chain_handlers,
             entry_bridge_evidence=entry_bridge_evidence,
         ):
@@ -7800,6 +7819,7 @@ def emit_minimal_unflatten(
                         state_var_reg=int(state_var_reg),
                         materialized_indirect_transfers=materialized_indirect_transfers,
                         materialized_state_routes=materialized_state_routes,
+                        materialized_handler_by_state=materialized_handler_by_state,
                         condition_chain_handlers=route_handler_serials,
                         entry_bridge_evidence=entry_bridge_evidence,
                     )
@@ -7832,6 +7852,7 @@ def emit_minimal_unflatten(
         ),
         materialized_indirect_transfers=materialized_indirect_transfers,
         materialized_state_routes=materialized_state_routes,
+        materialized_handler_by_state=materialized_handler_by_state,
         condition_chain_handlers=route_handler_serials,
         infer_unmatched_returns=not materialized_computed_goto_profile,
         entry_bridge_evidence=entry_bridge_evidence,

@@ -8090,6 +8090,55 @@ def test_register_conditional_entry_uses_unique_materialized_state_route(_seam) 
     assert (2, 3, 22) in edges
 
 
+def test_register_conditional_entry_prefers_portable_live_handler_map(_seam) -> None:
+    reg = 99
+    parser_state = 0xA0716E5B
+    main_state = 0xEC71CA67
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2, 3), (0,), (_mov_reg(0x1100, parser_state, reg),)),
+            2: _b(2, (3,), (1,), (_mov_reg(0x1200, main_state, reg),)),
+            3: _b(3, (4,), (1, 2), (_mov_state(0x1300, 0xDEAD),)),
+            4: _b(4, (21,), (3, 21, 22)),
+            21: _b(21, (4,), (4,)),
+            22: _b(22, (4,), (4,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    coarse_dispatcher = _disp(
+        {parser_state: 21, main_state: 21},
+        exit_block=99,
+    )
+
+    modifications = build_state_write_redirects(
+        fg,
+        coarse_dispatcher,
+        recover_state_write_transitions(
+            fg,
+            coarse_dispatcher,
+            _STATE,
+            dispatcher_entry_serial=4,
+        ),
+        dispatcher_entry_serial=4,
+        pre_header_serial=None,
+        initial_state=None,
+        state_var_stkoff=_STATE,
+        state_var_reg=reg,
+        materialized_handler_by_state={parser_state: 22, main_state: 21},
+        condition_chain_handlers=frozenset({21, 22}),
+    )
+
+    edges = {
+        (modification.from_serial, modification.old_target, modification.new_target)
+        for modification in modifications
+        if isinstance(modification, (RedirectGoto, RedirectBranch))
+    }
+    assert (1, 3, 22) in edges
+    assert (2, 3, 21) in edges
+
+
 def test_register_conditional_entry_prefers_exact_detached_equality_target(
     _seam,
 ) -> None:
