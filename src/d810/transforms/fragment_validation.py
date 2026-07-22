@@ -1,0 +1,885 @@
+"""Pure projected-state validation for detached semantic fragments.
+
+The Hex-Rays backend lifts its unpublished staged graph into these serial-free
+records.  Validation operates only on that projection and the portable
+``FragmentPlan``.  Every postcondition produces a positive or negative outcome
+so the diagnostic database can explain why publication was accepted or
+aborted without reconstructing intent from text logs.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass
+from enum import Enum
+
+from d810.ir.block_identity import StableBlockIdentity
+from d810.ir.flowgraph import BlockKind
+from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.transforms.fragment_plan import (
+    FragmentBlockRole,
+    FragmentDataFlowObligation,
+    FragmentFlagCorridor,
+    FragmentOperation,
+    FragmentPlan,
+    FragmentRangeAssumption,
+    FragmentValueSite,
+)
+
+
+_BADADDR = 0xFFFFFFFFFFFFFFFF
+
+
+def _identifier(value: str, description: str) -> str:
+    value = str(value).strip()
+    if not value:
+        raise ValueError(f"{description} must not be empty")
+    return value
+
+
+def _native_ea(value: int, description: str) -> int:
+    value = int(value)
+    if not 0 <= value < _BADADDR:
+        raise ValueError(f"{description} must be a native EA")
+    return value
+
+
+class FragmentBindingState(str, Enum):
+    """Authority state represented by one projected physical realization."""
+
+    PUBLISHED = "published"
+    STAGED = "staged"
+
+
+class FragmentValidationPostcondition(str, Enum):
+    """Machine-queryable semantic acceptance conditions."""
+
+    GRAPH_CLOSURE = "graph_closure"
+    ROOT_REACHABILITY = "root_reachability"
+    INTERNAL_CONNECTIVITY = "internal_connectivity"
+    OPERATION_REACHABILITY = "operation_reachability"
+    ORIGINAL_SUPERSESSION = "original_supersession"
+    DISPATCHER_ABSENCE = "dispatcher_absence"
+    PRED_SUCC_SYMMETRY = "pred_succ_symmetry"
+    BLOCK_TOPOLOGY = "block_topology"
+    OPERATION_TOPOLOGY = "operation_topology"
+    FALLTHROUGH_TOPOLOGY = "fallthrough_topology"
+    USE_DEF_INTEGRITY = "use_def_integrity"
+    DEF_USE_INTEGRITY = "def_use_integrity"
+    FLAG_CORRIDOR_INTEGRITY = "flag_corridor_integrity"
+    VALUE_RANGE_PROVEN = "value_range_proven"
+    IDENTITY_OWNERSHIP = "identity_ownership"
+    VERSION_LINEAGE = "version_lineage"
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedFragmentBlock:
+    """One unpublished post-publication block projection."""
+
+    block_id: str
+    kind: BlockKind
+    successors: tuple[str, ...]
+    predecessors: tuple[str, ...]
+    physical_position: int
+    instruction_eas: tuple[int, ...] = ()
+    flag_write_eas: frozenset[int] = frozenset()
+
+    def __post_init__(self) -> None:
+        block_id = _identifier(self.block_id, "projected fragment block id")
+        if not isinstance(self.kind, BlockKind):
+            raise TypeError("projected fragment block requires a BlockKind")
+        successors = tuple(
+            _identifier(value, "projected successor") for value in self.successors
+        )
+        predecessors = tuple(
+            _identifier(value, "projected predecessor") for value in self.predecessors
+        )
+        physical_position = int(self.physical_position)
+        if physical_position < 0:
+            raise ValueError("projected physical position must be non-negative")
+        instruction_eas = tuple(
+            _native_ea(value, "projected instruction") for value in self.instruction_eas
+        )
+        if len(set(instruction_eas)) != len(instruction_eas):
+            raise ValueError("projected instruction order contains duplicate EAs")
+        flag_write_eas = frozenset(
+            _native_ea(value, "projected flag write") for value in self.flag_write_eas
+        )
+        if not flag_write_eas.issubset(instruction_eas):
+            raise ValueError("projected flag writes must be projected instructions")
+        object.__setattr__(self, "block_id", block_id)
+        object.__setattr__(self, "successors", successors)
+        object.__setattr__(self, "predecessors", predecessors)
+        object.__setattr__(self, "physical_position", physical_position)
+        object.__setattr__(self, "instruction_eas", instruction_eas)
+        object.__setattr__(self, "flag_write_eas", flag_write_eas)
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedIdentityBinding:
+    """Serial-free logical owner and version bound to one projected block."""
+
+    block_id: str
+    logical_owner_id: str
+    version: int
+    generation: int
+    state: FragmentBindingState
+    stable_identity: StableBlockIdentity | None
+    previous_version: int | None = None
+
+    def __post_init__(self) -> None:
+        block_id = _identifier(self.block_id, "projected binding block id")
+        logical_owner_id = _identifier(
+            self.logical_owner_id,
+            "projected logical owner id",
+        )
+        version = int(self.version)
+        generation = int(self.generation)
+        previous_version = (
+            None if self.previous_version is None else int(self.previous_version)
+        )
+        if version < 0 or generation < 0:
+            raise ValueError(
+                "projected binding version and generation must be non-negative"
+            )
+        if previous_version is not None and previous_version < 0:
+            raise ValueError("projected predecessor version must be non-negative")
+        if not isinstance(self.state, FragmentBindingState):
+            raise TypeError("projected binding requires a FragmentBindingState")
+        if self.stable_identity is not None and not isinstance(
+            self.stable_identity,
+            StableBlockIdentity,
+        ):
+            raise TypeError("projected binding stable identity has the wrong type")
+        object.__setattr__(self, "block_id", block_id)
+        object.__setattr__(self, "logical_owner_id", logical_owner_id)
+        object.__setattr__(self, "version", version)
+        object.__setattr__(self, "generation", generation)
+        object.__setattr__(self, "previous_version", previous_version)
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedDataFlowRelation:
+    """One projected reaching-definition relation."""
+
+    value_id: str
+    definition_site_id: str
+    use_site_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "value_id",
+            _identifier(self.value_id, "projected data-flow value id"),
+        )
+        object.__setattr__(
+            self,
+            "definition_site_id",
+            _identifier(
+                self.definition_site_id,
+                "projected definition site id",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "use_site_id",
+            _identifier(self.use_site_id, "projected use site id"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedRangeFact:
+    """Inclusive range proven for one projected value site."""
+
+    site_id: str
+    value_id: str
+    lo: int | None = None
+    hi: int | None = None
+
+    def __post_init__(self) -> None:
+        site_id = _identifier(self.site_id, "projected range site id")
+        value_id = _identifier(self.value_id, "projected range value id")
+        lo = None if self.lo is None else int(self.lo)
+        hi = None if self.hi is None else int(self.hi)
+        if lo is None and hi is None:
+            raise ValueError("projected range fact requires at least one bound")
+        if lo is not None and hi is not None and lo > hi:
+            raise ValueError("projected range lower bound exceeds upper bound")
+        object.__setattr__(self, "site_id", site_id)
+        object.__setattr__(self, "value_id", value_id)
+        object.__setattr__(self, "lo", lo)
+        object.__setattr__(self, "hi", hi)
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedFragment:
+    """Complete serial-free graph and semantic projection of a staged fragment."""
+
+    entry_block_id: str
+    blocks: tuple[ProjectedFragmentBlock, ...]
+    identity_bindings: tuple[ProjectedIdentityBinding, ...]
+    data_flow_relations: tuple[ProjectedDataFlowRelation, ...] = ()
+    value_ranges: tuple[ProjectedRangeFact, ...] = ()
+
+    def __post_init__(self) -> None:
+        entry_block_id = _identifier(
+            self.entry_block_id,
+            "projected fragment entry block",
+        )
+        blocks = tuple(self.blocks)
+        identity_bindings = tuple(self.identity_bindings)
+        data_flow_relations = tuple(self.data_flow_relations)
+        value_ranges = tuple(self.value_ranges)
+        if any(not isinstance(block, ProjectedFragmentBlock) for block in blocks):
+            raise TypeError("projection contains an invalid block")
+        if any(
+            not isinstance(binding, ProjectedIdentityBinding)
+            for binding in identity_bindings
+        ):
+            raise TypeError("projection contains an invalid identity binding")
+        if any(
+            not isinstance(relation, ProjectedDataFlowRelation)
+            for relation in data_flow_relations
+        ):
+            raise TypeError("projection contains an invalid data-flow relation")
+        if any(not isinstance(fact, ProjectedRangeFact) for fact in value_ranges):
+            raise TypeError("projection contains an invalid range fact")
+        object.__setattr__(self, "entry_block_id", entry_block_id)
+        object.__setattr__(self, "blocks", blocks)
+        object.__setattr__(self, "identity_bindings", identity_bindings)
+        object.__setattr__(self, "data_flow_relations", data_flow_relations)
+        object.__setattr__(self, "value_ranges", value_ranges)
+
+    def block(self, block_id: str) -> ProjectedFragmentBlock:
+        block_id = str(block_id)
+        for block in self.blocks:
+            if block.block_id == block_id:
+                return block
+        raise KeyError(block_id)
+
+    def binding(self, block_id: str) -> ProjectedIdentityBinding:
+        block_id = str(block_id)
+        for binding in self.identity_bindings:
+            if binding.block_id == block_id:
+                return binding
+        raise KeyError(block_id)
+
+
+@dataclass(frozen=True, slots=True)
+class FragmentValidationOutcome:
+    """One positive or negative semantic postcondition result."""
+
+    postcondition: FragmentValidationPostcondition
+    subject_id: str
+    passed: bool
+    reason: str
+    block_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.postcondition, FragmentValidationPostcondition):
+            raise TypeError("validation outcome requires a postcondition")
+        object.__setattr__(
+            self,
+            "subject_id",
+            _identifier(self.subject_id, "fragment validation subject"),
+        )
+        object.__setattr__(self, "passed", bool(self.passed))
+        object.__setattr__(self, "reason", str(self.reason))
+        object.__setattr__(
+            self,
+            "block_ids",
+            tuple(str(block_id) for block_id in self.block_ids),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FragmentValidationResult:
+    """All pre-publication semantic outcomes for one fragment."""
+
+    plan_id: str
+    atomic_group_id: str
+    outcomes: tuple[FragmentValidationOutcome, ...]
+
+    @property
+    def passed(self) -> bool:
+        return bool(self.outcomes) and all(outcome.passed for outcome in self.outcomes)
+
+    @property
+    def failures(self) -> tuple[FragmentValidationOutcome, ...]:
+        return tuple(outcome for outcome in self.outcomes if not outcome.passed)
+
+
+def _outcome(
+    outcomes: list[FragmentValidationOutcome],
+    postcondition: FragmentValidationPostcondition,
+    subject_id: str,
+    passed: bool,
+    reason: str,
+    *block_ids: str,
+) -> None:
+    outcomes.append(
+        FragmentValidationOutcome(
+            postcondition=postcondition,
+            subject_id=subject_id,
+            passed=passed,
+            reason=reason,
+            block_ids=tuple(block_ids),
+        )
+    )
+
+
+def _reachable(
+    blocks: dict[str, ProjectedFragmentBlock],
+    roots: tuple[str, ...],
+) -> frozenset[str]:
+    visited: set[str] = set()
+    queue = deque(root for root in roots if root in blocks)
+    while queue:
+        block_id = queue.popleft()
+        if block_id in visited:
+            continue
+        block = blocks.get(block_id)
+        if block is None:
+            continue
+        visited.add(block_id)
+        queue.extend(target for target in block.successors if target not in visited)
+    return frozenset(visited)
+
+
+def _site_present(
+    site: FragmentValueSite,
+    blocks: dict[str, ProjectedFragmentBlock],
+) -> bool:
+    block = blocks.get(site.block_id)
+    return bool(block is not None and site.instruction_ea in block.instruction_eas)
+
+
+def _validate_graph(
+    projection: ProjectedFragment,
+    blocks: dict[str, ProjectedFragmentBlock],
+    outcomes: list[FragmentValidationOutcome],
+) -> None:
+    block_ids = tuple(block.block_id for block in projection.blocks)
+    references_closed = (
+        len(blocks) == len(projection.blocks)
+        and projection.entry_block_id in blocks
+        and all(
+            target in blocks
+            for block in projection.blocks
+            for target in (*block.successors, *block.predecessors)
+        )
+    )
+    _outcome(
+        outcomes,
+        FragmentValidationPostcondition.GRAPH_CLOSURE,
+        "projection",
+        references_closed,
+        "all projected graph references are closed"
+        if references_closed
+        else "projection has duplicate blocks, a missing entry, or an unknown edge endpoint",
+        *block_ids,
+    )
+
+    positions = tuple(block.physical_position for block in projection.blocks)
+    unique_positions = len(set(positions)) == len(positions)
+    shape_valid = True
+    malformed: list[str] = []
+    for block in projection.blocks:
+        successor_count = len(block.successors)
+        valid = {
+            BlockKind.ZERO_WAY: successor_count == 0,
+            BlockKind.ONE_WAY: successor_count == 1,
+            BlockKind.TWO_WAY: successor_count == 2,
+            BlockKind.N_WAY: successor_count >= 2,
+        }[block.kind]
+        valid = valid and len(set(block.successors)) == successor_count
+        valid = valid and len(set(block.predecessors)) == len(block.predecessors)
+        if not valid:
+            shape_valid = False
+            malformed.append(block.block_id)
+    _outcome(
+        outcomes,
+        FragmentValidationPostcondition.BLOCK_TOPOLOGY,
+        "projection",
+        shape_valid and unique_positions,
+        "block kinds, edges, and physical positions are coherent"
+        if shape_valid and unique_positions
+        else "block kind, duplicate edge, or physical-position invariant failed",
+        *malformed,
+    )
+
+    symmetry_valid = True
+    asymmetric: set[str] = set()
+    for block in projection.blocks:
+        for successor in block.successors:
+            target = blocks.get(successor)
+            if target is None or block.block_id not in target.predecessors:
+                symmetry_valid = False
+                asymmetric.update((block.block_id, successor))
+        for predecessor in block.predecessors:
+            source = blocks.get(predecessor)
+            if source is None or block.block_id not in source.successors:
+                symmetry_valid = False
+                asymmetric.update((predecessor, block.block_id))
+    _outcome(
+        outcomes,
+        FragmentValidationPostcondition.PRED_SUCC_SYMMETRY,
+        "projection",
+        symmetry_valid,
+        "every successor and predecessor relation is reciprocal"
+        if symmetry_valid
+        else "projected predecessor/successor relation is asymmetric",
+        *sorted(asymmetric),
+    )
+
+
+def _validate_reachability(
+    plan: FragmentPlan,
+    blocks: dict[str, ProjectedFragmentBlock],
+    projection: ProjectedFragment,
+    outcomes: list[FragmentValidationOutcome],
+) -> None:
+    entry_reachable = _reachable(blocks, (projection.entry_block_id,))
+    fragment_reachable = _reachable(blocks, plan.roots)
+    for root in plan.roots:
+        passed = root in entry_reachable
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.ROOT_REACHABILITY,
+            root,
+            passed,
+            "publication root is reachable from projected function entry"
+            if passed
+            else "publication root is unreachable from projected function entry",
+            root,
+        )
+    for block in plan.blocks:
+        if block.role not in {
+            FragmentBlockRole.REPLACEMENT,
+            FragmentBlockRole.SYNTHETIC,
+        }:
+            continue
+        passed = block.block_id in fragment_reachable
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.INTERNAL_CONNECTIVITY,
+            block.block_id,
+            passed,
+            "staged fragment block is connected to a fragment root"
+            if passed
+            else "staged fragment block is disconnected from all fragment roots",
+            block.block_id,
+        )
+    for operation in plan.operations:
+        passed = operation.source_block_id in fragment_reachable
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.OPERATION_REACHABILITY,
+            operation.operation_id,
+            passed,
+            "required operation is reachable from a fragment root"
+            if passed
+            else "required operation is unreachable from every fragment root",
+            operation.source_block_id,
+        )
+    for original in plan.owned_originals:
+        passed = original not in entry_reachable
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.ORIGINAL_SUPERSESSION,
+            original,
+            passed,
+            "owned original is unreachable after projected publication"
+            if passed
+            else "owned original remains reachable after projected publication",
+            original,
+        )
+    for dispatcher in plan.prohibited_dispatcher_blocks:
+        passed = dispatcher not in entry_reachable
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.DISPATCHER_ABSENCE,
+            dispatcher,
+            passed,
+            "prohibited dispatcher router is unreachable"
+            if passed
+            else "reachable route enters a prohibited dispatcher router",
+            dispatcher,
+        )
+
+
+def _validate_operation(
+    operation: FragmentOperation,
+    blocks: dict[str, ProjectedFragmentBlock],
+    outcomes: list[FragmentValidationOutcome],
+) -> None:
+    source = blocks.get(operation.source_block_id)
+    expected_targets = {edge.target_block_id for edge in operation.edges}
+    actual_targets = set() if source is None else set(source.successors)
+    expected_kind = (
+        BlockKind.ONE_WAY if len(operation.edges) == 1 else BlockKind.TWO_WAY
+    )
+    topology_valid = (
+        source is not None
+        and source.kind is expected_kind
+        and actual_targets == expected_targets
+        and len(actual_targets) == len(operation.edges)
+    )
+    _outcome(
+        outcomes,
+        FragmentValidationPostcondition.OPERATION_TOPOLOGY,
+        operation.operation_id,
+        topology_valid,
+        "projected operation has exactly its planned semantic destinations"
+        if topology_valid
+        else "projected operation shape or destinations differ from the plan",
+        operation.source_block_id,
+        *sorted(expected_targets),
+    )
+
+    fallthrough_edges = tuple(
+        edge
+        for edge in operation.edges
+        if edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+    )
+    if not fallthrough_edges:
+        return
+    target = blocks.get(fallthrough_edges[0].target_block_id)
+    passed = bool(
+        source is not None
+        and target is not None
+        and target.physical_position == source.physical_position + 1
+    )
+    _outcome(
+        outcomes,
+        FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
+        operation.operation_id,
+        passed,
+        "conditional fallthrough is the physically adjacent target"
+        if passed
+        else "conditional fallthrough target is not physically adjacent",
+        operation.source_block_id,
+        fallthrough_edges[0].target_block_id,
+    )
+
+
+def _validate_data_flow(
+    obligation: FragmentDataFlowObligation,
+    blocks: dict[str, ProjectedFragmentBlock],
+    relations: tuple[ProjectedDataFlowRelation, ...],
+    outcomes: list[FragmentValidationOutcome],
+) -> None:
+    definition = obligation.definition
+    expected_use_ids = {use.site_id for use in obligation.uses}
+    sites_present = _site_present(definition, blocks) and all(
+        _site_present(use, blocks) for use in obligation.uses
+    )
+    use_def_valid = sites_present
+    for use in obligation.uses:
+        actual_relations = tuple(
+            relation
+            for relation in relations
+            if relation.value_id == definition.value_id
+            and relation.use_site_id == use.site_id
+        )
+        actual_definitions = {
+            relation.definition_site_id for relation in actual_relations
+        }
+        if actual_definitions != {definition.site_id} or len(actual_relations) != 1:
+            use_def_valid = False
+    _outcome(
+        outcomes,
+        FragmentValidationPostcondition.USE_DEF_INTEGRITY,
+        obligation.obligation_id,
+        use_def_valid,
+        "every planned use has exactly the planned reaching definition"
+        if use_def_valid
+        else "a planned use is missing, ambiguous, or reached by another definition",
+        definition.block_id,
+        *(use.block_id for use in obligation.uses),
+    )
+
+    actual_relations = tuple(
+        relation
+        for relation in relations
+        if relation.value_id == definition.value_id
+        and relation.definition_site_id == definition.site_id
+    )
+    actual_use_ids = {relation.use_site_id for relation in actual_relations}
+    def_use_valid = (
+        sites_present
+        and actual_use_ids == expected_use_ids
+        and len(actual_relations) == len(expected_use_ids)
+    )
+    _outcome(
+        outcomes,
+        FragmentValidationPostcondition.DEF_USE_INTEGRITY,
+        obligation.obligation_id,
+        def_use_valid,
+        "the planned definition reaches exactly its declared uses"
+        if def_use_valid
+        else "the planned definition lost a use or reaches an undeclared use",
+        definition.block_id,
+        *(use.block_id for use in obligation.uses),
+    )
+
+
+def _corridor_writes(
+    corridor: FragmentFlagCorridor,
+    blocks: dict[str, ProjectedFragmentBlock],
+) -> frozenset[int]:
+    writes: set[int] = set()
+    for index, block_id in enumerate(corridor.block_path):
+        block = blocks.get(block_id)
+        if block is None:
+            continue
+        instructions = block.instruction_eas
+        start = 0
+        end = len(instructions)
+        if index == 0:
+            try:
+                start = instructions.index(corridor.producer.instruction_ea)
+            except ValueError:
+                start = len(instructions)
+        if index == len(corridor.block_path) - 1:
+            try:
+                end = instructions.index(corridor.consumer.instruction_ea)
+            except ValueError:
+                end = 0
+        writes.update(set(instructions[start:end]) & block.flag_write_eas)
+    return frozenset(writes)
+
+
+def _validate_flag_corridor(
+    corridor: FragmentFlagCorridor,
+    blocks: dict[str, ProjectedFragmentBlock],
+    outcomes: list[FragmentValidationOutcome],
+) -> None:
+    sites_present = _site_present(corridor.producer, blocks) and _site_present(
+        corridor.consumer,
+        blocks,
+    )
+    path_connected = sites_present and len(set(corridor.block_path)) == len(
+        corridor.block_path
+    )
+    for source, target in zip(corridor.block_path, corridor.block_path[1:]):
+        source_block = blocks.get(source)
+        if source_block is None or target not in source_block.successors:
+            path_connected = False
+            break
+    if path_connected and len(corridor.block_path) == 1:
+        block = blocks[corridor.block_path[0]]
+        path_connected = block.instruction_eas.index(
+            corridor.producer.instruction_ea
+        ) < block.instruction_eas.index(corridor.consumer.instruction_ea)
+    observed_writes = _corridor_writes(corridor, blocks)
+    unpermitted_writes = observed_writes - corridor.permitted_flag_write_eas
+    passed = path_connected and not unpermitted_writes
+    reason = "flag corridor is connected and contains no intervening clobber"
+    if not path_connected:
+        reason = "flag producer-to-consumer corridor is disconnected or missing"
+    elif unpermitted_writes:
+        reason = "flag corridor contains an intervening unpermitted flag write"
+    _outcome(
+        outcomes,
+        FragmentValidationPostcondition.FLAG_CORRIDOR_INTEGRITY,
+        corridor.corridor_id,
+        passed,
+        reason,
+        *corridor.block_path,
+    )
+
+
+def _range_satisfies(
+    assumption: FragmentRangeAssumption,
+    fact: ProjectedRangeFact,
+) -> bool:
+    if assumption.lo is not None and (fact.lo is None or fact.lo < assumption.lo):
+        return False
+    if assumption.hi is not None and (fact.hi is None or fact.hi > assumption.hi):
+        return False
+    return True
+
+
+def _validate_range(
+    assumption: FragmentRangeAssumption,
+    facts: tuple[ProjectedRangeFact, ...],
+    outcomes: list[FragmentValidationOutcome],
+) -> None:
+    matching = tuple(
+        fact
+        for fact in facts
+        if fact.site_id == assumption.site.site_id
+        and fact.value_id == assumption.site.value_id
+    )
+    passed = len(matching) == 1 and _range_satisfies(assumption, matching[0])
+    _outcome(
+        outcomes,
+        FragmentValidationPostcondition.VALUE_RANGE_PROVEN,
+        assumption.assumption_id,
+        passed,
+        "projected value range is within the plan assumption"
+        if passed
+        else "projected value range is absent, ambiguous, or wider than assumed",
+        assumption.site.block_id,
+    )
+
+
+def _validate_identity(
+    plan: FragmentPlan,
+    projection: ProjectedFragment,
+    blocks: dict[str, ProjectedFragmentBlock],
+    outcomes: list[FragmentValidationOutcome],
+) -> None:
+    binding_lists: dict[str, list[ProjectedIdentityBinding]] = {}
+    for binding in projection.identity_bindings:
+        binding_lists.setdefault(binding.block_id, []).append(binding)
+
+    all_projected_bound = all(
+        len(binding_lists.get(block_id, ())) == 1 for block_id in blocks
+    )
+    unique_version_coordinates = len(
+        {
+            (binding.logical_owner_id, binding.version)
+            for binding in projection.identity_bindings
+        }
+    ) == len(projection.identity_bindings)
+    _outcome(
+        outcomes,
+        FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+        "projection-bindings",
+        all_projected_bound and unique_version_coordinates,
+        "every projected block has one unique logical owner version"
+        if all_projected_bound and unique_version_coordinates
+        else "a projected block lacks one exact logical owner version",
+        *blocks,
+    )
+
+    binding_by_id = {
+        block_id: bindings[0]
+        for block_id, bindings in binding_lists.items()
+        if len(bindings) == 1
+    }
+    for block in plan.blocks:
+        binding = binding_by_id.get(block.block_id)
+        expected_state = (
+            FragmentBindingState.STAGED
+            if block.role
+            in {FragmentBlockRole.REPLACEMENT, FragmentBlockRole.SYNTHETIC}
+            else FragmentBindingState.PUBLISHED
+        )
+        passed = bool(
+            binding is not None
+            and binding.state is expected_state
+            and binding.stable_identity == block.stable_identity
+        )
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+            block.block_id,
+            passed,
+            "projected identity and authority state match the plan"
+            if passed
+            else "projected identity or authority state differs from the plan",
+            block.block_id,
+        )
+
+        if block.role is FragmentBlockRole.SYNTHETIC:
+            lineage_valid = bool(
+                binding is not None and binding.previous_version is None
+            )
+            _outcome(
+                outcomes,
+                FragmentValidationPostcondition.VERSION_LINEAGE,
+                block.block_id,
+                lineage_valid,
+                "new synthetic owner has no predecessor version"
+                if lineage_valid
+                else "new synthetic owner incorrectly claims a predecessor version",
+                block.block_id,
+            )
+        elif block.role is FragmentBlockRole.REPLACEMENT:
+            original = binding_by_id.get(str(block.replaces_block_id))
+            owner_valid = bool(
+                binding is not None
+                and original is not None
+                and binding.logical_owner_id == original.logical_owner_id
+            )
+            _outcome(
+                outcomes,
+                FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+                f"{block.block_id}:replacement-owner",
+                owner_valid,
+                "replacement and original share one logical owner"
+                if owner_valid
+                else "replacement and original resolve to different logical owners",
+                str(block.replaces_block_id),
+                block.block_id,
+            )
+            lineage_valid = bool(
+                binding is not None
+                and original is not None
+                and binding.previous_version == original.version
+                and binding.version > original.version
+                and binding.generation == original.generation + 1
+            )
+            _outcome(
+                outcomes,
+                FragmentValidationPostcondition.VERSION_LINEAGE,
+                block.block_id,
+                lineage_valid,
+                "staged replacement directly descends from the published owner"
+                if lineage_valid
+                else "staged replacement owner or predecessor lineage drifted",
+                str(block.replaces_block_id),
+                block.block_id,
+            )
+
+
+def validate_fragment_projection(
+    plan: FragmentPlan,
+    projection: ProjectedFragment,
+) -> FragmentValidationResult:
+    """Prove all pre-publication semantic postconditions for ``projection``."""
+    if not isinstance(plan, FragmentPlan):
+        raise TypeError("fragment validation requires a FragmentPlan")
+    if not isinstance(projection, ProjectedFragment):
+        raise TypeError("fragment validation requires a ProjectedFragment")
+
+    outcomes: list[FragmentValidationOutcome] = []
+    blocks = {block.block_id: block for block in projection.blocks}
+    _validate_graph(projection, blocks, outcomes)
+    _validate_reachability(plan, blocks, projection, outcomes)
+    for operation in plan.operations:
+        _validate_operation(operation, blocks, outcomes)
+    for obligation in plan.data_flow_obligations:
+        _validate_data_flow(
+            obligation,
+            blocks,
+            projection.data_flow_relations,
+            outcomes,
+        )
+    for corridor in plan.flag_corridors:
+        _validate_flag_corridor(corridor, blocks, outcomes)
+    for assumption in plan.value_range_assumptions:
+        _validate_range(assumption, projection.value_ranges, outcomes)
+    _validate_identity(plan, projection, blocks, outcomes)
+    return FragmentValidationResult(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        outcomes=tuple(outcomes),
+    )
+
+
+__all__ = [
+    "FragmentBindingState",
+    "FragmentValidationOutcome",
+    "FragmentValidationPostcondition",
+    "FragmentValidationResult",
+    "ProjectedDataFlowRelation",
+    "ProjectedFragment",
+    "ProjectedFragmentBlock",
+    "ProjectedIdentityBinding",
+    "ProjectedRangeFact",
+    "validate_fragment_projection",
+]

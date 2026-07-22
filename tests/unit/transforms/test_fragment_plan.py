@@ -345,3 +345,42 @@ def test_fragment_plan_rejects_invalid_flag_corridor_and_range() -> None:
             lo=2,
             hi=1,
         )
+
+
+def test_fragment_plan_rejects_ambiguous_value_site_identity() -> None:
+    plan = _valid_plan()
+    duplicate_site_id = FragmentValueSite(
+        site_id=plan.data_flow_obligations[0].definition.site_id,
+        block_id="handler.true",
+        value_id="call:result",
+        instruction_ea=0x40C100,
+    )
+    call_use = FragmentValueSite(
+        site_id="call.use",
+        block_id="handler.true",
+        value_id="call:result",
+        instruction_ea=0x40C101,
+    )
+
+    with pytest.raises(FragmentPlanRejected, match="value site id .* is ambiguous"):
+        FragmentPlan(
+            plan_id=plan.plan_id,
+            atomic_group_id=plan.atomic_group_id,
+            native_key=plan.native_key,
+            blocks=plan.blocks,
+            roots=plan.roots,
+            owned_originals=plan.owned_originals,
+            prohibited_dispatcher_blocks=plan.prohibited_dispatcher_blocks,
+            operations=plan.operations,
+            data_flow_obligations=plan.data_flow_obligations
+            + (
+                FragmentDataFlowObligation(
+                    obligation_id="call-flow",
+                    role=FragmentDataFlowRole.CALL,
+                    definition=duplicate_site_id,
+                    uses=(call_use,),
+                ),
+            ),
+            flag_corridors=plan.flag_corridors,
+            value_range_assumptions=plan.value_range_assumptions,
+        )
