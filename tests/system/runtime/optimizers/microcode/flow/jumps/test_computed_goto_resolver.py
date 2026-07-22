@@ -2193,22 +2193,22 @@ def test_reference_style_route_materializes_folded_zero_way_write_owner() -> Non
         (NativeEaInterval(ea, ea + 1),), native_key=state.native_key
     )
     route = PortableStateWriteRouteEvidence(
-        write_identity=identity(0x40A723),
-        delivery_identity=identity(0x40A73D),
-        source_write_ea=0x40A723,
-        delivery_ea=0x40A73D,
-        delivery_region_start_ea=0x40A73D,
-        delivery_region_end_ea=0x40A73F,
-        corridor_instruction_eas=(0x40A723, 0x40A728, 0x40A73D),
+        write_identity=identity(0x40B469),
+        delivery_identity=identity(0x40B4C3),
+        source_write_ea=0x40B469,
+        delivery_ea=0x40B4C3,
+        delivery_region_start_ea=0x40B49E,
+        delivery_region_end_ea=0x40B4C5,
+        corridor_instruction_eas=(0x40B469, 0x40B49E, 0x40B4C3),
         state_var_reg=20,
         state_constant=0x7C4FB03D,
-        target_identity=identity(0x40ADF2),
-        target_ea=0x40ADF2,
+        target_identity=identity(0x40C592),
+        target_ea=0x40C592,
         proof_kind="reference_style_immediate_flow_route",
     )
     handles = {
-        0x40A723: SimpleNamespace(serial=30),
-        0x40ADF2: SimpleNamespace(serial=144),
+        0x40B469: SimpleNamespace(serial=30),
+        0x40C592: SimpleNamespace(serial=144),
     }
 
     class _Index:
@@ -2228,18 +2228,18 @@ def test_reference_style_route_materializes_folded_zero_way_write_owner() -> Non
 
     write_owner = SimpleNamespace(
         serial=30,
-        start=0x40A708,
+        start=0x40B469,
         tail=SimpleNamespace(
-            ea=0x40A72E,
-            opcode=ida_hexrays.m_jnz,
-            d=SimpleNamespace(t=ida_hexrays.mop_v),
+            ea=0x40B49E,
+            opcode=ida_hexrays.m_ijmp,
+            d=SimpleNamespace(t=ida_hexrays.mop_z),
         ),
         nsucc=lambda: 0,
         succ=lambda _index: (_ for _ in ()).throw(IndexError()),
     )
     blocks = {
         30: write_owner,
-        144: SimpleNamespace(serial=144, start=0x40ADF2),
+        144: SimpleNamespace(serial=144, start=0x40C592),
     }
     mba = SimpleNamespace(get_mblock=lambda serial: blocks.get(int(serial)))
     diagnostics = []
@@ -2262,12 +2262,12 @@ def test_reference_style_route_materializes_folded_zero_way_write_owner() -> Non
     assert pending[0].old_target_serial is None
     assert pending[0].collapse_conditional is True
     assert pending[0].materialize_zero_way is True
-    assert pending[0].predicate_ea == 0x40A72E
+    assert pending[0].predicate_ea == 0x40B49E
     assert already == ()
     assert unbound == 0
     assert diagnostics[0]["reason"] == "materialize_folded_reference_zero_way"
     assert diagnostics[0]["delivery_status"] == "missing"
-    assert diagnostics[0]["write_tail_ea"] == "0x40A72E"
+    assert diagnostics[0]["write_tail_ea"] == "0x40B49E"
 
 
 def test_static_conditional_state_choice_maps_both_unique_handler_arms() -> None:
