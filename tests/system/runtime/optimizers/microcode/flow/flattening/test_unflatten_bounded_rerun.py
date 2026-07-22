@@ -1430,6 +1430,78 @@ def _fresh_rule() -> StateMachineCffUnflattener:
     return rule
 
 
+def test_recovery_gate_reports_session_profile_and_identity_phase() -> None:
+    reported = []
+    rule = _fresh_rule()
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    native = NativePreanalysisSessionState(evidence_generation=7)
+    native.bound_preopt_generation = 7
+    resolver_state = ResolverSessionState(
+        native_preanalysis=native,
+        native_key=NATIVE_KEY,
+        materialized=True,
+        indirect_dispatcher_materialized=True,
+    )
+    mba = SimpleNamespace(entry_ea=_EA, maturity=_MAT2)
+
+    rule._report_recovery_gate_decision(
+        mba,
+        resolver_state=resolver_state,
+        decision="accepted",
+        reason="recovery_round_granted",
+        imported_identity_ready=True,
+        recovery_epoch_phase=2,
+        rounds_before=0,
+    )
+
+    assert len(reported) == 1
+    record = reported[0]
+    assert record.consumer == "state_machine_cff_unflattener"
+    assert record.strategy == "recovery_gate"
+    assert record.fact_id == "resolver_session:indirect_dispatcher_materialized"
+    assert record.maturity == "MMAT_CALLS"
+    assert record.decision == "accepted"
+    assert record.reason == "recovery_round_granted"
+    assert record.payload == {
+        "bound_preopt_generation": 7,
+        "evidence_generation": 7,
+        "imported_identity_ready": True,
+        "indirect_dispatcher_materialized": True,
+        "recovery_epoch_phase": 2,
+        "resolver_session_present": True,
+        "rounds_before": 0,
+    }
+
+
+def test_unbound_materialized_preopt_deferral_is_persisted() -> None:
+    reported = []
+    rule = _fresh_rule()
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    native = NativePreanalysisSessionState(evidence_generation=9)
+    resolver_state = ResolverSessionState(
+        native_preanalysis=native,
+        native_key=NATIVE_KEY,
+        materialized=True,
+        indirect_dispatcher_materialized=True,
+    )
+    rule.current_resolver_session_state = lambda: resolver_state
+    mba = SimpleNamespace(entry_ea=_EA, maturity=_MAT)
+
+    assert rule.run_state_machine_unflatten(mba) == 0
+
+    assert len(reported) == 1
+    record = reported[0]
+    assert record.decision == "declined"
+    assert record.reason == "preopt_evidence_generation_unbound"
+    assert record.payload["evidence_generation"] == 9
+    assert record.payload["bound_preopt_generation"] is None
+    assert record.payload["recovery_epoch_phase"] == 0
+
+
 def test_regenerated_mba_resets_only_its_function_round_budget() -> None:
     class RecordingPassManager:
         def __init__(self) -> None:
@@ -1561,6 +1633,45 @@ def test_preopt_bound_epoch_ignores_mba_address_churn_from_own_mutations() -> No
     )
     assert rule._pass_manager.reset_eas == [_EA, _EA]
     assert (_EA, _MAT) not in rule._unflat_round_count
+
+
+def test_imported_union_epoch_reopens_call_recovery_after_narrow_preopt_bind() -> None:
+    class RecordingPassManager:
+        def __init__(self) -> None:
+            self.reset_eas: list[int] = []
+
+        def reset_func(self, func_ea: int) -> None:
+            self.reset_eas.append(int(func_ea))
+
+    rule = _fresh_rule()
+    rule._pass_manager = RecordingPassManager()
+    rule._pass_manager_session_by_func = {}
+    reused_mba = SimpleNamespace(entry_ea=_EA, this=0x1111)
+
+    # A narrow bootstrap bind stabilizes the evidence generation before the
+    # detached union has been imported.  The indirect CALLS profile can spend
+    # its one-shot attempt on that incomplete graph.
+    rule._reset_pass_manager_if_new_session(
+        reused_mba,
+        evidence_generation=7,
+        stable_preopt_epoch=True,
+        imported_identity_ready=False,
+    )
+    rule._unflat_round_count[(_EA, _MAT2)] = 1
+
+    # Importing the complete union at the same evidence generation is a new
+    # live recovery epoch even if Hex-Rays reuses the mba_t address.  It must
+    # grant CALLS one fresh attempt without treating later MBA address churn as
+    # another epoch.
+    rule._reset_pass_manager_if_new_session(
+        reused_mba,
+        evidence_generation=7,
+        stable_preopt_epoch=True,
+        imported_identity_ready=True,
+    )
+
+    assert rule._pass_manager.reset_eas == [_EA, _EA]
+    assert (_EA, _MAT2) not in rule._unflat_round_count
 
 
 def test_recovery_epoch_uses_generation_bound_into_preopt_without_import() -> None:

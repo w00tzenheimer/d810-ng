@@ -90,6 +90,7 @@ from d810.analyses.data_flow.concolic.emulation import EmulationCapability
 from d810.analyses.control_flow.transition_builder import (
     _convert_condition_chain_to_result,
 )
+from d810.analyses.value_flow.model import FactConsumerRecord
 from d810.backends.hexrays.evidence.condition_chain_analysis import (
     analyze_condition_chain_dispatcher,
 )
@@ -1081,7 +1082,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self._last_config_v2_pass_ids: tuple[str, ...] = ()
         self._pass_scheduler = None
         self._pass_manager = FunctionPassManager()
-        self._pass_manager_session_by_func: dict[int, tuple[int, int, bool]] = {}
+        self._pass_manager_session_by_func: dict[int, tuple[int, int, int]] = {}
 
     def set_project_config(self, config: object | None) -> None:
         """Attach project-level config-v2 options without changing rule options."""
@@ -1103,6 +1104,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         *,
         evidence_generation: int = 0,
         stable_preopt_epoch: bool = False,
+        imported_identity_ready: bool = False,
     ) -> None:
         func_ea = int(getattr(mba, "entry_ea", 0) or 0)
         if func_ea == 0:
@@ -1115,10 +1117,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # repeatedly; the stable epoch is then the bound evidence generation,
         # not the disposable address.
         mba_session_identity = 0 if preopt_epoch_is_stable else stable_mba_identity(mba)
+        preopt_epoch_phase = (
+            2 if imported_identity_ready else (1 if preopt_epoch_is_stable else 0)
+        )
         session_signature = (
             mba_session_identity,
             int(evidence_generation),
-            preopt_epoch_is_stable,
+            preopt_epoch_phase,
         )
         if self._pass_manager_session_by_func.get(func_ea) == session_signature:
             return
@@ -1170,6 +1175,62 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
     def _mark_ea_converged(self, func_ea: int) -> None:
         """Mark ``func_ea`` terminal — recovery found no dispatcher (graph fully unflattened)."""
         self._unflat_done_eas.add(func_ea)
+
+    def _report_recovery_gate_decision(
+        self,
+        mba: object,
+        *,
+        resolver_state: object | None,
+        decision: str,
+        reason: str,
+        imported_identity_ready: bool | None,
+        recovery_epoch_phase: int,
+        rounds_before: int,
+    ) -> None:
+        """Persist the CALLS recovery authority decision in the diagnostic DB."""
+        flow_context = getattr(self, "flow_context", None)
+        report = getattr(flow_context, "report_fact_consumers", None)
+        if not callable(report):
+            return
+        native_preanalysis = (
+            resolver_state.native_preanalysis
+            if isinstance(resolver_state, ResolverSessionState)
+            else None
+        )
+        report(
+            (
+                FactConsumerRecord(
+                    consumer="state_machine_cff_unflattener",
+                    strategy="recovery_gate",
+                    fact_id="resolver_session:indirect_dispatcher_materialized",
+                    maturity=maturity_to_string(int(getattr(mba, "maturity", 0))),
+                    decision=decision,
+                    reason=reason,
+                    payload={
+                        "bound_preopt_generation": (
+                            None
+                            if native_preanalysis is None
+                            else native_preanalysis.bound_preopt_generation
+                        ),
+                        "evidence_generation": (
+                            0
+                            if native_preanalysis is None
+                            else int(native_preanalysis.evidence_generation)
+                        ),
+                        "imported_identity_ready": imported_identity_ready,
+                        "indirect_dispatcher_materialized": bool(
+                            isinstance(resolver_state, ResolverSessionState)
+                            and resolver_state.indirect_dispatcher_materialized
+                        ),
+                        "recovery_epoch_phase": int(recovery_epoch_phase),
+                        "resolver_session_present": isinstance(
+                            resolver_state, ResolverSessionState
+                        ),
+                        "rounds_before": int(rounds_before),
+                    },
+                ),
+            )
+        )
 
     def _log_pipeline_v2_shadow(
         self,
@@ -1401,6 +1462,15 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         if not isinstance(resolver_state, ResolverSessionState):
             resolver_state = None
         if _should_defer_unbound_materialized_preopt(resolver_state):
+            self._report_recovery_gate_decision(
+                mba,
+                resolver_state=resolver_state,
+                decision="declined",
+                reason="preopt_evidence_generation_unbound",
+                imported_identity_ready=False,
+                recovery_epoch_phase=0,
+                rounds_before=0,
+            )
             logger.debug(
                 "unflat: deferring materialized mutation until PREOPT binds "
                 "evidence generation %d for func=0x%x",
@@ -1630,6 +1700,15 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # pre-fold stage where their dispatcher is still alive.
         if is_indirect:
             if mba.maturity != ida_hexrays.MMAT_CALLS:
+                self._report_recovery_gate_decision(
+                    mba,
+                    resolver_state=resolver_state,
+                    decision="declined",
+                    reason="indirect_profile_requires_calls",
+                    imported_identity_ready=None,
+                    recovery_epoch_phase=0,
+                    rounds_before=0,
+                )
                 return (False, is_indirect)
         elif int(mba.maturity) not in (
             self._union_recovery_maturities() | self._config_recovery_maturities()
@@ -1639,6 +1718,15 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             # lift/prelim/select_family so a stage nothing wants costs nothing (ticket
             # llr-a93i). The fine per-family gate below still defers a profile that wants a
             # DIFFERENT stage within the union/override.
+            self._report_recovery_gate_decision(
+                mba,
+                resolver_state=resolver_state,
+                decision="declined",
+                reason="maturity_not_registered",
+                imported_identity_ready=None,
+                recovery_epoch_phase=0,
+                rounds_before=0,
+            )
             return (False, is_indirect)
         has_imported_identity = bool(imported_detached_snippet_target_eas(mba))
         current_evidence_generation = (
@@ -1654,6 +1742,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         stable_preopt_epoch = bool(
             has_imported_identity or bound_preopt_generation is not None
         )
+        recovery_epoch_phase = (
+            2 if has_imported_identity else (1 if stable_preopt_epoch else 0)
+        )
         self._reset_pass_manager_if_new_session(
             mba,
             evidence_generation=_unflatten_recovery_epoch_generation(
@@ -1661,6 +1752,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 bound_preopt_generation=bound_preopt_generation,
             ),
             stable_preopt_epoch=stable_preopt_epoch,
+            imported_identity_ready=has_imported_identity,
         )
         # Bounded re-run (ticket llr-3gn4): re-running the unflatten on the re-lifted
         # post-redirect graph discovers + redirects a residual dispatcher a single pass
@@ -1670,10 +1762,34 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # terminating: a fully-unflattened graph yields no dispatcher, so the next round
         # emits no plan and marks the ea done. GATED to the NON-indirect profile — see
         # :meth:`_should_run_unflatten_round`.
+        round_key = (int(mba.entry_ea), int(mba.maturity))
+        rounds_before = int(self._unflat_round_count.get(round_key, 0))
         if not self._should_run_unflatten_round(
             int(mba.entry_ea), is_indirect=is_indirect, maturity=int(mba.maturity)
         ):
+            self._report_recovery_gate_decision(
+                mba,
+                resolver_state=resolver_state,
+                decision="declined",
+                reason=(
+                    "function_converged"
+                    if int(mba.entry_ea) in self._unflat_done_eas
+                    else "round_budget_exhausted"
+                ),
+                imported_identity_ready=has_imported_identity,
+                recovery_epoch_phase=recovery_epoch_phase,
+                rounds_before=rounds_before,
+            )
             return (False, is_indirect)
+        self._report_recovery_gate_decision(
+            mba,
+            resolver_state=resolver_state,
+            decision="accepted",
+            reason="recovery_round_granted",
+            imported_identity_ready=has_imported_identity,
+            recovery_epoch_phase=recovery_epoch_phase,
+            rounds_before=rounds_before,
+        )
         return (True, is_indirect)
 
     def _register_dispatcher_resolvers(self, mba: "ida_hexrays.mba_t") -> None:
