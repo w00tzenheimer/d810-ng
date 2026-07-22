@@ -10717,6 +10717,32 @@ def _preopt_union_boundary_ports(
             false_owner = target_owner(false_target_ea)
             if true_owner is None or false_owner is None:
                 return None
+            terminal_target_eas = {
+                int(target_ea)
+                for target_ea in (true_target_ea, false_target_ea)
+                for block in (
+                    None
+                    if native_cfg is None
+                    else native_cfg.blocks_by_ea.get(int(target_ea))
+                ,)
+                if block is not None
+                and block.terminal is NativeTerminalKind.RETURN
+            }
+            equality_target_ea = (
+                true_target_ea
+                if int(transfer.condition_code) == 4
+                else (
+                    false_target_ea
+                    if int(transfer.condition_code) == 5
+                    else None
+                )
+            )
+            terminal_return_boundary = bool(
+                len(terminal_target_eas) == 1
+                and equality_target_ea is not None
+                and equality_target_ea in terminal_target_eas
+            )
+            terminal_state = int(transfer.selector_compare_constant) & _MASK32
             conditional_ports.append(
                 DetachedSnippetConditionalBoundaryPort(
                     source_block_ea=source_ea,
@@ -10725,13 +10751,31 @@ def _preopt_union_boundary_ports(
                     old_fallthrough_target_ea=None,
                     taken_target_ea=true_target_ea,
                     fallthrough_target_ea=false_target_ea,
-                    state_register=None,
-                    taken_state=None,
-                    fallthrough_state=None,
+                    state_register=(
+                        int(transfer.selector_state_var_reg)
+                        if terminal_return_boundary
+                        else None
+                    ),
+                    taken_state=(
+                        terminal_state
+                        if terminal_return_boundary
+                        and true_target_ea in terminal_target_eas
+                        else None
+                    ),
+                    fallthrough_state=(
+                        terminal_state
+                        if terminal_return_boundary
+                        and false_target_ea in terminal_target_eas
+                        else None
+                    ),
                     source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
                     taken_target_owner=true_owner,
                     fallthrough_target_owner=false_owner,
-                    resolver_kind="resolver_proven_register_compare_cut",
+                    resolver_kind=(
+                        "preopt_terminal_return_boundary"
+                        if terminal_return_boundary
+                        else "resolver_proven_register_compare_cut"
+                    ),
                     predicate_size=4,
                     condition_code=int(transfer.condition_code),
                     predicate_register=int(transfer.selector_state_var_reg),
