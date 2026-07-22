@@ -14454,7 +14454,7 @@ def _classify_live_state_write_routes(
             and int(tail.opcode) == int(ida_hexrays.m_goto)
             and len(successors) in (0, 1)
         )
-        is_reference_conditional_delivery = bool(
+        is_reference_two_way_delivery = bool(
             tail is not None
             and int(tail.ea) == int(evidence.delivery_ea)
             and evidence.proof_kind == "reference_style_immediate_flow_route"
@@ -14466,6 +14466,18 @@ def _classify_live_state_write_routes(
                 or successor == int(target_result.block.serial)
                 for successor in successors
             )
+        )
+        is_reference_zero_way_delivery = bool(
+            tail is not None
+            and int(tail.ea) == int(evidence.delivery_ea)
+            and evidence.proof_kind == "reference_style_immediate_flow_route"
+            and ida_hexrays.is_mcode_jcond(int(tail.opcode))
+            and len(successors) == 0
+            and getattr(tail, "d", None) is not None
+            and int(tail.d.t) == int(ida_hexrays.mop_v)
+        )
+        is_reference_conditional_delivery = bool(
+            is_reference_two_way_delivery or is_reference_zero_way_delivery
         )
         if not is_direct_delivery and not is_reference_conditional_delivery:
             unbound += 1
@@ -14526,7 +14538,11 @@ def _classify_live_state_write_routes(
             diagnose(
                 evidence,
                 outcome="pending",
-                reason="collapse_reference_conditional",
+                reason=(
+                    "materialize_reference_zero_way"
+                    if is_reference_zero_way_delivery
+                    else "collapse_reference_conditional"
+                ),
                 write=write,
                 delivery=delivery,
                 target=target,
