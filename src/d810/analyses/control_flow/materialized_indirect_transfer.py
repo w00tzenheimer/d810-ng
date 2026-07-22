@@ -424,6 +424,81 @@ class PortableMaterializedStateRoute:
 
 
 @dataclass(frozen=True, slots=True)
+class PortableStateWriteRouteEvidence:
+    """Native authority for one state assignment and its route delivery.
+
+    The state write explains which handler is selected.  ``delivery_ea`` is
+    the distinct native transfer site that must be rebound and replaced.  The
+    corridor retains the exact decoded instruction heads used to prove that
+    the delivery belongs to this write, without carrying an MBA block serial.
+    """
+
+    source_identity: StableBlockIdentity
+    source_write_ea: int
+    delivery_ea: int
+    delivery_region_end_ea: int
+    corridor_instruction_eas: tuple[int, ...]
+    state_var_reg: int
+    state_constant: int
+    target_identity: StableBlockIdentity
+    target_ea: int
+    proof_kind: str = "static_native_state_delivery"
+
+    def __post_init__(self) -> None:
+        source_write_ea = int(self.source_write_ea)
+        delivery_ea = int(self.delivery_ea)
+        delivery_region_end_ea = int(self.delivery_region_end_ea)
+        target_ea = int(self.target_ea)
+        corridor = tuple(int(ea) for ea in self.corridor_instruction_eas)
+        if not self.source_identity.native_ranges.contains(source_write_ea):
+            raise ValueError("state-route source write is outside source identity")
+        if not self.source_identity.native_ranges.contains(delivery_ea):
+            raise ValueError("state-route delivery is outside source identity")
+        if delivery_region_end_ea <= delivery_ea:
+            raise ValueError("state-route delivery region must be non-empty")
+        if (
+            not corridor
+            or corridor != tuple(sorted(set(corridor)))
+            or corridor[0] != source_write_ea
+            or corridor[-1] != delivery_ea
+            or any(
+                not self.source_identity.native_ranges.contains(ea) for ea in corridor
+            )
+        ):
+            raise ValueError("state-route corridor must span source write to delivery")
+        if not self.target_identity.native_ranges.contains(target_ea):
+            raise ValueError("state-route target is outside target identity")
+        if self.source_identity.native_key != self.target_identity.native_key:
+            raise ValueError("state-route identities require one native key")
+        state_var_reg = int(self.state_var_reg)
+        if state_var_reg < 0:
+            raise ValueError("state-route register must be non-negative")
+        object.__setattr__(self, "source_write_ea", source_write_ea)
+        object.__setattr__(self, "delivery_ea", delivery_ea)
+        object.__setattr__(self, "delivery_region_end_ea", delivery_region_end_ea)
+        object.__setattr__(self, "corridor_instruction_eas", corridor)
+        object.__setattr__(self, "state_var_reg", state_var_reg)
+        object.__setattr__(self, "state_constant", int(self.state_constant))
+        object.__setattr__(self, "target_ea", target_ea)
+
+    def diagnostic_payload(self, *, generation: int) -> dict[str, object]:
+        """Return the portable route in DB-queryable native coordinates."""
+        return {
+            "generation": int(generation),
+            "proof_kind": str(self.proof_kind),
+            "source_write_ea": f"0x{self.source_write_ea:X}",
+            "delivery_ea": f"0x{self.delivery_ea:X}",
+            "delivery_region_end_ea": f"0x{self.delivery_region_end_ea:X}",
+            "corridor_instruction_eas": [
+                f"0x{ea:X}" for ea in self.corridor_instruction_eas
+            ],
+            "state_var_reg": self.state_var_reg,
+            "state_constant": f"0x{self.state_constant:X}",
+            "target_ea": f"0x{self.target_ea:X}",
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TerminalReturnCarrierRequest:
     """Request exact early-maturity return-value evidence for one terminal arm.
 
@@ -534,9 +609,7 @@ def plan_terminal_return_carrier_requests_from_native_routes(
                 set(),
             ).add(state_constant)
         elif transfer.resolver_kind == "static_handler_entry_route":
-            states_by_terminal_target.setdefault(target_ea, set()).add(
-                state_constant
-            )
+            states_by_terminal_target.setdefault(target_ea, set()).add(state_constant)
 
     terminal_targets_by_handler: dict[int, set[int]] = {}
     for port in direct_boundary_ports:

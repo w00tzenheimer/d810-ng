@@ -21,6 +21,7 @@ from d810.analyses.control_flow.detached_handler_island import (
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     PortableMaterializedStateRoute,
+    PortableStateWriteRouteEvidence,
     TerminalReturnCarrierRequest,
     is_conditional_handler_bridge_kind,
 )
@@ -304,6 +305,7 @@ class ResolverPortableEvidence:
 
     key: NativePreanalysisKey
     state_routes: tuple[PortableMaterializedStateRoute, ...] = ()
+    state_write_routes: tuple[PortableStateWriteRouteEvidence, ...] = ()
     dispatcher_region_identity: StableBlockIdentity | None = None
     terminal_return_carrier_requests: tuple[TerminalReturnCarrierRequest, ...] = ()
     call_result_carriers: tuple[CallResultCarrier, ...] = ()
@@ -462,6 +464,29 @@ class NativePreanalysisSessionState:
             evidence_family="portable_state_routes",
             evidence_reason="portable state-route evidence changed",
             state_routes=merged,
+        )
+
+    def merge_state_write_routes(
+        self,
+        key: NativePreanalysisKey,
+        routes: tuple[PortableStateWriteRouteEvidence, ...],
+    ) -> bool:
+        """Merge native write-to-delivery route authority into the lifecycle."""
+        for route in routes:
+            for identity in (route.source_identity, route.target_identity):
+                if identity.native_key != key:
+                    raise NativePreanalysisKeyMismatch(
+                        key,
+                        identity.native_key,
+                        key.mismatch_fields(identity.native_key),
+                    )
+        current = self._resolver_evidence_for(key)
+        merged = tuple(dict.fromkeys((*current.state_write_routes, *routes)))
+        return self._replace_resolver_evidence(
+            key,
+            evidence_family="state_write_routes",
+            evidence_reason="native state-write route evidence changed",
+            state_write_routes=merged,
         )
 
     def merge_portable_dispatcher_region_identity(
@@ -753,17 +778,23 @@ class NativePreanalysisSessionState:
             native_cfg=(
                 native_cfg
                 if native_cfg is not None
-                else NativeCfg({}) if current is None else current.native_cfg
+                else NativeCfg({})
+                if current is None
+                else current.native_cfg
             ),
             semantic_closure=(
                 semantic_closure
                 if semantic_closure is not None
-                else None if current is None else current.semantic_closure
+                else None
+                if current is None
+                else current.semantic_closure
             ),
             transfers=(
                 transfers
                 if transfers is not None
-                else () if current is None else current.transfers
+                else ()
+                if current is None
+                else current.transfers
             ),
             boundary_ports=(
                 boundary_ports

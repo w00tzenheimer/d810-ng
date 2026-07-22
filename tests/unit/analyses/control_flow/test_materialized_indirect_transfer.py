@@ -1,4 +1,5 @@
 """Tests for resolver-proven computed-goto transfer evidence."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from d810.analyses.control_flow.interval_map import IntervalDispatcher, Interval
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
+    PortableStateWriteRouteEvidence,
     ResidualIndirectCallNeutralizationPlan,
     ResidualStateRouteBridgePlan,
     TerminalReturnCarrierRequest,
@@ -55,6 +57,48 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from tests.native_preanalysis import make_native_key
+
+
+NATIVE_KEY = make_native_key()
+
+
+def test_portable_state_write_route_requires_anchored_native_corridor() -> None:
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401020),),
+        native_key=NATIVE_KEY,
+    )
+    target = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x402000, 0x402001),),
+        native_key=NATIVE_KEY,
+    )
+
+    with pytest.raises(ValueError, match="source write"):
+        PortableStateWriteRouteEvidence(
+            source_identity=source,
+            source_write_ea=0x400FFF,
+            delivery_ea=0x401018,
+            delivery_region_end_ea=0x40101D,
+            corridor_instruction_eas=(0x400FFF, 0x401018),
+            state_var_reg=8,
+            state_constant=0x1234,
+            target_identity=target,
+            target_ea=0x402000,
+        )
+
+    with pytest.raises(ValueError, match="corridor"):
+        PortableStateWriteRouteEvidence(
+            source_identity=source,
+            source_write_ea=0x401000,
+            delivery_ea=0x401018,
+            delivery_region_end_ea=0x40101D,
+            corridor_instruction_eas=(0x401000, 0x401010),
+            state_var_reg=8,
+            state_constant=0x1234,
+            target_identity=target,
+            target_ea=0x402000,
+        )
 
 
 def test_mutation_projection_excludes_observation_only_transfer_kinds() -> None:
@@ -371,10 +415,13 @@ def test_conditional_handler_entries_abstain_on_serial_identity_conflict():
         resolver_kind="conditional_handler_bridge",
     )
 
-    assert unique_materialized_conditional_handler_entry_eas(
-        (transfer,),
-        {0x5C46FC3C: 25, 0x3EEFBA76: 25},
-    ) == {}
+    assert (
+        unique_materialized_conditional_handler_entry_eas(
+            (transfer,),
+            {0x5C46FC3C: 25, 0x3EEFBA76: 25},
+        )
+        == {}
+    )
 
 
 def test_missing_materialized_handler_targets_reports_unmapped_exact_states():
@@ -390,29 +437,35 @@ def test_missing_materialized_handler_targets_reports_unmapped_exact_states():
 
 
 def test_missing_materialized_handler_targets_accepts_complete_exact_map():
-    assert missing_materialized_handler_targets(
-        {
-            0x11111111: 0x401000,
-            0x22222222: 0x402000,
-        },
-        {
-            0x11111111: 10,
-            0x22222222: 20,
-        },
-    ) == ()
+    assert (
+        missing_materialized_handler_targets(
+            {
+                0x11111111: 0x401000,
+                0x22222222: 0x402000,
+            },
+            {
+                0x11111111: 10,
+                0x22222222: 20,
+            },
+        )
+        == ()
+    )
 
 
 def test_missing_materialized_handler_targets_accepts_proven_terminal_state():
-    assert missing_materialized_handler_targets(
-        {
-            0x11111111: 0x401000,
-            0x22222222: 0x402000,
-        },
-        {
-            0x11111111: 10,
-        },
-        terminal_state_targets=((0x22222222, 0x402000),),
-    ) == ()
+    assert (
+        missing_materialized_handler_targets(
+            {
+                0x11111111: 0x401000,
+                0x22222222: 0x402000,
+            },
+            {
+                0x11111111: 10,
+            },
+            terminal_state_targets=((0x22222222, 0x402000),),
+        )
+        == ()
+    )
 
 
 def test_instruction_backed_handler_owners_reject_external_placeholders():
@@ -460,13 +513,16 @@ def test_instruction_backed_handler_owner_precedes_imported_clone():
         func_ea=0x40D200,
     )
 
-    assert select_materialized_handler_owner_serial(
-        state_constant=state,
-        instruction_backed_owners={state: 194},
-        exact_target_serial=670,
-        exact_target_ea=0x40E387,
-        flow_graph=graph,
-    ) == 194
+    assert (
+        select_materialized_handler_owner_serial(
+            state_constant=state,
+            instruction_backed_owners={state: 194},
+            exact_target_serial=670,
+            exact_target_ea=0x40E387,
+            flow_graph=graph,
+        )
+        == 194
+    )
 
 
 def test_adjacent_router_arm_does_not_replace_explicit_handler_entry():
@@ -477,25 +533,31 @@ def test_adjacent_router_arm_does_not_replace_explicit_handler_entry():
         func_ea=0x40D200,
     )
 
-    assert select_materialized_handler_owner_serial(
-        state_constant=state,
-        instruction_backed_owners={state: 268},
-        exact_target_serial=777,
-        exact_target_ea=0x40EAA7,
-        flow_graph=graph,
-    ) == 777
+    assert (
+        select_materialized_handler_owner_serial(
+            state_constant=state,
+            instruction_backed_owners={state: 268},
+            exact_target_serial=777,
+            exact_target_ea=0x40EAA7,
+            flow_graph=graph,
+        )
+        == 777
+    )
 
 
 def test_imported_handler_owner_fills_missing_live_state():
     graph = FlowGraph(blocks={}, entry_serial=0, func_ea=0x40D200)
 
-    assert select_materialized_handler_owner_serial(
-        state_constant=0xB8D2E088,
-        instruction_backed_owners={},
-        exact_target_serial=670,
-        exact_target_ea=0x40E387,
-        flow_graph=graph,
-    ) == 670
+    assert (
+        select_materialized_handler_owner_serial(
+            state_constant=0xB8D2E088,
+            instruction_backed_owners={},
+            exact_target_serial=670,
+            exact_target_ea=0x40E387,
+            flow_graph=graph,
+        )
+        == 670
+    )
 
 
 @pytest.mark.parametrize(
@@ -524,12 +586,15 @@ def test_exact_handler_override_requires_native_entry_or_imported_root(
     imported_target_eas: frozenset[int],
     expected: int | None,
 ) -> None:
-    assert exact_materialized_handler_override_serial(
-        target_ea=target_ea,
-        target_serial=204 if expected != 252 else 252,
-        target_native_identity_ea=block_native_identity_ea,
-        imported_target_eas=imported_target_eas,
-    ) == expected
+    assert (
+        exact_materialized_handler_override_serial(
+            target_ea=target_ea,
+            target_serial=204 if expected != 252 else 252,
+            target_native_identity_ea=block_native_identity_ea,
+            imported_target_eas=imported_target_eas,
+        )
+        == expected
+    )
 
 
 def test_singleton_anchor_transfer_resolves_exact_live_target_block():
@@ -784,11 +849,14 @@ def test_residual_state_route_bridge_requires_unique_live_one_way_endpoints() ->
             state_constant=0xA5A94B86,
         ),
     )
-    assert plan_residual_state_route_bridges(
-        (evidence,),
-        live_blocks_by_ea=live_blocks,
-        one_way_source_blocks=frozenset(),
-    ) == ()
+    assert (
+        plan_residual_state_route_bridges(
+            (evidence,),
+            live_blocks_by_ea=live_blocks,
+            one_way_source_blocks=frozenset(),
+        )
+        == ()
+    )
 
     conflicting = MaterializedIndirectTransfer(
         source_jmp_ea=0x40B360,
@@ -799,11 +867,14 @@ def test_residual_state_route_bridge_requires_unique_live_one_way_endpoints() ->
         selector_state_constant=0xF6A636EF,
         resolver_kind="residual_state_route_evidence",
     )
-    assert plan_residual_state_route_bridges(
-        (evidence, conflicting),
-        live_blocks_by_ea={**live_blocks, 0x40C4B4: 300},
-        one_way_source_blocks=frozenset({113}),
-    ) == ()
+    assert (
+        plan_residual_state_route_bridges(
+            (evidence, conflicting),
+            live_blocks_by_ea={**live_blocks, 0x40C4B4: 300},
+            one_way_source_blocks=frozenset({113}),
+        )
+        == ()
+    )
 
 
 def test_residual_state_route_bridge_activates_one_source_per_state_target() -> None:
@@ -1061,16 +1132,22 @@ def test_return_carrier_request_abstains_for_nonterminal_or_ambiguous_route() ->
         ),
     )
 
-    assert plan_terminal_return_carrier_requests(
-        graph,
-        (ordinary,),
-        state_var_reg=20,
-    ) == ()
-    assert plan_terminal_return_carrier_requests(
-        graph,
-        conflicting,
-        state_var_reg=20,
-    ) == ()
+    assert (
+        plan_terminal_return_carrier_requests(
+            graph,
+            (ordinary,),
+            state_var_reg=20,
+        )
+        == ()
+    )
+    assert (
+        plan_terminal_return_carrier_requests(
+            graph,
+            conflicting,
+            state_var_reg=20,
+        )
+        == ()
+    )
 
 
 def test_resolver_proven_native_jump_neutralizes_exact_mislifted_call() -> None:
@@ -1185,12 +1262,15 @@ def test_resolver_proven_indirect_call_neutralization_abstains_without_full_proo
         resolver_kind=resolver_kind,
     )
 
-    assert plan_resolver_proven_indirect_call_neutralizations(
-        (transfer,),
-        graph,
-        redirected_targets_by_source=redirects,
-        allowed_target_serials=allowed_targets,
-    ) == ()
+    assert (
+        plan_resolver_proven_indirect_call_neutralizations(
+            (transfer,),
+            graph,
+            redirected_targets_by_source=redirects,
+            allowed_target_serials=allowed_targets,
+        )
+        == ()
+    )
 
 
 def test_equality_target_projection_abstains_on_conflicting_primary_routes() -> None:
@@ -1329,12 +1409,15 @@ def test_target_mapper_excludes_known_shadow_block_from_bounded_owner():
     )
 
     assert find_unique_target_entry_block(graph, 0x2000, 0x2005) is None
-    assert find_unique_target_entry_block(
-        graph,
-        0x2000,
-        0x2005,
-        excluded_serials=frozenset({3}),
-    ) == 2
+    assert (
+        find_unique_target_entry_block(
+            graph,
+            0x2000,
+            0x2005,
+            excluded_serials=frozenset({3}),
+        )
+        == 2
+    )
 
 
 def test_state_keyed_equality_transfer_selects_matching_arm():
@@ -1376,10 +1459,7 @@ def test_state_keyed_completed_route_selects_single_microcode_handler():
         resolver_kind="static_equality_route",
     )
 
-    assert (
-        lookup_state_keyed_transfer_target(_graph(), transfer, 0xA5A94B86)
-        == 2
-    )
+    assert lookup_state_keyed_transfer_target(_graph(), transfer, 0xA5A94B86) == 2
     assert lookup_state_keyed_transfer_target(_graph(), transfer, 0xAE5A330B) is None
 
 
@@ -1657,11 +1737,14 @@ def test_snapshot_state_route_abstains_when_two_arms_share_source_and_state():
         ),
     )
 
-    assert resolve_materialized_handler_transition_targets(
-        transitions,
-        (MaterializedStateRoute(10, state, 4),),
-        frozenset({3, 4}),
-    ) == transitions
+    assert (
+        resolve_materialized_handler_transition_targets(
+            transitions,
+            (MaterializedStateRoute(10, state, 4),),
+            frozenset({3, 4}),
+        )
+        == transitions
+    )
 
 
 def test_snapshot_state_route_abstains_on_conflicting_targets():
@@ -1713,11 +1796,14 @@ def test_replayed_handler_route_abstains_when_two_arms_own_same_source():
         for handler in (2, 3)
     )
 
-    assert resolve_materialized_handler_exit_states(
-        transitions,
-        (MaterializedStateRoute(1, state, 2),),
-        frozenset({2}),
-    ) == transitions
+    assert (
+        resolve_materialized_handler_exit_states(
+            transitions,
+            (MaterializedStateRoute(1, state, 2),),
+            frozenset({2}),
+        )
+        == transitions
+    )
 
 
 def test_replayed_default_route_abstains_for_non_handler_target():
@@ -1790,12 +1876,10 @@ def test_replayed_handler_route_prefers_its_owning_handler_over_shared_path():
 
 
 def test_materialized_handler_maps_include_condition_chain_only_handler():
-    handler_states, handler_targets, handler_serials = (
-        merge_materialized_handler_maps(
-            {0x11111111: 10},
-            {20: 0x22222222},
-            {0xA5540595: 213},
-        )
+    handler_states, handler_targets, handler_serials = merge_materialized_handler_maps(
+        {0x11111111: 10},
+        {20: 0x22222222},
+        {0xA5540595: 213},
     )
 
     assert handler_states == {
@@ -1812,11 +1896,9 @@ def test_materialized_handler_maps_include_condition_chain_only_handler():
 
 
 def test_materialized_handler_maps_abstain_on_conflicting_state_owner():
-    handler_states, handler_targets, handler_serials = (
-        merge_materialized_handler_maps(
-            {0xA5540595: 10},
-            {213: 0xA5540595},
-        )
+    handler_states, handler_targets, handler_serials = merge_materialized_handler_maps(
+        {0xA5540595: 10},
+        {213: 0xA5540595},
     )
 
     assert handler_states == {}
@@ -1927,18 +2009,30 @@ def test_state_keyed_signed_range_transfer_selects_proven_arm():
         selector_state_on_left=True,
     )
 
-    assert lookup_state_keyed_transfer_target(
-        _graph(), transfer, 0xA0000000, state_var_reg=20
-    ) == 2
-    assert lookup_state_keyed_transfer_target(
-        _graph(), transfer, 0xF6A636EF, state_var_reg=20
-    ) == 2
-    assert lookup_state_keyed_transfer_target(
-        _graph(), transfer, 0x70000000, state_var_reg=20
-    ) == 3
-    assert lookup_state_keyed_transfer_target(
-        _graph(), transfer, 0xA0000000, state_var_reg=8
-    ) is None
+    assert (
+        lookup_state_keyed_transfer_target(
+            _graph(), transfer, 0xA0000000, state_var_reg=20
+        )
+        == 2
+    )
+    assert (
+        lookup_state_keyed_transfer_target(
+            _graph(), transfer, 0xF6A636EF, state_var_reg=20
+        )
+        == 2
+    )
+    assert (
+        lookup_state_keyed_transfer_target(
+            _graph(), transfer, 0x70000000, state_var_reg=20
+        )
+        == 3
+    )
+    assert (
+        lookup_state_keyed_transfer_target(
+            _graph(), transfer, 0xA0000000, state_var_reg=8
+        )
+        is None
+    )
 
 
 def test_materialized_transfer_chain_walks_detached_bst_to_known_handler():
@@ -1980,14 +2074,17 @@ def test_materialized_transfer_chain_walks_detached_bst_to_known_handler():
         ),
     )
 
-    assert route_materialized_transfer_chain(
-        graph,
-        transfers,
-        start_block=1,
-        state_constant=0xA0000000,
-        state_var_reg=20,
-        handler_serials=frozenset({3, 4}),
-    ) == 3
+    assert (
+        route_materialized_transfer_chain(
+            graph,
+            transfers,
+            start_block=1,
+            state_constant=0xA0000000,
+            state_var_reg=20,
+            handler_serials=frozenset({3, 4}),
+        )
+        == 3
+    )
 
 
 def test_materialized_transfer_chain_does_not_erase_state_key_mismatch():
@@ -2008,22 +2105,28 @@ def test_materialized_transfer_chain_does_not_erase_state_key_mismatch():
         resolver_kind="static_equality_route",
     )
 
-    assert route_materialized_transfer_chain(
-        graph,
-        (keyed_singleton,),
-        start_block=1,
-        state_constant=0xE0606B6D,
-        state_var_reg=20,
-        handler_serials=frozenset({2}),
-    ) == 2
-    assert route_materialized_transfer_chain(
-        graph,
-        (keyed_singleton,),
-        start_block=1,
-        state_constant=0xDC71BBC5,
-        state_var_reg=20,
-        handler_serials=frozenset({2}),
-    ) is None
+    assert (
+        route_materialized_transfer_chain(
+            graph,
+            (keyed_singleton,),
+            start_block=1,
+            state_constant=0xE0606B6D,
+            state_var_reg=20,
+            handler_serials=frozenset({2}),
+        )
+        == 2
+    )
+    assert (
+        route_materialized_transfer_chain(
+            graph,
+            (keyed_singleton,),
+            start_block=1,
+            state_constant=0xDC71BBC5,
+            state_var_reg=20,
+            handler_serials=frozenset({2}),
+        )
+        is None
+    )
 
 
 def _condition_chain_graph() -> FlowGraph:
@@ -2077,14 +2180,17 @@ def test_condition_chain_router_ownership_wins_over_range_handler_alias() -> Non
         root=2,
     )
 
-    assert route_transfer_target_through_condition_chain(
-        graph,
-        dag,
-        target_block=1,
-        state_constant=0xDEAD,
-        # Interval backfill can alias a router as a provisional handler.
-        handler_serials=frozenset({2, 3, 4}),
-    ) == 3
+    assert (
+        route_transfer_target_through_condition_chain(
+            graph,
+            dag,
+            target_block=1,
+            state_constant=0xDEAD,
+            # Interval backfill can alias a router as a provisional handler.
+            handler_serials=frozenset({2, 3, 4}),
+        )
+        == 3
+    )
 
 
 @pytest.mark.parametrize(
@@ -2115,7 +2221,9 @@ def test_source_anchored_transfer_walks_from_any_router_root_to_handler(
 
 
 @pytest.mark.parametrize("ambiguous", (False, True), ids=("missing", "ambiguous"))
-def test_missing_or_ambiguous_condition_chain_evidence_abstains(ambiguous: bool) -> None:
+def test_missing_or_ambiguous_condition_chain_evidence_abstains(
+    ambiguous: bool,
+) -> None:
     transfer = MaterializedIndirectTransfer(
         source_jmp_ea=0x1010,
         source_block_ea=0x1000,
