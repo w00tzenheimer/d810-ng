@@ -8510,6 +8510,7 @@ def _preopt_entry_bridge_transfer(
     """Bind one portable PREOPT entry predicate to two exact handler EAs."""
     source_ea = evidence.predicate_block_ea
     predicate_ea = evidence.conditional_tail_ea
+    predicate_stack_identity = evidence.canonical_predicate_stack_identity
     state_register = unique_materialized_state_register(transfers)
     state_targets = (
         {}
@@ -8523,6 +8524,9 @@ def _preopt_entry_bridge_transfer(
     if (
         source_ea is None
         or predicate_ea is None
+        or predicate_stack_identity is None
+        or int(predicate_stack_identity[1]) <= 0
+        or int(evidence.condition_code) not in {4, 5}
         or state_register is None
         or taken_target is None
         or fallthrough_target is None
@@ -8539,11 +8543,8 @@ def _preopt_entry_bridge_transfer(
         false_target_ea=int(fallthrough_target),
         selector_state_var_reg=int(state_register),
         resolver_kind="preopt_entry_bridge",
-        predicate_size=(
-            None
-            if evidence.canonical_stack_cell_identity is None
-            else int(evidence.canonical_stack_cell_identity[1])
-        ),
+        predicate_size=int(predicate_stack_identity[1]),
+        predicate_stack_ida_stkoff=int(predicate_stack_identity[0]),
         predicate_true_state=int(evidence.taken_state_constant) & _MASK32,
         predicate_false_state=(int(evidence.fallthrough_state_constant) & _MASK32),
         predicate_true_is_taken=True,
