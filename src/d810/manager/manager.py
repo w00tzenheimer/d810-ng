@@ -378,8 +378,10 @@ class D810Manager:
         result: typing.Any = None
         for _round in range(2):
             self.prepare_native_preanalysis(function_ea)
-            if _round:
-                invalidate_cached_cfunc()
+            # Native preanalysis may generate top-level or snippet cfuncs while
+            # capturing pristine templates.  None of those cache entries owns
+            # the live decompile that follows this preparation round.
+            invalidate_cached_cfunc()
             result = decompile()
             if not self.decompilation_lifecycle.has_pending_generated_restart(
                 function_ea
