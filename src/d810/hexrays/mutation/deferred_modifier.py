@@ -3638,6 +3638,52 @@ class DeferredGraphModifier:
                 "Hex-Rays rejected direct semantic fragment root publication"
             )
 
+    def _rewrite_semantic_fragment_taken_root(
+        self,
+        edge: SemanticFragmentRootEdgeBinding,
+        *,
+        restore: bool,
+    ) -> None:
+        predecessor = self._resolve_semantic_fragment_version(
+            edge.predecessor.version
+        )
+        original = self._resolve_semantic_fragment_version(edge.original.version)
+        replacement = self._resolve_semantic_fragment_version(
+            edge.replacement.version
+        )
+        old_target = replacement if restore else original
+        new_target = original if restore else replacement
+        taken, fallthrough = self._semantic_edge_conditional_arms(predecessor)
+        if restore and int(taken.serial) == int(new_target.serial):
+            old_target.predset._del(int(predecessor.serial))
+            if int(predecessor.serial) not in {
+                int(value) for value in new_target.predset
+            }:
+                new_target.predset.push_back(int(predecessor.serial))
+            self._semantic_edge_mark(
+                predecessor,
+                old_target,
+                new_target,
+                fallthrough,
+            )
+            return
+        if int(taken.serial) != int(old_target.serial):
+            raise SemanticFragmentBackendRejected(
+                "conditional taken root authority changed after preflight"
+            )
+        if int(new_target.serial) == int(fallthrough.serial):
+            raise SemanticFragmentBackendRejected(
+                "conditional taken root cannot equal its fallthrough sibling"
+            )
+        if not self._apply_target_change(
+            predecessor,
+            int(new_target.serial),
+            old_target=int(old_target.serial),
+        ):
+            raise SemanticFragmentBackendRejected(
+                "Hex-Rays rejected conditional taken root publication"
+            )
+
     def _publish_semantic_fragment_roots(
         self,
         plan: FragmentPlan,
@@ -3647,11 +3693,14 @@ class DeferredGraphModifier:
         token = self._semantic_fragment_publication_token(plan, rollback_token)
         for edge in token.edges:
             token.attempted_edge_ids.append(edge.edge_id)
-            if edge.role is not SemanticEdgeRole.DIRECT:
+            if edge.role is SemanticEdgeRole.DIRECT:
+                self._rewrite_semantic_fragment_direct_root(edge, restore=False)
+            elif edge.role is SemanticEdgeRole.CONDITIONAL_TAKEN:
+                self._rewrite_semantic_fragment_taken_root(edge, restore=False)
+            else:
                 raise SemanticFragmentBackendRejected(
-                    "conditional root publication requires atomic branch lowering"
+                    "conditional fallthrough root publication requires a helper"
                 )
-            self._rewrite_semantic_fragment_direct_root(edge, restore=False)
 
     def _rebuild_semantic_fragment_chains(self, plan: FragmentPlan) -> None:
         """Invalidate live chains after publication or rollback."""
@@ -3679,11 +3728,14 @@ class DeferredGraphModifier:
         token = self._semantic_fragment_publication_token(plan, rollback_token)
         for edge_id in reversed(token.attempted_edge_ids):
             edge = token.edge(edge_id)
-            if edge.role is not SemanticEdgeRole.DIRECT:
+            if edge.role is SemanticEdgeRole.DIRECT:
+                self._rewrite_semantic_fragment_direct_root(edge, restore=True)
+            elif edge.role is SemanticEdgeRole.CONDITIONAL_TAKEN:
+                self._rewrite_semantic_fragment_taken_root(edge, restore=True)
+            else:
                 raise SemanticFragmentBackendRejected(
-                    "conditional semantic fragment root rollback is unavailable"
+                    "conditional fallthrough root rollback is unavailable"
                 )
-            self._rewrite_semantic_fragment_direct_root(edge, restore=True)
 
     def _complete_semantic_fragment_publication(self, plan: FragmentPlan) -> None:
         """Release transaction-local backend state after committed authority."""

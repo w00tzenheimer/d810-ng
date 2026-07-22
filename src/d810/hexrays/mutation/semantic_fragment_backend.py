@@ -535,7 +535,13 @@ def prepare_semantic_fragment_root_publication(
             "semantic fragment root publication contains duplicate edges"
         )
     unsupported = tuple(
-        edge for edge in edges if edge.role is not SemanticEdgeRole.DIRECT
+        edge
+        for edge in edges
+        if edge.role
+        not in {
+            SemanticEdgeRole.DIRECT,
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+        }
     )
     if unsupported:
         raise SemanticFragmentBackendRejected(
