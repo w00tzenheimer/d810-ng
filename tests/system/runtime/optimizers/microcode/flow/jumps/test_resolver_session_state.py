@@ -1884,7 +1884,7 @@ def test_calls_done_refreshes_completed_preopt_union_before_requesting_redo(
     assert state.native_preanalysis.has_pending_generated_restart
     assert redo == [
         (
-            "computed_goto_preopt_template_refreshed",
+            "computed_goto_calls_evidence",
             {"function_ea": 0x40D200, "evidence_generation": 3},
         )
     ]
@@ -1966,14 +1966,11 @@ def test_calls_done_stages_restart_when_preopt_union_refresh_abstains(
 
 
 @pytest.mark.parametrize(
-    ("preopt_refreshed", "expected_reason"),
-    (
-        (True, "computed_goto_preopt_template_refreshed"),
-        (False, "computed_goto_calls_evidence"),
-    ),
+    "preopt_refresh_outcome",
+    (True, False, "raise"),
 )
 def test_calls_done_retains_changed_evidence_during_active_materialization(
-    monkeypatch, preopt_refreshed: bool, expected_reason: str
+    monkeypatch, preopt_refresh_outcome: bool | str
 ) -> None:
     import d810.hexrays.mutation.detached_handler_island as island
     import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as resolver
@@ -2040,10 +2037,15 @@ def test_calls_done_retains_changed_evidence_during_active_materialization(
         "_materialize_residual_state_routes_from_mba",
         lambda _resolution, _transfers, _mba: (0, ()),
     )
+    def refresh_preopt(_state, _mba):
+        if preopt_refresh_outcome == "raise":
+            raise RuntimeError("refresh failed")
+        return preopt_refresh_outcome
+
     monkeypatch.setattr(
         resolver,
         "_refresh_preopt_union_from_calls_evidence",
-        lambda _state, _mba: preopt_refreshed,
+        refresh_preopt,
     )
     monkeypatch.setattr(
         resolver,
@@ -2063,7 +2065,7 @@ def test_calls_done_retains_changed_evidence_during_active_materialization(
     assert state.native_preanalysis.has_pending_generated_restart
     assert redo == [
         (
-            expected_reason,
+            "computed_goto_calls_evidence",
             {
                 "function_ea": 0x40A560,
                 "materialized_count": 0,
