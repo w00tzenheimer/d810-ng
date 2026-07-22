@@ -552,6 +552,7 @@ class ModificationType(Enum):
     INSN_SCALARIZE_LOCAL_ALIAS_ACCESS = auto()  # Rewrite proven local pointer alias ldx/stx through its base local
     INSN_RETARGET_OUTPUT_STORE = auto()  # Rewrite a proven output-store address to the output pointer carrier
     MATERIALIZE_ZERO_WAY_CONDITIONAL = auto()  # Preserve a generated m_jcnd and bind its two proven CFG arms
+    MATERIALIZE_ZERO_WAY_GOTO = auto()  # Replace one proven generated m_jcnd with its direct route
     LOWER_CONDITIONAL_STATE_TRANSITION = auto()  # Replace state-write-to-dispatcher with a proven 2-way edge
     NORMALIZE_NWAY_DISPATCHER_EXIT = auto()  # Downgrade degenerate NWAY dispatcher exit to 1-way
     BYPASS_DISPATCHER_TRAMPOLINE = auto()  # Redirect an edge away from a dispatcher trampoline
@@ -658,6 +659,7 @@ _STAGED_ATOMIC_CLASS_MAP: "dict[ModificationType, StagedAtomicClassification]" =
     ModificationType.BLOCK_CONVERT_TO_GOTO: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
     ModificationType.EDGE_REMOVE: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
     ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
+    ModificationType.MATERIALIZE_ZERO_WAY_GOTO: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
     # Additive: already create new blocks and defer the tail redirect.
     # Safe to apply through the default dispatcher during commit.
     ModificationType.BLOCK_CREATE_WITH_REDIRECT: StagedAtomicClassification.ADDITIVE,
@@ -1803,6 +1805,46 @@ class DeferredGraphModifier:
             hex(predicate_ea),
             taken_target_serial,
             fallthrough_target_serial,
+        )
+        if self.event_emitter is not None:
+            self._emit(
+                DeferredEvent.DEFERRED_QUEUE_ADDED,
+                self._mod_payload(self.modifications[-1]),
+            )
+
+    def queue_materialize_zero_way_goto(
+        self,
+        *,
+        source_serial: int,
+        predicate_ea: int,
+        target_serial: int,
+        description: str = "",
+        rule_priority: int = 0,
+    ) -> None:
+        """Queue atomic replacement of a generated zero-way predicate.
+
+        The exact native predicate is removed together with its zero-way shape
+        and replaced by one proven direct edge.  This operation is deliberately
+        distinct from ``BLOCK_CONVERT_TO_GOTO`` because a zero-way conditional
+        cannot pass through an intermediate one-way conditional CFG state.
+        """
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.MATERIALIZE_ZERO_WAY_GOTO,
+            block_serial=int(source_serial),
+            new_target=int(target_serial),
+            rewrite_from_ea=int(predicate_ea),
+            priority=10,
+            rule_priority=int(rule_priority),
+            description=description or (
+                f"materialize zero-way goto {source_serial}: "
+                f"predicate=0x{int(predicate_ea):X} target={target_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued materialize_zero_way_goto: src=%d ea=%s target=%d",
+            source_serial,
+            hex(predicate_ea),
+            target_serial,
         )
         if self.event_emitter is not None:
             self._emit(
@@ -3993,6 +4035,13 @@ class DeferredGraphModifier:
                     mod.conditional_target,
                     mod.fallthrough_target,
                 )
+            elif mod.mod_type == ModificationType.MATERIALIZE_ZERO_WAY_GOTO:
+                key = (
+                    mod.mod_type,
+                    mod.block_serial,
+                    mod.rewrite_from_ea,
+                    mod.new_target,
+                )
             elif mod.mod_type == ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION:
                 key = (
                     mod.mod_type,
@@ -4135,6 +4184,7 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_GOTO_CHANGE,
             ModificationType.BLOCK_TARGET_CHANGE,
             ModificationType.BLOCK_CONVERT_TO_GOTO,
+            ModificationType.MATERIALIZE_ZERO_WAY_GOTO,
             ModificationType.BLOCK_CREATE_WITH_REDIRECT,
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT,
             ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
@@ -4151,17 +4201,18 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_GOTO_CHANGE: 1,
             ModificationType.BLOCK_TARGET_CHANGE: 2,
             ModificationType.BLOCK_CONVERT_TO_GOTO: 3,
-            ModificationType.BLOCK_CREATE_WITH_REDIRECT: 4,
-            ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: 5,
-            ModificationType.BLOCK_DUPLICATE_AND_REDIRECT: 6,
-            ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT: 7,
-            ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION: 8,
-            ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT: 9,
-            ModificationType.BYPASS_DISPATCHER_TRAMPOLINE: 10,
-            ModificationType.CANONICALIZE_JTBL_CASE_OVERLAP: 11,
-            ModificationType.PHASE_CYCLE_LOWERING: 12,
-            ModificationType.EDGE_SPLIT_TRAMPOLINE: 13,
-            ModificationType.EDGE_REMOVE: 14,
+            ModificationType.MATERIALIZE_ZERO_WAY_GOTO: 4,
+            ModificationType.BLOCK_CREATE_WITH_REDIRECT: 5,
+            ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: 6,
+            ModificationType.BLOCK_DUPLICATE_AND_REDIRECT: 7,
+            ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT: 8,
+            ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION: 9,
+            ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT: 10,
+            ModificationType.BYPASS_DISPATCHER_TRAMPOLINE: 11,
+            ModificationType.CANONICALIZE_JTBL_CASE_OVERLAP: 12,
+            ModificationType.PHASE_CYCLE_LOWERING: 13,
+            ModificationType.EDGE_SPLIT_TRAMPOLINE: 14,
+            ModificationType.EDGE_REMOVE: 15,
             # EDGE_REDIRECT_VIA_PRED_SPLIT is intentionally absent: it is not
             # in terminal_mod_types (it executes via a separate code path in
             # apply_modifications) so ranking it here would cause it to be
@@ -5787,7 +5838,10 @@ class DeferredGraphModifier:
                 mod.new_target = effective_new_target
             rewire = self._stage_destructive_mod_via_copy(mod, index=i)
             if rewire is None:
-                if mod.mod_type == ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL:
+                if mod.mod_type in {
+                    ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL,
+                    ModificationType.MATERIALIZE_ZERO_WAY_GOTO,
+                }:
                     # This intent is only valid as copy-and-swap.  Falling back
                     # to the sequential mutator would expose a half-built
                     # 2-way block if helper creation or verifier wiring failed.
@@ -6323,6 +6377,12 @@ class DeferredGraphModifier:
                 predicate_ea=mod.rewrite_from_ea,
                 taken_target_serial=mod.conditional_target,
                 fallthrough_target_serial=mod.fallthrough_target,
+            )
+        if mod.mod_type == ModificationType.MATERIALIZE_ZERO_WAY_GOTO:
+            return self._apply_materialize_zero_way_goto(
+                copy_blk,
+                predicate_ea=mod.rewrite_from_ea,
+                target_serial=mod.new_target,
             )
         if mod.mod_type == ModificationType.EDGE_REMOVE:
             return remove_block_edge(
@@ -7175,6 +7235,13 @@ class DeferredGraphModifier:
                 predicate_ea=mod.rewrite_from_ea,
                 taken_target_serial=mod.conditional_target,
                 fallthrough_target_serial=mod.fallthrough_target,
+            )
+
+        elif mod.mod_type == ModificationType.MATERIALIZE_ZERO_WAY_GOTO:
+            return self._apply_materialize_zero_way_goto(
+                blk,
+                predicate_ea=mod.rewrite_from_ea,
+                target_serial=mod.new_target,
             )
 
         elif mod.mod_type == ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION:
@@ -8368,6 +8435,76 @@ class DeferredGraphModifier:
             live_taken_serial,
             live_fallthrough_serial,
             live_helper_serial,
+        )
+        return True
+
+    def _apply_materialize_zero_way_goto(
+        self,
+        blk: ida_hexrays.mblock_t,
+        *,
+        predicate_ea: int | None,
+        target_serial: int | None,
+    ) -> bool:
+        """Replace one exact generated zero-way predicate with a direct edge.
+
+        This helper is used on a staged copy.  The original zero-way
+        ``m_jcnd`` remains live until the copy contains both the replacement
+        ``m_goto`` and its reciprocal CFG edge, after which the staged gateway
+        redirects the original predecessors in one commit.
+        """
+        if (
+            predicate_ea is None
+            or target_serial is None
+            or blk.tail is None
+            or int(blk.nsucc()) != 0
+            or int(blk.tail.ea) != int(predicate_ea)
+            or not ida_hexrays.is_mcode_jcond(int(blk.tail.opcode))
+            or getattr(blk.tail, "d", None) is None
+            or int(blk.tail.d.t) != int(ida_hexrays.mop_v)
+        ):
+            logger.warning(
+                "materialize_zero_way_goto: source blk[%d] no longer "
+                "matches generated predicate at %s",
+                int(blk.serial),
+                None if predicate_ea is None else hex(int(predicate_ea)),
+            )
+            return False
+
+        # ``new_target`` is resolved before staging (and before sequential
+        # dispatch).  Resolving it again here can incorrectly apply a second
+        # planned-to-live serial shift after another mutation inserted blocks.
+        target = self.mba.get_mblock(int(target_serial))
+        if target is None:
+            return False
+
+        insert_goto_instruction(
+            blk,
+            int(target.serial),
+            nop_previous_instruction=True,
+        )
+        blk.type = int(ida_hexrays.BLT_1WAY)
+        blk.flags |= int(ida_hexrays.MBL_GOTO)
+        for stale in tuple(int(value) for value in blk.succset):
+            blk.succset._del(stale)
+            stale_block = self.mba.get_mblock(stale)
+            if stale_block is not None and int(blk.serial) in {
+                int(predecessor) for predecessor in stale_block.predset
+            }:
+                stale_block.predset._del(int(blk.serial))
+                stale_block.mark_lists_dirty()
+        blk.succset.push_back(int(target.serial))
+        if int(blk.serial) not in {
+            int(predecessor) for predecessor in target.predset
+        }:
+            target.predset.push_back(int(blk.serial))
+        blk.mark_lists_dirty()
+        target.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+        logger.info(
+            "MATERIALIZE_ZERO_WAY_GOTO: blk[%d] predicate=0x%x target=%d",
+            int(blk.serial),
+            int(predicate_ea),
+            int(target.serial),
         )
         return True
 

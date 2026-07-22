@@ -2003,6 +2003,7 @@ def test_reference_style_state_write_route_rebinds_conditional_dispatch_cut() ->
     assert pending[0].target.serial == 9
     assert pending[0].old_target_serial is None
     assert pending[0].collapse_conditional is True
+    assert pending[0].materialize_zero_way is False
     assert already == ()
     assert unbound == 0
     assert diagnostics == [
@@ -2037,6 +2038,7 @@ def test_reference_style_state_write_route_rebinds_conditional_dispatch_cut() ->
 
     assert len(pending) == 1
     assert pending[0].collapse_conditional is True
+    assert pending[0].materialize_zero_way is True
     assert already == ()
     assert unbound == 0
     assert diagnostics[0]["reason"] == "materialize_reference_zero_way"
