@@ -302,7 +302,10 @@ def test_generated_restart_is_staged_once_then_consumed_by_flowchart(
     # return-carrier requests during GLBOPT) belongs to the already-staged
     # controller retry.  It must advance that pending generation rather than
     # silently cancelling the restart before the controller regains control.
-    state.native_preanalysis.mark_evidence_changed()
+    state.native_preanalysis.mark_evidence_changed(
+        evidence_family="test_evidence",
+        reason="test evidence changed",
+    )
     assert state.native_preanalysis.evidence_generation == 3
     assert state.native_preanalysis.pending_generated_restart_generation == 3
     decision = {"session": session, "request_redo": False}
@@ -564,7 +567,10 @@ def test_bootstrap_route_is_published_only_after_current_preopt_rebind() -> None
     # Later CALLS facts may advance the shared evidence epoch without
     # regenerating the already-routed MBA.  The route remains tied to the
     # generation that actually bound this live MBA.
-    state.native_preanalysis.mark_evidence_changed()
+    state.native_preanalysis.mark_evidence_changed(
+        evidence_family="test_evidence",
+        reason="test evidence changed",
+    )
     assert state.evidence_generation == 2
     assert state.bound_bootstrap_routes() == (route,)
     assert state.native_preanalysis.bound_bootstrap_route_bindings(
@@ -1236,7 +1242,10 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
             primary_seed_ea=taken_target_ea,
         ),
     )
-    state.native_preanalysis.mark_evidence_changed()
+    state.native_preanalysis.mark_evidence_changed(
+        evidence_family="test_evidence",
+        reason="test evidence changed",
+    )
     _on_preopt_bootstrap_route(
         function_ea=0x40D200,
         mba=_Mba(),
