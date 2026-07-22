@@ -6250,14 +6250,11 @@ class DeferredGraphModifier:
                 mod.block_serial, mod.mod_type.name,
             )
             return None
-        # Entry-block guard: the function entry (serial==0, or EA ==
-        # mba.entry_ea) is positionally invariant.  copy_block +
-        # remove_block on the entry shifts serials — the old blk[1]
-        # (which holds the prologue) becomes the new blk[0], a
-        # non-empty block at serial==0 that triggers INTERR 51814.
-        # The entry cannot participate in the copy-and-swap pattern;
-        # callers must apply mods to it in-place via the sequential
-        # path (``_apply_single``).
+        # Entry-block guard: serial zero is positionally invariant.
+        # Imported blocks can legitimately retain ``mba.entry_ea`` as their
+        # broad live start coordinate, so that EA does not establish entry
+        # ownership.  Copying/removing serial zero would shift the prologue
+        # into the special slot and trigger INTERR 51814.
         try:
             target_serial = int(target_blk.serial)
             target_start = int(target_blk.start)
@@ -6266,9 +6263,7 @@ class DeferredGraphModifier:
             target_serial = -1
             target_start = -1
             mba_entry_ea = -1
-        if target_serial == 0 or (
-            target_start != -1 and target_start == mba_entry_ea
-        ):
+        if target_serial == 0:
             logger.warning(
                 "staged_atomic stage: refusing to copy entry block "
                 "blk[%d] (ea=0x%x, mba.entry_ea=0x%x) for mod %s (target "
