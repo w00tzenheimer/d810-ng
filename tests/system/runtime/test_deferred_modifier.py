@@ -3967,6 +3967,67 @@ class TestStagedAtomicApply:
         pred_changes = [(s, t) for (s, t, _) in changes if s == 10]
         assert not pred_changes, f"pred should not be redirected, got {pred_changes}"
         assert applied == 0
+        assert all(
+            copy_serial not in mba.blocks for _, copy_serial in mba.copied_blocks
+        )
+
+    def test_staged_atomic_required_stage_failure_aborts_entire_batch(
+        self,
+        monkeypatch,
+    ):
+        """One required staging refusal must prevent every sibling swap."""
+        mba = _StagedFakeMBA()
+        source = _StagedFakeBlock(5, nsucc=1, succ_serial=20)
+        source.predset.push_back(10)
+        predecessor = _StagedFakeBlock(10, nsucc=1, succ_serial=5)
+        old_target = _StagedFakeBlock(20, nsucc=0)
+        new_target = _StagedFakeBlock(30, nsucc=0)
+        mba.blocks.update(
+            {
+                5: source,
+                10: predecessor,
+                20: old_target,
+                30: new_target,
+            }
+        )
+        mba.qty = max(mba.blocks) + 1
+
+        changes = _staged_patch_wiring(monkeypatch, mba)
+        gateway = make_mutation_gateway(mba)
+        modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+        modifier.modifications = [
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=5,
+                new_target=30,
+                description="stageable sibling",
+            ),
+            dm.GraphModification(
+                dm.ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
+                block_serial=0,
+                old_target=5,
+                rewrite_from_ea=0x180000000,
+                condition_operand=object(),
+                false_target=20,
+                true_target=30,
+                description="positionally invariant entry consumer",
+            ),
+        ]
+
+        applied = modifier.apply(
+            run_optimize_local=False,
+            run_deep_cleaning=False,
+            staged_atomic=True,
+        )
+
+        assert applied == 0
+        assert tuple(predecessor.succset) == (5,)
+        assert not [change for change in changes if change[0] == 10]
+        assert all(
+            copy_serial not in mba.blocks for _, copy_serial in mba.copied_blocks
+        )
+        assert gateway.receipts == ()
+        assert gateway.active is False
 
     def test_staged_atomic_classify_mixed_bucket(self, monkeypatch):
         """Mixed mod list: one destructive, one instruction-only, one additive."""
