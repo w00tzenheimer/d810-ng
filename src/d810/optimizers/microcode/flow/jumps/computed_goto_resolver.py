@@ -14278,18 +14278,11 @@ def _on_calls_done_preanalysis(
             calls_evidence_changed = merge_calls_evidence()
             if not calls_evidence_changed:
                 return
-            preopt_refreshed = _refresh_preopt_union_from_calls_evidence(
-                state,
-                mba,
-            )
             request_generated_restart(
-                (
-                    "computed_goto_preopt_template_refreshed"
-                    if preopt_refreshed
-                    else "computed_goto_calls_evidence"
-                ),
+                "computed_goto_calls_evidence",
                 evidence_generation=state.evidence_generation,
             )
+            _refresh_preopt_union_from_calls_evidence(state, mba)
             return
 
         materialization = state.materialization
@@ -14405,20 +14398,13 @@ def _on_calls_done_preanalysis(
             return
 
         if calls_evidence_changed:
-            preopt_refreshed = _refresh_preopt_union_from_calls_evidence(
-                state,
-                mba,
-            )
             materialization.rounds += 1
             request_generated_restart(
-                (
-                    "computed_goto_preopt_template_refreshed"
-                    if preopt_refreshed
-                    else "computed_goto_calls_evidence"
-                ),
+                "computed_goto_calls_evidence",
                 materialized_count=len(imported_conditional_bridges),
                 round=int(materialization.rounds),
             )
+            _refresh_preopt_union_from_calls_evidence(state, mba)
             return
 
         logger.info(
