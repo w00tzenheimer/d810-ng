@@ -419,6 +419,8 @@ class NativePreanalysisSessionState:
         self,
         key: NativePreanalysisKey,
         *,
+        evidence_family: str,
+        evidence_reason: str,
         advance_generation: bool = True,
         **changes: object,
     ) -> bool:
@@ -428,7 +430,10 @@ class NativePreanalysisSessionState:
             return False
         self.resolver_evidence = updated
         if advance_generation:
-            self.mark_evidence_changed()
+            self.mark_evidence_changed(
+                evidence_family=evidence_family,
+                reason=evidence_reason,
+            )
         return True
 
     def merge_portable_state_routes(
@@ -452,7 +457,12 @@ class NativePreanalysisSessionState:
                     )
         current = self._resolver_evidence_for(key)
         merged = tuple(dict.fromkeys((*current.state_routes, *routes)))
-        return self._replace_resolver_evidence(key, state_routes=merged)
+        return self._replace_resolver_evidence(
+            key,
+            evidence_family="portable_state_routes",
+            evidence_reason="portable state-route evidence changed",
+            state_routes=merged,
+        )
 
     def merge_portable_dispatcher_region_identity(
         self,
@@ -477,6 +487,8 @@ class NativePreanalysisSessionState:
         )
         return self._replace_resolver_evidence(
             key,
+            evidence_family="dispatcher_region_identity",
+            evidence_reason="portable dispatcher-region identity changed",
             dispatcher_region_identity=merged,
         )
 
@@ -492,6 +504,8 @@ class NativePreanalysisSessionState:
         )
         return self._replace_resolver_evidence(
             key,
+            evidence_family="terminal_return_carrier_requests",
+            evidence_reason="terminal return-carrier evidence changed",
             terminal_return_carrier_requests=merged,
         )
 
@@ -511,6 +525,8 @@ class NativePreanalysisSessionState:
         merged = tuple(sorted(proofs.items()))
         return self._replace_resolver_evidence(
             key,
+            evidence_family="call_abi_proofs",
+            evidence_reason="call ABI evidence changed",
             advance_generation=False,
             call_abi_proofs=merged,
         )
@@ -527,6 +543,8 @@ class NativePreanalysisSessionState:
         merged = tuple(dict.fromkeys((*current.call_result_carriers, *carriers)))
         return self._replace_resolver_evidence(
             key,
+            evidence_family="call_result_carriers",
+            evidence_reason="call-result carrier evidence changed",
             advance_generation=False,
             call_result_carriers=merged,
         )
@@ -536,6 +554,8 @@ class NativePreanalysisSessionState:
         current = self._resolver_evidence_for(key)
         return self._replace_resolver_evidence(
             key,
+            evidence_family="call_result_carriers",
+            evidence_reason="call-result carrier evidence cleared",
             advance_generation=False,
             call_result_carriers=(),
         )
@@ -550,6 +570,8 @@ class NativePreanalysisSessionState:
             raise TypeError("computed-goto resolution must be portable evidence")
         return self._replace_resolver_evidence(
             key,
+            evidence_family="computed_goto_resolution",
+            evidence_reason="computed-goto resolution changed",
             advance_generation=False,
             computed_goto_resolution=resolution,
         )
@@ -567,6 +589,8 @@ class NativePreanalysisSessionState:
             raise TypeError("PREOPT union preparation must be portable evidence")
         return self._replace_resolver_evidence(
             key,
+            evidence_family="preopt_union_preparation",
+            evidence_reason="PREOPT union preparation changed",
             advance_generation=False,
             preopt_union_preparation=preparation,
         )
@@ -581,6 +605,8 @@ class NativePreanalysisSessionState:
             raise TypeError("prepatch PREOPT source must be portable evidence")
         return self._replace_resolver_evidence(
             key,
+            evidence_family="prepatch_preopt_union_source",
+            evidence_reason="prepatch PREOPT union source changed",
             advance_generation=False,
             prepatch_preopt_union_source=source,
         )
@@ -631,6 +657,8 @@ class NativePreanalysisSessionState:
         )
         return self._replace_resolver_evidence(
             key,
+            evidence_family="preopt_entry_bridge",
+            evidence_reason="PREOPT entry-bridge evidence changed",
             preopt_entry_bridges=merged,
         )
 
@@ -676,6 +704,8 @@ class NativePreanalysisSessionState:
         )
         return self._replace_resolver_evidence(
             key,
+            evidence_family="bootstrap_route_bindings",
+            evidence_reason="PREOPT bootstrap-route binding changed",
             advance_generation=False,
             bootstrap_route_bindings=merged,
         )
@@ -880,10 +910,13 @@ class NativePreanalysisSessionState:
         self.facts = facts
         if transfer_inventory_changed:
             self.transfer_inventory_revision += 1
-        self.mark_evidence_changed()
+        self.mark_evidence_changed(
+            evidence_family="native_facts",
+            reason="normalized native facts changed",
+        )
         return True
 
-    def mark_evidence_changed(self) -> None:
+    def mark_evidence_changed(self, *, evidence_family: str, reason: str) -> None:
         """Advance a bound epoch, or coalesce first-pass native evidence.
 
         Flowchart discovery can establish several mutually-dependent native
@@ -897,8 +930,10 @@ class NativePreanalysisSessionState:
             self._observe_transition(
                 operation="evidence_coalesced",
                 previous_generation=previous_generation,
-                evidence_family="native_preanalysis",
-                reason="first-pass evidence shares the pending PREOPT generation",
+                evidence_family=evidence_family,
+                reason=(
+                    f"{reason}; first-pass evidence shares the pending PREOPT generation"
+                ),
             )
             return
         restart_pending = self.pending_generated_restart_generation is not None
@@ -910,8 +945,8 @@ class NativePreanalysisSessionState:
         self._observe_transition(
             operation="evidence_changed",
             previous_generation=previous_generation,
-            evidence_family="native_preanalysis",
-            reason="portable evidence changed",
+            evidence_family=evidence_family,
+            reason=reason,
         )
 
     def merge_bootstrap_route(self, evidence: BootstrapRouteEvidence) -> bool:
@@ -934,7 +969,10 @@ class NativePreanalysisSessionState:
             self.published_bootstrap_keys.discard(key)
         else:
             self.bootstrap_routes[key] = evidence
-        self.mark_evidence_changed()
+        self.mark_evidence_changed(
+            evidence_family="bootstrap_routes",
+            reason="portable bootstrap-route evidence changed",
+        )
         return True
 
     def mark_bootstrap_route_rebound(self, evidence: BootstrapRouteEvidence) -> bool:

@@ -70,7 +70,10 @@ def test_evidence_observer_sees_generation_and_preopt_bind_transitions() -> None
     observed = []
     state = NativePreanalysisSessionState(event_observer=observed.append)
 
-    state.mark_evidence_changed()
+    state.mark_evidence_changed(
+        evidence_family="test_evidence",
+        reason="test evidence changed",
+    )
     state.mark_preopt_bound()
 
     assert [
@@ -82,6 +85,31 @@ def test_evidence_observer_sees_generation_and_preopt_bind_transitions() -> None
     ]
 
 
+def test_resolver_evidence_observer_names_the_changed_family() -> None:
+    observed = []
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    target = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x402000, 0x402010),), native_key=NATIVE_KEY
+    )
+    state = NativePreanalysisSessionState(event_observer=observed.append)
+
+    assert state.merge_portable_state_routes(
+        NATIVE_KEY,
+        (
+            PortableMaterializedStateRoute(
+                source_identity=source,
+                state_constant=0x1234,
+                target_identity=target,
+            ),
+        ),
+    )
+
+    assert observed[-1].evidence_family == "portable_state_routes"
+    assert observed[-1].reason == "portable state-route evidence changed"
+
+
 def test_first_pass_native_evidence_coalesces_until_preopt_binds() -> None:
     source = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x401020, 0x401021),), native_key=NATIVE_KEY
@@ -91,7 +119,10 @@ def test_first_pass_native_evidence_coalesces_until_preopt_binds() -> None:
     )
     state = NativePreanalysisSessionState()
 
-    state.mark_evidence_changed()
+    state.mark_evidence_changed(
+        evidence_family="test_evidence",
+        reason="test evidence changed",
+    )
     assert state.evidence_generation == 1
     assert state.merge_bootstrap_route(
         BootstrapRouteEvidence(
@@ -106,7 +137,10 @@ def test_first_pass_native_evidence_coalesces_until_preopt_binds() -> None:
     assert state.evidence_generation == 1
 
     assert state.mark_preopt_bound()
-    state.mark_evidence_changed()
+    state.mark_evidence_changed(
+        evidence_family="test_evidence",
+        reason="test evidence changed",
+    )
     assert state.evidence_generation == 2
 
 

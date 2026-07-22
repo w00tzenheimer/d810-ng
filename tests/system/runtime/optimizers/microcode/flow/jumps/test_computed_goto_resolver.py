@@ -1288,7 +1288,10 @@ def test_flowchart_preflight_discovers_bootstrap_evidence_before_its_redo(
     monkeypatch,
 ):
     session, state = _resolver_session()
-    state.native_preanalysis.mark_evidence_changed()
+    state.native_preanalysis.mark_evidence_changed(
+        evidence_family="test_evidence",
+        reason="test evidence changed",
+    )
     state.begin_materialization(object())
     monkeypatch.setattr(
         computed_goto_resolver,
