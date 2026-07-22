@@ -4332,6 +4332,45 @@ class TestStagedAtomicEaIdentity:
         assert len(rewire.preds_to_redirect) == 1
         assert rewire.preds_to_redirect[0] is pred
 
+    def test_stage_accepts_nonzero_imported_block_sharing_function_entry_ea(
+        self,
+        monkeypatch,
+    ):
+        """A broad imported start EA must not imply positional entry ownership."""
+        mba = _StagedFakeMBA()
+        source = _StagedFakeBlock(
+            5,
+            nsucc=1,
+            succ_serial=20,
+            start=mba.entry_ea,
+        )
+        source.predset.push_back(10)
+        predecessor = _StagedFakeBlock(10, nsucc=1, succ_serial=5)
+        target = _StagedFakeBlock(20, nsucc=0)
+        target.predset.push_back(5)
+        mba.blocks.update({5: source, 10: predecessor, 20: target})
+        mba.qty = max(mba.blocks) + 1
+
+        _staged_patch_wiring(monkeypatch, mba)
+        modifier = dm.DeferredGraphModifier(
+            mba,
+            mutation_gateway=make_mutation_gateway(mba),
+        )
+        modification = dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE,
+            block_serial=5,
+            new_target=30,
+        )
+
+        rewire = modifier._stage_destructive_mod_via_copy(
+            modification,
+            index=0,
+        )
+
+        assert rewire is not None
+        assert rewire.original_blk is source
+        assert rewire.original_serial == 5
+
     def test_staged_goto_change_resolves_remapped_source_to_its_ea(
         self,
         monkeypatch,
