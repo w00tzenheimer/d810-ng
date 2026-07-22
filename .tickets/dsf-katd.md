@@ -2,7 +2,7 @@
 id: dsf-katd
 status: closed
 deps: []
-links: [dsf-dnr9]
+links: [dsf-dnr9, lrea-t5gy]
 created: 2026-07-21T03:43:31Z
 type: task
 priority: 1
