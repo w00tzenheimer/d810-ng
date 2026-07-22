@@ -33,7 +33,11 @@ from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
     StructuralMutationKind,
 )
-from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.block_identity import (
+    MbaBlockHandle,
+    NativeEaInterval,
+    StableBlockIdentity,
+)
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     ResolverSessionState,
     resolver_session_state,
@@ -155,6 +159,35 @@ def test_imported_instruction_origins_are_current_mba_owned_and_normalized() -> 
 
     assert state.current_mba_token is None
     assert state.current_imported_instruction_origins == ()
+
+
+def test_imported_root_handles_are_current_mba_owned_and_serial_free() -> None:
+    state = ResolverSessionState(
+        native_preanalysis=NativePreanalysisSessionState(), native_key=NATIVE_KEY
+    )
+    target_ea = 0x40BECC
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(target_ea, target_ea + 0x10),),
+        native_key=NATIVE_KEY,
+    )
+    handle = MbaBlockHandle.imported_native(
+        identity,
+        session_id="resolver-test",
+        token="imported-root",
+    )
+
+    assert state.bind_current_imported_instruction_origins(0x1234, ())
+    state.bind_current_imported_root_handles(
+        0x1234,
+        ((target_ea, handle),),
+    )
+
+    assert state.imported_root_handles_for(0x1234) == ((target_ea, handle),)
+    assert state.imported_root_handles_for(0x5678) == ()
+    assert not hasattr(handle, "serial")
+
+    assert state.bind_current_imported_instruction_origins(0x5678, ())
+    assert state.current_imported_root_handles == ()
 
 
 @pytest.mark.parametrize(

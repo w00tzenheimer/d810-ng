@@ -74,6 +74,13 @@ def test_imported_native_rebind_disambiguates_a_live_translation_clone() -> None
     )
 
     assert index.rebind_identity(handler).status is RebindStatus.AMBIGUOUS
+    native_rebound = index.rebind_native_identity(handler)
+    assert native_rebound.status is RebindStatus.BOUND
+    assert native_rebound.block is not None
+    assert native_rebound.block.serial == 9
+    assert (
+        native_rebound.block.handle.provenance is BlockHandleProvenance.NATIVE
+    )
     rebound = index.rebind_imported_identity(handler)
     assert rebound.status is RebindStatus.BOUND
     assert rebound.block is not None

@@ -112,6 +112,10 @@ RESOLVER_SESSION_FIELD_INVENTORY = {
         FieldLifetime.CALLBACK_LOCAL,
         "current MBA synthetic-to-native instruction provenance",
     ),
+    "current_imported_root_handles": FieldInventory(
+        FieldLifetime.CALLBACK_LOCAL,
+        "importer-selected roots bound through the live MBA identity index",
+    ),
 }
 
 

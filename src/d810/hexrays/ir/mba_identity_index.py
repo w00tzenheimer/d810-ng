@@ -519,6 +519,18 @@ class MbaBlockIdentityIndex:
         self._observe_decision("rebind", identity, result)
         return result
 
+    def rebind_native_identity(
+        self,
+        identity: StableBlockIdentity,
+    ) -> RebindResult:
+        """Rebind only the unique non-imported live native translation."""
+        result = self._rebind_identity(
+            identity,
+            provenance=BlockHandleProvenance.NATIVE,
+        )
+        self._observe_decision("rebind_native", identity, result)
+        return result
+
     def rebind_imported_identity(
         self,
         identity: StableBlockIdentity,

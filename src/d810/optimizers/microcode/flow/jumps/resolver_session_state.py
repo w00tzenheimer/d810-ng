@@ -27,6 +27,7 @@ from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.ir.block_identity import (
     BoundBlock,
+    MbaBlockHandle,
     RebindStatus,
     StableBlockIdentity,
 )
@@ -78,6 +79,7 @@ class ResolverSessionState:
     attempted_mbas: set[tuple[int, int, int, int]] = field(default_factory=set)
     current_mba_token: int | None = None
     current_imported_instruction_origins: tuple[tuple[int, int], ...] = ()
+    current_imported_root_handles: tuple[tuple[int, MbaBlockHandle], ...] = ()
 
     @property
     def evidence_generation(self) -> int:
@@ -162,6 +164,8 @@ class ResolverSessionState:
                 )
             native_by_imported[imported_ea] = native_ea
         normalized = tuple(sorted(native_by_imported.items()))
+        if self.current_mba_token != token:
+            self.current_imported_root_handles = ()
         changed = (
             self.current_mba_token != token
             or self.current_imported_instruction_origins != normalized
@@ -178,6 +182,44 @@ class ResolverSessionState:
         if self.current_mba_token != int(mba_token):
             return ()
         return self.current_imported_instruction_origins
+
+    def bind_current_imported_root_handles(
+        self,
+        mba_token: int,
+        roots: tuple[tuple[int, MbaBlockHandle], ...],
+    ) -> None:
+        """Retain importer-selected root ownership for only the current MBA.
+
+        Shared handler bodies can be cloned into several union templates.  A
+        native EA alone then identifies the semantic handler but not the one
+        importer-owned root selected for that handler.  The gateway-created
+        handle carries that current-generation ownership without persisting a
+        block serial or inventing a cross-maturity identity.
+        """
+        token = int(mba_token)
+        if token <= 0 or self.current_mba_token != token:
+            raise ValueError("imported roots require the current MBA token")
+        by_target: dict[int, MbaBlockHandle] = {}
+        for target_ea, handle in roots:
+            target_ea = int(target_ea)
+            if target_ea <= 0 or handle.stable_identity is None:
+                raise ValueError("imported roots require native identities")
+            if not handle.stable_identity.native_ranges.contains(target_ea):
+                raise ValueError("imported root identity must contain its target EA")
+            previous = by_target.get(target_ea)
+            if previous is not None and previous != handle:
+                raise ValueError("one imported target cannot have multiple roots")
+            by_target[target_ea] = handle
+        self.current_imported_root_handles = tuple(sorted(by_target.items()))
+
+    def imported_root_handles_for(
+        self,
+        mba_token: int,
+    ) -> tuple[tuple[int, MbaBlockHandle], ...]:
+        """Return importer-selected roots only for their live MBA generation."""
+        if self.current_mba_token != int(mba_token):
+            return ()
+        return self.current_imported_root_handles
 
     def begin_snippet_capture(self, function_ea: int) -> bool:
         """Enter one callback-local detached-snippet capture section."""
@@ -205,10 +247,12 @@ class ResolverSessionState:
         self.attempted_mbas.clear()
         self.current_mba_token = None
         self.current_imported_instruction_origins = ()
+        self.current_imported_root_handles = ()
 
     def invalidate_current_mba_binding(self) -> None:
         """Drop only the generation-local index after a structural mutation."""
         self.identity_index = None
+        self.current_imported_root_handles = ()
 
     def rebind_bootstrap_route(
         self,
