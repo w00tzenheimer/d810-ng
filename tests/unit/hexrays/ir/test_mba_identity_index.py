@@ -6,6 +6,8 @@ import importlib.util
 from dataclasses import dataclass
 from dataclasses import fields
 
+import pytest
+
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.ir.block_identity import (
     BlockHandleProvenance,
@@ -667,6 +669,39 @@ def test_every_initial_binding_has_one_logical_proxy() -> None:
     assert index.logical_proxy_count == 2
     assert index.logical_proxy_for_handle(index.handle_for_serial(4)) is not None
     assert index.logical_proxy_for_handle(index.handle_for_serial(5)) is not None
+
+
+def test_proxy_commit_preflights_every_future_binding_before_promotion() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),),
+        native_key=NATIVE_KEY,
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=2,
+        bindings=((identity, 4),),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(4)
+    assert original is not None
+    proxy = index.logical_proxy_for_handle(original)
+    assert proxy is not None
+    replacement = index.create_native_handle(identity)
+    index.begin_transaction("missing-binding", 5)
+    staged = index.stage_replacement(
+        transaction_id="missing-binding",
+        original=original,
+        replacement=replacement,
+        returned_serial=4,
+    )
+    index._serials_by_transaction["missing-binding"].pop(replacement.token)
+
+    with pytest.raises(ValueError, match="future published logical block"):
+        index.commit_proxy_transaction("missing-binding")
+
+    assert proxy.resolve().handle is original
+    assert proxy.resolve(transaction_id="missing-binding") is staged
+    assert index.resolve(original).serial == 4
+    index.abort_proxy_transaction("missing-binding")
 
 
 def test_identity_index_has_no_parallel_stale_token_authority() -> None:
