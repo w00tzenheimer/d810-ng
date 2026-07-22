@@ -14331,6 +14331,24 @@ def _classify_live_state_write_routes(
         anchor_ea = int(getattr(block, "start", 0) or 0)
         return f"blk{int(serial)}@0x{anchor_ea:X}"
 
+    def is_state_dispatcher_successor(
+        serial: int,
+        evidence: PortableStateWriteRouteEvidence,
+    ) -> bool:
+        if int(serial) in router_serials:
+            return True
+        block = mba.get_mblock(int(serial))
+        tail = None if block is None else block.tail
+        if tail is None or not ida_hexrays.is_mcode_jcond(int(tail.opcode)):
+            return False
+        return any(
+            operand is not None
+            and int(getattr(operand, "t", ida_hexrays.mop_z))
+            == int(ida_hexrays.mop_r)
+            and int(getattr(operand, "r", -1)) == int(evidence.state_var_reg)
+            for operand in (getattr(tail, "l", None), getattr(tail, "r", None))
+        )
+
     def diagnose(
         evidence: PortableStateWriteRouteEvidence,
         *,
@@ -14438,9 +14456,13 @@ def _classify_live_state_write_routes(
                 int(write.succ(successor_index))
                 for successor_index in range(int(write.nsucc()))
             )
-            accepted_targets = router_serials | {
-                int(target_result.block.serial)
-            }
+            semantic_target_serial = int(target_result.block.serial)
+
+            def is_accepted_delivery_target(serial: int) -> bool:
+                return int(serial) == semantic_target_serial or (
+                    is_state_dispatcher_successor(int(serial), evidence)
+                )
+
             delivery_successors = write_successors
             is_folded_direct_delivery = bool(
                 write_tail is not None
@@ -14449,7 +14471,7 @@ def _classify_live_state_write_routes(
                 <= int(write_tail.ea)
                 <= int(evidence.delivery_ea)
                 and len(write_successors) == 1
-                and write_successors[0] in accepted_targets
+                and is_accepted_delivery_target(write_successors[0])
             )
             if not is_folded_direct_delivery and len(write_successors) == 1:
                 corridor_helper = mba.get_mblock(int(write_successors[0]))
@@ -14481,7 +14503,7 @@ def _classify_live_state_write_routes(
                     <= int(helper_tail.ea)
                     <= int(evidence.delivery_ea)
                     and len(helper_successors) == 1
-                    and helper_successors[0] in accepted_targets
+                    and is_accepted_delivery_target(helper_successors[0])
                 )
                 if is_folded_direct_delivery:
                     delivery_successors = helper_successors
