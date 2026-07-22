@@ -290,17 +290,18 @@ def _discover_reference_style_immediate_flow_routes(
         mnemonic = str(instruction.mnemonic).lower()
         is_jump = mnemonic == "jmp" or mnemonic in _SV_JCC_MNEMS
         is_conditional_jump = mnemonic in _SV_JCC_MNEMS
-        is_state_operand = (
-            instruction.destination_mreg is not None
-            and int(instruction.destination_mreg) == int(state_var_reg)
-        )
+        is_state_operand = instruction.destination_mreg is not None and int(
+            instruction.destination_mreg
+        ) == int(state_var_reg)
 
         if saved_assignment is not None and int(instruction.ea) in branch_target_eas:
             branch_assignment = saved_assignment
 
         if (
-            mnemonic == "mov" or mnemonic.startswith("cmov")
-        ) and is_state_operand and instruction.writes_destination:
+            (mnemonic == "mov" or mnemonic.startswith("cmov"))
+            and is_state_operand
+            and instruction.writes_destination
+        ):
             current_assignment = instruction
             target = None
             state_constant = None
@@ -7081,9 +7082,7 @@ def _decode_native_flow_route_inventory(
         )
         direct_target_ea = (
             int(instruction.ops[0].addr)
-            if (
-                mnemonic == "jmp" or mnemonic in _SV_JCC_MNEMS
-            )
+            if (mnemonic == "jmp" or mnemonic in _SV_JCC_MNEMS)
             and instruction.ops[0].type in {idaapi.o_near, idaapi.o_far}
             else None
         )
@@ -10984,18 +10983,18 @@ def _preopt_union_boundary_ports(
             int(target_ea)
             for target_ea in (true_target_ea, false_target_ea)
             for block in (
-                None
-                if native_cfg is None
-                else native_cfg.blocks_by_ea.get(int(target_ea))
-            ,)
+                (
+                    None
+                    if native_cfg is None
+                    else native_cfg.blocks_by_ea.get(int(target_ea))
+                ),
+            )
             if block is not None and block.terminal is NativeTerminalKind.RETURN
         }
         equality_target_ea = (
             true_target_ea
             if int(transfer.condition_code) == 4
-            else (
-                false_target_ea if int(transfer.condition_code) == 5 else None
-            )
+            else (false_target_ea if int(transfer.condition_code) == 5 else None)
         )
         terminal_return_boundary = bool(
             len(terminal_target_eas) == 1
@@ -11025,8 +11024,7 @@ def _preopt_union_boundary_ports(
             ),
             taken_state=(
                 terminal_state
-                if terminal_return_boundary
-                and taken_target_ea in terminal_target_eas
+                if terminal_return_boundary and taken_target_ea in terminal_target_eas
                 else None
             ),
             fallthrough_state=(
@@ -11046,9 +11044,7 @@ def _preopt_union_boundary_ports(
             predicate_size=4,
             condition_code=int(transfer.condition_code),
             predicate_register=int(transfer.selector_state_var_reg),
-            predicate_constant=(
-                int(transfer.selector_compare_constant) & _MASK32
-            ),
+            predicate_constant=(int(transfer.selector_compare_constant) & _MASK32),
             predicate_true_is_taken=predicate_true_is_taken,
         )
 
@@ -13761,9 +13757,7 @@ def _first_x86_fastcall_register_accesses(
                 first[index] = (
                     "read"
                     if access_type & int(ida_idp.READ_ACCESS)
-                    else "write"
-                    if access_type == int(ida_idp.WRITE_ACCESS)
-                    else None
+                    else "write" if access_type == int(ida_idp.WRITE_ACCESS) else None
                 )
         if all(kind is not None for kind in first):
             break
@@ -14552,20 +14546,20 @@ class _ReboundStateWriteRoute(NamedTuple):
     predicate_ea: int | None
 
 
-def _rebind_route_identity(index, identity, *, prefer_imported: bool):
-    """Rebind one route identity without accepting an ambiguous fallback."""
+def _rebind_route_identity(index, identity, *, imported_first: bool):
+    """Rebind one route identity to an explicit native ownership class."""
     from d810.ir.block_identity import RebindStatus
 
     primary = (
         index.rebind_imported_identity(identity)
-        if prefer_imported
-        else index.rebind_identity(identity)
+        if imported_first
+        else index.rebind_native_identity(identity)
     )
     if primary.status is not RebindStatus.MISSING:
         return primary
     return (
-        index.rebind_identity(identity)
-        if prefer_imported
+        index.rebind_native_identity(identity)
+        if imported_first
         else index.rebind_imported_identity(identity)
     )
 
@@ -14576,7 +14570,8 @@ def _classify_live_state_write_routes(
     routes: Sequence[PortableStateWriteRouteEvidence],
     *,
     dispatcher_router_eas: frozenset[int],
-    prefer_imported: bool,
+    union_imported: bool,
+    imported_root_handles: Mapping[int, object] | None = None,
     imported_instruction_origins: Mapping[int, int] | None = None,
     diagnostic_rows: list[dict[str, object]] | None = None,
 ) -> tuple[
@@ -14587,7 +14582,10 @@ def _classify_live_state_write_routes(
     """Bind direct state deliveries that still point at a proven dispatcher."""
     import ida_hexrays  # type: ignore[import-untyped]
 
+    from d810.ir.block_identity import RebindStatus
+
     instruction_origins = imported_instruction_origins or {}
+    imported_roots = imported_root_handles or {}
 
     def native_instruction_ea(instruction: object | None) -> int | None:
         if instruction is None:
@@ -14612,8 +14610,7 @@ def _classify_live_state_write_routes(
             return False
         return any(
             operand is not None
-            and int(getattr(operand, "t", ida_hexrays.mop_z))
-            == int(ida_hexrays.mop_r)
+            and int(getattr(operand, "t", ida_hexrays.mop_z)) == int(ida_hexrays.mop_r)
             and int(getattr(operand, "r", -1)) == int(evidence.state_var_reg)
             for operand in (getattr(tail, "l", None), getattr(tail, "r", None))
         )
@@ -14664,11 +14661,7 @@ def _classify_live_state_write_routes(
             (NativeEaInterval(int(router_ea), int(router_ea) + 1),),
             native_key=index.native_key,
         )
-        rebound = _rebind_route_identity(
-            index,
-            router_identity,
-            prefer_imported=prefer_imported,
-        )
+        rebound = index.rebind_native_identity(router_identity)
         if rebound.block is not None:
             router_serials.add(int(rebound.block.serial))
 
@@ -14678,21 +14671,44 @@ def _classify_live_state_write_routes(
     delivery_targets: dict[int, int] = {}
     for evidence in routes:
         folded_shape_details: dict[str, object] = {}
-        write_result = _rebind_route_identity(
-            index,
-            evidence.write_identity,
-            prefer_imported=prefer_imported,
+        # A state-route mutation starts in the top-level MBA.  Never mix an
+        # imported write or delivery owner into that source corridor: the
+        # importer already owns imported-to-imported cuts.  A folded-away
+        # native delivery is represented as MISSING so the write-owner proof
+        # below can recover its surviving terminal without crossing owners.
+        corridor_identity = StableBlockIdentity.from_instruction_eas(
+            evidence.corridor_instruction_eas,
+            native_key=index.native_key,
         )
-        delivery_result = _rebind_route_identity(
-            index,
-            evidence.delivery_identity,
-            prefer_imported=prefer_imported,
+        write_result = index.rebind_native_identity(evidence.write_identity)
+        delivery_result = index.rebind_native_identity(evidence.delivery_identity)
+        corridor_result = index.rebind_native_identity(corridor_identity)
+        if (
+            write_result.status is RebindStatus.AMBIGUOUS
+            and corridor_result.block is not None
+        ):
+            write_result = corridor_result
+        if (
+            delivery_result.status is RebindStatus.AMBIGUOUS
+            and corridor_result.block is not None
+        ):
+            delivery_result = corridor_result
+        imported_root = imported_roots.get(int(evidence.target_ea))
+        target_result = (
+            index.resolve(imported_root)
+            if union_imported and imported_root is not None
+            else None
         )
-        target_result = _rebind_route_identity(
-            index,
-            evidence.target_identity,
-            prefer_imported=prefer_imported,
-        )
+        if target_result is not None:
+            from d810.ir.block_identity import RebindResult
+
+            target_result = RebindResult.bound(target_result)
+        else:
+            target_result = _rebind_route_identity(
+                index,
+                evidence.target_identity,
+                imported_first=union_imported,
+            )
         write = (
             None
             if write_result.block is None
@@ -14803,20 +14819,14 @@ def _classify_live_state_write_routes(
             )
             if not is_folded_direct_delivery and len(write_successors) == 1:
                 corridor_helper = mba.get_mblock(int(write_successors[0]))
-                helper_head = (
-                    None if corridor_helper is None else corridor_helper.head
-                )
-                helper_tail = (
-                    None if corridor_helper is None else corridor_helper.tail
-                )
+                helper_head = None if corridor_helper is None else corridor_helper.head
+                helper_tail = None if corridor_helper is None else corridor_helper.tail
                 helper_successors = (
                     ()
                     if corridor_helper is None
                     else tuple(
                         int(corridor_helper.succ(successor_index))
-                        for successor_index in range(
-                            int(corridor_helper.nsucc())
-                        )
+                        for successor_index in range(int(corridor_helper.nsucc()))
                     )
                 )
                 folded_shape_details.update(
@@ -14900,8 +14910,7 @@ def _classify_live_state_write_routes(
                             block_ref(successor) for successor in write_successors
                         ],
                         delivery_successors=[
-                            block_ref(successor)
-                            for successor in delivery_successors
+                            block_ref(successor) for successor in delivery_successors
                         ],
                     )
                 else:
@@ -14920,8 +14929,7 @@ def _classify_live_state_write_routes(
                             block_ref(successor) for successor in write_successors
                         ],
                         delivery_successors=[
-                            block_ref(successor)
-                            for successor in delivery_successors
+                            block_ref(successor) for successor in delivery_successors
                         ],
                     )
                 continue
@@ -14982,12 +14990,6 @@ def _classify_live_state_write_routes(
             and evidence.proof_kind == "reference_style_immediate_flow_route"
             and ida_hexrays.is_mcode_jcond(int(tail.opcode))
             and len(successors) == 2
-            and router_serials
-            and all(
-                successor in router_serials
-                or successor == int(target_result.block.serial)
-                for successor in successors
-            )
         )
         is_reference_zero_way_delivery = bool(
             tail is not None
@@ -15045,11 +15047,7 @@ def _classify_live_state_write_routes(
             None if is_reference_conditional_delivery else old_target_serial,
             bool(is_reference_conditional_delivery),
             bool(is_reference_zero_way_delivery),
-            (
-                int(tail.ea)
-                if is_reference_zero_way_delivery
-                else None
-            ),
+            (int(tail.ea) if is_reference_zero_way_delivery else None),
         )
         if is_reference_conditional_delivery:
             previous_target = delivery_targets.get(int(delivery.serial))
@@ -15410,9 +15408,12 @@ def rebind_live_preopt_routes(
         index,
         state.portable_evidence.state_write_routes,
         dispatcher_router_eas=dispatcher_router_eas,
-        prefer_imported=union_imported,
+        union_imported=union_imported,
         imported_instruction_origins=dict(
             state.imported_instruction_origins_for(int(current_mba_token or 0))
+        ),
+        imported_root_handles=dict(
+            state.imported_root_handles_for(int(current_mba_token or 0))
         ),
         diagnostic_rows=state_write_diagnostics,
     )
@@ -15434,9 +15435,7 @@ def rebind_live_preopt_routes(
                 mba_generation_before=int(
                     getattr(session, "current_mba_generation", 0)
                 ),
-                mba_generation_after=int(
-                    getattr(session, "current_mba_generation", 0)
-                ),
+                mba_generation_after=int(getattr(session, "current_mba_generation", 0)),
                 summary=(
                     f"bound {len(state_write_pending)} pending and "
                     f"{len(state_write_already)} already-applied state routes; "
@@ -15444,6 +15443,71 @@ def rebind_live_preopt_routes(
                 ),
                 payload={"routes": state_write_diagnostics},
             )
+        )
+    reference_state_write_routes = frozenset(
+        evidence
+        for evidence in state.portable_evidence.state_write_routes
+        if evidence.proof_kind == "reference_style_immediate_flow_route"
+    )
+    rebound_reference_routes = frozenset(
+        route.evidence
+        for route in (*state_write_pending, *state_write_already)
+        if route.evidence.proof_kind == "reference_style_immediate_flow_route"
+    )
+    reference_fragment_complete = bool(
+        not reference_state_write_routes
+        or reference_state_write_routes == rebound_reference_routes
+    )
+    if session_id is not None and reference_state_write_routes:
+        maturity = getattr(mba, "maturity", None)
+        emit_diagnostic(
+            LifecycleEventObserved(
+                session_id=str(session_id),
+                func_ea=int(function_ea),
+                event_kind="state_write_route_fragment",
+                provider="hexrays",
+                maturity=(
+                    None if maturity is None else maturity_to_string(int(maturity))
+                ),
+                phase="preopt_route_rebind",
+                evidence_generation=int(state.evidence_generation),
+                mba_generation_before=int(
+                    getattr(session, "current_mba_generation", 0)
+                ),
+                mba_generation_after=int(getattr(session, "current_mba_generation", 0)),
+                summary=(
+                    "reference state-route fragment bound atomically"
+                    if reference_fragment_complete
+                    else "reference state-route fragment abstained atomically"
+                ),
+                payload={
+                    "outcome": (
+                        "bound" if reference_fragment_complete else "abstained"
+                    ),
+                    "expected_routes": len(reference_state_write_routes),
+                    "rebound_routes": len(rebound_reference_routes),
+                    "unbound_routes": (
+                        len(reference_state_write_routes)
+                        - len(rebound_reference_routes)
+                    ),
+                },
+            )
+        )
+    if not reference_fragment_complete:
+        logger.info(
+            "PREOPT state-write fragment abstained: func=0x%X pending=%d "
+            "already=%d rebound_reference=%d total_reference=%d "
+            "reason=incomplete_reference_fragment",
+            int(function_ea),
+            len(state_write_pending),
+            len(state_write_already),
+            len(rebound_reference_routes),
+            len(reference_state_write_routes),
+        )
+        state_write_pending = tuple(
+            route
+            for route in state_write_pending
+            if route.evidence.proof_kind != "reference_style_immediate_flow_route"
         )
     state_write_pending_by_source = {
         int(route.delivery.serial): int(route.target.serial)

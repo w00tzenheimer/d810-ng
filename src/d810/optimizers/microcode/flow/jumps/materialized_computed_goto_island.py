@@ -423,9 +423,27 @@ def _restore_preopt_terminal_return_carriers(
         stable_mba_identity(mba),
         imported_instruction_origins,
     )
-    mutation_gateway.identity_index.refresh_from_mba(
-        mba,
-        imported_instruction_origins=dict(imported_instruction_origins),
+    imported_root_handles = tuple(
+        (
+            int(target_ea),
+            mutation_gateway.identity_index.handle_for_serial(int(root_serial)),
+        )
+        for target_ea, root_serial in imported.roots
+    )
+    if any(handle is None for _target_ea, handle in imported_root_handles):
+        logger.error(
+            "PREOPT union import abstained after mutation: func=0x%X "
+            "reason=imported_root_handle_missing",
+            int(function_ea),
+        )
+        return
+    state.bind_current_imported_root_handles(
+        stable_mba_identity(mba),
+        tuple(
+            (int(target_ea), handle)
+            for target_ea, handle in imported_root_handles
+            if handle is not None
+        ),
     )
     state.preopt_union_imported_mbas.add(
         _preopt_union_import_key(int(function_ea), mba)

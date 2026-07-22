@@ -264,13 +264,15 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
     gateway = make_mutation_gateway(mba)
     gateway.identity_index.evidence_generation = state.evidence_generation
     state.bind_current_mba(gateway.identity_index)
-    refreshed_origins: list[dict[int, int]] = []
+    root_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x2000, 0x2001),),
+        native_key=NATIVE_KEY,
+    )
+    root_handle = SimpleNamespace(stable_identity=root_identity)
     monkeypatch.setattr(
         type(gateway.identity_index),
-        "refresh_from_mba",
-        lambda current_index, current_mba, *, imported_instruction_origins=None: (
-            refreshed_origins.append(dict(imported_instruction_origins or {}))
-        ),
+        "handle_for_serial",
+        lambda _current_index, serial: root_handle if int(serial) == 8 else None,
     )
     first_decision: dict[str, object] = {
         "session": session,
@@ -306,7 +308,7 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
     }
     assert state.native_preanalysis.bound_preopt_generation == 1
     assert state.current_imported_instruction_origins == ((0xFFFFFFFFFFFFFF01, 0x2000),)
-    assert refreshed_origins == [{0xFFFFFFFFFFFFFF01: 0x2000}]
+    assert state.current_imported_root_handles == ((0x2000, root_handle),)
     assert rebound_routes == [(0x1000, mba, first_decision)]
 
 
@@ -387,9 +389,20 @@ def test_live_bootstrap_endpoint_does_not_suppress_prepared_union(monkeypatch) -
         lambda **_kwargs: None,
     )
 
+    gateway = make_mutation_gateway(mba)
+    root_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x2000, 0x2001),),
+        native_key=NATIVE_KEY,
+    )
+    root_handle = SimpleNamespace(stable_identity=root_identity)
+    monkeypatch.setattr(
+        type(gateway.identity_index),
+        "handle_for_serial",
+        lambda _current_index, serial: root_handle if int(serial) == 8 else None,
+    )
     decision: dict[str, object] = {
         "session": session,
-        "mutation_gateway": make_mutation_gateway(mba),
+        "mutation_gateway": gateway,
     }
     island._restore_preopt_terminal_return_carriers(
         function_ea=0x1000,
