@@ -10493,6 +10493,113 @@ def test_preopt_live_conditional_bridge_rejects_unbound_flag_only_cmov_predicate
     assert ports == ()
 
 
+def test_preopt_live_conditional_bridge_revalidates_explicit_call_result_predicate(
+    monkeypatch,
+) -> None:
+    predicate_ea = 0x40A936
+    source_ea = 0x40A903
+    true_target_ea = 0x40C47E
+    false_target_ea = 0x40C665
+    live_source = SimpleNamespace(serial=7, start=source_ea)
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=source_ea,
+        materialized_anchor_eas=(predicate_ea,),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        selector_state_var_reg=20,
+        resolver_kind="conditional_handler_bridge",
+        predicate_register=8,
+        predicate_size=4,
+        predicate_compare_constant=7,
+        predicate_true_state=0xAE5A330B,
+        predicate_false_state=0x09FE690C,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_find_unique_live_predicate_block",
+        lambda _mba, candidate_ea: (
+            live_source if int(candidate_ea) == predicate_ea else None
+        ),
+    )
+    orientations = []
+
+    def orient(*_args, **kwargs):
+        orientations.append(kwargs)
+        return False
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "exact_live_predicate_true_is_taken",
+        orient,
+    )
+
+    ports = computed_goto_resolver._preopt_live_conditional_bridge_boundary_ports(
+        (transfer,),
+        live_mba=object(),
+        live_native_eas=frozenset({source_ea, predicate_ea}),
+        imported_entry_eas=frozenset({true_target_ea, false_target_ea}),
+    )
+
+    assert ports is not None
+    assert len(ports) == 1
+    assert ports[0].taken_target_ea == false_target_ea
+    assert ports[0].fallthrough_target_ea == true_target_ea
+    assert ports[0].predicate_register == 8
+    assert ports[0].predicate_size == 4
+    assert ports[0].predicate_constant == 7
+    assert orientations == [
+        {
+            "predicate_ea": predicate_ea,
+            "condition_code": 5,
+            "predicate_register": 8,
+            "predicate_size": 4,
+            "predicate_constant": 7,
+        }
+    ]
+
+
+def test_preopt_live_conditional_bridge_rejects_unbound_explicit_predicate(
+    monkeypatch,
+) -> None:
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40A936,
+        source_block_ea=0x40A903,
+        materialized_anchor_eas=(0x40A936,),
+        target_eas=(0x40C47E, 0x40C665),
+        condition_code=5,
+        true_target_ea=0x40C47E,
+        false_target_ea=0x40C665,
+        selector_state_var_reg=20,
+        resolver_kind="conditional_handler_bridge",
+        predicate_register=8,
+        predicate_size=4,
+        predicate_compare_constant=7,
+        predicate_true_state=0xAE5A330B,
+        predicate_false_state=0x09FE690C,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_find_unique_live_predicate_block",
+        lambda *_args, **_kwargs: None,
+    )
+
+    ports = computed_goto_resolver._preopt_live_conditional_bridge_boundary_ports(
+        (transfer,),
+        live_mba=object(),
+        live_native_eas=frozenset({0x40A903, 0x40A936}),
+        imported_entry_eas=frozenset({0x40C47E, 0x40C665}),
+    )
+
+    assert ports == ()
+
+
 def test_preopt_live_conditional_bridge_prefers_equivalent_explicit_predicate(
     monkeypatch,
 ) -> None:
@@ -10563,7 +10670,7 @@ def test_preopt_live_conditional_bridge_prefers_equivalent_explicit_predicate(
     assert ports[0].predicate_constant == 5
 
 
-def test_preopt_live_conditional_bridge_rejects_mixed_orientation_conflict(
+def test_preopt_live_conditional_bridge_rejects_mixed_target_conflict(
     monkeypatch,
 ) -> None:
     flag_only = MaterializedIndirectTransfer(
@@ -10586,7 +10693,8 @@ def test_preopt_live_conditional_bridge_rejects_mixed_orientation_conflict(
     explicit = replace(
         flag_only,
         predicate_register=8,
-        predicate_true_is_taken=False,
+        target_eas=(0x40ADA3, 0x40B199),
+        true_target_ea=0x40ADA3,
     )
     residual_routes = (
         MaterializedIndirectTransfer(
@@ -10624,7 +10732,7 @@ def test_preopt_live_conditional_bridge_rejects_mixed_orientation_conflict(
         (*residual_routes, flag_only, explicit),
         live_mba=object(),
         live_native_eas=frozenset({0x40C4B4, 0x40C4C3}),
-        imported_entry_eas=frozenset({0x40ADA2, 0x40B199}),
+        imported_entry_eas=frozenset({0x40ADA2, 0x40ADA3, 0x40B199}),
     )
 
     assert ports is None

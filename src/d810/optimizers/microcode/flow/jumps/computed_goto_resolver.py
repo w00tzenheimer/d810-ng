@@ -11413,9 +11413,12 @@ def _preopt_live_conditional_bridge_boundary_ports(
         is_static_state_choice = (
             transfer.resolver_kind == "static_conditional_state_choice_bridge"
         )
-        is_flag_only_live_bridge = bool(
+        is_exact_live_bridge = bool(
             transfer.resolver_kind == "conditional_handler_bridge"
             and transfer.predicate_preserve_live
+        )
+        is_flag_only_live_bridge = bool(
+            is_exact_live_bridge
             and transfer.predicate_register is None
             and transfer.predicate_compare_register is None
         )
@@ -11469,7 +11472,7 @@ def _preopt_live_conditional_bridge_boundary_ports(
             or true_state == false_state
             or (
                 not is_static_state_choice
-                and not is_flag_only_live_bridge
+                and not is_exact_live_bridge
                 and (
                     (true_state, true_target_ea) not in residual_state_targets
                     or (false_state, false_target_ea) not in residual_state_targets
@@ -11489,7 +11492,7 @@ def _preopt_live_conditional_bridge_boundary_ports(
         predicate_ea = int(transfer.source_jmp_ea)
         source_block_ea = int(transfer.source_block_ea)
         predicate_true_is_taken = transfer.predicate_true_is_taken
-        if is_static_state_choice or is_flag_only_live_bridge:
+        if is_static_state_choice or is_exact_live_bridge:
             if live_mba is None:
                 continue
             live_source = _find_unique_live_predicate_block(
@@ -11498,7 +11501,7 @@ def _preopt_live_conditional_bridge_boundary_ports(
             )
             if live_source is None:
                 logger.info(
-                    "PREOPT static conditional choice abstained: "
+                    "PREOPT exact conditional choice abstained: "
                     "source=0x%X compare=%s predicate=0x%X reason=live_predicate",
                     source_block_ea,
                     (
@@ -11538,7 +11541,7 @@ def _preopt_live_conditional_bridge_boundary_ports(
             )
             if predicate_true_is_taken not in (True, False):
                 logger.info(
-                    "PREOPT static conditional choice abstained: "
+                    "PREOPT exact conditional choice abstained: "
                     "source=blk%d@0x%X predicate=0x%X reason=orientation",
                     int(live_source.serial),
                     int(live_source.start),
@@ -11674,7 +11677,7 @@ def _preopt_live_conditional_bridge_boundary_ports(
             ),
             predicate_true_is_taken=bool(predicate_true_is_taken),
         )
-        if is_static_state_choice or is_flag_only_live_bridge:
+        if is_static_state_choice or is_exact_live_bridge:
             logger.info(
                 "PREOPT exact conditional choice port: "
                 "source=0x%X compare=0x%X predicate=0x%X "
