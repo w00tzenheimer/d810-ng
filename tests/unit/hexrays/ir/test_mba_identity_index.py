@@ -589,3 +589,59 @@ def test_rebind_observer_receives_portable_identity_and_generations() -> None:
     assert row.result.block.serial == 17
     assert row.mba_generation == 5
     assert row.evidence_generation == 3
+
+
+def test_ea_rebind_prefers_unique_exact_instruction_owner_over_shared_range() -> None:
+    exact_owner = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x401004,),
+    )
+    range_owner = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x401008,),
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=0,
+        bindings=((exact_owner, 4), (range_owner, 5)),
+        native_key=NATIVE_KEY,
+    )
+
+    exact = index.rebind_native_ea(0x401004)
+    ambiguous = index.rebind_native_ea(0x401006)
+
+    assert exact.status is RebindStatus.BOUND
+    assert exact.block is not None
+    assert exact.block.serial == 4
+    assert ambiguous.status is RebindStatus.AMBIGUOUS
+
+
+def test_ea_rebind_accepts_explicit_owner_only_when_it_owns_the_ea() -> None:
+    first = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x401004,),
+    )
+    second = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x401008,),
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=0,
+        bindings=((first, 4), (second, 5)),
+        native_key=NATIVE_KEY,
+    )
+    second_owner = index.handle_for_serial(5)
+    assert second_owner is not None
+
+    rebound = index.rebind_native_ea(0x401006, owner=second_owner)
+
+    assert rebound.status is RebindStatus.BOUND
+    assert rebound.block is not None
+    assert rebound.block.serial == 5
+    assert (
+        index.rebind_native_ea(0x402000, owner=second_owner).status
+        is RebindStatus.MISSING
+    )
