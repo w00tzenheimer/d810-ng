@@ -5793,13 +5793,11 @@ class DeferredGraphModifier:
                so removals don't invalidate earlier serials).  Orphaned
                blocks are those whose predset became empty after commit.
 
-        Failure handling: if staging fails for a destructive-expressible
-        mod, no state changes have been made to the existing topology,
-        so subsequent mods can still proceed.  If commit fails, the
-        copies already in the MBA become orphaned new blocks that the
-        cleanup phase attempts to delete.  Combined with Phase 1
-        snapshot rollback, this provides both "intermediate state
-        invisible" + "clean failure".
+        Failure handling: a required destructive staging failure aborts the
+        whole batch before the swap point.  Any copies already staged are
+        discarded, so no sibling route can become visible without the failed
+        operation.  If commit fails after the swap point, snapshot rollback
+        remains the recovery authority.
 
         Args:
             sorted_mods: Modifications in priority order (already passed
@@ -5838,33 +5836,17 @@ class DeferredGraphModifier:
                 mod.new_target = effective_new_target
             rewire = self._stage_destructive_mod_via_copy(mod, index=i)
             if rewire is None:
-                if mod.mod_type in {
-                    ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL,
-                    ModificationType.MATERIALIZE_ZERO_WAY_GOTO,
-                    ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
-                }:
-                    # This intent is only valid as copy-and-swap.  Falling back
-                    # to the sequential mutator would expose a half-built
-                    # 2-way block if helper creation or verifier wiring failed.
-                    failed += 1
-                    staged_indices.add(i)
-                    logger.warning(
-                        "staged_atomic: refusing non-atomic fallback for "
-                        "mod[%d] %s (block=%d)",
-                        i,
-                        mod.mod_type.name,
-                        mod.block_serial,
-                    )
-                    continue
-                # Staging declined — could be a refusal (e.g., entry-block
-                # guard) or a genuine failure.  Either way, don't count
-                # it as failed here: the mod is NOT in staged_indices, so
-                # Phase 3a will run it through ``_apply_single``, which
-                # correctly counts success or failure a single time.
-                logger.info(
-                    "staged_atomic: staging declined for mod[%d] %s "
-                    "(block=%d) — will fall through to sequential apply",
-                    i, mod.mod_type.name, mod.block_serial,
+                # A destructive intent is atomic only through copy-and-swap.
+                # Sequential fallback would make this operation visible apart
+                # from its siblings and invalidate the batch receipt.
+                failed += 1
+                staged_indices.add(i)
+                logger.warning(
+                    "staged_atomic: refusing non-atomic fallback for "
+                    "mod[%d] %s (block=%d)",
+                    i,
+                    mod.mod_type.name,
+                    mod.block_serial,
                 )
                 continue
             pending_rewires.append(rewire)
@@ -5880,6 +5862,25 @@ class DeferredGraphModifier:
                     for p in rewire.preds_to_redirect
                 ),
             )
+
+        if failed:
+            discarded = self._discard_uncommitted_staged_copies(
+                tuple(rewire.new_blk for rewire in pending_rewires)
+            )
+            if discarded != len(pending_rewires):
+                self.verify_failed = True
+                logger.error(
+                    "staged_atomic: required staging failure discarded only "
+                    "%d/%d staged copies",
+                    discarded,
+                    len(pending_rewires),
+                )
+            logger.warning(
+                "staged_atomic: required staging failure aborted all %d "
+                "planned modifications before commit",
+                len(sorted_mods),
+            )
+            return 0, len(sorted_mods)
 
         # --- Phase 3: Commit ---------------------------------------------
         # 3a. Run ADDITIVE + INSTRUCTION_ONLY + UNSUPPORTED mods directly
@@ -6115,6 +6116,35 @@ class DeferredGraphModifier:
         self.mba.mark_chains_dirty()
         return successful, failed
 
+    def _discard_uncommitted_staged_copies(
+        self,
+        blocks: "tuple[ida_hexrays.mblock_t, ...]",
+    ) -> int:
+        """Remove staged copies before any predecessor swap becomes visible."""
+        remover = getattr(self.mba, "remove_block", None)
+        if remover is None:
+            return 0
+        removed = 0
+        for block in sorted(
+            blocks,
+            key=lambda candidate: int(candidate.serial),
+            reverse=True,
+        ):
+            try:
+                remover(block)
+                removed += 1
+            except Exception:
+                logger.error(
+                    "staged_atomic: failed to discard uncommitted copy "
+                    "blk[%d]@0x%x",
+                    int(getattr(block, "serial", -1)),
+                    int(getattr(block, "start", idaapi.BADADDR)),
+                    exc_info=True,
+                )
+        if removed:
+            self.mba.mark_chains_dirty()
+        return removed
+
     def _repair_cfg_51814_offenders(
         self,
         offenders: list[dict[str, object]],
@@ -6324,6 +6354,7 @@ class DeferredGraphModifier:
                     "staged_atomic stage: failed to repair copy.type: %s",
                     exc,
                 )
+                self._discard_uncommitted_staged_copies((new_blk,))
                 return None
         logger.debug(
             "staged_atomic stage: copy_block src=blk[%d](type=%d ea=0x%x) "
@@ -6358,6 +6389,7 @@ class DeferredGraphModifier:
                 "staged_atomic stage: mutation failed on copy blk[%d] for mod[%d] %s",
                 new_blk.serial, index, mod.mod_type.name,
             )
+            self._discard_uncommitted_staged_copies((new_blk,))
             return None
 
         try:
@@ -6367,6 +6399,7 @@ class DeferredGraphModifier:
                 "staged_atomic stage: copy blk[%d] has no readable start EA",
                 new_blk.serial,
             )
+            self._discard_uncommitted_staged_copies((new_blk,))
             return None
 
         return _StagedPendingRewire(
