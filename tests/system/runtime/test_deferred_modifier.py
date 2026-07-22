@@ -3760,6 +3760,51 @@ class TestStagedAtomicApply:
         assert lowered_blocks[0] is not source
         assert 5 in mba.removed_blocks
 
+    def test_staged_conditional_lowering_rebinds_copied_fallthrough(
+        self,
+        monkeypatch,
+    ):
+        """A copied 2-way block validates its new physical fallthrough."""
+        mba = _StagedFakeMBA()
+        original = _StagedFakeBlock(5, nsucc=2, succ_serial=20)
+        original.succset.push_back(21)
+        copy = _StagedFakeBlock(50, nsucc=2, succ_serial=51)
+        copy.succset.push_back(21)
+        mba.blocks.update({5: original, 20: _StagedFakeBlock(20, nsucc=0)})
+        mba.blocks.update({21: _StagedFakeBlock(21, nsucc=0), 50: copy})
+        mba.qty = 52
+        modifier = dm.DeferredGraphModifier(
+            mba,
+            mutation_gateway=make_mutation_gateway(mba),
+        )
+        observed_old_dispatchers: list[int] = []
+
+        def _lower(_copy_block, **kwargs):
+            observed_old_dispatchers.append(int(kwargs["old_dispatcher_serial"]))
+            return True
+
+        monkeypatch.setattr(
+            modifier,
+            "_apply_lower_conditional_state_transition",
+            _lower,
+        )
+        modification = dm.GraphModification(
+            dm.ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
+            block_serial=5,
+            old_target=20,
+            rewrite_from_ea=0x401000,
+            condition_operand=object(),
+            false_target=30,
+            true_target=40,
+        )
+
+        assert modifier._apply_destructive_on_copy(
+            copy,
+            modification,
+            original_blk=original,
+        )
+        assert observed_old_dispatchers == [51]
+
     def test_staged_atomic_goto_change_stages_copy_and_redirects_preds(
         self,
         monkeypatch,
