@@ -767,13 +767,16 @@ def test_bootstrap_rebind_can_select_the_unique_imported_handler_clone() -> None
         bindings=((source, 7), (handler, 9)),
         native_key=NATIVE_KEY,
     )
-    index.begin_transaction(10)
+    index.begin_transaction("imported-handler-clone", 10)
     imported = index.create_imported_native_handle(handler)
     index.record_insert(
+        transaction_id="imported-handler-clone",
         insertion_serial=10,
         created=imported,
         returned_serial=10,
     )
+    index.commit_proxy_transaction("imported-handler-clone")
+    index.advance_generation()
     state.bind_current_mba(index)
 
     assert (

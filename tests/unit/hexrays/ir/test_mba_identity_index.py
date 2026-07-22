@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from dataclasses import dataclass
+from dataclasses import fields
 
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.ir.block_identity import (
@@ -65,13 +66,16 @@ def test_imported_native_rebind_disambiguates_a_live_translation_clone() -> None
     index = MbaBlockIdentityIndex.from_bindings(
         generation=0, bindings=((source, 7), (handler, 9)), native_key=NATIVE_KEY
     )
-    index.begin_transaction(10)
+    index.begin_transaction("import-translation", 10)
     imported = index.create_imported_native_handle(handler)
     index.record_insert(
+        transaction_id="import-translation",
         insertion_serial=10,
         created=imported,
         returned_serial=10,
     )
+    index.commit_proxy_transaction("import-translation")
+    index.advance_generation()
 
     assert index.rebind_identity(handler).status is RebindStatus.AMBIGUOUS
     native_rebound = index.rebind_native_identity(handler)
@@ -645,3 +649,27 @@ def test_ea_rebind_accepts_explicit_owner_only_when_it_owns_the_ea() -> None:
         index.rebind_native_ea(0x402000, owner=second_owner).status
         is RebindStatus.MISSING
     )
+
+
+def test_every_initial_binding_has_one_logical_proxy() -> None:
+    first = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    second = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x402000, 0x402010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=2,
+        bindings=((first, 4), (second, 5)),
+        native_key=NATIVE_KEY,
+    )
+
+    assert index.logical_proxy_count == 2
+    assert index.logical_proxy_for_handle(index.handle_for_serial(4)) is not None
+    assert index.logical_proxy_for_handle(index.handle_for_serial(5)) is not None
+
+
+def test_identity_index_has_no_parallel_stale_token_authority() -> None:
+    assert "_stale_tokens" not in {
+        field.name for field in fields(MbaBlockIdentityIndex)
+    }
