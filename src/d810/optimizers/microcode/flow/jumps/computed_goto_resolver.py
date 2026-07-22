@@ -14290,6 +14290,7 @@ class _ReboundStateWriteRoute(NamedTuple):
     old_target_serial: int | None
     collapse_conditional: bool
     materialize_zero_way: bool
+    predicate_ea: int | None
 
 
 def _rebind_route_identity(index, identity, *, prefer_imported: bool):
@@ -14468,6 +14469,41 @@ def _classify_live_state_write_routes(
                     block_ref(successor) for successor in write_successors
                 ],
             )
+            is_folded_zero_way_delivery = bool(
+                write_tail is not None
+                and ida_hexrays.is_mcode_jcond(int(write_tail.opcode))
+                and len(write_successors) == 0
+                and getattr(write_tail, "d", None) is not None
+                and int(write_tail.d.t) == int(ida_hexrays.mop_v)
+                and int(evidence.source_write_ea)
+                <= int(write_tail.ea)
+                <= int(evidence.delivery_ea)
+            )
+            if is_folded_zero_way_delivery:
+                rebound = _ReboundStateWriteRoute(
+                    evidence,
+                    write_result.block,
+                    write_result.block,
+                    target_result.block,
+                    None,
+                    True,
+                    True,
+                    int(write_tail.ea),
+                )
+                pending.append(rebound)
+                diagnose(
+                    evidence,
+                    outcome="pending",
+                    reason="materialize_folded_reference_zero_way",
+                    write=write,
+                    delivery=write,
+                    target=target,
+                    write_status=write_result.status.value,
+                    delivery_status=delivery_result.status.value,
+                    target_status=target_result.status.value,
+                    **folded_shape_details,
+                )
+                continue
             semantic_target_serial = int(target_result.block.serial)
 
             def is_accepted_delivery_target(serial: int) -> bool:
@@ -14566,6 +14602,7 @@ def _classify_live_state_write_routes(
                     old_target_serial,
                     False,
                     False,
+                    None,
                 )
                 if delivery_successors[0] == int(target_result.block.serial):
                     already.append(rebound)
@@ -14720,6 +14757,11 @@ def _classify_live_state_write_routes(
             None if is_reference_conditional_delivery else old_target_serial,
             bool(is_reference_conditional_delivery),
             bool(is_reference_zero_way_delivery),
+            (
+                int(evidence.delivery_ea)
+                if is_reference_zero_way_delivery
+                else None
+            ),
         )
         if is_reference_conditional_delivery:
             previous_target = delivery_targets.get(int(delivery.serial))
@@ -15365,7 +15407,7 @@ def _on_preopt_bootstrap_route(
             if route.materialize_zero_way:
                 modifier.queue_materialize_zero_way_goto(
                     source_serial=int(route.delivery.serial),
-                    predicate_ea=int(route.evidence.delivery_ea),
+                    predicate_ea=int(route.predicate_ea),
                     target_serial=int(route.target.serial),
                     description=description,
                     rule_priority=100,
