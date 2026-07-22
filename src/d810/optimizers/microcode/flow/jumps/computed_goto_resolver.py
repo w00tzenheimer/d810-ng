@@ -11693,6 +11693,52 @@ def _preopt_live_conditional_bridge_boundary_ports(
                 fallthrough_target_ea,
             )
         candidates.setdefault((source_block_ea, predicate_ea), set()).add(port)
+    coalesced_candidates: dict[
+        tuple[int, int],
+        set[DetachedSnippetConditionalBoundaryPort],
+    ] = {}
+    for source_key, source_ports in candidates.items():
+        semantically_equivalent: dict[
+            DetachedSnippetConditionalBoundaryPort,
+            set[DetachedSnippetConditionalBoundaryPort],
+        ] = {}
+        for port in source_ports:
+            semantic_route = replace(
+                port,
+                predicate_register=None,
+                predicate_size=None,
+                predicate_constant=None,
+            )
+            semantically_equivalent.setdefault(semantic_route, set()).add(port)
+        coalesced_ports: set[DetachedSnippetConditionalBoundaryPort] = set()
+        for equivalent_ports in semantically_equivalent.values():
+            explicit_ports = {
+                port
+                for port in equivalent_ports
+                if any(
+                    value is not None
+                    for value in (
+                        port.predicate_register,
+                        port.predicate_size,
+                        port.predicate_constant,
+                    )
+                )
+            }
+            explicit_shapes = {
+                (
+                    port.predicate_register,
+                    port.predicate_size,
+                    port.predicate_constant,
+                )
+                for port in explicit_ports
+            }
+            if len(explicit_shapes) > 1:
+                coalesced_ports.update(explicit_ports)
+                continue
+            preferred_ports = explicit_ports or equivalent_ports
+            coalesced_ports.add(min(preferred_ports, key=repr))
+        coalesced_candidates[source_key] = coalesced_ports
+    candidates = coalesced_candidates
     conflicting = {key: ports for key, ports in candidates.items() if len(ports) != 1}
     if conflicting:
         for (source_block_ea, predicate_ea), ports in sorted(conflicting.items()):
