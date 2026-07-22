@@ -14,6 +14,7 @@ from d810.analyses.control_flow.detached_handler_island import (
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     PortableMaterializedStateRoute,
+    PortableStateWriteRouteEvidence,
     TerminalReturnCarrierRequest,
 )
 from d810.analyses.control_flow.native_preanalysis_session import (
@@ -145,6 +146,65 @@ def test_resolver_evidence_observer_names_the_changed_family() -> None:
 
     assert observed[-1].evidence_family == "portable_state_routes"
     assert observed[-1].reason == "portable state-route evidence changed"
+
+
+def test_lifecycle_owns_native_state_write_delivery_routes() -> None:
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40A5B2, 0x40A5C9),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40A5B2, 0x40A5C8),
+    )
+    target = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40BECC, 0x40BECD),),
+        native_key=NATIVE_KEY,
+    )
+    route = PortableStateWriteRouteEvidence(
+        source_identity=source,
+        source_write_ea=0x40A5B2,
+        delivery_ea=0x40A5C8,
+        delivery_region_end_ea=0x40A5CD,
+        corridor_instruction_eas=(0x40A5B2, 0x40A5B8, 0x40A5C2, 0x40A5C8),
+        state_var_reg=16,
+        state_constant=0xABB95547,
+        target_identity=target,
+        target_ea=0x40BECC,
+    )
+    observed = []
+    state = NativePreanalysisSessionState(event_observer=observed.append)
+
+    assert state.merge_state_write_routes(NATIVE_KEY, (route,))
+    assert not state.merge_state_write_routes(NATIVE_KEY, (route,))
+    assert state.resolver_evidence is not None
+    assert state.resolver_evidence.state_write_routes == (route,)
+    assert observed[-1].evidence_family == "state_write_routes"
+    assert observed[-1].reason == "native state-write route evidence changed"
+
+
+def test_state_write_delivery_route_rejects_mismatched_native_key() -> None:
+    other_key = make_native_key(profile_fingerprint="sha256:other-profile")
+    route = PortableStateWriteRouteEvidence(
+        source_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40A5B2, 0x40A5C9),),
+            native_key=other_key,
+        ),
+        source_write_ea=0x40A5B2,
+        delivery_ea=0x40A5C8,
+        delivery_region_end_ea=0x40A5CD,
+        corridor_instruction_eas=(0x40A5B2, 0x40A5C8),
+        state_var_reg=16,
+        state_constant=0xABB95547,
+        target_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40BECC, 0x40BECD),),
+            native_key=other_key,
+        ),
+        target_ea=0x40BECC,
+    )
+
+    with pytest.raises(NativePreanalysisKeyMismatch):
+        NativePreanalysisSessionState().merge_state_write_routes(
+            NATIVE_KEY,
+            (route,),
+        )
 
 
 def test_first_pass_native_evidence_coalesces_until_preopt_binds() -> None:
