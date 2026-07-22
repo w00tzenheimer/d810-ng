@@ -209,6 +209,7 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
     assert result == "final"
     assert calls == [
         ("prepare", 0x401000),
+        ("invalidate", 0x401000),
         ("decompile", 0x401000),
         ("pending", 0x401000),
         ("prepare", 0x401000),
