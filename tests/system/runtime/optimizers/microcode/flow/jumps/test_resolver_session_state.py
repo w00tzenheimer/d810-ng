@@ -1397,6 +1397,54 @@ def test_prepared_union_applies_only_the_external_entry_bridge_port(
     )
 
 
+def test_owned_preopt_union_does_not_recapture_mutated_entry_bridge(
+    monkeypatch,
+) -> None:
+    from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
+
+    function_ea = 0x40A560
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(),
+        resolver_attachment=None,
+        native_key=NATIVE_KEY,
+    )
+    state = resolver_session_state(session)
+    assert state.native_preanalysis.merge_preopt_entry_bridge_evidence(
+        state.native_key,
+        EntryBridgeEvidence(
+            predicate_ea=0x40A5AB,
+            condition_code=5,
+            predicate_stack_identity=(-0x20, 4),
+            stack_cell_identity=(0x40, 4),
+            taken_state_constant=0xA0716E5B,
+            fallthrough_state_constant=0xEC71CA67,
+            source_store_ea=0x40A5AE,
+            predicate_block_ea=0x40A59D,
+            conditional_tail_ea=0x40A5AB,
+        ),
+    )
+    assert state.native_preanalysis.mark_preopt_bound()
+    state.preopt_union_imported_mbas.add((function_ea, 77, 0))
+    state.bind_current_imported_instruction_origins(77, ())
+    captures: list[object] = []
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_capture_preopt_entry_bridge_evidence",
+        lambda _state, current_mba: captures.append(current_mba) or True,
+    )
+    mba = SimpleNamespace(entry_ea=function_ea, qty=0)
+
+    _on_preopt_bootstrap_route(
+        function_ea=function_ea,
+        mba=mba,
+        decision={"session": session},
+    )
+
+    assert captures == []
+    assert state.evidence_generation == 1
+    assert state.native_preanalysis.bound_preopt_generation == 1
+
+
 def test_materialization_and_transfer_accumulation_are_session_owned() -> None:
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
