@@ -704,6 +704,100 @@ def test_proxy_commit_preflights_every_future_binding_before_promotion() -> None
     index.abort_proxy_transaction("missing-binding")
 
 
+def test_inserted_replacement_stages_one_proxy_and_shifts_transaction_view() -> None:
+    original_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),),
+        native_key=NATIVE_KEY,
+    )
+    later_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x402000, 0x402010),),
+        native_key=NATIVE_KEY,
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=2,
+        bindings=((original_identity, 2), (later_identity, 5)),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(2)
+    later = index.handle_for_serial(5)
+    assert original is not None
+    assert later is not None
+    original_proxy = index.logical_proxy_for_handle(original)
+    assert original_proxy is not None
+    replacement = index.create_native_handle(original_identity)
+    index.begin_transaction("inserted-replacement", 6)
+    proxy_count_before_stage = index.logical_proxy_count
+
+    staged = index.stage_inserted_replacement(
+        transaction_id="inserted-replacement",
+        original=original,
+        replacement=replacement,
+        insertion_serial=5,
+        returned_serial=5,
+    )
+
+    assert index.logical_proxy_count == proxy_count_before_stage
+    assert index.logical_proxy_for_handle(replacement) is original_proxy
+    assert index.resolve(original).serial == 2
+    assert index.resolve(later).serial == 5
+    assert index.resolve(
+        original,
+        transaction_id="inserted-replacement",
+    ).serial == 5
+    assert index.resolve(
+        later,
+        transaction_id="inserted-replacement",
+    ).serial == 6
+    assert index.resolve_logical_version(
+        original_proxy.resolve(),
+        transaction_id="inserted-replacement",
+    ).serial == 2
+    assert staged.predecessor_version_id == original_proxy.resolve().version_id
+
+    transitions = index.commit_proxy_transaction("inserted-replacement")
+
+    assert index.resolve(original).handle is replacement
+    assert index.resolve(original).serial == 5
+    assert index.resolve(later).serial == 6
+    assert len(transitions) == 1
+
+
+def test_inserted_replacement_abort_preserves_published_coordinates() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),),
+        native_key=NATIVE_KEY,
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=2,
+        bindings=((identity, 2),),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(2)
+    assert original is not None
+    replacement = index.create_native_handle(identity)
+    index.begin_transaction("abort-inserted-replacement", 3)
+    staged = index.stage_inserted_replacement(
+        transaction_id="abort-inserted-replacement",
+        original=original,
+        replacement=replacement,
+        insertion_serial=2,
+        returned_serial=2,
+    )
+    original_proxy = index.logical_proxy_for_handle(original)
+    assert original_proxy is not None
+    assert index.resolve_logical_version(
+        original_proxy.resolve(),
+        transaction_id="abort-inserted-replacement",
+    ).serial == 3
+
+    discarded = index.abort_proxy_transaction("abort-inserted-replacement")
+
+    assert discarded == (staged.version_id,)
+    assert index.resolve(original).handle is original
+    assert index.resolve(original).serial == 2
+    assert index.resolve(replacement) is None
+
+
 def test_identity_index_has_no_parallel_stale_token_authority() -> None:
     assert "_stale_tokens" not in {
         field.name for field in fields(MbaBlockIdentityIndex)
