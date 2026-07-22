@@ -497,6 +497,10 @@ class FragmentPlan:
             (operation.operation_id for operation in operations),
             "fragment operation",
         )
+        self._require_unique_ids(
+            (operation.source_block_id for operation in operations),
+            "fragment operation source",
+        )
         for operation in operations:
             source = block_by_id.get(operation.source_block_id)
             if source is None:
