@@ -10483,6 +10483,72 @@ def test_preopt_live_conditional_bridge_rejects_unbound_flag_only_cmov_predicate
     assert ports == ()
 
 
+def test_preopt_live_conditional_bridge_reports_mixed_predicate_conflict(
+    monkeypatch,
+) -> None:
+    flag_only = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40C4C3,
+        source_block_ea=0x40C4B4,
+        materialized_anchor_eas=(0x40C4C3,),
+        target_eas=(0x40ADA2, 0x40B199),
+        condition_code=5,
+        true_target_ea=0x40ADA2,
+        false_target_ea=0x40B199,
+        selector_state_var_reg=20,
+        resolver_kind="conditional_handler_bridge",
+        predicate_size=4,
+        predicate_compare_constant=5,
+        predicate_true_state=0x2B8162DC,
+        predicate_false_state=0x456A4274,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+    )
+    explicit = replace(
+        flag_only,
+        predicate_register=8,
+    )
+    residual_routes = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40ADA2,
+            source_block_ea=0x40ADA2,
+            materialized_anchor_eas=(),
+            target_eas=(0x40ADA2,),
+            selector_state_var_reg=20,
+            selector_state_constant=0x2B8162DC,
+            resolver_kind="residual_state_route_evidence",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40B199,
+            source_block_ea=0x40B199,
+            materialized_anchor_eas=(),
+            target_eas=(0x40B199,),
+            selector_state_var_reg=20,
+            selector_state_constant=0x456A4274,
+            resolver_kind="residual_state_route_evidence",
+        ),
+    )
+    live_source = SimpleNamespace(serial=7, start=0x40C4B4)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_find_unique_live_predicate_block",
+        lambda *_args, **_kwargs: live_source,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "exact_live_predicate_true_is_taken",
+        lambda *_args, **_kwargs: True,
+    )
+
+    ports = computed_goto_resolver._preopt_live_conditional_bridge_boundary_ports(
+        (*residual_routes, flag_only, explicit),
+        live_mba=object(),
+        live_native_eas=frozenset({0x40C4B4, 0x40C4C3}),
+        imported_entry_eas=frozenset({0x40ADA2, 0x40B199}),
+    )
+
+    assert ports is None
+
+
 def test_preopt_stack_carried_choice_is_deferred_to_its_live_consumer(
     monkeypatch,
 ) -> None:

@@ -11703,20 +11703,23 @@ def _preopt_live_conditional_bridge_boundary_ports(
                 predicate_ea,
                 tuple(
                     sorted(
-                        (
-                            port.resolver_kind,
-                            int(port.taken_state),
-                            int(port.taken_target_ea),
-                            int(port.fallthrough_state),
-                            int(port.fallthrough_target_ea),
-                            port.predicate_register,
-                            port.predicate_size,
-                            port.predicate_constant,
-                            int(port.condition_code),
-                            bool(port.predicate_true_is_taken),
-                            port.logical_source_anchor_ea,
-                        )
-                        for port in ports
+                        [
+                            (
+                                port.resolver_kind,
+                                int(port.taken_state),
+                                int(port.taken_target_ea),
+                                int(port.fallthrough_state),
+                                int(port.fallthrough_target_ea),
+                                port.predicate_register,
+                                port.predicate_size,
+                                port.predicate_constant,
+                                int(port.condition_code),
+                                bool(port.predicate_true_is_taken),
+                                port.logical_source_anchor_ea,
+                            )
+                            for port in ports
+                        ],
+                        key=repr,
                     )
                 ),
             )
