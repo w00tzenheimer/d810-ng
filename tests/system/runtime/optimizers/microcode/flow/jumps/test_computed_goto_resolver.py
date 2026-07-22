@@ -617,6 +617,18 @@ def test_entry_consumer_rebinds_root_handles_and_synthetic_load_origin() -> None
         "reason": "direct_dispatcher_successor",
         "source_block": "blk20@0x40BECC",
         "source_successors": ("blk40@0x40A607", "blk41@0x40B6C0"),
+        "source_successor_details": (
+            {
+                "block": "blk40@0x40A607",
+                "native_origins": (),
+                "successors": (),
+            },
+            {
+                "block": "blk41@0x40B6C0",
+                "native_origins": (),
+                "successors": (),
+            },
+        ),
         "dispatcher_routers": ("blk40@0x40A607", "blk41@0x40B6C0"),
         "rewrite_eas": ("0xF0000001",),
         "rewrite_origins": ("0x40BECC",),
