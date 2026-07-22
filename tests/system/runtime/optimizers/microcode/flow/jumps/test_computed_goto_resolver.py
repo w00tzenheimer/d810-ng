@@ -2045,6 +2045,115 @@ def test_reference_style_state_write_route_rebinds_conditional_dispatch_cut() ->
     assert diagnostics[0]["successors"] == []
 
 
+def test_reference_style_route_rebinds_folded_delivery_at_write_owner() -> None:
+    import ida_hexrays
+
+    from d810.ir.block_identity import RebindResult, RebindStatus
+
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    _session, state = _resolver_session(resolution)
+    identity = lambda ea: StableBlockIdentity.from_intervals(
+        (NativeEaInterval(ea, ea + 1),), native_key=state.native_key
+    )
+    route = PortableStateWriteRouteEvidence(
+        write_identity=identity(0x40A723),
+        delivery_identity=identity(0x40A73D),
+        source_write_ea=0x40A723,
+        delivery_ea=0x40A73D,
+        delivery_region_start_ea=0x40A734,
+        delivery_region_end_ea=0x40A73F,
+        corridor_instruction_eas=(0x40A723, 0x40A734, 0x40A73D),
+        state_var_reg=20,
+        state_constant=0x7C4FB03D,
+        target_identity=identity(0x40ADF2),
+        target_ea=0x40ADF2,
+        proof_kind="reference_style_immediate_flow_route",
+    )
+    handles = {
+        0x40A723: SimpleNamespace(serial=18),
+        0x40A607: SimpleNamespace(serial=6),
+        0x40ADF2: SimpleNamespace(serial=75),
+    }
+
+    class _Index:
+        native_key = state.native_key
+
+        @staticmethod
+        def rebind_imported_identity(candidate):
+            anchor = candidate.native_ranges.intervals[0].start_ea
+            handle = handles.get(anchor)
+            return (
+                RebindResult(RebindStatus.BOUND, handle)
+                if handle is not None
+                else RebindResult.missing()
+            )
+
+        rebind_identity = rebind_imported_identity
+
+    write_owner = SimpleNamespace(
+        serial=18,
+        start=0x40A702,
+        tail=SimpleNamespace(ea=0x40A734, opcode=ida_hexrays.m_goto),
+        nsucc=lambda: 1,
+        succ=lambda _index: 6,
+    )
+    blocks = {
+        6: SimpleNamespace(serial=6, start=0x40A607),
+        18: write_owner,
+        75: SimpleNamespace(serial=75, start=0x40ADF2),
+    }
+    mba = SimpleNamespace(get_mblock=lambda serial: blocks.get(int(serial)))
+    diagnostics = []
+
+    pending, already, unbound = (
+        computed_goto_resolver._classify_live_state_write_routes(
+            mba,
+            _Index(),
+            (route,),
+            dispatcher_router_eas=frozenset({0x40A607}),
+            prefer_imported=True,
+            diagnostic_rows=diagnostics,
+        )
+    )
+
+    assert len(pending) == 1
+    assert pending[0].write.serial == 18
+    assert pending[0].delivery.serial == 18
+    assert pending[0].target.serial == 75
+    assert pending[0].old_target_serial == 6
+    assert pending[0].collapse_conditional is False
+    assert pending[0].materialize_zero_way is False
+    assert already == ()
+    assert unbound == 0
+    assert diagnostics[0]["reason"] == "redirect_folded_reference_delivery"
+    assert diagnostics[0]["delivery_status"] == "missing"
+    assert diagnostics[0]["successors"] == ["blk6@0x40A607"]
+
+    write_owner.succ = lambda _index: 75
+    diagnostics.clear()
+    pending, already, unbound = (
+        computed_goto_resolver._classify_live_state_write_routes(
+            mba,
+            _Index(),
+            (route,),
+            dispatcher_router_eas=frozenset({0x40A607}),
+            prefer_imported=True,
+            diagnostic_rows=diagnostics,
+        )
+    )
+    assert pending == ()
+    assert len(already) == 1
+    assert unbound == 0
+    assert diagnostics[0]["reason"] == "folded_direct_target_matches"
+
+
 def test_static_conditional_state_choice_maps_both_unique_handler_arms() -> None:
     choice = _make_static_conditional_state_choice(
         source_block_ea=0x40D252,

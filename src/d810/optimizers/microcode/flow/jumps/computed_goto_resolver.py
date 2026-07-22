@@ -14405,6 +14405,92 @@ def _classify_live_state_write_routes(
             evidence.target_identity,
             prefer_imported=prefer_imported,
         )
+        write = (
+            None
+            if write_result.block is None
+            else mba.get_mblock(int(write_result.block.serial))
+        )
+        delivery = (
+            None
+            if delivery_result.block is None
+            else mba.get_mblock(int(delivery_result.block.serial))
+        )
+        target = (
+            None
+            if target_result.block is None
+            else mba.get_mblock(int(target_result.block.serial))
+        )
+        if (
+            delivery_result.block is None
+            and write is not None
+            and target is not None
+            and evidence.proof_kind == "reference_style_immediate_flow_route"
+        ):
+            # PREOPT can fold the native delivery jump into the block that owns
+            # the state write.  The delivery EA then has no independent live
+            # identity, but the reference proof remains actionable when the
+            # write owner's exact surviving goto is inside that proof corridor
+            # and still points either at a dispatcher router or at the proven
+            # semantic target.
+            write_tail = write.tail
+            write_successors = tuple(
+                int(write.succ(successor_index))
+                for successor_index in range(int(write.nsucc()))
+            )
+            is_folded_direct_delivery = bool(
+                write_tail is not None
+                and int(write_tail.opcode) == int(ida_hexrays.m_goto)
+                and int(write_tail.ea) in {
+                    int(ea) for ea in evidence.corridor_instruction_eas
+                }
+                and len(write_successors) == 1
+                and write_successors[0]
+                in router_serials | {int(target_result.block.serial)}
+            )
+            if is_folded_direct_delivery:
+                old_target_serial = int(write_successors[0])
+                rebound = _ReboundStateWriteRoute(
+                    evidence,
+                    write_result.block,
+                    write_result.block,
+                    target_result.block,
+                    old_target_serial,
+                    False,
+                    False,
+                )
+                if old_target_serial == int(target_result.block.serial):
+                    already.append(rebound)
+                    diagnose(
+                        evidence,
+                        outcome="already_applied",
+                        reason="folded_direct_target_matches",
+                        write=write,
+                        delivery=write,
+                        target=target,
+                        write_status=write_result.status.value,
+                        delivery_status=delivery_result.status.value,
+                        target_status=target_result.status.value,
+                        successors=[
+                            block_ref(successor) for successor in write_successors
+                        ],
+                    )
+                else:
+                    pending.append(rebound)
+                    diagnose(
+                        evidence,
+                        outcome="pending",
+                        reason="redirect_folded_reference_delivery",
+                        write=write,
+                        delivery=write,
+                        target=target,
+                        write_status=write_result.status.value,
+                        delivery_status=delivery_result.status.value,
+                        target_status=target_result.status.value,
+                        successors=[
+                            block_ref(successor) for successor in write_successors
+                        ],
+                    )
+                continue
         if (
             write_result.block is None
             or delivery_result.block is None
@@ -14425,14 +14511,14 @@ def _classify_live_state_write_routes(
                 evidence,
                 outcome="abstained",
                 reason="identity_rebind_failed",
+                write=write,
+                delivery=delivery,
+                target=target,
                 write_status=write_result.status.value,
                 delivery_status=delivery_result.status.value,
                 target_status=target_result.status.value,
             )
             continue
-        write = mba.get_mblock(int(write_result.block.serial))
-        delivery = mba.get_mblock(int(delivery_result.block.serial))
-        target = mba.get_mblock(int(target_result.block.serial))
         if write is None or delivery is None or target is None:
             unbound += 1
             diagnose(
