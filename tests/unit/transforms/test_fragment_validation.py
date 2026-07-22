@@ -22,12 +22,14 @@ from d810.transforms.fragment_plan import (
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
     FragmentValidationPostcondition,
+    PublishedFragmentObservation,
     ProjectedDataFlowRelation,
     ProjectedFragment,
     ProjectedFragmentBlock,
     ProjectedIdentityBinding,
     ProjectedRangeFact,
     validate_fragment_projection,
+    validate_published_fragment_observation,
 )
 from tests.native_preanalysis import make_native_key
 
@@ -522,3 +524,93 @@ def test_block_kind_must_match_projected_successor_shape() -> None:
         _plan(),
         projection,
     )
+
+
+def _published_observation(
+    plan: FragmentPlan | None = None,
+) -> PublishedFragmentObservation:
+    plan = _plan() if plan is None else plan
+    prevalidation = validate_fragment_projection(plan, _projection(plan))
+    assert prevalidation.passed
+    return PublishedFragmentObservation(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        published_root_ids=plan.roots,
+        observable_operations=plan.operations,
+        semantic_outcomes=prevalidation.outcomes,
+    )
+
+
+def test_postpublication_accepts_observable_semantics_without_physical_blocks() -> None:
+    plan = _plan()
+    observation = _published_observation(plan)
+
+    result = validate_published_fragment_observation(plan, observation)
+
+    assert result.passed
+    assert result.failures == ()
+    assert FragmentValidationPostcondition.ROOT_AUTHORITY in {
+        outcome.postcondition for outcome in result.outcomes
+    }
+    assert FragmentValidationPostcondition.OBSERVABLE_OPERATION in {
+        outcome.postcondition for outcome in result.outcomes
+    }
+
+
+def test_postpublication_rejects_changed_semantic_operation() -> None:
+    plan = _plan()
+    observation = _published_observation(plan)
+    changed_operation = replace(
+        plan.operations[0],
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id="true",
+            ),
+        ),
+        predicate_anchor_ea=None,
+    )
+    observation = replace(
+        observation,
+        observable_operations=(changed_operation,),
+    )
+
+    result = validate_published_fragment_observation(plan, observation)
+
+    assert FragmentValidationPostcondition.OBSERVABLE_OPERATION in {
+        outcome.postcondition for outcome in result.failures
+    }
+
+
+def test_postpublication_rejects_missing_semantic_postcondition() -> None:
+    plan = _plan()
+    observation = _published_observation(plan)
+    observation = replace(
+        observation,
+        semantic_outcomes=tuple(
+            outcome
+            for outcome in observation.semantic_outcomes
+            if outcome.postcondition
+            is not FragmentValidationPostcondition.FLAG_CORRIDOR_INTEGRITY
+        ),
+    )
+
+    result = validate_published_fragment_observation(plan, observation)
+
+    assert FragmentValidationPostcondition.POSTVALIDATION_COVERAGE in {
+        outcome.postcondition for outcome in result.failures
+    }
+
+
+def test_postpublication_rejects_missing_root_authority() -> None:
+    plan = _plan()
+    observation = replace(
+        _published_observation(plan),
+        published_root_ids=(),
+    )
+
+    result = validate_published_fragment_observation(plan, observation)
+
+    assert FragmentValidationPostcondition.ROOT_AUTHORITY in {
+        outcome.postcondition for outcome in result.failures
+    }
