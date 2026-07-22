@@ -5055,7 +5055,7 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
         predicate_register=8,
         predicate_size=4,
         predicate_constant=7,
-        predicate_true_is_taken=True,
+        predicate_true_is_taken=False,
     )
     assert detached_handler_island.capture_detached_snippet_template(
         function_ea,
@@ -5152,7 +5152,7 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
     mutation = batch.conditional[0]
     assert mutation.source.imported_key == (source_block_ea, 1)
     assert mutation.preserve_live_predicate is True
-    assert mutation.preserved_predicate_true_is_taken is True
+    assert mutation.preserved_predicate_true_is_taken is False
     assert identity_events
     assert all(event.primary_anchor_ea is not None for event in identity_events)
     assert all(
@@ -5169,7 +5169,7 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
     assert {event.primary_anchor_ea for event in orientation_events} == {predicate_ea}
     assert {event.outcome for event in orientation_events} == {"matched"}
     assert {event.reason for event in orientation_events} == {
-        "exact imported predicate orientation proven (matching)"
+        "exact imported predicate orientation proven (inverted)"
     }
 
     imported_predicate_ea = 0xF10000
@@ -5231,6 +5231,7 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
     assert len(queued) == 1
     assert queued[0]["rewrite_from_ea"] == imported_predicate_ea
     assert queued[0]["condition_operand"].predicate_ea == imported_predicate_ea
+    assert queued[0]["condition_operand"].true_is_taken is False
 
 
 def test_preopt_import_preserves_inverted_signed_live_predicate(
