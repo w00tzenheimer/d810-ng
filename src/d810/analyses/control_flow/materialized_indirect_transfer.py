@@ -96,6 +96,11 @@ class MaterializedIndirectTransfer:
     #: value only; ``true_target_ea``/``false_target_ea`` carry its exact arms.
     predicate_register: int | None = None
     predicate_size: int | None = None
+    #: IDA-frame identity of the original stack predicate selected before the
+    #: dispatcher state was encoded into its carrier cell.  Entry consumers
+    #: lower this original semantic predicate rather than re-testing the
+    #: maturity-sensitive encoded carrier value.
+    predicate_stack_ida_stkoff: int | None = None
     #: Optional right-hand register for a live ``left != right`` predicate.
     #: ``None`` retains the original ``register != 0`` shape.
     predicate_compare_register: int | None = None
@@ -196,6 +201,7 @@ class MaterializedIndirectTransfer:
             ],
             "predicate_register": self.predicate_register,
             "predicate_size": self.predicate_size,
+            "predicate_stack_ida_stkoff": self.predicate_stack_ida_stkoff,
             "predicate_compare_register": self.predicate_compare_register,
             "predicate_compare_constant": optional_hex(self.predicate_compare_constant),
             "predicate_predecessor_ea": optional_hex(self.predicate_predecessor_ea),

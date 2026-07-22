@@ -163,9 +163,48 @@ def test_preopt_entry_bridge_projects_exact_portable_state_targets() -> None:
         predicate_false_state=fallthrough_state,
         predicate_true_is_taken=True,
         predicate_preserve_live=True,
+        predicate_stack_ida_stkoff=-0x20,
         state_carrier_store_ea=0x40A5C0,
         state_carrier_ida_stkoff=0x40,
     )
+
+
+def test_preopt_entry_bridge_requires_portable_original_predicate_identity() -> None:
+    evidence = EntryBridgeEvidence(
+        predicate_ea=0x40A5A0,
+        condition_code=5,
+        predicate_stack_identity=(0x20, 4),
+        stack_cell_identity=(0x80, 4),
+        taken_state_constant=0xA0716E5B,
+        fallthrough_state_constant=0xEC71CA67,
+        source_store_ea=0x40A5C0,
+        canonical_stack_cell_identity=(0x40, 4),
+        canonical_predicate_stack_identity=None,
+        predicate_block_ea=0x40A560,
+        conditional_tail_ea=0x40A5AB,
+    )
+    routes = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40C253,
+            source_block_ea=0x40C253,
+            materialized_anchor_eas=(),
+            target_eas=(0x40C26D,),
+            selector_state_var_reg=20,
+            selector_state_constant=0xA0716E5B,
+            resolver_kind="static_handler_entry_route",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40B98C,
+            source_block_ea=0x40B98C,
+            materialized_anchor_eas=(),
+            target_eas=(0x40B9A6,),
+            selector_state_var_reg=20,
+            selector_state_constant=0xEC71CA67,
+            resolver_kind="static_handler_entry_route",
+        ),
+    )
+
+    assert computed_goto_resolver._preopt_entry_bridge_transfer(evidence, routes) is None
 
 
 def test_preopt_entry_bridge_replaces_later_bootstrap_port_atomically() -> None:
