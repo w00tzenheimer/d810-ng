@@ -10,7 +10,6 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
-from d810.hexrays.mutation import detached_handler_island
 from d810.manager.manager import D810Manager, _build_current_mba_identity_index
 from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
@@ -22,12 +21,11 @@ from tests.native_preanalysis import make_native_key
 NATIVE_KEY = make_native_key()
 
 
-def test_current_mba_identity_index_uses_session_owned_imported_origins(
+def test_current_mba_identity_index_uses_only_current_mba_imported_origins(
     monkeypatch,
 ) -> None:
     native_preanalysis = NativePreanalysisSessionState()
     origins = ((0xFFFFFFFFFFFFFF01, 0x40A70E),)
-    assert native_preanalysis.set_imported_instruction_origins(NATIVE_KEY, origins)
     session = SimpleNamespace(
         native_preanalysis=native_preanalysis,
         native_key=NATIVE_KEY,
@@ -36,7 +34,8 @@ def test_current_mba_identity_index_uses_session_owned_imported_origins(
         function_ea=0x40A560,
     )
     state = resolver_session_state(session)
-    mba = SimpleNamespace(maturity=0)
+    mba = SimpleNamespace(maturity=0, this=0x1234)
+    assert state.bind_current_imported_instruction_origins(0x1234, origins)
     captured: dict[str, object] = {}
     index = SimpleNamespace(
         evidence_generation=native_preanalysis.evidence_generation,
@@ -49,13 +48,6 @@ def test_current_mba_identity_index_uses_session_owned_imported_origins(
         return index
 
     monkeypatch.setattr(
-        detached_handler_island,
-        "imported_detached_snippet_instruction_origins",
-        lambda _mba: (_ for _ in ()).throw(
-            AssertionError("CALLS identity must not read adapter-owned PREOPT state")
-        ),
-    )
-    monkeypatch.setattr(
         MbaBlockIdentityIndex,
         "from_mba",
         staticmethod(build_index),
@@ -65,6 +57,37 @@ def test_current_mba_identity_index_uses_session_owned_imported_origins(
     assert captured["mba"] is mba
     assert captured["imported_instruction_origins"] == dict(origins)
     assert state.identity_index is index
+
+
+def test_current_mba_identity_index_rejects_previous_mba_origins(monkeypatch) -> None:
+    native_preanalysis = NativePreanalysisSessionState()
+    session = SimpleNamespace(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        resolver_attachment=None,
+        identity_key="test-session",
+        function_ea=0x40A560,
+    )
+    state = resolver_session_state(session)
+    assert state.bind_current_imported_instruction_origins(
+        0x1234,
+        ((0xFFFFFFFFFFFFFF01, 0x40A70E),),
+    )
+    captured: dict[str, object] = {}
+    index = SimpleNamespace(evidence_generation=0, generation=0)
+
+    def build_index(_mba, **kwargs):
+        captured.update(kwargs)
+        return index
+
+    monkeypatch.setattr(MbaBlockIdentityIndex, "from_mba", staticmethod(build_index))
+
+    _build_current_mba_identity_index(
+        session=session,
+        mba=SimpleNamespace(maturity=0, this=0x5678),
+    )
+
+    assert captured["imported_instruction_origins"] == {}
 
 
 def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(

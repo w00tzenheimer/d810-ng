@@ -171,7 +171,6 @@ from d810.hexrays.mutation.detached_handler_island import (
     find_unique_live_block_by_native_ea,
     imported_detached_snippet_conditional_boundary_evidence,
     imported_detached_snippet_direct_boundary_evidence,
-    imported_detached_snippet_instruction_origins,
     imported_detached_snippet_target_eas,
     stable_mba_identity,
 )
@@ -749,8 +748,7 @@ def _instruction_backed_portable_handler_overrides(
         for state in equality_target_eas
         if int(state) in portable_handler_targets
         and (
-            (block := get_block(int(portable_handler_targets[int(state)])))
-            is not None
+            (block := get_block(int(portable_handler_targets[int(state)]))) is not None
         )
         and bool(getattr(block, "insn_snapshots", ()))
     }
@@ -1819,8 +1817,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         materialized_dispatcher_entry_serial: int | None = None
         materialized_dispatcher_router_serials: frozenset[int] = frozenset()
         imported_instruction_origins = (
-            dict(imported_detached_snippet_instruction_origins(mba))
+            dict(
+                resolver_state.imported_instruction_origins_for(
+                    stable_mba_identity(mba)
+                )
+            )
             if materialized_computed_goto_profile
+            and isinstance(resolver_state, ResolverSessionState)
             else {}
         )
         imported_direct_boundary_evidence = (
@@ -1933,8 +1936,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         != int(target_ea)
                         or int(getattr(port, "endpoint_block_ea", 0) or 0)
                         != int(target_ea)
-                        or str(getattr(port, "delivery_mode", ""))
-                        != "terminal_goto"
+                        or str(getattr(port, "delivery_mode", "")) != "terminal_goto"
                     ):
                         continue
                     anchors = {
@@ -2348,9 +2350,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 condition_chain_dag=(
                     range_evidence.decision_dag if range_evidence is not None else None
                 ),
-                applied_direct_boundary_evidence=(
-                    imported_direct_boundary_evidence
-                ),
+                applied_direct_boundary_evidence=(imported_direct_boundary_evidence),
             )
             terminal_state_targets: list[tuple[int, int]] = []
             for route in materialized_state_routes:

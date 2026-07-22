@@ -76,6 +76,8 @@ class ResolverSessionState:
     preopt_union_imported_mbas: set[tuple[int, int, int]] = field(default_factory=set)
     preopt_union_mutated_mbas: set[tuple[int, int, int]] = field(default_factory=set)
     attempted_mbas: set[tuple[int, int, int, int]] = field(default_factory=set)
+    current_mba_token: int | None = None
+    current_imported_instruction_origins: tuple[tuple[int, int], ...] = ()
 
     @property
     def evidence_generation(self) -> int:
@@ -133,6 +135,50 @@ class ResolverSessionState:
             )
         self.identity_index = index
 
+    def bind_current_imported_instruction_origins(
+        self,
+        mba_token: int,
+        origins: tuple[tuple[int, int], ...],
+    ) -> bool:
+        """Bind synthetic instruction coordinates to exactly one live MBA.
+
+        Synthetic EAs are maturity-local coordinates, not portable evidence.
+        The binding therefore lives beside the current identity index and is
+        rejected automatically when a regenerated MBA presents another token.
+        """
+        token = int(mba_token)
+        if token <= 0:
+            raise ValueError("current MBA token must be positive")
+        native_by_imported: dict[int, int] = {}
+        for imported_ea, native_ea in origins:
+            imported_ea = int(imported_ea)
+            native_ea = int(native_ea)
+            if imported_ea <= 0 or native_ea <= 0:
+                raise ValueError("imported instruction origins require positive EAs")
+            previous = native_by_imported.get(imported_ea)
+            if previous is not None and previous != native_ea:
+                raise ValueError(
+                    "one imported instruction EA cannot have multiple native origins"
+                )
+            native_by_imported[imported_ea] = native_ea
+        normalized = tuple(sorted(native_by_imported.items()))
+        changed = (
+            self.current_mba_token != token
+            or self.current_imported_instruction_origins != normalized
+        )
+        self.current_mba_token = token
+        self.current_imported_instruction_origins = normalized
+        return changed
+
+    def imported_instruction_origins_for(
+        self,
+        mba_token: int,
+    ) -> tuple[tuple[int, int], ...]:
+        """Return provenance only for the live MBA generation that published it."""
+        if self.current_mba_token != int(mba_token):
+            return ()
+        return self.current_imported_instruction_origins
+
     def begin_snippet_capture(self, function_ea: int) -> bool:
         """Enter one callback-local detached-snippet capture section."""
         if self.snippet_capture_active:
@@ -157,6 +203,8 @@ class ResolverSessionState:
         self.preopt_union_imported_mbas.clear()
         self.preopt_union_mutated_mbas.clear()
         self.attempted_mbas.clear()
+        self.current_mba_token = None
+        self.current_imported_instruction_origins = ()
 
     def invalidate_current_mba_binding(self) -> None:
         """Drop only the generation-local index after a structural mutation."""
