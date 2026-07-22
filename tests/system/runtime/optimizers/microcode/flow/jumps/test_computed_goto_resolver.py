@@ -9419,6 +9419,16 @@ def test_preopt_refresh_keeps_static_choice_port_across_maturity_shape_drift() -
     )
     calls_shape = replace(
         baseline,
+        taken_target_ea=baseline.fallthrough_target_ea,
+        fallthrough_target_ea=baseline.taken_target_ea,
+        taken_state=baseline.fallthrough_state,
+        fallthrough_state=baseline.taken_state,
+        taken_target_owner=baseline.fallthrough_target_owner,
+        fallthrough_target_owner=baseline.taken_target_owner,
+        old_taken_target_ea=baseline.old_fallthrough_target_ea,
+        old_fallthrough_target_ea=baseline.old_taken_target_ea,
+        old_taken_target_owner=baseline.old_fallthrough_target_owner,
+        old_fallthrough_target_owner=baseline.old_taken_target_owner,
         predicate_size=4,
         condition_code=5,
         predicate_register=8,
@@ -9437,7 +9447,7 @@ def test_preopt_refresh_keeps_static_choice_port_across_maturity_shape_drift() -
             DetachedSnippetBoundaryPorts((), (baseline,)),
             DetachedSnippetBoundaryPorts(
                 (),
-                (replace(calls_shape, taken_target_ea=0x40F178),),
+                (replace(calls_shape, fallthrough_target_ea=0x40F178),),
             ),
         )
 
