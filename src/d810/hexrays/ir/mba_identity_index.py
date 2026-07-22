@@ -193,9 +193,7 @@ class MbaBlockIdentityIndex:
                     )
                 instruction = getattr(instruction, "next", None)
             imported_eas = tuple(
-                ea
-                for ea in sorted(imported_anchors)
-                if 0 <= ea < 0xFFFFFFFFFFFFFFFF
+                ea for ea in sorted(imported_anchors) if 0 <= ea < 0xFFFFFFFFFFFFFFFF
             )
             if imported_eas:
                 index._bind_new_native(
@@ -217,10 +215,7 @@ class MbaBlockIdentityIndex:
             if native_anchors:
                 index._bind_new_native(
                     StableBlockIdentity.from_intervals(
-                        (
-                            NativeEaInterval(ea, ea + 1)
-                            for ea in sorted(native_anchors)
-                        ),
+                        (NativeEaInterval(ea, ea + 1) for ea in sorted(native_anchors)),
                         native_key=native_key,
                         exact_instruction_eas=instruction_eas,
                     ),
@@ -315,6 +310,32 @@ class MbaBlockIdentityIndex:
             return None
         proxy_token = self._proxy_token_by_handle_token.get(handle.token)
         return None if proxy_token is None else self._proxies_by_token[proxy_token]
+
+    def owns_logical_proxy(self, proxy: LogicalBlockProxy) -> bool:
+        """Return whether *proxy* is this index's exact logical authority."""
+        return self._proxies_by_token.get(proxy.proxy_token) is proxy
+
+    def resolve_logical_proxy(
+        self,
+        proxy: LogicalBlockProxy,
+        *,
+        transaction_id: str | None = None,
+    ):
+        """Resolve one owned logical proxy to its current physical binding.
+
+        The proxy selects the published or transaction-local version first;
+        only then does the index bind that physical handle to a live serial.
+        This keeps the serial lookup at the live backend boundary.
+        """
+        if not self.owns_logical_proxy(proxy):
+            raise ValueError("logical proxy is not owned by this identity index")
+        version = proxy.resolve(transaction_id=transaction_id)
+        if version is None:
+            return None
+        return self.resolve(
+            version.handle,
+            transaction_id=transaction_id,
+        )
 
     def _new_token(self, prefix: str) -> str:
         token = f"{prefix}:{self._next_token}"
@@ -917,7 +938,9 @@ class MbaBlockIdentityIndex:
             if not any(token == owner.token for _identity, token in candidates):
                 return RebindResult.missing()
             bound = self.resolve(owner)
-            return RebindResult.missing() if bound is None else RebindResult.bound(bound)
+            return (
+                RebindResult.missing() if bound is None else RebindResult.bound(bound)
+            )
         exact_tokens = tuple(
             token
             for identity, token in candidates
@@ -1086,14 +1109,10 @@ class MbaBlockIdentityIndex:
             if len(old_bounds) == 1 and len(serials) == 1:
                 handle = old_bounds[0].handle
                 replacement_serial = int(serials[0])
-                replacement_token = rebuilt._token_by_serial.get(
-                    replacement_serial
-                )
+                replacement_token = rebuilt._token_by_serial.get(replacement_serial)
                 if replacement_token is None:
                     rebuilt._refresh_primary_serial(replacement_serial)
-                    replacement_token = rebuilt._token_by_serial.get(
-                        replacement_serial
-                    )
+                    replacement_token = rebuilt._token_by_serial.get(replacement_serial)
                 if replacement_token is None:
                     continue
                 replacement_handle = rebuilt._handles_by_token[replacement_token]
