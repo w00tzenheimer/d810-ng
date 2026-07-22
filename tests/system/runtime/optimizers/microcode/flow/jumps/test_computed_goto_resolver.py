@@ -1884,6 +1884,27 @@ def test_state_write_route_rebind_requires_live_dispatcher_successor() -> None:
     assert already == ()
     assert unbound == 0
 
+    imported_delivery_ea = 0xF10000
+    delivery.tail.ea = imported_delivery_ea
+    pending, already, unbound = (
+        computed_goto_resolver._classify_live_state_write_routes(
+            mba,
+            _Index(),
+            (route,),
+            dispatcher_router_eas=frozenset({0x40A5F0}),
+            prefer_imported=True,
+            imported_instruction_origins={
+                imported_delivery_ea: route.delivery_ea,
+            },
+        )
+    )
+    assert len(pending) == 1
+    assert pending[0].delivery.serial == 3
+    assert pending[0].target.serial == 9
+    assert already == ()
+    assert unbound == 0
+    delivery.tail.ea = route.delivery_ea
+
     delivery.nsucc = lambda: 0
     pending, already, unbound = (
         computed_goto_resolver._classify_live_state_write_routes(

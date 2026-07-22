@@ -14439,6 +14439,7 @@ def _classify_live_state_write_routes(
     *,
     dispatcher_router_eas: frozenset[int],
     prefer_imported: bool,
+    imported_instruction_origins: Mapping[int, int] | None = None,
     diagnostic_rows: list[dict[str, object]] | None = None,
 ) -> tuple[
     tuple[_ReboundStateWriteRoute, ...],
@@ -14447,6 +14448,14 @@ def _classify_live_state_write_routes(
 ]:
     """Bind direct state deliveries that still point at a proven dispatcher."""
     import ida_hexrays  # type: ignore[import-untyped]
+
+    instruction_origins = imported_instruction_origins or {}
+
+    def native_instruction_ea(instruction: object | None) -> int | None:
+        if instruction is None:
+            return None
+        live_ea = int(instruction.ea)
+        return int(instruction_origins.get(live_ea, live_ea))
 
     def block_ref(serial: int) -> str:
         block = mba.get_mblock(int(serial))
@@ -14581,7 +14590,9 @@ def _classify_live_state_write_routes(
             )
             folded_shape_details.update(
                 write_tail_ea=(
-                    None if write_tail is None else f"0x{int(write_tail.ea):X}"
+                    None
+                    if write_tail is None
+                    else f"0x{int(native_instruction_ea(write_tail) or 0):X}"
                 ),
                 write_tail_opcode=(
                     None if write_tail is None else int(write_tail.opcode)
@@ -14607,7 +14618,7 @@ def _classify_live_state_write_routes(
                     )
                 )
                 and int(evidence.source_write_ea)
-                <= int(write_tail.ea)
+                <= int(native_instruction_ea(write_tail) or 0)
                 <= int(evidence.delivery_ea)
             )
             if is_folded_zero_way_delivery:
@@ -14647,7 +14658,7 @@ def _classify_live_state_write_routes(
                 write_tail is not None
                 and int(write_tail.opcode) == int(ida_hexrays.m_goto)
                 and int(evidence.source_write_ea)
-                <= int(write_tail.ea)
+                <= int(native_instruction_ea(write_tail) or 0)
                 <= int(evidence.delivery_ea)
                 and len(write_successors) == 1
                 and is_accepted_delivery_target(write_successors[0])
@@ -14679,7 +14690,7 @@ def _classify_live_state_write_routes(
                     helper_head_ea=(
                         None
                         if helper_head is None
-                        else f"0x{int(helper_head.ea):X}"
+                        else f"0x{int(native_instruction_ea(helper_head) or 0):X}"
                     ),
                     helper_head_opcode=(
                         None if helper_head is None else int(helper_head.opcode)
@@ -14692,7 +14703,7 @@ def _classify_live_state_write_routes(
                     helper_tail_ea=(
                         None
                         if helper_tail is None
-                        else f"0x{int(helper_tail.ea):X}"
+                        else f"0x{int(native_instruction_ea(helper_tail) or 0):X}"
                     ),
                     helper_tail_opcode=(
                         None if helper_tail is None else int(helper_tail.opcode)
@@ -14716,7 +14727,7 @@ def _classify_live_state_write_routes(
                     and int(helper_head.opcode) == int(helper_tail.opcode)
                     and int(helper_tail.opcode) == int(ida_hexrays.m_goto)
                     and int(evidence.source_write_ea)
-                    <= int(helper_tail.ea)
+                    <= int(native_instruction_ea(helper_tail) or 0)
                     <= int(evidence.delivery_ea)
                     and len(helper_successors) == 1
                     and is_accepted_delivery_target(helper_successors[0])
@@ -14823,13 +14834,13 @@ def _classify_live_state_write_routes(
         )
         is_direct_delivery = bool(
             tail is not None
-            and int(tail.ea) == int(evidence.delivery_ea)
+            and native_instruction_ea(tail) == int(evidence.delivery_ea)
             and int(tail.opcode) == int(ida_hexrays.m_goto)
             and len(successors) in (0, 1)
         )
         is_reference_two_way_delivery = bool(
             tail is not None
-            and int(tail.ea) == int(evidence.delivery_ea)
+            and native_instruction_ea(tail) == int(evidence.delivery_ea)
             and evidence.proof_kind == "reference_style_immediate_flow_route"
             and ida_hexrays.is_mcode_jcond(int(tail.opcode))
             and len(successors) == 2
@@ -14842,7 +14853,7 @@ def _classify_live_state_write_routes(
         )
         is_reference_zero_way_delivery = bool(
             tail is not None
-            and int(tail.ea) == int(evidence.delivery_ea)
+            and native_instruction_ea(tail) == int(evidence.delivery_ea)
             and evidence.proof_kind == "reference_style_immediate_flow_route"
             and ida_hexrays.is_mcode_jcond(int(tail.opcode))
             and len(successors) == 0
@@ -14860,7 +14871,11 @@ def _classify_live_state_write_routes(
                 int(delivery.serial),
                 int(delivery.start),
                 int(evidence.delivery_ea),
-                None if tail is None else f"0x{int(tail.ea):X}",
+                (
+                    None
+                    if tail is None
+                    else f"0x{int(native_instruction_ea(tail) or 0):X}"
+                ),
                 None if tail is None else int(tail.opcode),
                 successors,
             )
@@ -14871,7 +14886,11 @@ def _classify_live_state_write_routes(
                 write=write,
                 delivery=delivery,
                 target=target,
-                tail_ea=(None if tail is None else f"0x{int(tail.ea):X}"),
+                tail_ea=(
+                    None
+                    if tail is None
+                    else f"0x{int(native_instruction_ea(tail) or 0):X}"
+                ),
                 tail_opcode=(None if tail is None else int(tail.opcode)),
                 successors=[block_ref(successor) for successor in successors],
                 dispatcher_routers=[
@@ -14889,7 +14908,7 @@ def _classify_live_state_write_routes(
             bool(is_reference_conditional_delivery),
             bool(is_reference_zero_way_delivery),
             (
-                int(evidence.delivery_ea)
+                int(tail.ea)
                 if is_reference_zero_way_delivery
                 else None
             ),
@@ -15254,6 +15273,9 @@ def _on_preopt_bootstrap_route(
         state.portable_evidence.state_write_routes,
         dispatcher_router_eas=dispatcher_router_eas,
         prefer_imported=union_imported,
+        imported_instruction_origins=dict(
+            state.imported_instruction_origins_for(int(current_mba_token or 0))
+        ),
         diagnostic_rows=state_write_diagnostics,
     )
     session = decision.get("session")
