@@ -4774,6 +4774,59 @@ def build_exact_terminal_state_route_redirects(
     ]
 
 
+def _prefer_exact_terminal_route_fragments(
+    modifications: list[object],
+    terminal_redirects: list[object],
+) -> list[object]:
+    """Make each exact terminal route the sole CFG rewrite for its source.
+
+    A source-local terminal state write and a rebound zero-successor target
+    prove one complete terminal fragment.  A coarse state transition for the
+    same source must not race that fragment in the deferred gateway: whichever
+    rewrite happens first would make the sibling stale, and equal-priority
+    conflict resolution can then select the non-terminal target.  Keep
+    instruction-local edits, but replace every same-source CFG rewrite with the
+    one exact terminal redirect.  Ambiguous terminal claims abstain.
+    """
+    terminal_by_source: dict[int, set[tuple[int, int]]] = {}
+    terminal_mod_by_key: dict[tuple[int, int, int], object] = {}
+    for modification in terminal_redirects:
+        if not isinstance(modification, RedirectGoto):
+            continue
+        source = int(modification.from_serial)
+        edge = (int(modification.old_target), int(modification.new_target))
+        terminal_by_source.setdefault(source, set()).add(edge)
+        terminal_mod_by_key[(source, *edge)] = modification
+
+    authoritative = {
+        source: next(iter(edges))
+        for source, edges in terminal_by_source.items()
+        if len(edges) == 1
+    }
+    if not authoritative:
+        return list(modifications)
+
+    result: list[object] = []
+    for modification in modifications:
+        if isinstance(modification, (RedirectGoto, RedirectBranch)):
+            source = int(modification.from_serial)
+        elif isinstance(modification, ConvertToGoto):
+            source = int(modification.block_serial)
+        elif isinstance(modification, LowerConditionalStateTransition):
+            source = int(modification.source_serial)
+        else:
+            result.append(modification)
+            continue
+        if source not in authoritative:
+            result.append(modification)
+
+    for source, (old_target, new_target) in sorted(authoritative.items()):
+        result.append(
+            terminal_mod_by_key[(source, old_target, new_target)]
+        )
+    return result
+
+
 def _exact_terminal_state_writer_sources(
     flow_graph,
     routes: tuple[MaterializedStateRoute, ...],
@@ -8314,6 +8367,10 @@ def emit_minimal_unflatten(
     )
     if indirect_call_neutralizations:
         mods = list(mods) + indirect_call_neutralizations
+    mods = _prefer_exact_terminal_route_fragments(
+        list(mods),
+        terminal_state_route_mods,
+    )
     mods = _normalize_degenerate_branch_redirects(flow_graph, list(mods))
     plan = compile_patch_plan(list(mods), flow_graph)
     if terminal_carrier_convergence:

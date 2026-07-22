@@ -529,7 +529,24 @@ def _rebind_portable_materialized_state_routes(
         )
         if portable.proof_kind == "terminal_state_route":
             if rebound_target is not None:
-                target_serial = int(rebound_target.serial)
+                rebound_target_block = flow_graph.get_block(
+                    int(rebound_target.serial)
+                )
+                if (
+                    rebound_target_block is not None
+                    and getattr(rebound_target_block, "kind", None)
+                    is BlockKind.EXTERNAL
+                ):
+                    stop_serials = tuple(
+                        int(block.serial)
+                        for block in getattr(flow_graph, "blocks", {}).values()
+                        if block.kind is BlockKind.STOP
+                    )
+                    target_serial = (
+                        stop_serials[0] if len(stop_serials) == 1 else None
+                    )
+                else:
+                    target_serial = int(rebound_target.serial)
             elif portable.target_native_ea is not None:
                 stop_serials = tuple(
                     int(block.serial)
