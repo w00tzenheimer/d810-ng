@@ -87,12 +87,14 @@ class LogicalBlockProxy:
 
     __slots__ = (
         "_aborted",
+        "_generation",
         "_lineage",
         "_next_version",
         "_provenance",
         "_proxy_token",
         "_published",
         "_retired",
+        "_retirements",
         "_session_id",
         "_stable_identity",
         "_staged",
@@ -103,26 +105,49 @@ class LogicalBlockProxy:
         self,
         *,
         proxy_token: str,
-        published: LogicalBlockVersion,
+        session_id: str,
+        stable_identity: StableBlockIdentity | None,
+        provenance: BlockHandleProvenance,
+        generation: int,
+        published: LogicalBlockVersion | None,
     ) -> None:
         proxy_token = str(proxy_token)
-        if not proxy_token or published.version_id.proxy_token != proxy_token:
-            raise ValueError("published version must belong to its logical proxy")
+        session_id = str(session_id)
+        generation = int(generation)
+        if not proxy_token or not session_id:
+            raise ValueError("logical block proxy requires tokens and a session")
+        if generation < 0:
+            raise ValueError("logical block generation must be non-negative")
+        if published is not None:
+            if published.version_id.proxy_token != proxy_token:
+                raise ValueError("published version must belong to its logical proxy")
+            if published.handle.session_id != session_id:
+                raise ValueError("published version must belong to the proxy session")
+            if published.handle.stable_identity != stable_identity:
+                raise ValueError("published version must match the proxy identity")
+            if published.handle.provenance is not provenance:
+                raise ValueError("published version must match the proxy provenance")
+            if published.generation != generation:
+                raise ValueError("published version must match the proxy generation")
         self._proxy_token = proxy_token
-        self._session_id = published.handle.session_id
-        self._stable_identity = published.handle.stable_identity
-        self._provenance = published.handle.provenance
+        self._session_id = session_id
+        self._stable_identity = stable_identity
+        self._provenance = provenance
+        self._generation = generation
         self._published = published
         self._staged: dict[str, LogicalBlockVersion] = {}
+        self._retirements: dict[str, int] = {}
         self._retired: list[LogicalBlockVersion] = []
         self._aborted: list[LogicalBlockVersion] = []
         self._lineage: list[
             tuple[LogicalBlockVersionId, LogicalBlockVersionId]
         ] = []
-        self._states: dict[LogicalBlockVersionId, LogicalBlockVersionState] = {
-            published.version_id: LogicalBlockVersionState.PUBLISHED
-        }
-        self._next_version = published.version_id.version + 1
+        self._states: dict[LogicalBlockVersionId, LogicalBlockVersionState] = {}
+        if published is not None:
+            self._states[published.version_id] = LogicalBlockVersionState.PUBLISHED
+        self._next_version = (
+            0 if published is None else published.version_id.version + 1
+        )
 
     @classmethod
     def with_published(
@@ -138,12 +163,45 @@ class LogicalBlockProxy:
             raise ValueError("logical block proxy requires a token")
         return cls(
             proxy_token=proxy_token,
+            session_id=handle.session_id,
+            stable_identity=handle.stable_identity,
+            provenance=handle.provenance,
+            generation=generation,
             published=LogicalBlockVersion(
                 version_id=LogicalBlockVersionId(proxy_token, 0),
                 handle=handle,
                 generation=generation,
                 predecessor_version_id=None,
             ),
+        )
+
+    @classmethod
+    def without_published(
+        cls,
+        *,
+        proxy_token: str,
+        session_id: str,
+        stable_identity: StableBlockIdentity | None,
+        provenance: BlockHandleProvenance,
+        generation: int,
+    ) -> LogicalBlockProxy:
+        if (
+            provenance is BlockHandleProvenance.SYNTHETIC
+            and stable_identity is not None
+        ):
+            raise ValueError("synthetic logical proxy cannot claim stable identity")
+        if (
+            provenance is not BlockHandleProvenance.SYNTHETIC
+            and stable_identity is None
+        ):
+            raise ValueError("native logical proxy requires stable identity")
+        return cls(
+            proxy_token=proxy_token,
+            session_id=session_id,
+            stable_identity=stable_identity,
+            provenance=provenance,
+            generation=generation,
+            published=None,
         )
 
     @property
@@ -156,7 +214,7 @@ class LogicalBlockProxy:
 
     @property
     def generation(self) -> int:
-        return self._published.generation
+        return self._generation
 
     @property
     def provenance(self) -> BlockHandleProvenance:
@@ -176,9 +234,16 @@ class LogicalBlockProxy:
     ) -> tuple[tuple[LogicalBlockVersionId, LogicalBlockVersionId], ...]:
         return tuple(self._lineage)
 
-    def resolve(self, *, transaction_id: str | None = None) -> LogicalBlockVersion:
+    def resolve(
+        self,
+        *,
+        transaction_id: str | None = None,
+    ) -> LogicalBlockVersion | None:
         if transaction_id is not None:
-            staged = self._staged.get(str(transaction_id))
+            transaction_id = str(transaction_id)
+            if transaction_id in self._retirements:
+                return None
+            staged = self._staged.get(transaction_id)
             if staged is not None:
                 return staged
         return self._published
@@ -198,6 +263,10 @@ class LogicalBlockProxy:
             raise LogicalBlockStageConflict(
                 f"transaction {transaction_id!r} already staged this logical block"
             )
+        if transaction_id in self._retirements:
+            raise LogicalBlockStageConflict(
+                f"transaction {transaction_id!r} already retired this logical block"
+            )
         if generation != self.generation + 1:
             raise ValueError(
                 "staged logical block generation must follow published generation"
@@ -215,15 +284,51 @@ class LogicalBlockProxy:
             ),
             handle=handle,
             generation=generation,
-            predecessor_version_id=self._published.version_id,
+            predecessor_version_id=(
+                None if self._published is None else self._published.version_id
+            ),
         )
         self._next_version += 1
         self._staged[transaction_id] = staged
         self._states[staged.version_id] = LogicalBlockVersionState.STAGED
         return staged
 
+    def stage_retirement(self, *, transaction_id: str, generation: int) -> None:
+        transaction_id = str(transaction_id)
+        generation = int(generation)
+        if not transaction_id:
+            raise ValueError("logical block retirement requires a transaction id")
+        if self._published is None:
+            raise LogicalBlockStageConflict("cannot retire an unpublished logical block")
+        if transaction_id in self._staged or transaction_id in self._retirements:
+            raise LogicalBlockStageConflict(
+                f"transaction {transaction_id!r} already staged this logical block"
+            )
+        if generation != self.generation + 1:
+            raise ValueError(
+                "staged logical block generation must follow published generation"
+            )
+        self._retirements[transaction_id] = generation
+
     def commit(self, transaction_id: str) -> LogicalBlockVersionTransition:
         transaction_id = str(transaction_id)
+        retirement_generation = self._retirements.get(transaction_id)
+        if retirement_generation is not None:
+            published = self._published
+            if published is None:
+                raise LogicalBlockStageConflict(
+                    "retired logical block no longer has a published predecessor"
+                )
+            self._retirements.pop(transaction_id)
+            self._states[published.version_id] = LogicalBlockVersionState.RETIRED
+            self._retired.append(published)
+            self._published = None
+            self._generation = retirement_generation
+            return LogicalBlockVersionTransition(
+                transaction_id=transaction_id,
+                retired_version_id=published.version_id,
+                promoted_version_id=None,
+            )
         try:
             staged = self._staged[transaction_id]
         except KeyError as exc:
@@ -231,19 +336,25 @@ class LogicalBlockProxy:
                 f"transaction {transaction_id!r} has no staged logical block"
             ) from exc
         published = self._published
-        if staged.predecessor_version_id != published.version_id:
+        published_version_id = (
+            None if published is None else published.version_id
+        )
+        if staged.predecessor_version_id != published_version_id:
             raise LogicalBlockStageConflict(
                 "staged logical block no longer has the published predecessor"
             )
         self._staged.pop(transaction_id)
-        self._states[published.version_id] = LogicalBlockVersionState.RETIRED
-        self._retired.append(published)
+        if published is not None:
+            self._states[published.version_id] = LogicalBlockVersionState.RETIRED
+            self._retired.append(published)
         self._published = staged
+        self._generation = staged.generation
         self._states[staged.version_id] = LogicalBlockVersionState.PUBLISHED
-        self._lineage.append((published.version_id, staged.version_id))
+        if published is not None:
+            self._lineage.append((published.version_id, staged.version_id))
         return LogicalBlockVersionTransition(
             transaction_id=transaction_id,
-            retired_version_id=published.version_id,
+            retired_version_id=published_version_id,
             promoted_version_id=staged.version_id,
         )
 
@@ -258,6 +369,20 @@ class LogicalBlockProxy:
         self._states[staged.version_id] = LogicalBlockVersionState.ABORTED
         self._aborted.append(staged)
         return staged
+
+    def abort_retirement(self, transaction_id: str) -> LogicalBlockVersion:
+        transaction_id = str(transaction_id)
+        if transaction_id not in self._retirements:
+            raise LogicalBlockStageConflict(
+                f"transaction {transaction_id!r} has no staged retirement"
+            )
+        self._retirements.pop(transaction_id)
+        published = self._published
+        if published is None:
+            raise LogicalBlockStageConflict(
+                "aborted retirement has no published logical block"
+            )
+        return published
 
     def state_of(self, version_id: LogicalBlockVersionId) -> LogicalBlockVersionState:
         return self._states[version_id]
