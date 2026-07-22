@@ -14404,12 +14404,18 @@ def _on_calls_done_preanalysis(
             )
             return
 
-        if calls_evidence_changed and _refresh_preopt_union_from_calls_evidence(
-            state, mba
-        ):
+        if calls_evidence_changed:
+            preopt_refreshed = _refresh_preopt_union_from_calls_evidence(
+                state,
+                mba,
+            )
             materialization.rounds += 1
             request_generated_restart(
-                "computed_goto_preopt_template_refreshed",
+                (
+                    "computed_goto_preopt_template_refreshed"
+                    if preopt_refreshed
+                    else "computed_goto_calls_evidence"
+                ),
                 materialized_count=len(imported_conditional_bridges),
                 round=int(materialization.rounds),
             )

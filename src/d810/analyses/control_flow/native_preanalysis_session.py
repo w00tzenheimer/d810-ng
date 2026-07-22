@@ -1065,16 +1065,37 @@ class NativePreanalysisSessionState:
         The owning decompile controller must initiate a follow-up pass; its
         flowchart callback then consumes this request and returns ``MERR_REDO``.
         """
+        generation = int(self.evidence_generation)
         if not self.request_controlled_redo():
+            self._observe_transition(
+                operation="generated_restart_requested",
+                previous_generation=generation,
+                evidence_family="controller_restart",
+                outcome="declined",
+                reason="evidence generation already owns a controlled redo",
+            )
             return False
         self.pending_generated_restart_generation = self.evidence_generation
+        self._observe_transition(
+            operation="generated_restart_requested",
+            previous_generation=generation,
+            evidence_family="controller_restart",
+            reason="CALLS staged a controller-owned generated-MBA restart",
+        )
         return True
 
     def consume_generated_restart(self) -> bool:
         """Consume the current generation's staged flowchart restart once."""
         if not self.has_pending_generated_restart:
             return False
+        generation = int(self.evidence_generation)
         self.pending_generated_restart_generation = None
+        self._observe_transition(
+            operation="generated_restart_consumed",
+            previous_generation=generation,
+            evidence_family="controller_restart",
+            reason="flowchart consumed the staged generated-MBA restart",
+        )
         return True
 
     def needs_preopt_binding(self) -> bool:
