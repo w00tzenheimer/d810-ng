@@ -282,49 +282,6 @@ def _record_preopt_modification(
     decision["details"] = merged_details
 
 
-def _preopt_bootstrap_routes_are_live(
-    state: ResolverSessionState,
-    mba: object,
-) -> bool:
-    """Whether the current MBA already owns every required bootstrap endpoint.
-
-    A prepared union is a transport artifact, not an instruction to clone an
-    already-live function body.  When every portable bootstrap route uniquely
-    rebinds to an instruction-backed source and handler, the later bootstrap
-    handler can apply the narrow missing edge directly through the mutation
-    gateway.  Full-union import would duplicate those native regions.
-    """
-    routes = tuple(state.native_preanalysis.bootstrap_routes.values())
-    if not routes or state.identity_index is None:
-        return False
-    for evidence in routes:
-        rebound = state.rebind_bootstrap_route(
-            source_identity=evidence.source_identity,
-            state=int(evidence.state),
-        )
-        if rebound is None:
-            return False
-        try:
-            source = mba.get_mblock(int(rebound.source.serial))
-            handler = mba.get_mblock(int(rebound.handler.serial))
-            source_tail = None if source is None else source.tail
-            source_successors = -1 if source is None else int(source.nsucc())
-        except (AttributeError, TypeError, ValueError):
-            return False
-        if (
-            source is None
-            or handler is None
-            or getattr(source, "head", None) is None
-            or getattr(handler, "head", None) is None
-            or source_tail is None
-            or int(getattr(source_tail, "ea", -1)) != int(evidence.source_anchor_ea)
-            or int(getattr(source_tail, "opcode", -1)) != int(ida_hexrays.m_goto)
-            or source_successors not in (0, 1)
-        ):
-            return False
-    return True
-
-
 def _restore_preopt_terminal_return_carriers(
     *,
     function_ea: int,
@@ -367,22 +324,6 @@ def _restore_preopt_terminal_return_carriers(
         or state.preopt_union_import_active
         or _preopt_union_generation_was_processed(state, int(function_ea), mba)
     ):
-        return
-
-    if _preopt_bootstrap_routes_are_live(state, mba):
-        logger.info(
-            "PREOPT union import skipped: func=0x%X reason=live_bootstrap_routes "
-            "routes=%s",
-            int(function_ea),
-            [
-                (
-                    f"source@0x{int(route.source_anchor_ea):X}",
-                    f"state=0x{int(route.state):X}",
-                    f"handler@0x{int(route.handler_anchor_ea):X}",
-                )
-                for route in state.native_preanalysis.bootstrap_routes.values()
-            ],
-        )
         return
 
     primary_seed_ea = int(preparation.primary_seed_ea)

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from d810.analyses.control_flow.detached_handler_island import (
+    DetachedSnippetBoundaryPortOwner,
     DetachedSnippetBoundaryPorts,
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
@@ -26,6 +27,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     PreoptUnionPreparationResult,
 )
 from d810.analyses.control_flow.native_semantic_closure import NativeCfg
+from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
@@ -912,6 +914,7 @@ def test_preopt_route_consumption_materializes_a_zero_way_goto(monkeypatch) -> N
         def __init__(self, serial: int, *, tail: object | None = None) -> None:
             self.serial = int(serial)
             self.start = 0x40D313 if serial == 29 else 0x40EAA7
+            self.head = tail
             self.tail = tail
 
         def nsucc(self) -> int:
@@ -1258,6 +1261,140 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
 
     assert queued == [(7, predicate_ea, 9, 11)]
     assert session.native_preanalysis.bound_preopt_generation == 2
+
+
+def test_prepared_union_applies_only_the_external_entry_bridge_port(
+    monkeypatch,
+) -> None:
+    from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
+
+    function_ea = 0x40A560
+    taken_state = 0xA0716E5B
+    fallthrough_state = 0xEC71CA67
+    taken_target = 0x40C26D
+    fallthrough_target = 0x40B9A6
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(),
+        resolver_attachment=None,
+        native_key=NATIVE_KEY,
+    )
+    state = resolver_session_state(session)
+    evidence = EntryBridgeEvidence(
+        predicate_ea=0x40A5A0,
+        condition_code=5,
+        predicate_stack_identity=(0x20, 4),
+        stack_cell_identity=(0x80, 4),
+        taken_state_constant=taken_state,
+        fallthrough_state_constant=fallthrough_state,
+        source_store_ea=0x40A5AE,
+        canonical_stack_cell_identity=(0x40, 4),
+        canonical_predicate_stack_identity=(-0x20, 4),
+        predicate_block_ea=0x40A59D,
+        conditional_tail_ea=0x40A5AB,
+    )
+    assert state.native_preanalysis.merge_preopt_entry_bridge_evidence(
+        state.native_key,
+        evidence,
+    )
+    assert state.native_preanalysis.merge_materialized_transfers(
+        state.native_key,
+        (
+            MaterializedIndirectTransfer(
+                source_jmp_ea=0x40C253,
+                source_block_ea=0x40C253,
+                materialized_anchor_eas=(),
+                target_eas=(taken_target,),
+                selector_state_var_reg=20,
+                selector_state_constant=taken_state,
+                resolver_kind="static_handler_entry_route",
+            ),
+            MaterializedIndirectTransfer(
+                source_jmp_ea=0x40B98C,
+                source_block_ea=0x40B98C,
+                materialized_anchor_eas=(),
+                target_eas=(fallthrough_target,),
+                selector_state_var_reg=20,
+                selector_state_constant=fallthrough_state,
+                resolver_kind="static_handler_entry_route",
+            ),
+            MaterializedIndirectTransfer(
+                source_jmp_ea=0x40B000,
+                source_block_ea=0x40B000,
+                materialized_anchor_eas=(),
+                target_eas=(0x40B100, 0x40B200),
+                condition_code=5,
+                true_target_ea=0x40B100,
+                false_target_ea=0x40B200,
+                selector_state_var_reg=20,
+                predicate_true_is_taken=True,
+                predicate_preserve_live=True,
+                resolver_kind="static_conditional_state_choice_bridge",
+            ),
+        ),
+    )
+    assert state.native_preanalysis.discover_static_native_bootstrap_route(
+        state.native_key,
+        source_anchor_ea=0x40A5C8,
+        state_constant=0xABB95547,
+        handler_anchor_ea=0x40BECC,
+    )
+    state.native_preanalysis.set_preopt_union_preparation(
+        state.native_key,
+        PreoptUnionPreparationResult(
+            function_ea=function_ea,
+            prepared=True,
+            published=True,
+            primary_seed_ea=taken_target,
+        ),
+    )
+    state.bind_current_mba(
+        MbaBlockIdentityIndex.from_bindings(
+            generation=0,
+            evidence_generation=state.evidence_generation,
+            bindings=(),
+            native_key=NATIVE_KEY,
+        )
+    )
+    captured: list[tuple[object, ...]] = []
+
+    def apply_ports(mba, applied_function_ea, ports, *, mutation_gateway):
+        captured.append((mba, applied_function_ea, ports, mutation_gateway))
+        return (object(),)
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_capture_preopt_entry_bridge_evidence",
+        lambda _state, _mba: False,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "apply_live_conditional_boundary_ports",
+        apply_ports,
+    )
+    mba = SimpleNamespace(entry_ea=function_ea, qty=0)
+    decision = {"session": session, "mutation_gateway": "gateway"}
+
+    _on_preopt_bootstrap_route(
+        function_ea=function_ea,
+        mba=mba,
+        decision=decision,
+    )
+
+    assert len(captured) == 1
+    assert captured[0][0] is mba
+    assert captured[0][1] == function_ea
+    assert captured[0][3] == "gateway"
+    ports = captured[0][2]
+    assert len(ports) == 1
+    assert ports[0].predicate_ea == 0x40A5AB
+    assert ports[0].logical_source_anchor_ea == 0x40A5C8
+    assert ports[0].resolver_kind == "preopt_entry_bridge"
+    assert ports[0].source_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert decision["microcode_modified"] is True
+    assert (
+        session.native_preanalysis.bound_preopt_generation
+        == state.evidence_generation
+    )
 
 
 def test_materialization_and_transfer_accumulation_are_session_owned() -> None:
