@@ -678,13 +678,13 @@ class MbaBlockIdentityIndex:
                 serials[token] = serial + 1
         return staged
 
-    def stage_new_proxy(
+    def reserve_new_proxy(
         self,
         *,
         transaction_id: str,
         handle: MbaBlockHandle,
-        returned_serial: int,
     ) -> LogicalBlockVersion:
+        """Reserve a new logical owner without claiming a physical coordinate."""
         transaction_id = str(transaction_id)
         serials = self._serials_by_transaction.get(transaction_id)
         if serials is None:
@@ -707,9 +707,24 @@ class MbaBlockIdentityIndex:
             handle=handle,
             generation=self.generation + 1,
         )
-        serials[handle.token] = int(returned_serial)
         self._proxy_tokens_by_transaction[transaction_id].add(proxy_token)
         self._proxy_actions_by_transaction[transaction_id][proxy_token] = "new"
+        return staged
+
+    def stage_new_proxy(
+        self,
+        *,
+        transaction_id: str,
+        handle: MbaBlockHandle,
+        returned_serial: int,
+    ) -> LogicalBlockVersion:
+        transaction_id = str(transaction_id)
+        staged = self.reserve_new_proxy(
+            transaction_id=transaction_id,
+            handle=handle,
+        )
+        serials = self._serials_by_transaction[transaction_id]
+        serials[handle.token] = int(returned_serial)
         return staged
 
     def stage_retirement(
@@ -814,8 +829,19 @@ class MbaBlockIdentityIndex:
                 proxy.abort_retirement(transaction_id)
                 continue
             staged = proxy.abort(transaction_id)
-            if actions.get(proxy_token) == "replacement":
+            action = actions.get(proxy_token)
+            if action in {"replacement", "new"}:
                 self._proxy_token_by_handle_token.pop(staged.handle.token, None)
+            if action == "new":
+                self._proxies_by_token.pop(proxy_token, None)
+                self._handles_by_token.pop(staged.handle.token, None)
+                identity = staged.handle.stable_identity
+                if identity is not None:
+                    tokens = self._tokens_by_identity.get(identity)
+                    if tokens is not None:
+                        tokens.discard(staged.handle.token)
+                        if not tokens:
+                            self._tokens_by_identity.pop(identity, None)
             discarded.append(staged.version_id)
         self._serials_by_transaction.pop(transaction_id, None)
         self._baseline_tokens_by_transaction.pop(transaction_id, None)
@@ -1075,11 +1101,28 @@ class MbaBlockIdentityIndex:
         for token, serial in tuple(serials.items()):
             if serial >= insertion_serial:
                 serials[token] = serial + 1
-        self.stage_new_proxy(
-            transaction_id=transaction_id,
-            handle=created,
-            returned_serial=int(returned_serial),
+        proxy = self.logical_proxy_for_handle(created)
+        if proxy is None:
+            self.stage_new_proxy(
+                transaction_id=transaction_id,
+                handle=created,
+                returned_serial=int(returned_serial),
+            )
+            return
+        action = self._proxy_actions_by_transaction.get(transaction_id, {}).get(
+            proxy.proxy_token
         )
+        staged = proxy.resolve(transaction_id=transaction_id)
+        if (
+            action != "new"
+            or staged is None
+            or staged.handle is not created
+            or created.token in serials
+        ):
+            raise ValueError(
+                "inserted block does not match a transaction-reserved logical owner"
+            )
+        serials[created.token] = int(returned_serial)
 
     def record_realized_serial(
         self,

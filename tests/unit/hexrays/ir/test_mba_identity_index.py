@@ -762,6 +762,61 @@ def test_inserted_replacement_stages_one_proxy_and_shifts_transaction_view() -> 
     assert len(transitions) == 1
 
 
+def test_reserved_synthetic_proxy_binds_only_when_insertion_is_realized() -> None:
+    first_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),),
+        native_key=NATIVE_KEY,
+    )
+    later_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x402000, 0x402010),),
+        native_key=NATIVE_KEY,
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=2,
+        bindings=((first_identity, 0), (later_identity, 1)),
+        native_key=NATIVE_KEY,
+    )
+    later = index.handle_for_serial(1)
+    assert later is not None
+    proxy_count = index.logical_proxy_count
+    transaction_id = "reserved-synthetic"
+    index.begin_transaction(transaction_id, 2)
+    helper = index.create_synthetic_handle()
+
+    staged = index.reserve_new_proxy(
+        transaction_id=transaction_id,
+        handle=helper,
+    )
+
+    proxy = index.logical_proxy_for_handle(helper)
+    assert proxy is not None
+    assert proxy.resolve() is None
+    assert proxy.resolve(transaction_id=transaction_id) is staged
+    assert (
+        index.resolve_logical_version(staged, transaction_id=transaction_id) is None
+    )
+    assert index.logical_proxy_count == proxy_count + 1
+
+    index.record_insert(
+        transaction_id=transaction_id,
+        insertion_serial=1,
+        created=helper,
+        returned_serial=1,
+    )
+
+    bound = index.resolve_logical_version(staged, transaction_id=transaction_id)
+    assert bound is not None and bound.serial == 1
+    shifted = index.resolve(later, transaction_id=transaction_id)
+    assert shifted is not None and shifted.serial == 2
+
+    discarded = index.abort_proxy_transaction(transaction_id)
+
+    assert discarded == (staged.version_id,)
+    assert index.logical_proxy_for_handle(helper) is None
+    assert index.logical_proxy_count == proxy_count
+    assert index.resolve(later).serial == 1
+
+
 def test_inserted_replacement_abort_preserves_published_coordinates() -> None:
     identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x401000, 0x401010),),
