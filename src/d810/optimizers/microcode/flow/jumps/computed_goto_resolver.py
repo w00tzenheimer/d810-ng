@@ -14338,7 +14338,7 @@ def _classify_live_state_write_routes(
         if int(serial) in router_serials:
             return True
         block = mba.get_mblock(int(serial))
-        tail = None if block is None else block.tail
+        tail = None if block is None else getattr(block, "tail", None)
         if tail is None or not ida_hexrays.is_mcode_jcond(int(tail.opcode)):
             return False
         return any(
