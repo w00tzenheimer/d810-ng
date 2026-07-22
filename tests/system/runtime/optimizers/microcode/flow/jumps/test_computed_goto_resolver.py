@@ -10581,6 +10581,37 @@ def test_preopt_union_internal_successor_proof_requires_one_imported_target() ->
     assert computed_goto_resolver._preopt_union_internal_successor_eas(closure) == {}
 
 
+def test_preopt_union_internal_successor_includes_reference_state_routes() -> None:
+    delivery_ea = 0x40A70E
+    target_ea = 0x40ADF2
+    identity = lambda ea: StableBlockIdentity.from_intervals(
+        (NativeEaInterval(ea, ea + 1),), native_key=NATIVE_KEY
+    )
+    route = PortableStateWriteRouteEvidence(
+        write_identity=identity(0x40A6F0),
+        delivery_identity=identity(delivery_ea),
+        source_write_ea=0x40A6F0,
+        delivery_ea=delivery_ea,
+        delivery_region_start_ea=delivery_ea,
+        delivery_region_end_ea=delivery_ea + 2,
+        corridor_instruction_eas=(0x40A6F0, delivery_ea),
+        state_var_reg=20,
+        state_constant=0x12345678,
+        target_identity=identity(target_ea),
+        target_ea=target_ea,
+        proof_kind="reference_style_immediate_flow_route",
+    )
+    closure = SimpleNamespace(
+        included_block_eas=(delivery_ea, target_ea),
+        proven_import_boundary_edges=(),
+    )
+
+    assert computed_goto_resolver._preopt_union_internal_successor_eas(
+        closure,
+        state_write_routes=(route,),
+    ) == {delivery_ea: target_ea}
+
+
 def test_preopt_union_groups_two_resolver_cut_targets_into_one_conditional_port() -> (
     None
 ):
