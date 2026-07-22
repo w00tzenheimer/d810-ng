@@ -10246,6 +10246,215 @@ def test_preopt_union_reanchors_imported_conditional_source_from_predicate() -> 
     )
 
 
+def test_preopt_static_choice_uses_native_predicate_when_prior_mba_folded_it() -> None:
+    source_ea = 0x40B8E6
+    predicate_ea = 0x40B90F
+    old_taken_ea = 0x40C6B5
+    old_fallthrough_ea = 0x40B915
+    true_state = 0x7F9D6412
+    false_state = 0xA7933EA0
+    true_target_ea = 0x40B3FF
+    false_target_ea = 0x40C1A0
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=source_ea,
+        materialized_anchor_eas=(predicate_ea,),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        selector_state_var_reg=20,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        predicate_true_is_taken=True,
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    native_cfg = NativeCfg(
+        {
+            source_ea: NativeBlock(
+                source_ea,
+                old_fallthrough_ea,
+                outgoing_edges=(
+                    NativeEdge(
+                        NativeEdgeKind.CONDITIONAL_TRUE,
+                        old_taken_ea,
+                        source_instruction_ea=predicate_ea,
+                    ),
+                    NativeEdge(
+                        NativeEdgeKind.CONDITIONAL_FALSE,
+                        old_fallthrough_ea,
+                        source_instruction_ea=predicate_ea,
+                    ),
+                ),
+            ),
+            old_taken_ea: NativeBlock(old_taken_ea, old_taken_ea + 1),
+            old_fallthrough_ea: NativeBlock(
+                old_fallthrough_ea,
+                old_fallthrough_ea + 1,
+            ),
+            true_target_ea: NativeBlock(true_target_ea, true_target_ea + 1),
+            false_target_ea: NativeBlock(false_target_ea, false_target_ea + 1),
+        }
+    )
+
+    ports = computed_goto_resolver._preopt_live_conditional_bridge_boundary_ports(
+        (transfer,),
+        live_mba=None,
+        live_native_eas=frozenset(),
+        imported_entry_eas=frozenset(
+            {
+                source_ea,
+                old_taken_ea,
+                old_fallthrough_ea,
+                true_target_ea,
+                false_target_ea,
+            }
+        ),
+        native_cfg=native_cfg,
+    )
+
+    assert ports is not None
+    assert len(ports) == 1
+    (port,) = ports
+    assert port.source_block_ea == source_ea
+    assert port.predicate_ea == predicate_ea
+    assert port.old_taken_target_ea == old_taken_ea
+    assert port.old_fallthrough_target_ea == old_fallthrough_ea
+    assert port.taken_state == true_state
+    assert port.taken_target_ea == true_target_ea
+    assert port.fallthrough_state == false_state
+    assert port.fallthrough_target_ea == false_target_ea
+    assert port.predicate_true_is_taken is True
+
+
+def test_preopt_static_choice_survives_an_equivalent_stale_live_bridge() -> None:
+    source_ea = 0x40B8E6
+    predicate_ea = 0x40B90F
+    old_taken_ea = 0x40C6B5
+    old_fallthrough_ea = 0x40B915
+    true_state = 0x7F9D6412
+    false_state = 0xA7933EA0
+    true_target_ea = 0x40B3FF
+    false_target_ea = 0x40C1A0
+    static_choice = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=source_ea,
+        materialized_anchor_eas=(predicate_ea,),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        selector_state_var_reg=20,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        predicate_true_is_taken=True,
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    stale_live_bridge = replace(
+        static_choice,
+        predicate_register=8,
+        predicate_size=4,
+        predicate_preserve_live=True,
+        resolver_kind="conditional_handler_bridge",
+    )
+    native_cfg = NativeCfg(
+        {
+            source_ea: NativeBlock(
+                source_ea,
+                old_fallthrough_ea,
+                outgoing_edges=(
+                    NativeEdge(
+                        NativeEdgeKind.CONDITIONAL_TRUE,
+                        old_taken_ea,
+                        source_instruction_ea=predicate_ea,
+                    ),
+                    NativeEdge(
+                        NativeEdgeKind.CONDITIONAL_FALSE,
+                        old_fallthrough_ea,
+                        source_instruction_ea=predicate_ea,
+                    ),
+                ),
+            ),
+            old_taken_ea: NativeBlock(old_taken_ea, old_taken_ea + 1),
+            old_fallthrough_ea: NativeBlock(
+                old_fallthrough_ea,
+                old_fallthrough_ea + 1,
+            ),
+            true_target_ea: NativeBlock(true_target_ea, true_target_ea + 1),
+            false_target_ea: NativeBlock(false_target_ea, false_target_ea + 1),
+        }
+    )
+
+    ports = computed_goto_resolver._preopt_live_conditional_bridge_boundary_ports(
+        (static_choice, stale_live_bridge),
+        live_mba=None,
+        live_native_eas=frozenset(),
+        imported_entry_eas=frozenset(
+            {
+                source_ea,
+                old_taken_ea,
+                old_fallthrough_ea,
+                true_target_ea,
+                false_target_ea,
+            }
+        ),
+        native_cfg=native_cfg,
+    )
+
+    assert ports is not None
+    assert len(ports) == 1
+    assert ports[0].resolver_kind == "resolver_proven_static_conditional_state_choice"
+
+
+def test_preopt_static_choice_defers_one_way_native_shape_to_template_proof() -> None:
+    source_ea = 0x40B8E6
+    predicate_ea = 0x40B90F
+    old_taken_ea = 0x40C6B5
+    true_target_ea = 0x40B3FF
+    false_target_ea = 0x40C1A0
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=source_ea,
+        materialized_anchor_eas=(predicate_ea,),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        selector_state_var_reg=20,
+        predicate_true_state=0x7F9D6412,
+        predicate_false_state=0xA7933EA0,
+        predicate_true_is_taken=True,
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    native_cfg = NativeCfg(
+        {
+            source_ea: NativeBlock(
+                source_ea,
+                0x40B915,
+                outgoing_edges=(NativeEdge(NativeEdgeKind.DIRECT_JUMP, old_taken_ea),),
+            ),
+            old_taken_ea: NativeBlock(old_taken_ea, old_taken_ea + 1),
+            true_target_ea: NativeBlock(true_target_ea, true_target_ea + 1),
+            false_target_ea: NativeBlock(false_target_ea, false_target_ea + 1),
+        }
+    )
+
+    ports = computed_goto_resolver._preopt_live_conditional_bridge_boundary_ports(
+        (transfer,),
+        live_mba=None,
+        live_native_eas=frozenset(),
+        imported_entry_eas=frozenset(
+            {source_ea, old_taken_ea, true_target_ea, false_target_ea}
+        ),
+        native_cfg=native_cfg,
+    )
+
+    assert ports is not None
+    assert len(ports) == 1
+    assert ports[0].old_taken_target_ea is None
+    assert ports[0].old_fallthrough_target_ea is None
+
+
 def test_preopt_residual_route_rebinds_an_imported_handler_tail() -> None:
     source_ea = 0x5000
     write_ea = 0x5008
