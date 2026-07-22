@@ -1192,9 +1192,11 @@ def test_restore_pruned_conditional_preserves_predicate_and_builds_both_arms(
         ea=0x40C12C,
         d=_BlockReference(),
     )
-    taken_target = _FakeBlock(20, start=0x40C20C)
+    # Imported union blocks share the function start EA.  Their live handles,
+    # not that broad start coordinate, must survive the helper insertion.
+    taken_target = _FakeBlock(20, start=0x40A560)
     taken_target.mba = mba
-    fallthrough_target = _FakeBlock(30, start=0x40C16A)
+    fallthrough_target = _FakeBlock(30, start=0x40A560)
     fallthrough_target.mba = mba
     mba.blocks = {
         int(guard.serial): guard,
@@ -1238,9 +1240,8 @@ def test_restore_pruned_conditional_preserves_predicate_and_builds_both_arms(
     monkeypatch.setattr(dm, "insert_goto_instruction", lambda *_a, **_k: None)
     monkeypatch.setattr(dm.ida_hexrays, "mop_t", _BlockReference)
 
-    modifier = dm.DeferredGraphModifier(
-        mba, mutation_gateway=make_mutation_gateway(mba)
-    )
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     assert modifier.restore_pruned_conditional_now(
         guard,
         taken_target=taken_target,
@@ -1259,6 +1260,12 @@ def test_restore_pruned_conditional_preserves_predicate_and_builds_both_arms(
     assert tuple(helper.succset) == (int(live_fallthrough_target.serial),)
     assert tuple(helper.predset) == (int(live_guard.serial),)
     assert int(live_guard.serial) in tuple(live_taken_target.predset)
+    assert len(gateway.receipts) == 1
+    assert gateway.receipts[0].operation_count == 3
+    assert gateway.receipts[0].planned_operation_count == 3
+    assert gateway.receipts[0].description == (
+        "restore proven pruned conditional fragment"
+    )
 
 
 def test_conditional_lowering_helpers_keep_target_identity_across_two_insertions(

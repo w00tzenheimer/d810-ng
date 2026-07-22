@@ -2835,18 +2835,31 @@ class DeferredGraphModifier:
         an adjacent fallthrough helper, preserving the original condition and
         changing only its block-reference destination.
         """
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise RuntimeError("conditional restoration requires a mutation gateway")
         source_serial = int(source.serial)
         source_start_ea = int(source.start)
         taken_serial_before_insertion = int(taken_target.serial)
         taken_start_ea = int(taken_target.start)
         fallthrough_serial_before_insertion = int(fallthrough_target.serial)
         fallthrough_start_ea = int(fallthrough_target.start)
+        source_handle = gateway.identity_index.handle_for_serial(source_serial)
+        taken_handle = gateway.identity_index.handle_for_serial(
+            taken_serial_before_insertion
+        )
+        fallthrough_handle = gateway.identity_index.handle_for_serial(
+            fallthrough_serial_before_insertion
+        )
         tail = source.tail
         if (
             source.nsucc() != 0
             or tail is None
             or not ida_hexrays.is_mcode_jcond(int(tail.opcode))
             or taken_target is fallthrough_target
+            or source_handle is None
+            or taken_handle is None
+            or fallthrough_handle is None
         ):
             logger.info(
                 "pruned conditional restore abstained: "
@@ -2863,11 +2876,67 @@ class DeferredGraphModifier:
             )
             return False
 
+        def native_anchor(handle, fallback: int) -> int:
+            identity = handle.stable_identity
+            if identity is None:
+                return int(fallback)
+            if identity.exact_instruction_eas:
+                return min(int(ea) for ea in identity.exact_instruction_eas)
+            return int(identity.native_ranges.intervals[0].start_ea)
+
+        taken_anchor_ea = native_anchor(taken_handle, taken_start_ea)
+        fallthrough_anchor_ea = native_anchor(
+            fallthrough_handle,
+            fallthrough_start_ea,
+        )
+
+        self._begin_mutation_batch(
+            serial_quantity=int(self.mba.qty),
+            kind=StructuralMutationKind.BLOCK_REPLACE,
+            description="restore proven pruned conditional fragment",
+            planned_operation_count=3,
+            plan_items=(
+                MbaMutationPlanItem(
+                    item_index=0,
+                    mutation_kind="insert_fallthrough_helper",
+                    source_serial=source_serial,
+                    source_anchor_ea=int(tail.ea),
+                    source_identity=source_handle.stable_identity,
+                    disposition="planned",
+                    reason="preserve native predicate and materialize fallthrough",
+                ),
+                MbaMutationPlanItem(
+                    item_index=1,
+                    mutation_kind="bind_conditional_taken",
+                    source_serial=source_serial,
+                    source_anchor_ea=int(tail.ea),
+                    source_identity=source_handle.stable_identity,
+                    target_serial=taken_serial_before_insertion,
+                    target_anchor_ea=taken_anchor_ea,
+                    target_identity=taken_handle.stable_identity,
+                    disposition="planned",
+                    reason="resolver-proven taken route",
+                ),
+                MbaMutationPlanItem(
+                    item_index=2,
+                    mutation_kind="bind_conditional_fallthrough",
+                    source_serial=source_serial,
+                    source_anchor_ea=int(tail.ea),
+                    source_identity=source_handle.stable_identity,
+                    target_serial=fallthrough_serial_before_insertion,
+                    target_anchor_ea=fallthrough_anchor_ea,
+                    target_identity=fallthrough_handle.stable_identity,
+                    disposition="planned",
+                    reason="resolver-proven fallthrough route",
+                ),
+            ),
+        )
         helper_serial = self._build_fallthrough_goto_helper(
             source,
             fallthrough_target,
         )
         if helper_serial is None:
+            gateway.abort(reason="fallthrough helper insertion failed")
             logger.info(
                 "pruned conditional restore abstained: "
                 "source=blk%d@0x%X fallthrough=blk%d@0x%X "
@@ -2878,17 +2947,23 @@ class DeferredGraphModifier:
                 fallthrough_start_ea,
             )
             return False
-        source = self._reacquire_block_after_insertion(
-            source_serial,
-            source_start_ea,
+        source_binding = gateway.identity_index.resolve(source_handle)
+        taken_binding = gateway.identity_index.resolve(taken_handle)
+        fallthrough_binding = gateway.identity_index.resolve(fallthrough_handle)
+        source = (
+            None
+            if source_binding is None
+            else self.mba.get_mblock(int(source_binding.serial))
         )
-        taken_target = self._reacquire_block_after_insertion(
-            taken_serial_before_insertion,
-            taken_start_ea,
+        taken_target = (
+            None
+            if taken_binding is None
+            else self.mba.get_mblock(int(taken_binding.serial))
         )
-        fallthrough_target = self._reacquire_block_after_insertion(
-            fallthrough_serial_before_insertion,
-            fallthrough_start_ea,
+        fallthrough_target = (
+            None
+            if fallthrough_binding is None
+            else self.mba.get_mblock(int(fallthrough_binding.serial))
         )
         helper = self.mba.get_mblock(int(helper_serial))
         if (
@@ -2898,6 +2973,7 @@ class DeferredGraphModifier:
             or helper is None
             or int(helper.serial) != int(source.serial) + 1
         ):
+            gateway.abort(reason="live block handle reacquisition failed")
             logger.info(
                 "pruned conditional restore abstained: "
                 "source=blk%d@0x%X helper=%s taken=blk%d@0x%X "
@@ -2914,6 +2990,7 @@ class DeferredGraphModifier:
 
         tail = source.tail
         if tail is None or not ida_hexrays.is_mcode_jcond(int(tail.opcode)):
+            gateway.abort(reason="native predicate disappeared after helper insertion")
             logger.info(
                 "pruned conditional restore abstained: "
                 "source=blk%d@0x%X tail=%s reason=tail_after_insertion",
@@ -2941,6 +3018,15 @@ class DeferredGraphModifier:
             taken_target,
             fallthrough_target,
         )
+        gateway.record_edge_redirect(
+            source=source_handle,
+            target=taken_handle,
+        )
+        gateway.record_edge_redirect(
+            source=source_handle,
+            target=fallthrough_handle,
+        )
+        gateway.commit()
         return True
 
     def restore_pruned_direct_now(
@@ -8794,10 +8880,21 @@ class DeferredGraphModifier:
         requirement that ``succset[0]`` of a 2-way block equals the fall-through.
         """
         mba = blk.mba
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise RuntimeError("fallthrough helper insertion requires a mutation gateway")
         target_serial_before_insertion = int(target_blk.serial)
-        target_start_ea = int(target_blk.start)
-        target_instruction_ea = (
-            None if target_blk.head is None else int(target_blk.head.ea)
+        target_handle = gateway.identity_index.handle_for_serial(
+            target_serial_before_insertion
+        )
+        state_fields = (state_register, state_size, state_value)
+        if target_handle is None or (
+            any(value is not None for value in state_fields)
+            and not all(value is not None for value in state_fields)
+        ):
+            return None
+        assignment_ea = (
+            int(blk.tail.ea) if blk.tail is not None else int(self.mba.entry_ea)
         )
         old_qty = int(mba.qty)
         nop_block = copy_block_keep(mba, blk, blk.serial + 1)
@@ -8833,29 +8930,26 @@ class DeferredGraphModifier:
                 sblk.predset._del(nop_block.serial)
         for p in [int(x) for x in nop_block.predset]:
             nop_block.predset._del(p)
-        # SWIG block proxies are not stable across ``copy_block_keep``.  Resolve
-        # the pre-insertion serial through this modifier's insertion ledger and
-        # reacquire the current C++ block instead of trusting ``target_blk``.
-        current_target = self._reacquire_block_after_insertion(
-            target_serial_before_insertion,
-            target_start_ea,
-            exact_instruction_ea=target_instruction_ea,
-            insertion_serial=int(nop_block.serial),
+        # SWIG block proxies are not stable across ``copy_block_keep``.  Keep a
+        # serial-free live handle through the insertion and reacquire the
+        # current C++ target from the gateway-owned identity index.
+        target_binding = gateway.identity_index.resolve(target_handle)
+        current_target = (
+            None
+            if target_binding is None
+            else mba.get_mblock(int(target_binding.serial))
         )
         if current_target is None:
             return None
         target_serial = int(current_target.serial)
-        state_fields = (state_register, state_size, state_value)
         if all(value is not None for value in state_fields):
             assignment = self._materialize_register_state_write(
-                ea=int(blk.tail.ea) if blk.tail is not None else int(self.mba.entry_ea),
+                ea=assignment_ea,
                 state_register=int(state_register),
                 state_size=int(state_size),
                 state_value=int(state_value),
             )
             nop_block.insert_into_block(assignment, nop_block.tail)
-        elif any(value is not None for value in state_fields):
-            return None
         insert_goto_instruction(nop_block, target_serial, nop_previous_instruction=False)
         nop_block.flags |= ida_hexrays.MBL_GOTO
         nop_block.succset.push_back(target_serial)
