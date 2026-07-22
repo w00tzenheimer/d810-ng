@@ -207,6 +207,49 @@ def test_preopt_entry_bridge_requires_portable_original_predicate_identity() -> 
     assert computed_goto_resolver._preopt_entry_bridge_transfer(evidence, routes) is None
 
 
+@pytest.mark.parametrize(
+    ("condition_code", "condition_true_is_transfer_true"),
+    ((4, True), (5, False)),
+)
+def test_preopt_entry_consumer_lowers_original_predicate_with_exact_polarity(
+    condition_code: int,
+    condition_true_is_transfer_true: bool,
+) -> None:
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40A5AB,
+        source_block_ea=0x40A59D,
+        materialized_anchor_eas=(0x40A5AE,),
+        target_eas=(0x40C26D, 0x40B9A6),
+        condition_code=condition_code,
+        true_target_ea=0x40C26D,
+        false_target_ea=0x40B9A6,
+        selector_state_var_reg=20,
+        resolver_kind="preopt_entry_bridge",
+        predicate_size=4,
+        predicate_stack_ida_stkoff=-0x20,
+        predicate_true_state=0xA0716E5B,
+        predicate_false_state=0xEC71CA67,
+        state_carrier_store_ea=0x40A5AE,
+        state_carrier_consumer_load_eas=(0x40BECC,),
+        state_carrier_ida_stkoff=0x40,
+    )
+    mba = SimpleNamespace(stkoff_ida2vd=lambda stkoff: int(stkoff) + 0x500)
+
+    lowering = computed_goto_resolver._preopt_entry_consumer_condition(
+        transfer,
+        mba,
+    )
+
+    assert lowering is not None
+    assert lowering.condition_operand.stack_stkoff == 0x4E0
+    assert lowering.condition_operand.stack_size == 4
+    assert lowering.condition_operand.value == 0
+    assert (
+        lowering.condition_true_is_transfer_true
+        is condition_true_is_transfer_true
+    )
+
+
 def test_preopt_entry_bridge_replaces_later_bootstrap_port_atomically() -> None:
     owner = DetachedSnippetBoundaryPortOwner
     taken_state = 0xA0716E5B
@@ -428,6 +471,7 @@ def test_preopt_entry_bridge_defers_to_matching_stack_carried_consumer() -> None
             selector_state_var_reg=20,
             resolver_kind="preopt_entry_bridge",
             predicate_size=4,
+            predicate_stack_ida_stkoff=-0x20,
             predicate_true_state=taken_state,
             predicate_false_state=fallthrough_state,
             state_carrier_store_ea=store_ea,
