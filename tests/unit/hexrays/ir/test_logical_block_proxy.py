@@ -197,3 +197,67 @@ def test_proxy_identity_and_provenance_cannot_drift_between_versions() -> None:
             generation=4,
         )
     assert proxy.provenance is BlockHandleProvenance.NATIVE
+
+
+def test_new_logical_block_is_unpublished_until_owning_transaction_commits() -> None:
+    proxy = LogicalBlockProxy.without_published(
+        proxy_token="logical:new-tail",
+        session_id="proxy-session",
+        stable_identity=None,
+        provenance=BlockHandleProvenance.SYNTHETIC,
+        generation=3,
+    )
+    staged = proxy.stage(
+        transaction_id="tx-insert",
+        handle=MbaBlockHandle.synthetic(
+            session_id="proxy-session",
+            token="physical:new-tail",
+        ),
+        generation=4,
+    )
+
+    assert proxy.resolve() is None
+    assert proxy.resolve(transaction_id="tx-insert") is staged
+
+    transition = proxy.commit("tx-insert")
+
+    assert transition.retired_version_id is None
+    assert transition.promoted_version_id == staged.version_id
+    assert proxy.resolve() is staged
+    assert proxy.generation == 4
+
+
+def test_retirement_is_transaction_local_and_commit_has_no_promoted_version() -> None:
+    proxy = LogicalBlockProxy.with_published(
+        proxy_token="logical:dead-route",
+        handle=_handle("physical:v0"),
+        generation=3,
+    )
+    published = proxy.resolve()
+
+    proxy.stage_retirement(transaction_id="tx-remove", generation=4)
+
+    assert proxy.resolve() is published
+    assert proxy.resolve(transaction_id="tx-remove") is None
+
+    transition = proxy.commit("tx-remove")
+
+    assert transition.retired_version_id == published.version_id
+    assert transition.promoted_version_id is None
+    assert proxy.resolve() is None
+    assert proxy.generation == 4
+    assert proxy.state_of(published.version_id) is LogicalBlockVersionState.RETIRED
+
+
+def test_aborted_retirement_preserves_published_version() -> None:
+    proxy = LogicalBlockProxy.with_published(
+        proxy_token="logical:live-route",
+        handle=_handle("physical:v0"),
+        generation=3,
+    )
+    published = proxy.resolve()
+    proxy.stage_retirement(transaction_id="tx-remove", generation=4)
+
+    assert proxy.abort_retirement("tx-remove") is published
+    assert proxy.resolve() is published
+    assert proxy.generation == 3
