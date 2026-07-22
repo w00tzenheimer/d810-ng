@@ -5674,6 +5674,8 @@ class DeferredGraphModifier:
         """
         successful = 0
         failed = 0
+        external_sdk_operation_count = 0
+        external_sdk_refresh_required = False
 
         # --- Phase 1: Classify ---------------------------------------
         classified: list[tuple[int, GraphModification, StagedAtomicClassification]] = [
@@ -5820,6 +5822,13 @@ class DeferredGraphModifier:
             try:
                 if self._apply_single(mod):
                     successful += 1
+                    if cls == StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE:
+                        external_sdk_refresh_required = True
+                        if (
+                            mod.mod_type
+                            != ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL
+                        ):
+                            external_sdk_operation_count += 1
                     recent_modifications.append({
                         "index": i,
                         "description": mod.description,
@@ -5850,6 +5859,12 @@ class DeferredGraphModifier:
         for rewire in pending_rewires:
             if self._commit_staged_rewire(rewire):
                 successful += 1
+                external_sdk_refresh_required = True
+                if (
+                    rewire.mod_type
+                    != ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL
+                ):
+                    external_sdk_operation_count += 1
                 committed_rewires.append(rewire)
                 recent_modifications.append({
                     "description": (
@@ -5899,6 +5914,17 @@ class DeferredGraphModifier:
         )
         if offenders:
             self._repair_cfg_51814_offenders(offenders)
+
+        if external_sdk_refresh_required:
+            gateway = self._mutation_gateway
+            if gateway is None or not gateway.active:
+                raise RuntimeError(
+                    "staged atomic SDK operations require an active mutation gateway"
+                )
+            gateway.record_external_sdk_operations(
+                self.mba,
+                operation_count=external_sdk_operation_count,
+            )
 
         self.mba.mark_chains_dirty()
         return successful, failed

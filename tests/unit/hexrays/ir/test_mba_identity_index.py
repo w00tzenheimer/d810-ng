@@ -494,6 +494,31 @@ def test_index_keeps_evidence_and_mutation_generations_independent() -> None:
     assert index.rebind_identity(source).block.generation == 1
 
 
+def test_rebuild_repairs_a_missing_primary_serial_before_preserving_handle() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=0,
+        bindings=((identity, 5),),
+        native_key=NATIVE_KEY,
+    )
+    original_handle = index.handle_for_serial(5)
+    rebuilt = MbaBlockIdentityIndex.from_bindings(
+        generation=0,
+        bindings=((identity, 5),),
+        native_key=NATIVE_KEY,
+    )
+    rebuilt._token_by_serial.pop(5)
+
+    index._replace_with_rebuilt(rebuilt)
+
+    rebound = index.rebind_identity(identity)
+    assert rebound.block is not None
+    assert rebound.block.serial == 5
+    assert rebound.block.handle is original_handle
+
+
 def test_rebind_observer_receives_portable_identity_and_generations() -> None:
     source = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY

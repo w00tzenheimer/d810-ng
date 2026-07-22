@@ -730,14 +730,24 @@ class MbaBlockIdentityIndex:
             old_tokens = previous_native.get(identity, ())
             if len(old_tokens) == 1 and len(serials) == 1:
                 handle = self._handles_by_token[old_tokens[0]]
-                replacement_token = rebuilt._token_by_serial[serials[0]]
+                replacement_serial = int(serials[0])
+                replacement_token = rebuilt._token_by_serial.get(
+                    replacement_serial
+                )
+                if replacement_token is None:
+                    rebuilt._refresh_primary_serial(replacement_serial)
+                    replacement_token = rebuilt._token_by_serial.get(
+                        replacement_serial
+                    )
+                if replacement_token is None:
+                    continue
                 rebuilt._serial_by_token.pop(replacement_token, None)
                 rebuilt._handles_by_token.pop(replacement_token, None)
                 rebuilt._handles_by_token[handle.token] = handle
                 rebuilt._tokens_by_identity[identity].discard(replacement_token)
                 rebuilt._tokens_by_identity[identity].add(handle.token)
-                rebuilt._token_by_serial.pop(serials[0], None)
-                rebuilt._bind(handle, serials[0])
+                rebuilt._token_by_serial.pop(replacement_serial, None)
+                rebuilt._bind(handle, replacement_serial)
                 preserved_tokens.add(handle.token)
         stale_tokens = self._stale_tokens | (previous_tokens - preserved_tokens)
         stale_tokens.difference_update(rebuilt._handles_by_token)

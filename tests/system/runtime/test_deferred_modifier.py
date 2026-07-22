@@ -3550,9 +3550,8 @@ class TestStagedAtomicApply:
 
         changes = _staged_patch_wiring(monkeypatch, mba)
 
-        modifier = dm.DeferredGraphModifier(
-            mba, mutation_gateway=make_mutation_gateway(mba)
-        )
+        gateway = make_mutation_gateway(mba)
+        modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
         modifier.modifications = [
             dm.GraphModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -3579,6 +3578,8 @@ class TestStagedAtomicApply:
 
         # applied counts both staging and commit rewire.
         assert applied >= 1
+        assert gateway.receipts[-1].planned_operation_count == 1
+        assert gateway.receipts[-1].operation_count == 1
 
     def test_staged_atomic_terminal_goto_stages_copy_and_redirects_preds(
         self,
@@ -3594,9 +3595,8 @@ class TestStagedAtomicApply:
         mba.qty = max(mba.blocks.keys()) + 1
 
         changes = _staged_patch_wiring(monkeypatch, mba)
-        modifier = dm.DeferredGraphModifier(
-            mba, mutation_gateway=make_mutation_gateway(mba)
-        )
+        gateway = make_mutation_gateway(mba)
+        modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
         modifier.modifications = [
             dm.GraphModification(
                 dm.ModificationType.BLOCK_TERMINAL_GOTO_CHANGE,
@@ -3620,6 +3620,8 @@ class TestStagedAtomicApply:
             for source_serial, target_serial, _kind in changes
         )
         assert applied >= 1
+        assert gateway.receipts[-1].planned_operation_count == 1
+        assert gateway.receipts[-1].operation_count == 1
 
     def test_staged_atomic_instruction_only_bypasses_staging(self, monkeypatch):
         """INSN_NOP must NOT trigger copy_block; it runs through _apply_single."""

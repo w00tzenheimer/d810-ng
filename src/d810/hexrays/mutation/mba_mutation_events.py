@@ -355,6 +355,26 @@ class MbaMutationGateway:
         self.identity_index.refresh_from_mba(mba)
         self._operation_count += 1
 
+    def record_external_sdk_operations(
+        self,
+        mba: object,
+        *,
+        operation_count: int,
+    ) -> None:
+        """Refresh bindings after a coordinator-owned external SDK batch.
+
+        Copy-and-swap applies several SDK writes behind one logical mutation
+        plan item.  The gateway needs the final live MBA once, plus the exact
+        number of successfully committed plan items that did not already
+        record a modeled insert, split, clone, remove, or redirect.
+        """
+        self._require_active()
+        count = int(operation_count)
+        if count < 0:
+            raise ValueError("external SDK operation count must be non-negative")
+        self.identity_index.refresh_from_mba(mba)
+        self._operation_count += count
+
     def commit(self) -> MbaMutationReceipt:
         self._require_active()
         pre_generation = self.identity_index.generation
