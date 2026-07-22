@@ -212,7 +212,11 @@ from d810.hexrays.mutation.mba_mutation_events import (
 from d810.hexrays.mutation.semantic_fragment_backend import (
     SemanticFragmentBackendRejected,
     SemanticFragmentBackendState,
+    SemanticFragmentRootEdgeBinding,
+    SemanticFragmentRootPublicationToken,
     discard_staged_semantic_fragment,
+    observe_published_semantic_fragment,
+    prepare_semantic_fragment_root_publication,
     stage_semantic_fragment,
 )
 from d810.hexrays.mutation.cfg_verify import (
@@ -3524,6 +3528,175 @@ class DeferredGraphModifier:
     def _discard_staged_semantic_fragment(self, plan: FragmentPlan) -> None:
         """Backend-only discard port for unpublished fragment versions."""
         discard_staged_semantic_fragment(self, plan)
+
+    @staticmethod
+    def _semantic_fragment_publication_token(
+        plan: FragmentPlan,
+        token: object,
+    ) -> SemanticFragmentRootPublicationToken:
+        if not isinstance(token, SemanticFragmentRootPublicationToken):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment root publication requires its rollback token"
+            )
+        if token.plan_id != plan.plan_id or token.atomic_group_id != plan.atomic_group_id:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment rollback token does not match the plan"
+            )
+        return token
+
+    def _prepare_semantic_fragment_root_publication(
+        self,
+        plan: FragmentPlan,
+    ) -> SemanticFragmentRootPublicationToken:
+        """Capture serial-free root authority before the first live rewrite."""
+        return prepare_semantic_fragment_root_publication(self, plan)
+
+    def _rewrite_semantic_fragment_entry_edge(
+        self,
+        predecessor,
+        old_target,
+        new_target,
+    ) -> None:
+        """Rewrite the synthetic block-zero edge with symmetric bookkeeping."""
+        old_serial = int(old_target.serial)
+        new_serial = int(new_target.serial)
+        if int(predecessor.serial) != 0:
+            raise SemanticFragmentBackendRejected(
+                "entry-edge publication requires the positional entry block"
+            )
+        if tuple(int(value) for value in predecessor.succset) != (old_serial,):
+            raise SemanticFragmentBackendRejected(
+                "entry root authority changed after publication preflight"
+            )
+        tail = predecessor.tail
+        if tail is not None:
+            left = getattr(tail, "l", None)
+            if (
+                int(tail.opcode) != int(ida_hexrays.m_goto)
+                or left is None
+                or int(left.t) != int(ida_hexrays.mop_b)
+                or int(left.b) != old_serial
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "entry root authority has an unsupported explicit tail"
+                )
+            left.make_blkref(new_serial)
+        predecessor.succset._del(old_serial)
+        predecessor.succset.push_back(new_serial)
+        old_target.predset._del(int(predecessor.serial))
+        if int(predecessor.serial) not in {
+            int(value) for value in new_target.predset
+        }:
+            new_target.predset.push_back(int(predecessor.serial))
+        self._semantic_edge_mark(predecessor, old_target, new_target)
+
+    def _rewrite_semantic_fragment_direct_root(
+        self,
+        edge: SemanticFragmentRootEdgeBinding,
+        *,
+        restore: bool,
+    ) -> None:
+        predecessor = self._resolve_semantic_fragment_version(
+            edge.predecessor.version
+        )
+        original = self._resolve_semantic_fragment_version(edge.original.version)
+        replacement = self._resolve_semantic_fragment_version(
+            edge.replacement.version
+        )
+        old_target = replacement if restore else original
+        new_target = original if restore else replacement
+        current_successors = tuple(int(value) for value in predecessor.succset)
+        if restore and current_successors == (int(new_target.serial),):
+            tail = predecessor.tail
+            if (
+                tail is not None
+                and int(tail.opcode) == int(ida_hexrays.m_goto)
+                and getattr(tail, "l", None) is not None
+                and int(tail.l.t) == int(ida_hexrays.mop_b)
+            ):
+                tail.l.make_blkref(int(new_target.serial))
+            old_target.predset._del(int(predecessor.serial))
+            if int(predecessor.serial) not in {
+                int(value) for value in new_target.predset
+            }:
+                new_target.predset.push_back(int(predecessor.serial))
+            self._semantic_edge_mark(predecessor, old_target, new_target)
+            return
+        if current_successors != (int(old_target.serial),):
+            raise SemanticFragmentBackendRejected(
+                "direct root authority changed after publication preflight"
+            )
+        if int(predecessor.serial) == 0:
+            self._rewrite_semantic_fragment_entry_edge(
+                predecessor,
+                old_target,
+                new_target,
+            )
+            return
+        if not self._apply_goto_change(predecessor, int(new_target.serial)):
+            raise SemanticFragmentBackendRejected(
+                "Hex-Rays rejected direct semantic fragment root publication"
+            )
+
+    def _publish_semantic_fragment_roots(
+        self,
+        plan: FragmentPlan,
+        rollback_token: object,
+    ) -> None:
+        """Publish every preflighted root edge, retaining exact rollback scope."""
+        token = self._semantic_fragment_publication_token(plan, rollback_token)
+        for edge in token.edges:
+            token.attempted_edge_ids.append(edge.edge_id)
+            if edge.role is not SemanticEdgeRole.DIRECT:
+                raise SemanticFragmentBackendRejected(
+                    "conditional root publication requires atomic branch lowering"
+                )
+            self._rewrite_semantic_fragment_direct_root(edge, restore=False)
+
+    def _rebuild_semantic_fragment_chains(self, plan: FragmentPlan) -> None:
+        """Invalidate live chains after publication or rollback."""
+        state = self._semantic_fragment_state
+        if (
+            state is None
+            or state.plan_id != plan.plan_id
+            or state.atomic_group_id != plan.atomic_group_id
+        ):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment chain rebuild has no matching staged state"
+            )
+        self.mba.mark_chains_dirty()
+
+    def _observe_published_semantic_fragment(self, plan: FragmentPlan):
+        """Return read-only semantics from the actual published live graph."""
+        return observe_published_semantic_fragment(self, plan)
+
+    def _rollback_semantic_fragment_roots(
+        self,
+        plan: FragmentPlan,
+        rollback_token: object,
+    ) -> None:
+        """Restore every attempted incoming edge in reverse publication order."""
+        token = self._semantic_fragment_publication_token(plan, rollback_token)
+        for edge_id in reversed(token.attempted_edge_ids):
+            edge = token.edge(edge_id)
+            if edge.role is not SemanticEdgeRole.DIRECT:
+                raise SemanticFragmentBackendRejected(
+                    "conditional semantic fragment root rollback is unavailable"
+                )
+            self._rewrite_semantic_fragment_direct_root(edge, restore=True)
+
+    def _complete_semantic_fragment_publication(self, plan: FragmentPlan) -> None:
+        """Release transaction-local backend state after committed authority."""
+        state = self._semantic_fragment_state
+        if (
+            state is None
+            or state.plan_id != plan.plan_id
+            or state.atomic_group_id != plan.atomic_group_id
+        ):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment completion has no matching staged state"
+            )
+        self._semantic_fragment_state = None
 
     def restore_pruned_conditional_now(
         self,

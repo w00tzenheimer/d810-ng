@@ -26,6 +26,7 @@ _BACKEND_PORT = (
     "_rebuild_semantic_fragment_chains",
     "_observe_published_semantic_fragment",
     "_rollback_semantic_fragment_roots",
+    "_complete_semantic_fragment_publication",
 )
 
 
@@ -77,6 +78,7 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
     stage_attempted = False
     root_attempted = False
     rollback_token = None
+    receipt = None
     try:
         stage_attempted = True
         projection = backend._stage_semantic_fragment(plan)
@@ -111,7 +113,7 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             prepublication=prepublication,
             postpublication=postpublication,
         )
-        return gateway.commit()
+        receipt = gateway.commit()
     except Exception as original_error:
         recovery_error: Exception | None = None
         if root_attempted:
@@ -143,6 +145,8 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
                 recovery_error,
             ) from recovery_error
         raise
+    backend._complete_semantic_fragment_publication(plan)
+    return receipt
 
 
 __all__ = [

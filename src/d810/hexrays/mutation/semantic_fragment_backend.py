@@ -24,10 +24,13 @@ from d810.transforms.fragment_plan import (
 )
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
+    FragmentValidationPostcondition,
+    PublishedFragmentObservation,
     ProjectedFallthroughHelper,
     ProjectedFragment,
     ProjectedFragmentBlock,
     ProjectedIdentityBinding,
+    validate_fragment_projection,
 )
 
 if TYPE_CHECKING:
@@ -49,6 +52,36 @@ class SemanticFragmentRuntimeBinding:
     proxy: LogicalBlockProxy
     version: LogicalBlockVersion
     state: FragmentBindingState
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticFragmentRootEdgeBinding:
+    """One serial-free incoming edge whose root authority will change."""
+
+    edge_id: str
+    root_block_id: str
+    predecessor: SemanticFragmentRuntimeBinding
+    original: SemanticFragmentRuntimeBinding
+    replacement: SemanticFragmentRuntimeBinding
+    role: SemanticEdgeRole
+
+
+@dataclass(slots=True)
+class SemanticFragmentRootPublicationToken:
+    """Complete rollback authority captured before the first root write."""
+
+    plan_id: str
+    atomic_group_id: str
+    edges: tuple[SemanticFragmentRootEdgeBinding, ...]
+    attempted_edge_ids: list[str] = field(default_factory=list)
+
+    def edge(self, edge_id: str) -> SemanticFragmentRootEdgeBinding:
+        for edge in self.edges:
+            if edge.edge_id == edge_id:
+                return edge
+        raise SemanticFragmentBackendRejected(
+            f"root publication token has no edge {edge_id!r}"
+        )
 
 
 @dataclass(slots=True)
@@ -293,6 +326,8 @@ def _project_fragment(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
     state: SemanticFragmentBackendState,
+    *,
+    simulate_root_publication: bool = True,
 ) -> ProjectedFragment:
     live_by_id = {
         block_id: _live_block_for_binding(modifier, binding)
@@ -325,18 +360,19 @@ def _project_fragment(
             for serial in block.predset
         ]
 
-    for root_id in plan.roots:
-        replacement = plan.block(root_id)
-        original_id = str(replacement.replaces_block_id)
-        for predecessor_id in tuple(predecessors[original_id]):
-            predecessors[original_id].remove(predecessor_id)
-            predecessors[root_id].append(predecessor_id)
-            if predecessor_id not in successors:
-                continue
-            successors[predecessor_id] = [
-                root_id if target_id == original_id else target_id
-                for target_id in successors[predecessor_id]
-            ]
+    if simulate_root_publication:
+        for root_id in plan.roots:
+            replacement = plan.block(root_id)
+            original_id = str(replacement.replaces_block_id)
+            for predecessor_id in tuple(predecessors[original_id]):
+                predecessors[original_id].remove(predecessor_id)
+                predecessors[root_id].append(predecessor_id)
+                if predecessor_id not in successors:
+                    continue
+                successors[predecessor_id] = [
+                    root_id if target_id == original_id else target_id
+                    for target_id in successors[predecessor_id]
+                ]
 
     entry_ids = tuple(
         block_id
@@ -381,6 +417,189 @@ def _project_fragment(
         blocks=projected_blocks,
         identity_bindings=projected_bindings,
         fallthrough_helpers=tuple(state.fallthrough_helpers),
+    )
+
+
+def _binding_for_live_serial(
+    modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
+    serial: int,
+) -> SemanticFragmentRuntimeBinding:
+    matches = tuple(
+        binding
+        for binding in state.bindings.values()
+        if int(_live_block_for_binding(modifier, binding).serial) == int(serial)
+    )
+    if len(matches) != 1:
+        raise SemanticFragmentBackendRejected(
+            "root predecessor is not owned by exactly one fragment binding"
+        )
+    return matches[0]
+
+
+def _incoming_root_edge_role(predecessor, original) -> SemanticEdgeRole:
+    successors = tuple(int(value) for value in predecessor.succset)
+    original_serial = int(original.serial)
+    if successors == (original_serial,):
+        return SemanticEdgeRole.DIRECT
+    tail = predecessor.tail
+    if (
+        len(successors) != 2
+        or tail is None
+        or not ida_hexrays.is_mcode_jcond(int(tail.opcode))
+        or getattr(tail, "d", None) is None
+        or int(tail.d.t) != int(ida_hexrays.mop_b)
+    ):
+        raise SemanticFragmentBackendRejected(
+            "root predecessor is not a supported one-way or conditional edge"
+        )
+    taken_serial = int(tail.d.b)
+    fallthroughs = tuple(
+        successor for successor in successors if successor != taken_serial
+    )
+    if taken_serial not in successors or len(fallthroughs) != 1:
+        raise SemanticFragmentBackendRejected(
+            "root predecessor conditional topology is inconsistent"
+        )
+    if original_serial == taken_serial:
+        return SemanticEdgeRole.CONDITIONAL_TAKEN
+    if original_serial != fallthroughs[0]:
+        raise SemanticFragmentBackendRejected(
+            "root predecessor does not target its declared original"
+        )
+    if (
+        predecessor.nextb is None
+        or int(predecessor.nextb.serial) != original_serial
+    ):
+        raise SemanticFragmentBackendRejected(
+            "root predecessor physical fallthrough is not adjacent"
+        )
+    return SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+
+
+def prepare_semantic_fragment_root_publication(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+) -> SemanticFragmentRootPublicationToken:
+    """Capture every incoming root edge before exposing any staged version."""
+    state = modifier._semantic_fragment_state
+    if state is None:
+        raise SemanticFragmentBackendRejected("semantic fragment is not staged")
+    if state.plan_id != plan.plan_id or state.atomic_group_id != plan.atomic_group_id:
+        raise SemanticFragmentBackendRejected(
+            "staged semantic fragment does not match root publication request"
+        )
+
+    edges: list[SemanticFragmentRootEdgeBinding] = []
+    for root_block_id in plan.roots:
+        replacement = state.binding(root_block_id)
+        original_block_id = str(plan.block(root_block_id).replaces_block_id)
+        original = state.binding(original_block_id)
+        original_live = _live_block_for_binding(modifier, original)
+        replacement_live = _live_block_for_binding(modifier, replacement)
+        if tuple(int(value) for value in replacement_live.predset):
+            raise SemanticFragmentBackendRejected(
+                f"replacement root {root_block_id!r} is already published"
+            )
+        predecessor_serials = tuple(int(value) for value in original_live.predset)
+        if not predecessor_serials:
+            raise SemanticFragmentBackendRejected(
+                f"owned original {original_block_id!r} has no incoming root authority"
+            )
+        for predecessor_serial in predecessor_serials:
+            predecessor = _binding_for_live_serial(
+                modifier,
+                state,
+                predecessor_serial,
+            )
+            if predecessor.state is not FragmentBindingState.PUBLISHED:
+                raise SemanticFragmentBackendRejected(
+                    "root predecessor must be a published logical version"
+                )
+            predecessor_live = _live_block_for_binding(modifier, predecessor)
+            role = _incoming_root_edge_role(predecessor_live, original_live)
+            edge_id = f"{root_block_id}:{predecessor.block_id}:{role.value}"
+            edges.append(
+                SemanticFragmentRootEdgeBinding(
+                    edge_id=edge_id,
+                    root_block_id=root_block_id,
+                    predecessor=predecessor,
+                    original=original,
+                    replacement=replacement,
+                    role=role,
+                )
+            )
+    edge_ids = tuple(edge.edge_id for edge in edges)
+    if len(set(edge_ids)) != len(edge_ids):
+        raise SemanticFragmentBackendRejected(
+            "semantic fragment root publication contains duplicate edges"
+        )
+    unsupported = tuple(
+        edge for edge in edges if edge.role is not SemanticEdgeRole.DIRECT
+    )
+    if unsupported:
+        raise SemanticFragmentBackendRejected(
+            "conditional root publication requires its dedicated atomic lowering"
+        )
+    return SemanticFragmentRootPublicationToken(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        edges=tuple(edges),
+    )
+
+
+def observe_published_semantic_fragment(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+) -> PublishedFragmentObservation:
+    """Observe the actual live graph without projecting another root rewrite."""
+    state = modifier._semantic_fragment_state
+    if state is None:
+        raise SemanticFragmentBackendRejected("semantic fragment is not staged")
+    projection = _project_fragment(
+        modifier,
+        plan,
+        state,
+        simulate_root_publication=False,
+    )
+    validation = validate_fragment_projection(plan, projection)
+    outcomes_by_subject: dict[str, list] = {}
+    for outcome in validation.outcomes:
+        outcomes_by_subject.setdefault(outcome.subject_id, []).append(outcome)
+
+    published_roots = []
+    for root_block_id in plan.roots:
+        original_block_id = str(plan.block(root_block_id).replaces_block_id)
+        if (
+            not projection.block(original_block_id).predecessors
+            and bool(projection.block(root_block_id).predecessors)
+        ):
+            published_roots.append(root_block_id)
+
+    observable_operations = []
+    for operation in plan.operations:
+        relevant = outcomes_by_subject.get(operation.operation_id, ())
+        topology = tuple(
+            outcome
+            for outcome in relevant
+            if outcome.postcondition
+            in {
+                FragmentValidationPostcondition.OPERATION_TOPOLOGY,
+                FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
+            }
+        )
+        expected_count = 1 if len(operation.edges) == 1 else 2
+        if len(topology) == expected_count and all(
+            outcome.passed for outcome in topology
+        ):
+            observable_operations.append(operation)
+
+    return PublishedFragmentObservation(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        published_root_ids=tuple(published_roots),
+        observable_operations=tuple(observable_operations),
+        semantic_outcomes=validation.outcomes,
     )
 
 
@@ -454,6 +673,10 @@ def discard_staged_semantic_fragment(
 __all__ = [
     "SemanticFragmentBackendRejected",
     "SemanticFragmentBackendState",
+    "SemanticFragmentRootEdgeBinding",
+    "SemanticFragmentRootPublicationToken",
     "discard_staged_semantic_fragment",
+    "observe_published_semantic_fragment",
+    "prepare_semantic_fragment_root_publication",
     "stage_semantic_fragment",
 ]
