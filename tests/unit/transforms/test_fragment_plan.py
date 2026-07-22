@@ -1,0 +1,347 @@
+"""Portable semantic-fragment planning contract."""
+
+from __future__ import annotations
+
+from dataclasses import fields
+
+import pytest
+
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.transforms.fragment_plan import (
+    FragmentBlock,
+    FragmentBlockRole,
+    FragmentDataFlowObligation,
+    FragmentDataFlowRole,
+    FragmentEdge,
+    FragmentFlagCorridor,
+    FragmentOperation,
+    FragmentPlan,
+    FragmentPlanRejected,
+    FragmentRangeAssumption,
+    FragmentValueSite,
+)
+from tests.native_preanalysis import make_native_key
+
+
+NATIVE_KEY = make_native_key(function_rva=0x40A560)
+
+
+def _identity(start_ea: int, end_ea: int | None = None) -> StableBlockIdentity:
+    end_ea = start_ea + 1 if end_ea is None else end_ea
+    return StableBlockIdentity.from_intervals(
+        (NativeEaInterval(start_ea, end_ea),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(start_ea,),
+    )
+
+
+def _native_block(
+    block_id: str,
+    role: FragmentBlockRole,
+    start_ea: int,
+    *,
+    replaces: str | None = None,
+) -> FragmentBlock:
+    return FragmentBlock(
+        block_id=block_id,
+        role=role,
+        semantic_anchor_ea=start_ea,
+        stable_identity=_identity(start_ea, start_ea + 0x10),
+        replaces_block_id=replaces,
+    )
+
+
+def _valid_plan() -> FragmentPlan:
+    original = _native_block(
+        "predicate.original",
+        FragmentBlockRole.ORIGINAL,
+        0x40BECC,
+    )
+    replacement = FragmentBlock(
+        block_id="predicate.replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        semantic_anchor_ea=0x40BECC,
+        stable_identity=original.stable_identity,
+        replaces_block_id=original.block_id,
+    )
+    true_target = _native_block(
+        "handler.true",
+        FragmentBlockRole.EXTERNAL,
+        0x40C100,
+    )
+    false_target = _native_block(
+        "handler.false",
+        FragmentBlockRole.EXTERNAL,
+        0x40C200,
+    )
+    dispatcher = _native_block(
+        "dispatcher.residual",
+        FragmentBlockRole.EXTERNAL,
+        0x40C300,
+    )
+    condition_definition = FragmentValueSite(
+        site_id="condition.flags",
+        block_id=replacement.block_id,
+        value_id="flags:consumer-choice",
+        instruction_ea=0x40BECC,
+    )
+    condition_use = FragmentValueSite(
+        site_id="condition.branch",
+        block_id=replacement.block_id,
+        value_id="flags:consumer-choice",
+        instruction_ea=0x40BECD,
+    )
+    return FragmentPlan(
+        plan_id="rhad-a560-consumer-route",
+        atomic_group_id="consumer-route@0x40BECC",
+        native_key=NATIVE_KEY,
+        blocks=(
+            original,
+            replacement,
+            true_target,
+            false_target,
+            dispatcher,
+        ),
+        roots=(replacement.block_id,),
+        owned_originals=(original.block_id,),
+        prohibited_dispatcher_blocks=(dispatcher.block_id,),
+        operations=(
+            FragmentOperation(
+                operation_id="publish-consumer-condition",
+                source_block_id=replacement.block_id,
+                predicate_anchor_ea=0x40BECD,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        target_block_id=true_target.block_id,
+                    ),
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                        target_block_id=false_target.block_id,
+                    ),
+                ),
+            ),
+        ),
+        data_flow_obligations=(
+            FragmentDataFlowObligation(
+                obligation_id="condition-use-def",
+                role=FragmentDataFlowRole.CONDITION,
+                definition=condition_definition,
+                uses=(condition_use,),
+            ),
+        ),
+        flag_corridors=(
+            FragmentFlagCorridor(
+                corridor_id="condition-flags",
+                producer=condition_definition,
+                consumer=condition_use,
+                block_path=(replacement.block_id,),
+                permitted_flag_write_eas=frozenset({0x40BECC}),
+            ),
+        ),
+        value_range_assumptions=(
+            FragmentRangeAssumption(
+                assumption_id="condition-domain",
+                site=condition_definition,
+                lo=0,
+                hi=1,
+            ),
+        ),
+    )
+
+
+def test_fragment_plan_is_serial_free_and_groups_complete_conditional() -> None:
+    plan = _valid_plan()
+
+    assert plan.plan_id == "rhad-a560-consumer-route"
+    assert plan.atomic_group_id == "consumer-route@0x40BECC"
+    assert plan.operations[0].roles == frozenset(
+        {
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        }
+    )
+
+    forbidden_coordinate_names = {
+        "serial",
+        "mba",
+        "mblock",
+        "proxy",
+        "version",
+    }
+    model_types = (
+        FragmentBlock,
+        FragmentEdge,
+        FragmentOperation,
+        FragmentValueSite,
+        FragmentDataFlowObligation,
+        FragmentFlagCorridor,
+        FragmentRangeAssumption,
+        FragmentPlan,
+    )
+    for model_type in model_types:
+        names = {field.name.lower() for field in fields(model_type)}
+        assert forbidden_coordinate_names.isdisjoint(names)
+
+
+def test_fragment_plan_rejects_partial_conditional_operation() -> None:
+    with pytest.raises(FragmentPlanRejected, match="both conditional roles"):
+        FragmentOperation(
+            operation_id="partial-condition",
+            source_block_id="source",
+            predicate_anchor_ea=0x40BECD,
+            edges=(
+                FragmentEdge(
+                    role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                    target_block_id="target",
+                ),
+            ),
+        )
+
+
+def test_fragment_plan_rejects_direct_operation_with_predicate() -> None:
+    with pytest.raises(FragmentPlanRejected, match="predicate belongs only"):
+        FragmentOperation(
+            operation_id="direct-with-predicate",
+            source_block_id="source",
+            predicate_anchor_ea=0x40BECD,
+            edges=(
+                FragmentEdge(
+                    role=SemanticEdgeRole.DIRECT,
+                    target_block_id="target",
+                ),
+            ),
+        )
+
+
+def test_fragment_plan_requires_replacement_identity_to_match_original() -> None:
+    plan = _valid_plan()
+    original = plan.block("predicate.original")
+    mismatched_replacement = FragmentBlock(
+        block_id="predicate.replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        semantic_anchor_ea=0x40D000,
+        stable_identity=_identity(0x40D000, 0x40D010),
+        replaces_block_id=original.block_id,
+    )
+
+    with pytest.raises(FragmentPlanRejected, match="stable identity must match"):
+        FragmentPlan(
+            plan_id=plan.plan_id,
+            atomic_group_id=plan.atomic_group_id,
+            native_key=plan.native_key,
+            blocks=tuple(
+                mismatched_replacement
+                if block.role is FragmentBlockRole.REPLACEMENT
+                else block
+                for block in plan.blocks
+            ),
+            roots=plan.roots,
+            owned_originals=plan.owned_originals,
+            prohibited_dispatcher_blocks=plan.prohibited_dispatcher_blocks,
+            operations=plan.operations,
+            data_flow_obligations=plan.data_flow_obligations,
+            flag_corridors=plan.flag_corridors,
+            value_range_assumptions=plan.value_range_assumptions,
+        )
+
+
+def test_fragment_plan_requires_owned_original_for_every_replacement() -> None:
+    plan = _valid_plan()
+
+    with pytest.raises(FragmentPlanRejected, match="must own its replaced original"):
+        FragmentPlan(
+            plan_id=plan.plan_id,
+            atomic_group_id=plan.atomic_group_id,
+            native_key=plan.native_key,
+            blocks=plan.blocks,
+            roots=plan.roots,
+            owned_originals=(),
+            prohibited_dispatcher_blocks=plan.prohibited_dispatcher_blocks,
+            operations=plan.operations,
+            data_flow_obligations=plan.data_flow_obligations,
+            flag_corridors=plan.flag_corridors,
+            value_range_assumptions=plan.value_range_assumptions,
+        )
+
+
+def test_fragment_plan_requires_all_references_to_belong_to_the_plan() -> None:
+    plan = _valid_plan()
+    invalid_operation = FragmentOperation(
+        operation_id="unknown-target",
+        source_block_id="predicate.replacement",
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id="missing.block",
+            ),
+        ),
+    )
+
+    with pytest.raises(FragmentPlanRejected, match="unknown target block"):
+        FragmentPlan(
+            plan_id=plan.plan_id,
+            atomic_group_id=plan.atomic_group_id,
+            native_key=plan.native_key,
+            blocks=plan.blocks,
+            roots=plan.roots,
+            owned_originals=plan.owned_originals,
+            prohibited_dispatcher_blocks=plan.prohibited_dispatcher_blocks,
+            operations=(invalid_operation,),
+            data_flow_obligations=plan.data_flow_obligations,
+            flag_corridors=plan.flag_corridors,
+            value_range_assumptions=plan.value_range_assumptions,
+        )
+
+
+def test_fragment_plan_rejects_cross_function_stable_identity() -> None:
+    plan = _valid_plan()
+    other_key = make_native_key(function_rva=0x40D200)
+    foreign = FragmentBlock(
+        block_id="foreign",
+        role=FragmentBlockRole.EXTERNAL,
+        semantic_anchor_ea=0x40D348,
+        stable_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40D348, 0x40D349),),
+            native_key=other_key,
+        ),
+    )
+
+    with pytest.raises(FragmentPlanRejected, match="native identity mismatch"):
+        FragmentPlan(
+            plan_id=plan.plan_id,
+            atomic_group_id=plan.atomic_group_id,
+            native_key=plan.native_key,
+            blocks=plan.blocks + (foreign,),
+            roots=plan.roots,
+            owned_originals=plan.owned_originals,
+            prohibited_dispatcher_blocks=plan.prohibited_dispatcher_blocks,
+            operations=plan.operations,
+            data_flow_obligations=plan.data_flow_obligations,
+            flag_corridors=plan.flag_corridors,
+            value_range_assumptions=plan.value_range_assumptions,
+        )
+
+
+def test_fragment_plan_rejects_invalid_flag_corridor_and_range() -> None:
+    plan = _valid_plan()
+    definition = plan.data_flow_obligations[0].definition
+    use = plan.data_flow_obligations[0].uses[0]
+
+    with pytest.raises(FragmentPlanRejected, match="start at its producer"):
+        FragmentFlagCorridor(
+            corridor_id="broken-path",
+            producer=definition,
+            consumer=use,
+            block_path=("handler.true",),
+            permitted_flag_write_eas=frozenset({definition.instruction_ea}),
+        )
+
+    with pytest.raises(FragmentPlanRejected, match="lower bound exceeds"):
+        FragmentRangeAssumption(
+            assumption_id="broken-range",
+            site=definition,
+            lo=2,
+            hi=1,
+        )
