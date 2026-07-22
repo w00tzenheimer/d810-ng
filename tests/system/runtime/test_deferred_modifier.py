@@ -437,6 +437,70 @@ def test_zero_way_existing_goto_is_retargeted_without_appending(monkeypatch) -> 
     assert mba.marked_dirty is True
 
 
+def test_materialize_zero_way_goto_replaces_predicate_and_binds_edge(
+    monkeypatch,
+) -> None:
+    """A generated predicate and its direct route form one exact mutation."""
+    mba = _FakeMBA()
+    source = _FakeBlock(3, start=0x40A7AE)
+    source.tail = SimpleNamespace(
+        ea=0x40A7DF,
+        opcode=ida_hexrays.m_jnz,
+        d=SimpleNamespace(t=ida_hexrays.mop_v),
+    )
+    source.succset = _FakeEdgeSet()
+    source.nsucc = lambda: 0  # type: ignore[assignment]
+    target = _FakeBlock(9, start=0x40BCAF)
+    mba.blocks = {3: source, 9: target}
+    mba.qty = 10
+    inserted: list[tuple[int, int, bool]] = []
+
+    def _insert_goto(block, target_serial, *, nop_previous_instruction):
+        inserted.append(
+            (int(block.serial), int(target_serial), bool(nop_previous_instruction))
+        )
+        block.tail = SimpleNamespace(
+            ea=0x40A7DF,
+            opcode=ida_hexrays.m_goto,
+            l=SimpleNamespace(t=ida_hexrays.mop_b, b=int(target_serial)),
+        )
+
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_goto)
+    modifier = dm.DeferredGraphModifier(mba)
+
+    assert modifier._apply_materialize_zero_way_goto(
+        source,
+        predicate_ea=0x40A7DF,
+        target_serial=9,
+    )
+    assert inserted == [(3, 9, True)]
+    assert source.tail.opcode == ida_hexrays.m_goto
+    assert source.type == ida_hexrays.BLT_1WAY
+    assert source.flags & ida_hexrays.MBL_GOTO
+    assert source.succset._items == [9]
+    assert target.predset._items == [3]
+
+
+def test_queue_materialize_zero_way_goto_keeps_predicate_identity() -> None:
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+
+    modifier.queue_materialize_zero_way_goto(
+        source_serial=3,
+        predicate_ea=0x40A7DF,
+        target_serial=9,
+        rule_priority=100,
+    )
+
+    assert len(modifier.modifications) == 1
+    modification = modifier.modifications[0]
+    assert modification.mod_type is dm.ModificationType.MATERIALIZE_ZERO_WAY_GOTO
+    assert modification.block_serial == 3
+    assert modification.rewrite_from_ea == 0x40A7DF
+    assert modification.new_target == 9
+    assert modification.rule_priority == 100
+
+
 def test_apply_aborts_on_first_failed_modification_and_cleans(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(
@@ -3485,6 +3549,7 @@ class TestStagedAtomicClassification:
             dm.ModificationType.BLOCK_CONVERT_TO_GOTO,
             dm.ModificationType.EDGE_REMOVE,
             dm.ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL,
+            dm.ModificationType.MATERIALIZE_ZERO_WAY_GOTO,
         }
         actual = {
             mt

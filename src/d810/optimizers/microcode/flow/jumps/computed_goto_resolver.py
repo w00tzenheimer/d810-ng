@@ -14289,6 +14289,7 @@ class _ReboundStateWriteRoute(NamedTuple):
     target: object
     old_target_serial: int | None
     collapse_conditional: bool
+    materialize_zero_way: bool
 
 
 def _rebind_route_identity(index, identity, *, prefer_imported: bool):
@@ -14514,6 +14515,7 @@ def _classify_live_state_write_routes(
             target_result.block,
             None if is_reference_conditional_delivery else old_target_serial,
             bool(is_reference_conditional_delivery),
+            bool(is_reference_zero_way_delivery),
         )
         if is_reference_conditional_delivery:
             previous_target = delivery_targets.get(int(delivery.serial))
@@ -15156,7 +15158,15 @@ def _on_preopt_bootstrap_route(
                 f"state=0x{route.evidence.state_constant:X} "
                 f"handler@0x{route.evidence.target_ea:X}"
             )
-            if route.collapse_conditional:
+            if route.materialize_zero_way:
+                modifier.queue_materialize_zero_way_goto(
+                    source_serial=int(route.delivery.serial),
+                    predicate_ea=int(route.evidence.delivery_ea),
+                    target_serial=int(route.target.serial),
+                    description=description,
+                    rule_priority=100,
+                )
+            elif route.collapse_conditional:
                 modifier.queue_convert_to_goto(
                     block_serial=int(route.delivery.serial),
                     goto_target=int(route.target.serial),
