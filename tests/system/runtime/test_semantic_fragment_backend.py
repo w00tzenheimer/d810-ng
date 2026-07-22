@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 
@@ -62,6 +63,10 @@ class _BlockReference:
         self.t = int(ida_hexrays.mop_b)
         self.b = int(serial)
 
+    def erase(self) -> None:
+        self.t = int(ida_hexrays.mop_z)
+        self.b = -1
+
 
 class _Instruction:
     def __init__(self, opcode: int, ea: int, target: int | None = None):
@@ -92,6 +97,40 @@ class _Block:
 
     def mark_lists_dirty(self) -> None:
         return None
+
+    def make_nop(self, instruction) -> None:
+        instruction.opcode = int(ida_hexrays.m_nop)
+
+    def remove_from_block(self, instruction) -> None:
+        previous = None
+        current = self.head
+        while current is not None and current is not instruction:
+            previous = current
+            current = current.next
+        if current is None:
+            return
+        if previous is None:
+            self.head = current.next
+        else:
+            previous.next = current.next
+        if self.tail is current:
+            self.tail = previous
+        current.next = None
+
+    def insert_into_block(self, instruction, after) -> None:
+        if self.head is None:
+            instruction.next = None
+            self.head = instruction
+            self.tail = instruction
+            return
+        if after is None:
+            instruction.next = self.head
+            self.head = instruction
+            return
+        instruction.next = after.next
+        after.next = instruction
+        if self.tail is after:
+            self.tail = instruction
 
 
 class _Mba:
@@ -176,6 +215,70 @@ def _connect(source: _Block, target: _Block) -> None:
     source.head = source.tail
     source.succset.push_back(target.serial)
     target.predset.push_back(source.serial)
+
+
+def _create_fake_standalone_block(
+    *,
+    ref_blk: _Block,
+    blk_ins,
+    target_serial: int | None = None,
+    is_0_way: bool = False,
+    verify: bool = False,
+):
+    del verify
+    mba = ref_blk.mba
+    created = mba.copy_block(ref_blk, mba.qty - 1, 1)
+    for successor_serial in tuple(created.succset):
+        successor = mba.get_mblock(successor_serial)
+        if successor is not None:
+            successor.predset._del(created.serial)
+    created.succset.clear()
+    created.predset.clear()
+    created.head = None
+    created.tail = None
+    previous = None
+    for instruction in blk_ins:
+        copied = deepcopy(instruction)
+        created.insert_into_block(copied, previous)
+        previous = copied
+    if is_0_way:
+        created.type = int(ida_hexrays.BLT_0WAY)
+    elif target_serial is not None:
+        created.type = int(ida_hexrays.BLT_1WAY)
+        created.tail = _Instruction(
+            ida_hexrays.m_goto,
+            mba.entry_ea,
+            target_serial,
+        )
+        created.head = created.tail
+        created.succset.push_back(target_serial)
+        target = mba.get_mblock(target_serial)
+        if target is not None:
+            target.predset.push_back(created.serial)
+    return created
+
+
+def _change_fake_zero_way_successor(
+    block: _Block,
+    target_serial: int,
+    *,
+    verify: bool = False,
+) -> bool:
+    del verify
+    target_serial = int(target_serial)
+    block.type = int(ida_hexrays.BLT_1WAY)
+    block.tail = _Instruction(
+        ida_hexrays.m_goto,
+        block.mba.entry_ea,
+        target_serial,
+    )
+    block.head = block.tail
+    block.succset.push_back(target_serial)
+    target = block.mba.get_mblock(target_serial)
+    if target is not None:
+        target.predset.push_back(block.serial)
+    block.mba.mark_chains_dirty()
+    return True
 
 
 def _plan(gateway, *, entry: int, original: int, target: int, dispatcher: int):
@@ -288,4 +391,76 @@ def test_backend_stages_hidden_replacement_and_projects_root_publication() -> No
     assert tuple(original.succset) == (3,)
     assert tuple(target.predset) == ()
     assert proxy.resolve() is published
+    assert gateway.active is False
+
+
+def test_backend_stages_plan_owned_empty_synthetic_block(monkeypatch) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    monkeypatch.setattr(
+        dm,
+        "change_0way_block_successor",
+        _change_fake_zero_way_successor,
+    )
+    plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
+    synthetic = FragmentBlock(
+        block_id="synthetic",
+        role=FragmentBlockRole.SYNTHETIC,
+        materialization=FragmentBlockMaterialization.CREATE_EMPTY,
+        semantic_anchor_ea=0x401015,
+    )
+    plan = replace(
+        plan,
+        blocks=plan.blocks + (synthetic,),
+        operations=(
+            FragmentOperation(
+                operation_id="replacement-to-synthetic",
+                source_block_id="replacement",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=synthetic.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="synthetic-to-target",
+                source_block_id=synthetic.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="target",
+                    ),
+                ),
+            ),
+        ),
+    )
+    gateway._begin_semantic_fragment_batch(modifier, plan)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    result = validate_fragment_projection(plan, projection)
+    assert result.passed, result.failures
+    assert projection.block("replacement").successors == ("synthetic",)
+    assert projection.block("synthetic").successors == ("target",)
+    assert projection.binding("synthetic").state is FragmentBindingState.STAGED
+    assert projection.binding("synthetic").stable_identity is None
+    assert mba.qty == 7
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime synthetic staging test cleanup")
+
+    assert mba.qty == 5
+    assert tuple(entry.succset) == (1,)
+    assert tuple(original.succset) == (3,)
+    assert tuple(target.predset) == ()
     assert gateway.active is False

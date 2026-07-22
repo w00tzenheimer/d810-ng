@@ -3397,6 +3397,52 @@ class DeferredGraphModifier:
             self._discard_semantic_fragment_blocks((clone,))
             raise
 
+    def _stage_empty_semantic_block(
+        self,
+        *,
+        reference_version: LogicalBlockVersion,
+    ) -> LogicalBlockVersion:
+        """Create one detached zero-way block with a new synthetic lineage."""
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment materialization has no gateway"
+            )
+        reference = self._resolve_semantic_fragment_version(reference_version)
+        created_handle = gateway.identity_index.create_synthetic_handle()
+        created = create_standalone_block(
+            ref_blk=reference,
+            blk_ins=[],
+            is_0_way=True,
+            verify=False,
+        )
+        if created is None:
+            raise SemanticFragmentBackendRejected(
+                "Hex-Rays could not create an empty semantic fragment block"
+            )
+        try:
+            gateway.record_insert(
+                insertion_serial=int(created.serial),
+                returned_serial=int(created.serial),
+                created=created_handle,
+            )
+            proxy = gateway.identity_index.logical_proxy_for_handle(created_handle)
+            if proxy is None:
+                raise SemanticFragmentBackendRejected(
+                    "empty semantic fragment block has no logical proxy"
+                )
+            staged = proxy.resolve(
+                transaction_id=self._semantic_fragment_transaction_id()
+            )
+            if staged is None:
+                raise SemanticFragmentBackendRejected(
+                    "empty semantic fragment block has no staged version"
+                )
+            return staged
+        except Exception:
+            self._discard_semantic_fragment_blocks((created,))
+            raise
+
     def _discard_detached_semantic_versions(
         self,
         versions: tuple[LogicalBlockVersion, ...],
