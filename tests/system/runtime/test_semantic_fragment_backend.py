@@ -480,6 +480,88 @@ def test_backend_stages_hidden_replacement_and_projects_root_publication() -> No
     assert gateway.active is False
 
 
+def test_gateway_publishes_direct_fragment_root_from_entry() -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
+    original_handle = gateway.identity_index.handle_for_serial(1)
+    assert original_handle is not None
+    proxy = gateway.identity_index.logical_proxy_for_handle(original_handle)
+    assert proxy is not None
+    published = proxy.resolve()
+    assert published is not None
+
+    receipt = gateway.publish_semantic_fragment(modifier, plan)
+
+    promoted = proxy.resolve()
+    assert promoted is not None and promoted is not published
+    promoted_binding = gateway.identity_index.resolve_logical_version(promoted)
+    assert promoted_binding is not None
+    replacement = mba.get_mblock(promoted_binding.serial)
+    assert replacement is not None
+    assert tuple(entry.succset) == (replacement.serial,)
+    assert tuple(original.predset) == ()
+    assert tuple(replacement.predset) == (entry.serial,)
+    assert tuple(replacement.succset) == (target.serial,)
+    assert receipt.root_publication_confirmed
+    assert receipt.prepublication_validation.passed
+    assert receipt.postpublication_validation.passed
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
+
+
+def test_direct_root_partial_write_restores_previous_authority(monkeypatch) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
+    original_handle = gateway.identity_index.handle_for_serial(1)
+    assert original_handle is not None
+    proxy = gateway.identity_index.logical_proxy_for_handle(original_handle)
+    assert proxy is not None
+    published = proxy.resolve()
+    assert published is not None
+    mark = modifier._semantic_edge_mark
+    entry_write_failed = False
+
+    def _fail_once_after_entry_write(*blocks) -> None:
+        nonlocal entry_write_failed
+        mark(*blocks)
+        if not entry_write_failed and any(int(block.serial) == 0 for block in blocks):
+            entry_write_failed = True
+            raise RuntimeError("failure after entry root write")
+
+    monkeypatch.setattr(modifier, "_semantic_edge_mark", _fail_once_after_entry_write)
+
+    with pytest.raises(RuntimeError, match="failure after entry root write"):
+        gateway.publish_semantic_fragment(modifier, plan)
+
+    assert entry_write_failed
+    assert mba.qty == 5
+    assert tuple(entry.succset) == (original.serial,)
+    assert tuple(original.predset) == (entry.serial,)
+    assert tuple(original.succset) == (dispatcher.serial,)
+    assert tuple(target.predset) == ()
+    assert proxy.resolve() is published
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
+
+
 def test_backend_stages_plan_owned_empty_synthetic_block(monkeypatch) -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)

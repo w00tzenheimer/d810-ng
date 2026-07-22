@@ -341,6 +341,9 @@ class _FragmentBackend:
             raise RuntimeError("root rollback failed")
         self.root_published = False
 
+    def _complete_semantic_fragment_publication(self, _plan: FragmentPlan) -> None:
+        self.calls.append("complete")
+
 
 def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     plan = _plan()
@@ -359,6 +362,7 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
         "publish-roots",
         "rebuild",
         "observe",
+        "complete",
     ]
     assert receipt.kind is StructuralMutationKind.FRAGMENT_PUBLICATION
     assert receipt.fragment_plan_id == plan.plan_id
