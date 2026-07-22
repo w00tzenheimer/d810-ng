@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib.util
 from dataclasses import dataclass
 
+import pytest
+
 from d810.core.events import EventEmitter
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import (
@@ -157,6 +159,78 @@ def test_gateway_correlates_plan_commit_and_abort_with_batch_ids() -> None:
     assert aborted[-1].mutation_batch_id == second_batch
     assert aborted[-1].reason == "preflight rejected"
     assert index.generation == 3
+
+
+def test_gateway_observer_failure_cannot_change_transaction_authority() -> None:
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=2,
+        bindings=(),
+        native_key=NATIVE_KEY,
+    )
+    emitter = EventEmitter()
+
+    def _raise(_event) -> None:
+        raise RuntimeError("diagnostic sink unavailable")
+
+    emitter.on(MbaMutationPlanned, _raise)
+    emitter.on(MbaMutationCommitted, _raise)
+    emitter.on(MbaMutationAborted, _raise)
+    gateway = MbaMutationGateway(
+        generation=2,
+        session_id="mutation-session",
+        identity_index=index,
+        event_emitter=emitter,
+        native_key=NATIVE_KEY,
+    )
+
+    gateway.begin_batch(StructuralMutationKind.EDGE_REDIRECT)
+    gateway.record_edge_redirect()
+    receipt = gateway.commit()
+
+    assert receipt.post_generation == 3
+    assert gateway.active is False
+    assert index.generation == 3
+    assert [failure.phase for failure in gateway.observation_failures] == [
+        "planned",
+        "committed",
+    ]
+
+    gateway.begin_batch(StructuralMutationKind.BLOCK_REPLACE)
+    gateway.abort(reason="expected rejection")
+
+    assert gateway.active is False
+    assert [failure.phase for failure in gateway.observation_failures] == [
+        "planned",
+        "committed",
+        "planned",
+        "aborted",
+    ]
+
+
+def test_invalid_batch_preflight_leaves_no_active_identity_transaction() -> None:
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=2,
+        bindings=(),
+        native_key=NATIVE_KEY,
+    )
+    gateway = MbaMutationGateway(
+        generation=2,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+
+    with pytest.raises(ValueError, match="planned operation count"):
+        gateway.begin_batch(
+            StructuralMutationKind.EDGE_REDIRECT,
+            planned_operation_count=-1,
+        )
+
+    assert gateway.active is False
+    gateway.begin_batch(StructuralMutationKind.EDGE_REDIRECT)
+    gateway.abort(reason="test cleanup")
 
 
 def test_gateway_creates_independent_transactions_over_the_same_live_index() -> None:

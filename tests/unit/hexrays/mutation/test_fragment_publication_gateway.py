@@ -374,6 +374,27 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     assert aborted == []
 
 
+def test_commit_observer_failure_cannot_trigger_postcommit_root_rollback() -> None:
+    plan = _plan()
+    gateway, committed, aborted = _gateway(plan)
+    backend = _FragmentBackend(gateway)
+
+    def _raise(_event) -> None:
+        raise RuntimeError("diagnostic sink unavailable")
+
+    gateway.event_emitter.on(MbaMutationCommitted, _raise)
+
+    receipt = gateway.publish_semantic_fragment(backend, plan)
+
+    assert receipt.root_publication_confirmed
+    assert backend.root_published
+    assert "rollback-roots" not in backend.calls
+    assert gateway.active is False
+    assert gateway.observation_failures[-1].phase == "committed"
+    assert len(committed) == 1
+    assert aborted == []
+
+
 def test_prepublication_failure_discards_stage_without_exposing_roots() -> None:
     plan = _plan()
     gateway, committed, aborted = _gateway(plan)
