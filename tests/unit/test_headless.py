@@ -133,6 +133,38 @@ def test_decompile_routes_through_manager_owned_controller(monkeypatch):
     assert calls == [("controller", 0x401000), ("decompile", 0x401000)]
 
 
+def test_decompile_forwards_hexrays_failure_output_through_controller(monkeypatch):
+    from d810 import headless
+
+    calls = []
+    failure = object()
+    manager = SimpleNamespace(
+        decompile_with_native_preanalysis=lambda function_ea, decompile, invalidate: (
+            calls.append(("controller", function_ea)),
+            decompile(),
+        )[1]
+    )
+    headless._state = SimpleNamespace(manager=manager)
+    headless._configured = True
+    monkeypatch.setitem(
+        sys.modules,
+        "ida_hexrays",
+        SimpleNamespace(
+            decompile=lambda function_ea, failure_output: calls.append(
+                ("decompile", function_ea, failure_output)
+            )
+            or "cfunc",
+            clear_cached_cfuncs=lambda: calls.append(("invalidate", 0)),
+        ),
+    )
+
+    assert headless.decompile(0x401000, failure=failure) == "cfunc"
+    assert calls == [
+        ("controller", 0x401000),
+        ("decompile", 0x401000, failure),
+    ]
+
+
 def test_stop_without_state_is_noop():
     from d810 import headless
 

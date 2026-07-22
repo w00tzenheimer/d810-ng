@@ -58,10 +58,8 @@ def _run_worker(binary: pathlib.Path, output_path: pathlib.Path) -> None:
 
             cg.install()
             try:
-                assert headless.prepare_native_preanalysis(_FUNCTION_EA) > 0
-                ida_hexrays.clear_cached_cfuncs()
                 first_failure = ida_hexrays.hexrays_failure_t()
-                cfunc = ida_hexrays.decompile(_FUNCTION_EA, first_failure)
+                cfunc = headless.decompile(_FUNCTION_EA, failure=first_failure)
                 assert cfunc is not None, (
                     "first decompile failed: "
                     f"code={int(first_failure.code)} "
