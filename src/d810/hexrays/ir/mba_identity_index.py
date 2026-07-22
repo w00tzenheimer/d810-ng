@@ -337,6 +337,37 @@ class MbaBlockIdentityIndex:
             transaction_id=transaction_id,
         )
 
+    def resolve_logical_version(
+        self,
+        version: LogicalBlockVersion,
+        *,
+        transaction_id: str | None = None,
+    ) -> BoundBlock | None:
+        """Resolve one exact physical version without changing proxy authority."""
+        if not isinstance(version, LogicalBlockVersion):
+            raise TypeError("logical version resolution requires a version")
+        proxy = self._proxies_by_token.get(version.version_id.proxy_token)
+        if proxy is None or version.handle.session_id != self.session_id:
+            return None
+        serials = (
+            self._serial_by_token
+            if transaction_id is None
+            else self._serials_by_transaction.get(str(transaction_id), {})
+        )
+        serial = serials.get(version.handle.token)
+        if serial is None:
+            return None
+        identity = version.handle.stable_identity
+        anchor_ea = None
+        if identity is not None and identity.native_ranges.intervals:
+            anchor_ea = identity.native_ranges.intervals[0].start_ea
+        return BoundBlock(
+            handle=version.handle,
+            serial=int(serial),
+            generation=self.generation,
+            anchor_ea=anchor_ea,
+        )
+
     def _new_token(self, prefix: str) -> str:
         token = f"{prefix}:{self._next_token}"
         self._next_token += 1
@@ -603,6 +634,50 @@ class MbaBlockIdentityIndex:
         )
         return staged
 
+    def stage_inserted_replacement(
+        self,
+        *,
+        transaction_id: str,
+        original: MbaBlockHandle,
+        replacement: MbaBlockHandle,
+        insertion_serial: int,
+        returned_serial: int,
+    ) -> LogicalBlockVersion:
+        """Record one SDK insertion as the next version of an existing proxy."""
+        transaction_id = str(transaction_id)
+        serials = self._serials_by_transaction.get(transaction_id)
+        if serials is None:
+            raise ValueError(
+                "inserted replacement requires an active identity transaction"
+            )
+        insertion_serial = int(insertion_serial)
+        returned_serial = int(returned_serial)
+        quantity = max(serials.values(), default=-1) + 1
+        if not 0 <= insertion_serial <= quantity:
+            raise ValueError("inserted replacement coordinate is outside the MBA")
+        if returned_serial != insertion_serial:
+            raise ValueError(
+                "inserted replacement must bind at its actual insertion coordinate"
+            )
+        if self.resolve(original, transaction_id=transaction_id) is None:
+            raise ValueError("inserted replacement original is stale or foreign")
+        if (
+            self.resolve(replacement) is not None
+            or self.logical_proxy_for_handle(replacement) is not None
+        ):
+            raise ValueError("inserted replacement physical handle is already owned")
+
+        staged = self.stage_replacement(
+            transaction_id=transaction_id,
+            original=original,
+            replacement=replacement,
+            returned_serial=returned_serial,
+        )
+        for token, serial in tuple(serials.items()):
+            if token != replacement.token and serial >= insertion_serial:
+                serials[token] = serial + 1
+        return staged
+
     def stage_new_proxy(
         self,
         *,
@@ -739,6 +814,8 @@ class MbaBlockIdentityIndex:
                 proxy.abort_retirement(transaction_id)
                 continue
             staged = proxy.abort(transaction_id)
+            if actions.get(proxy_token) == "replacement":
+                self._proxy_token_by_handle_token.pop(staged.handle.token, None)
             discarded.append(staged.version_id)
         self._serials_by_transaction.pop(transaction_id, None)
         self._baseline_tokens_by_transaction.pop(transaction_id, None)

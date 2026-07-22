@@ -497,6 +497,45 @@ def test_gateway_replacement_is_transaction_local_until_commit() -> None:
     assert transition.promoted_version_id == staged.version_id
 
 
+def test_gateway_stages_inserted_replacement_as_one_logical_operation() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=((identity, 2),),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(2)
+    assert original is not None
+    replacement = index.create_native_handle(identity)
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+    gateway.begin_batch(
+        StructuralMutationKind.FRAGMENT_PUBLICATION,
+        serial_quantity=4,
+        planned_operation_count=1,
+    )
+
+    staged = gateway.stage_inserted_replacement(
+        original=original,
+        replacement=replacement,
+        insertion_serial=3,
+        returned_serial=3,
+    )
+
+    assert staged.handle is replacement
+    assert gateway.resolve_block(original).serial == 3
+    assert index.resolve(original).serial == 2
+    assert gateway._operation_count == 1
+    gateway.abort(reason="unit test does not attach fragment validation")
+
+
 def test_gateway_abort_discards_staged_version_and_preserves_published_authority() -> (
     None
 ):

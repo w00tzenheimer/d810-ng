@@ -606,6 +606,28 @@ class MbaMutationGateway:
         self._operation_count += 1
         return staged
 
+    def stage_inserted_replacement(
+        self,
+        *,
+        original: MbaBlockHandle,
+        replacement: MbaBlockHandle,
+        insertion_serial: int,
+        returned_serial: int,
+    ) -> LogicalBlockVersion:
+        """Stage an inserted physical clone behind the original logical proxy."""
+        self._require_active()
+        staged = self.identity_index.stage_inserted_replacement(
+            transaction_id=str(self._active_batch_id),
+            original=original,
+            replacement=replacement,
+            insertion_serial=int(insertion_serial),
+            returned_serial=int(returned_serial),
+        )
+        self._record_handle(original)
+        self._record_handle(replacement)
+        self._operation_count += 1
+        return staged
+
     def record_insert(
         self,
         *,
