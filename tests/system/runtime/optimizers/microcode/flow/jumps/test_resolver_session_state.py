@@ -42,7 +42,7 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     _native_entry_corridor_serials,
     _on_calls_done_preanalysis,
     _on_flowchart_preanalysis,
-    _on_preopt_bootstrap_route,
+    rebind_live_preopt_routes,
     discover_static_native_bootstrap_routes,
 )
 from tests.native_preanalysis import make_native_key
@@ -857,7 +857,7 @@ def test_preopt_route_consumption_uses_the_injected_mutation_gateway(
     }
 
     state.preopt_union_import_active = True
-    _on_preopt_bootstrap_route(
+    rebind_live_preopt_routes(
         function_ea=0x401000,
         mba=_Mba(),
         decision=decision,
@@ -870,7 +870,7 @@ def test_preopt_route_consumption_uses_the_injected_mutation_gateway(
     # pending and must still run in that same PREOPT callback.
     assert session.native_preanalysis.mark_preopt_bound()
 
-    _on_preopt_bootstrap_route(
+    rebind_live_preopt_routes(
         function_ea=0x401000,
         mba=_Mba(),
         decision=decision,
@@ -955,18 +955,18 @@ def test_preopt_route_consumption_materializes_a_zero_way_goto(monkeypatch) -> N
             assert mba is not None
             assert mutation_gateway == "gateway"
 
-        def restore_pruned_direct_now(
-            self,
-            source_block: object,
-            target_block: object,
-        ) -> bool:
-            queued.append((int(source_block.serial), int(target_block.serial)))
-            return True
+        def queue_terminal_goto_change(
+            self, *, block_serial: int, goto_target: int, **_kwargs
+        ) -> None:
+            queued.append((int(block_serial), int(goto_target)))
+
+        def apply(self, **_kwargs) -> int:
+            return 1
 
     monkeypatch.setattr(modifier_module, "DeferredGraphModifier", _Modifier)
     decision = {"session": session, "mutation_gateway": "gateway"}
 
-    _on_preopt_bootstrap_route(
+    rebind_live_preopt_routes(
         function_ea=0x40D200,
         mba=_Mba(),
         decision=decision,
@@ -1091,7 +1091,7 @@ def test_preopt_routes_static_conditional_taken_arm_through_gateway(
     monkeypatch.setattr(modifier_module, "DeferredGraphModifier", _Modifier)
     decision = {"session": session, "mutation_gateway": "gateway"}
 
-    _on_preopt_bootstrap_route(
+    rebind_live_preopt_routes(
         function_ea=0x40D200,
         mba=_Mba(),
         decision=decision,
@@ -1223,7 +1223,7 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
     monkeypatch.setattr(modifier_module, "DeferredGraphModifier", _Modifier)
     decision = {"session": session, "mutation_gateway": "gateway"}
 
-    _on_preopt_bootstrap_route(
+    rebind_live_preopt_routes(
         function_ea=0x40D200,
         mba=_Mba(),
         decision=decision,
@@ -1246,7 +1246,7 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
         evidence_family="test_evidence",
         reason="test evidence changed",
     )
-    _on_preopt_bootstrap_route(
+    rebind_live_preopt_routes(
         function_ea=0x40D200,
         mba=_Mba(),
         decision={
@@ -1258,7 +1258,7 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
     assert queued == [(7, predicate_ea, 9, 11)]
     assert session.native_preanalysis.bound_preopt_generation == 1
 
-    _on_preopt_bootstrap_route(
+    rebind_live_preopt_routes(
         function_ea=0x40D200,
         mba=_Mba(),
         decision={
@@ -1383,7 +1383,7 @@ def test_prepared_union_applies_only_the_external_entry_bridge_port(
     mba = SimpleNamespace(entry_ea=function_ea, qty=0)
     decision = {"session": session, "mutation_gateway": "gateway"}
 
-    _on_preopt_bootstrap_route(
+    rebind_live_preopt_routes(
         function_ea=function_ea,
         mba=mba,
         decision=decision,
@@ -1443,7 +1443,7 @@ def test_owned_preopt_union_does_not_recapture_mutated_entry_bridge(
     )
     mba = SimpleNamespace(entry_ea=function_ea, qty=0)
 
-    _on_preopt_bootstrap_route(
+    rebind_live_preopt_routes(
         function_ea=function_ea,
         mba=mba,
         decision={"session": session},

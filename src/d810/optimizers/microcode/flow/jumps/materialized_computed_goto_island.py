@@ -93,6 +93,7 @@ from d810.optimizers.microcode.flow.handler import (
 from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     get_prepared_preopt_union_closure,
     is_computed_goto_materialized,
+    rebind_live_preopt_routes,
     recover_conditional_handler_bridge_transfers_from_mba,
 )
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
@@ -415,9 +416,16 @@ def _restore_preopt_terminal_return_carriers(
             )
         return
 
+    imported_instruction_origins = tuple(
+        imported_detached_snippet_instruction_origins(mba)
+    )
     state.bind_current_imported_instruction_origins(
         stable_mba_identity(mba),
-        tuple(imported_detached_snippet_instruction_origins(mba)),
+        imported_instruction_origins,
+    )
+    mutation_gateway.identity_index.refresh_from_mba(
+        mba,
+        imported_instruction_origins=dict(imported_instruction_origins),
     )
     state.preopt_union_imported_mbas.add(
         _preopt_union_import_key(int(function_ea), mba)
@@ -428,6 +436,11 @@ def _restore_preopt_terminal_return_carriers(
         preopt_union_root_ea=primary_seed_ea,
         preopt_union_seed_count=len(seed_eas),
         preopt_union_boundary_port_count=expected_boundary_ports,
+    )
+    rebind_live_preopt_routes(
+        function_ea=int(function_ea),
+        mba=mba,
+        decision=decision,
     )
     logger.info(
         "PREOPT union import succeeded: func=0x%X primary=0x%X "

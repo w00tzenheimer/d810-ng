@@ -759,7 +759,12 @@ class MbaBlockIdentityIndex:
         self._next_token = max(self._next_token, rebuilt._next_token)
         self._baseline_tokens.clear()
 
-    def refresh_from_mba(self, mba: object) -> None:
+    def refresh_from_mba(
+        self,
+        mba: object,
+        *,
+        imported_instruction_origins: Mapping[int, int] | None = None,
+    ) -> None:
         """Rebuild bindings from a callback-local MBA after an unknown SDK effect."""
         self._replace_with_rebuilt(
             type(self).from_mba(
@@ -768,6 +773,7 @@ class MbaBlockIdentityIndex:
                 native_key=self.native_key,
                 evidence_generation=self.evidence_generation,
                 session_id=self.session_id,
+                imported_instruction_origins=imported_instruction_origins,
             )
         )
 

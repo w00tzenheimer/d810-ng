@@ -15013,7 +15013,7 @@ def _classify_live_state_write_routes(
     return tuple(pending), tuple(already), int(unbound)
 
 
-def _on_preopt_bootstrap_route(
+def rebind_live_preopt_routes(
     *,
     function_ea: int,
     mba: object,
@@ -15625,7 +15625,8 @@ def _on_preopt_bootstrap_route(
         deferred_applied = (
             modifier.apply(transactional=True, staged_atomic=True)
             if (
-                redirect_routes
+                terminal_routes
+                or redirect_routes
                 or state_write_pending
                 or conditional_pending
                 or conditional_materialize
@@ -16068,7 +16069,7 @@ def install() -> None:
     register_flowchart_preanalysis_handler(_HANDLER_NAME, _on_flowchart_preanalysis)
     register_preopt_preanalysis_handler(
         _PREOPT_HANDLER_NAME,
-        _on_preopt_bootstrap_route,
+        rebind_live_preopt_routes,
     )
     register_calls_done_preanalysis_handler(
         _CALLS_HANDLER_NAME,
@@ -16107,6 +16108,7 @@ __all__ = [
     "prepare_terminal_return_carrier_templates",
     "capture_detached_route_callinfo_templates",
     "recover_conditional_handler_bridge_transfers_from_mba",
+    "rebind_live_preopt_routes",
     "install",
     "uninstall",
 ]
