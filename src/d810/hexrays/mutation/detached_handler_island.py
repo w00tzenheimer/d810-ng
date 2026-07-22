@@ -1691,6 +1691,14 @@ def _capture_detached_snippet_template(
                     for native_ea in _block_native_eas(block)
                 )
             )
+        ) or (
+            block.head is None
+            and int(block.start) in terminal_return_entries
+            and (
+                owned_entries is None
+                or int(block.start) in owned_entries | additional_owned_entries
+            )
+            and _ea_in_ranges(int(block.start), normalized_ranges)
         ):
             included[int(block.serial)] = block
     roots = tuple(
@@ -1699,7 +1707,18 @@ def _capture_detached_snippet_template(
         if int(target_ea) in _block_native_eas(block)
         or int(block.start) == int(target_ea)
     )
-    resolved_root = _resolve_template_root_aliases(included, roots)
+    empty_terminal_roots = tuple(
+        int(serial)
+        for serial in roots
+        if included[int(serial)].head is None
+        and int(included[int(serial)].start) in terminal_return_entries
+        and int(included[int(serial)].nsucc()) == 0
+    )
+    resolved_root = (
+        (empty_terminal_roots[0], ())
+        if len(roots) == 1 and len(empty_terminal_roots) == 1
+        else _resolve_template_root_aliases(included, roots)
+    )
     if resolved_root is None:
         logger.info(
             "detached snippet capture abstained: target=0x%X "
@@ -1872,6 +1891,13 @@ def _capture_detached_snippet_template(
         lower_synthetic_exit_to_return = False
         append_native_exit_return = False
         native_entry = _unique_block_native_ea(block)
+        if (
+            native_entry is None
+            and block.head is None
+            and int(block.start) in terminal_return_entries
+            and int(block.nsucc()) == 0
+        ):
+            native_entry = int(block.start)
         if native_entry is None:
             logger.info(
                 "detached snippet capture abstained: target=0x%X "
@@ -2001,7 +2027,24 @@ def _capture_detached_snippet_template(
             external_successors.append(int(successor_ea))
 
         template_block_type = int(block.type)
-        if lower_synthetic_exit_to_return:
+        if (
+            int(native_entry) in terminal_return_entries
+            and not instructions
+            and not internal_successors
+            and not external_successors
+        ):
+            terminal_return = ida_hexrays.minsn_t(int(native_entry))
+            terminal_return.opcode = int(ida_hexrays.m_ret)
+            instructions = (terminal_return,)
+            template_block_type = int(ida_hexrays.BLT_STOP)
+            logger.info(
+                "detached snippet materialized proven empty native return: "
+                "target=0x%X source=blk%d@0x%X",
+                int(target_ea),
+                int(block.serial),
+                int(native_entry),
+            )
+        elif lower_synthetic_exit_to_return:
             terminal_return = ida_hexrays.minsn_t(int(block.tail.ea))
             terminal_return.opcode = int(ida_hexrays.m_ret)
             instructions = (*instructions[:-1], terminal_return)
@@ -4117,6 +4160,148 @@ class _ImportedTerminalReturnCarrierInsertion:
     owner_target_ea: int
     prepared_instruction: object = field(compare=False)
     already_present: bool = False
+
+
+def _preflight_terminal_return_templates(
+    mba: object,
+    function_ea: int,
+    batch: _BoundaryPortMutationBatch,
+    selected_templates: tuple[DetachedSnippetTemplate, ...],
+) -> bool:
+    """Reject incomplete terminal fragments before allocating live blocks."""
+    carrier_templates_by_identity: dict[
+        tuple[int, int, int],
+        list[_TerminalReturnCarrierTemplate],
+    ] = {}
+    for (
+        owner_ea,
+        _source_ea,
+        _state,
+    ), carrier_template in _TERMINAL_RETURN_CARRIER_TEMPLATES.items():
+        if int(owner_ea) != int(function_ea):
+            continue
+        request = carrier_template.request
+        identity = (
+            int(request.terminal_target_ea),
+            int(request.state_var_reg),
+            int(request.state_constant) & 0xFFFFFFFF,
+        )
+        carrier_templates_by_identity.setdefault(identity, []).append(
+            carrier_template
+        )
+    snippet_templates_by_target = {
+        int(template.target_ea): template for template in selected_templates
+    }
+    closing_opcodes = {
+        int(ida_hexrays.m_call),
+        int(ida_hexrays.m_icall),
+        int(ida_hexrays.m_ext),
+        int(ida_hexrays.m_goto),
+        int(ida_hexrays.m_ijmp),
+        int(ida_hexrays.m_jtbl),
+        int(ida_hexrays.m_ret),
+    }
+    for mutation in batch.conditional:
+        port = mutation.record.port
+        if port.resolver_kind != "preopt_terminal_return_boundary":
+            continue
+        if port.state_register is None:
+            return False
+        terminal_arms = tuple(
+            (int(target_ea), int(state) & 0xFFFFFFFF, owner, binding)
+            for target_ea, state, owner, binding in (
+                (
+                    port.taken_target_ea,
+                    port.taken_state,
+                    port.taken_target_owner,
+                    mutation.taken_target,
+                ),
+                (
+                    port.fallthrough_target_ea,
+                    port.fallthrough_state,
+                    port.fallthrough_target_owner,
+                    mutation.fallthrough_target,
+                ),
+            )
+            if state is not None
+        )
+        if len(terminal_arms) != 1:
+            return False
+        terminal_target_ea, state_constant, owner, target_binding = terminal_arms[0]
+        if (
+            owner is not DetachedSnippetBoundaryPortOwner.IMPORTED
+            or target_binding.imported_key is None
+        ):
+            return False
+        identity = (
+            terminal_target_ea,
+            int(port.state_register),
+            state_constant,
+        )
+        carrier_templates = carrier_templates_by_identity.get(identity, ())
+        if len(carrier_templates) != 1:
+            logger.info(
+                "detached snippet terminal fragment preflight abstained: "
+                "predicate=0x%X target=0x%X state=0x%X templates=%d "
+                "reason=carrier_identity",
+                int(port.predicate_ea),
+                terminal_target_ea,
+                state_constant,
+                len(carrier_templates),
+            )
+            return False
+        carrier = _prepare_terminal_return_carrier_instruction(
+            mba,
+            carrier_templates[0],
+        )
+        if carrier is None or not _is_stable_terminal_carrier_write(carrier):
+            return False
+        owner_target_ea, source_serial = target_binding.imported_key
+        snippet_template = snippet_templates_by_target.get(int(owner_target_ea))
+        terminal_block = (
+            None
+            if snippet_template is None
+            else _template_block_by_serial(snippet_template, int(source_serial))
+        )
+        instructions = () if terminal_block is None else terminal_block.instructions
+        returns = tuple(
+            instruction
+            for instruction in instructions
+            if int(instruction.opcode) == int(ida_hexrays.m_ret)
+        )
+        if (
+            terminal_block is None
+            or int(terminal_block.block_type) != int(ida_hexrays.BLT_STOP)
+            or terminal_block.successor_serials
+            or terminal_block.external_successor_eas
+            or len(returns) != 1
+            or not instructions
+            or int(instructions[-1].opcode) != int(ida_hexrays.m_ret)
+            or any(
+                int(instruction.opcode) in closing_opcodes
+                or ida_hexrays.is_mcode_jcond(int(instruction.opcode))
+                for instruction in instructions[:-1]
+            )
+        ):
+            logger.info(
+                "detached snippet terminal fragment preflight abstained: "
+                "predicate=0x%X target=0x%X reason=terminal_template_shape",
+                int(port.predicate_ea),
+                terminal_target_ea,
+            )
+            return False
+        return_writes = tuple(
+            instruction
+            for instruction in instructions
+            if int(instruction.d.t) == int(ida_hexrays.mop_r)
+            and int(instruction.d.r) == _return_mreg()
+        )
+        if return_writes and not (
+            len(return_writes) == 1
+            and _same_terminal_carrier_write(return_writes[0], carrier)
+        ):
+            return False
+    return True
 
 
 def _boundary_port_result(
@@ -7205,6 +7390,20 @@ def _materialize_detached_snippet_templates(
         return _empty_import_result_for_boundary_ports(
             selected,
             "boundary_port_batch_preflight",
+        )
+    if not _preflight_terminal_return_templates(
+        mba,
+        function_ea,
+        boundary_port_batch,
+        selected,
+    ):
+        logger.info(
+            "detached snippet import abstained: reason="
+            "terminal_return_fragment_preflight"
+        )
+        return _empty_import_result_for_boundary_ports(
+            selected,
+            "terminal_return_fragment_preflight",
         )
     needs_conditional_fallthrough_helpers = raw_preopt_import or bool(
         boundary_port_batch.conditional

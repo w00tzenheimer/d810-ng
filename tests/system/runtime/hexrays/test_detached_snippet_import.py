@@ -3979,6 +3979,11 @@ def test_terminal_return_port_abstains_atomically_without_unique_carrier(
         _carrier_source,
         destination,
     ) = _terminal_return_import_fixture()
+    qty_before = int(destination.qty)
+    blocks_before = tuple(
+        tuple(int(instruction.opcode) for instruction in block.instructions())
+        for block in destination.blocks
+    )
     restored: list[bool] = []
     monkeypatch.setattr(
         DeferredGraphModifier,
@@ -3997,6 +4002,11 @@ def test_terminal_return_port_abstains_atomically_without_unique_carrier(
     assert result.applied_boundary_ports == ()
     assert len(result.abstained_boundary_ports) == 1
     assert restored == []
+    assert int(destination.qty) == qty_before
+    assert tuple(
+        tuple(int(instruction.opcode) for instruction in block.instructions())
+        for block in destination.blocks
+    ) == blocks_before
 
 
 def test_preflight_uses_proven_logical_source_when_predicate_is_absent(
@@ -8760,6 +8770,49 @@ def test_capture_appends_return_only_for_native_terminal_evidence(monkeypatch) -
         int(instruction.opcode) for instruction in imported_return.instructions()
     )
     assert opcodes == (int(ida_hexrays.m_mov), int(ida_hexrays.m_ret))
+    assert int(imported_return.type) == int(ida_hexrays.BLT_0WAY)
+    assert tuple(imported_return.succset) == ()
+
+
+def test_capture_materializes_empty_proven_native_return(monkeypatch) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    return_ea = 0x3300
+    source = _MBA(
+        (_Block(0, return_ea, ()),),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_0WAY)
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        return_ea,
+        source,
+        ((return_ea, return_ea + 1),),
+        terminal_return_entry_eas=(return_ea,),
+    )
+
+    roots = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (return_ea,),
+        allow_raw_preopt_calls=True,
+        mutation_gateway=make_mutation_gateway(destination),
+    )
+    imported_return = destination.get_mblock(roots[return_ea])
+    assert tuple(
+        int(instruction.opcode) for instruction in imported_return.instructions()
+    ) == (int(ida_hexrays.m_ret),)
     assert int(imported_return.type) == int(ida_hexrays.BLT_0WAY)
     assert tuple(imported_return.succset) == ()
 

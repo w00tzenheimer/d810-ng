@@ -9198,6 +9198,72 @@ def test_preopt_union_groups_two_resolver_cut_targets_into_one_conditional_port(
     assert port.fallthrough_target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
 
 
+def test_preopt_union_classifies_one_native_return_arm_as_atomic_terminal_port() -> (
+    None
+):
+    source_ea = 0x40A5CA
+    resolver_ea = 0x40A5E3
+    return_target_ea = 0x40C898
+    sibling_target_ea = 0x40A5F0
+    closure = SimpleNamespace(
+        included_block_eas=(source_ea, return_target_ea, sibling_target_ea),
+        proven_import_boundary_edges=tuple(
+            SimpleNamespace(
+                source_ea=source_ea,
+                source_instruction_ea=resolver_ea,
+                target_ea=target_ea,
+                kind=NativeEdgeKind.INDIRECT,
+                provenance="static_fixpoint",
+            )
+            for target_ea in (return_target_ea, sibling_target_ea)
+        ),
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=resolver_ea,
+        source_block_ea=source_ea,
+        materialized_anchor_eas=(source_ea,),
+        target_eas=(return_target_ea, sibling_target_ea),
+        condition_code=4,
+        true_target_ea=return_target_ea,
+        false_target_ea=sibling_target_ea,
+        selector_state_var_reg=20,
+        selector_compare_constant=0x19A7218A,
+        resolver_kind="static_fixpoint",
+    )
+    native_cfg = SimpleNamespace(
+        blocks_by_ea={
+            return_target_ea: SimpleNamespace(
+                start_ea=return_target_ea,
+                end_ea=return_target_ea + 0xA,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+            sibling_target_ea: SimpleNamespace(
+                start_ea=sibling_target_ea,
+                end_ea=sibling_target_ea + 0x10,
+                terminal=NativeTerminalKind.NONE,
+            ),
+        }
+    )
+
+    ports = computed_goto_resolver._preopt_union_boundary_ports(
+        closure,
+        live_native_eas=frozenset(),
+        transfers=(transfer,),
+        native_cfg=native_cfg,
+    )
+
+    assert ports is not None
+    assert ports.direct == ()
+    assert len(ports.conditional) == 1
+    (port,) = ports.conditional
+    assert port.resolver_kind == "preopt_terminal_return_boundary"
+    assert port.state_register == 20
+    assert port.taken_state == 0x19A7218A
+    assert port.fallthrough_state is None
+    assert port.taken_target_ea == return_target_ea
+    assert port.fallthrough_target_ea == sibling_target_ea
+
+
 def test_preopt_union_routes_live_one_way_state_tail_into_imported_handler() -> None:
     predicate_write_ea = 0x40CDAF
     tail_write_ea = 0x40CDBA
