@@ -14,6 +14,7 @@ from d810.analyses.control_flow.detached_handler_island import (
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
+    PortableStateWriteRouteEvidence,
 )
 from d810.analyses.control_flow.native_semantic_closure import NativeBlock, NativeCfg
 from d810.core.native_preanalysis_key import NativePreanalysisKeyMismatch
@@ -438,6 +439,67 @@ def test_rebound_bootstrap_fact_is_published_once_on_a_real_snapshot(
         "generation": 1,
         "proof_kind": "static_native",
         "rebound": True,
+    }
+
+
+def test_state_write_route_inventory_is_published_once_on_a_real_snapshot(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    coordinator, _runtime = _coordinator(calls)
+    session, _created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401020, 0x401021),), native_key=NATIVE_KEY
+    )
+    delivery = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401030, 0x401031),), native_key=NATIVE_KEY
+    )
+    target = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401100, 0x401101),), native_key=NATIVE_KEY
+    )
+    route = PortableStateWriteRouteEvidence(
+        write_identity=source,
+        delivery_identity=delivery,
+        source_write_ea=0x401020,
+        delivery_ea=0x401030,
+        delivery_region_start_ea=0x401030,
+        delivery_region_end_ea=0x401035,
+        corridor_instruction_eas=(0x401020, 0x401030),
+        state_var_reg=20,
+        state_constant=0x12345678,
+        target_identity=target,
+        target_ea=0x401100,
+    )
+    assert session.native_preanalysis.merge_state_write_routes(NATIVE_KEY, (route,))
+    published: list[object] = []
+    import d810.core.observability as observability
+
+    monkeypatch.setattr(observability, "emit", published.append)
+
+    coordinator.capture_flowgraph(_flowgraph_payload(snapshot="snapshot"))
+    coordinator.capture_flowgraph(_flowgraph_payload(snapshot="snapshot"))
+
+    assert len(published) == 1
+    event = published[0]
+    assert len(event.observations) == 1
+    observation = event.observations[0]
+    assert observation.kind == "StateWriteRouteEvidenceFact"
+    assert observation.source_ea == 0x401020
+    assert observation.payload == {
+        "generation": 1,
+        "proof_kind": "static_native_state_delivery",
+        "source_write_ea": "0x401020",
+        "delivery_ea": "0x401030",
+        "delivery_region_start_ea": "0x401030",
+        "delivery_region_end_ea": "0x401035",
+        "corridor_instruction_eas": ["0x401020", "0x401030"],
+        "state_var_reg": 20,
+        "state_constant": "0x12345678",
+        "target_ea": "0x401100",
+        "inventory_revision": 1,
     }
 
 

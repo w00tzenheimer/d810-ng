@@ -124,6 +124,7 @@ from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
+    PortableStateWriteRouteEvidence,
     TerminalReturnCarrierRequest,
     find_unique_target_block,
     find_unique_target_entry_block,
@@ -155,6 +156,7 @@ from d810.ir.flowgraph import (
     InsnKind,
     OperandKind,
 )
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.hexrays.preanalysis.flowchart_preanalysis import (
     register_flowchart_preanalysis_handler,
     request_hexrays_redo,
@@ -204,6 +206,89 @@ from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
 
 _PatchPlan = ComputedGotoPatchPlan
 _PrepatchPreoptUnionSource = PrepatchPreoptUnionSource
+
+
+class _DecodedStateRouteInstruction(NamedTuple):
+    """IDA-free instruction facts used to prove one direct state route."""
+
+    ea: int
+    end_ea: int
+    mnemonic: str
+    destination_mreg: int | None
+    writes_destination: bool
+    immediate: int | None
+
+
+class _NativeStateRouteDeliverySite(NamedTuple):
+    """One bounded native delivery that returns a state to its dispatcher."""
+
+    block_entry_ea: int
+    delivery_ea: int
+    delivery_region_start_ea: int
+    delivery_region_end_ea: int
+
+
+def _select_static_state_write_delivery(
+    decoded: Sequence[_DecodedStateRouteInstruction],
+    *,
+    state_var_reg: int,
+    state_constant: int,
+    delivery_ea: int,
+) -> tuple[int, tuple[int, ...]] | None:
+    """Select one direct write-to-delivery corridor without conditional flow."""
+    selected = _select_static_state_write_assignment(
+        decoded,
+        state_var_reg=int(state_var_reg),
+        delivery_ea=int(delivery_ea),
+    )
+    if selected is None or int(selected[1]) != (int(state_constant) & _MASK32):
+        return None
+    return int(selected[0]), tuple(selected[2])
+
+
+def _select_static_state_write_assignment(
+    decoded: Sequence[_DecodedStateRouteInstruction],
+    *,
+    state_var_reg: int,
+    delivery_ea: int,
+) -> tuple[int, int, tuple[int, ...]] | None:
+    """Recover the final immediate flow-state assignment for one direct route."""
+    ordered = tuple(decoded)
+    if (
+        not ordered
+        or int(ordered[-1].ea) != int(delivery_ea)
+        or str(ordered[-1].mnemonic).lower() != "jmp"
+    ):
+        return None
+    state_writes = tuple(
+        (index, instruction)
+        for index, instruction in enumerate(ordered[:-1])
+        if instruction.writes_destination
+        and instruction.destination_mreg is not None
+        and int(instruction.destination_mreg) == int(state_var_reg)
+    )
+    if not state_writes:
+        return None
+    write_index, write = state_writes[-1]
+    if write.immediate is None or not _state_write_values_match(
+        mnemonic=str(write.mnemonic),
+        destination_mreg=write.destination_mreg,
+        immediate=write.immediate,
+        state_var_reg=int(state_var_reg),
+        state_constant=int(write.immediate),
+    ):
+        return None
+    corridor = ordered[write_index:]
+    if any(
+        str(instruction.mnemonic).lower() in _SV_JCC_MNEMS
+        or str(instruction.mnemonic).lower() in {"call", "ret", "retn", "retf"}
+        for instruction in corridor[:-1]
+    ):
+        return None
+    heads = tuple(int(instruction.ea) for instruction in corridor)
+    if heads != tuple(sorted(set(heads))):
+        return None
+    return int(write.ea), int(write.immediate) & _MASK32, heads
 
 
 def _merge_materialized_transfers(
@@ -1003,6 +1088,13 @@ def _resolve_static_handler_exit_routes(
         and route.selector_state_var_reg is not None
     }
     if len(state_registers) != 1:
+        logger.info(
+            "static state-write route discovery abstained: func=0x%X "
+            "reason=state_register_count registers=%s transfer_kinds=%s",
+            int(resolution.function_ea),
+            sorted(state_registers),
+            dict(collections.Counter(route.resolver_kind for route in transfers)),
+        )
         return ()
     state_register = next(iter(state_registers))
     state_targets = _unique_static_equality_handler_targets(
@@ -6774,6 +6866,280 @@ def _native_post_state_write_indirect_site(
     return None
 
 
+def _decode_static_state_route_corridor(
+    start_ea: int,
+    delivery_ea: int,
+    *,
+    max_instructions: int = 128,
+) -> tuple[_DecodedStateRouteInstruction, ...]:
+    """Decode one forward native corridor ending at an indirect delivery."""
+    import ida_ua  # type: ignore[import-untyped]
+    import idaapi  # type: ignore[import-untyped]
+
+    decoded: list[_DecodedStateRouteInstruction] = []
+    cursor = int(start_ea)
+    delivery = int(delivery_ea)
+    for _ in range(int(max_instructions)):
+        if cursor > delivery:
+            return ()
+        instruction = ida_ua.insn_t()
+        size = int(ida_ua.decode_insn(instruction, cursor))
+        if size <= 0:
+            return ()
+        mnemonic = (idaapi.print_insn_mnem(cursor) or "").lower()
+        destination_mreg = None
+        writes_destination = False
+        if instruction.ops[0].type == idaapi.o_reg:
+            destination_mreg = _native_register_mreg(_sv_reg_name(instruction.ops[0]))
+            writes_destination = _insn_writes_first_operand(
+                instruction,
+                idaapi.CF_CHG1,
+            )
+        immediate = (
+            int(instruction.ops[1].value)
+            if instruction.ops[1].type == idaapi.o_imm
+            else None
+        )
+        decoded.append(
+            _DecodedStateRouteInstruction(
+                cursor,
+                cursor + size,
+                mnemonic,
+                destination_mreg,
+                writes_destination,
+                immediate,
+            )
+        )
+        if cursor == delivery:
+            return tuple(decoded)
+        if mnemonic in {"jmp", "ret", "retn", "retf"}:
+            return ()
+        cursor += size
+    return ()
+
+
+def _native_direct_dispatch_delivery_sites(
+    function_ea: int,
+    envelope_end_ea: int,
+    *,
+    dispatcher_router_eas: frozenset[int],
+    excluded_delivery_eas: frozenset[int] = frozenset(),
+) -> tuple[_NativeStateRouteDeliverySite, ...]:
+    """Find direct native jumps that deliver a state to a proven dispatcher."""
+    import ida_bytes  # type: ignore[import-untyped]
+    import ida_ua  # type: ignore[import-untyped]
+    import idaapi  # type: ignore[import-untyped]
+    import idautils  # type: ignore[import-untyped]
+
+    if not dispatcher_router_eas:
+        return ()
+    sites: set[_NativeStateRouteDeliverySite] = set()
+    for ea in idautils.Heads(int(function_ea), int(envelope_end_ea)):
+        delivery_ea = int(ea)
+        if delivery_ea in excluded_delivery_eas or not ida_bytes.is_code(
+            ida_bytes.get_flags(delivery_ea)
+        ):
+            continue
+        instruction = ida_ua.insn_t()
+        size = int(ida_ua.decode_insn(instruction, delivery_ea))
+        if (
+            size <= 0
+            or (idaapi.print_insn_mnem(delivery_ea) or "").lower() != "jmp"
+            or instruction.ops[0].type not in {idaapi.o_near, idaapi.o_far}
+            or int(instruction.ops[0].addr) not in dispatcher_router_eas
+        ):
+            continue
+        sites.add(
+            _NativeStateRouteDeliverySite(
+                _block_start_of(delivery_ea, int(function_ea)),
+                delivery_ea,
+                delivery_ea,
+                delivery_ea + size,
+            )
+        )
+    return tuple(sorted(sites))
+
+
+def _discover_static_state_write_routes(
+    state: ResolverSessionState,
+    resolution: ComputedGotoResolution,
+    transfers: Sequence[MaterializedIndirectTransfer],
+) -> tuple[PortableStateWriteRouteEvidence, ...]:
+    """Publish direct reference-style state routes before top-level PREOPT."""
+    state_registers = {
+        int(route.selector_state_var_reg)
+        for route in transfers
+        if route.resolver_kind == "static_handler_entry_route"
+        and route.selector_state_var_reg is not None
+    }
+    if len(state_registers) != 1:
+        return ()
+    state_var_reg = next(iter(state_registers))
+    state_targets = _unique_static_equality_handler_targets(
+        transfers,
+        int(state_var_reg),
+    )
+    if not state_targets:
+        logger.info(
+            "static state-write route discovery abstained: func=0x%X "
+            "reason=no_state_targets state_register=%d",
+            int(resolution.function_ea),
+            int(state_var_reg),
+        )
+        return ()
+    decoded_count = 0
+    assignment_count = 0
+    mapped_count = 0
+    delivery_region_count = 0
+    candidates: dict[
+        tuple[int, int, int, int], set[PortableStateWriteRouteEvidence]
+    ] = {}
+    patch_delivery_sites = tuple(
+        _NativeStateRouteDeliverySite(
+            int(plan.block_entry),
+            int(plan.jmp_ea),
+            int(plan.patch_start),
+            int(plan.region_end),
+        )
+        for plan in resolution.patch_plans
+    )
+    dispatcher_router_eas = frozenset(
+        int(router_ea)
+        for transfer in transfers
+        for router_ea in transfer.dispatcher_router_eas
+    )
+    envelope_end_ea = (
+        max(
+            (
+                int(ea)
+                for ea in (
+                    *resolution.reachable_eas,
+                    *resolution.block_entries,
+                    *(site.delivery_region_end_ea for site in patch_delivery_sites),
+                    *(router_ea for router_ea in dispatcher_router_eas),
+                    *(
+                        end_ea
+                        for transfer in transfers
+                        for _start_ea, end_ea in transfer.owned_native_ranges
+                    ),
+                )
+            ),
+            default=int(resolution.function_ea),
+        )
+        + 1
+    )
+    direct_delivery_sites = _native_direct_dispatch_delivery_sites(
+        int(resolution.function_ea),
+        int(envelope_end_ea),
+        dispatcher_router_eas=dispatcher_router_eas,
+        excluded_delivery_eas=frozenset(
+            int(site.delivery_ea) for site in patch_delivery_sites
+        ),
+    )
+    for site in (*patch_delivery_sites, *direct_delivery_sites):
+        decoded = _decode_static_state_route_corridor(
+            int(site.block_entry_ea),
+            int(site.delivery_ea),
+        )
+        decoded_count += bool(decoded)
+        selected = _select_static_state_write_assignment(
+            decoded,
+            state_var_reg=int(state_var_reg),
+            delivery_ea=int(site.delivery_ea),
+        )
+        if selected is None:
+            continue
+        assignment_count += 1
+        write_ea, state_constant, corridor_instruction_eas = selected
+        target_ea = state_targets.get(int(state_constant))
+        if target_ea is None:
+            continue
+        mapped_count += 1
+        delivery_region_start_ea = int(site.delivery_region_start_ea)
+        delivery_region_end_ea = int(site.delivery_region_end_ea)
+        delivery_ea = int(site.delivery_ea)
+        if not int(delivery_region_start_ea) <= delivery_ea < delivery_region_end_ea:
+            continue
+        delivery_region_count += 1
+        target_ea = int(target_ea)
+        evidence = PortableStateWriteRouteEvidence(
+            write_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(int(write_ea), int(write_ea) + 1),),
+                native_key=state.native_key,
+            ),
+            delivery_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(int(delivery_ea), int(delivery_ea) + 1),),
+                native_key=state.native_key,
+            ),
+            source_write_ea=int(write_ea),
+            delivery_ea=int(delivery_ea),
+            delivery_region_start_ea=int(delivery_region_start_ea),
+            delivery_region_end_ea=int(delivery_region_end_ea),
+            corridor_instruction_eas=tuple(corridor_instruction_eas),
+            state_var_reg=int(state_var_reg),
+            state_constant=int(state_constant),
+            target_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(target_ea, target_ea + 1),),
+                native_key=state.native_key,
+            ),
+            target_ea=target_ea,
+        )
+        semantic_key = (
+            int(write_ea),
+            int(delivery_ea),
+            int(state_constant),
+            int(state_var_reg),
+        )
+        candidates.setdefault(semantic_key, set()).add(evidence)
+
+    discovered = tuple(
+        sorted(
+            (next(iter(proofs)) for proofs in candidates.values() if len(proofs) == 1),
+            key=lambda evidence: (
+                int(evidence.source_write_ea),
+                int(evidence.delivery_ea),
+                int(evidence.state_constant),
+                int(evidence.target_ea),
+            ),
+        )
+    )
+    if discovered:
+        state.native_preanalysis.merge_state_write_routes(
+            state.native_key,
+            discovered,
+        )
+        logger.info(
+            "static state-write routes published: func=0x%X count=%d routes=%s",
+            int(resolution.function_ea),
+            len(discovered),
+            [
+                (
+                    hex(int(evidence.source_write_ea)),
+                    hex(int(evidence.delivery_ea)),
+                    hex(int(evidence.state_constant)),
+                    hex(int(evidence.target_ea)),
+                )
+                for evidence in discovered
+            ],
+        )
+    else:
+        logger.info(
+            "static state-write route discovery abstained: func=0x%X "
+            "reason=no_direct_routes plans=%d direct_deliveries=%d decoded=%d "
+            "assignments=%d "
+            "mapped=%d delivery_regions=%d state_targets=%d",
+            int(resolution.function_ea),
+            len(resolution.patch_plans),
+            len(direct_delivery_sites),
+            decoded_count,
+            assignment_count,
+            mapped_count,
+            delivery_region_count,
+            len(state_targets),
+        )
+    return discovered
+
+
 def _native_residual_route_patch_site(
     write_ea: int,
     *,
@@ -7906,9 +8272,7 @@ def _preopt_entry_bridge_transfer(
         if state_register is None
         else _unique_static_equality_handler_targets(transfers, state_register)
     )
-    taken_target = state_targets.get(
-        int(evidence.taken_state_constant) & _MASK32
-    )
+    taken_target = state_targets.get(int(evidence.taken_state_constant) & _MASK32)
     fallthrough_target = state_targets.get(
         int(evidence.fallthrough_state_constant) & _MASK32
     )
@@ -7937,9 +8301,7 @@ def _preopt_entry_bridge_transfer(
             else int(evidence.canonical_stack_cell_identity[1])
         ),
         predicate_true_state=int(evidence.taken_state_constant) & _MASK32,
-        predicate_false_state=(
-            int(evidence.fallthrough_state_constant) & _MASK32
-        ),
+        predicate_false_state=(int(evidence.fallthrough_state_constant) & _MASK32),
         predicate_true_is_taken=True,
         predicate_preserve_live=True,
         state_carrier_store_ea=int(evidence.source_store_ea),
@@ -9412,8 +9774,7 @@ def stage_computed_goto_preanalysis(
     if resolution.arch == "x86" and resolution.patch_plans:
         state.pending_prepatch_materialization = resolution
         logger.info(
-            "computed-goto staged: func=0x%x sites=%d targets=%d "
-            "reachable=%d arch=%s",
+            "computed-goto staged: func=0x%x sites=%d targets=%d reachable=%d arch=%s",
             int(function_ea),
             resolution.site_count,
             resolution.target_count,
@@ -9995,6 +10356,7 @@ def _capture_prepatch_preopt_union_source(
         return False
 
     enriched = _enrich_preopt_union_route_ranges(resolution, transfers)
+    _discover_static_state_write_routes(state, resolution, enriched)
     region = plan_preopt_union_region(enriched)
     if region.abstentions or region.primary_seed_ea is None or not region.native_ranges:
         return abstain(
@@ -11099,8 +11461,7 @@ def _preopt_live_residual_route_boundary_ports(
             )
             rejections.append(
                 (
-                    "native_router_edge:"
-                    f"{edge.kind.value}:{edge_source}:{edge_target}",
+                    f"native_router_edge:{edge.kind.value}:{edge_source}:{edge_target}",
                     source_write_ea,
                     target_ea,
                 )
@@ -11664,11 +12025,7 @@ def _compose_preopt_entry_bridge_ports(
     false_target_ea = int(choice.false_target_ea)
     true_owner = target_owner(true_target_ea)
     false_owner = target_owner(false_target_ea)
-    if (
-        true_target_ea == false_target_ea
-        or true_owner is None
-        or false_owner is None
-    ):
+    if true_target_ea == false_target_ea or true_owner is None or false_owner is None:
         return direct_ports, ()
     assert choice.selector_state_var_reg is not None
     assert choice.predicate_true_state is not None
@@ -12032,8 +12389,7 @@ def _merge_preopt_union_boundary_ports(
             baseline = previous_conditional_by_source.get(source)
             if baseline is not None and baseline != port:
                 logger.info(
-                    "PREOPT union refresh conditional conflict: "
-                    "previous=%r current=%r",
+                    "PREOPT union refresh conditional conflict: previous=%r current=%r",
                     baseline,
                     port,
                 )
@@ -12109,9 +12465,7 @@ def prepare_preopt_union_closure(
     )
     if entry_bridge_transfers:
         transfers = transfers + tuple(
-            transfer
-            for transfer in entry_bridge_transfers
-            if transfer not in transfers
+            transfer for transfer in entry_bridge_transfers if transfer not in transfers
         )
     prepatch_source = state.portable_evidence.prepatch_preopt_union_source
     if prepatch_source is not None and not isinstance(
@@ -12227,7 +12581,7 @@ def prepare_preopt_union_closure(
         if closure.abstentions or not closure.native_ranges:
             if closure.abstentions:
                 logger.info(
-                    "PREOPT union semantic-closure abstentions: " "func=0x%X rows=%s",
+                    "PREOPT union semantic-closure abstentions: func=0x%X rows=%s",
                     key,
                     [
                         (
@@ -12569,8 +12923,7 @@ def prepare_detached_handler_snippets(
         materialized = materialize_computed_gotos(pending, state=state)
         if materialized <= 0:
             logger.info(
-                "computed-goto staged delivery abstained: func=0x%X "
-                "source_captured=%s",
+                "computed-goto staged delivery abstained: func=0x%X source_captured=%s",
                 key,
                 source_captured,
             )
@@ -12608,7 +12961,7 @@ def prepare_detached_handler_snippets(
             if staged_cfunc is not None:
                 break
             logger.info(
-                "computed-goto staged live decompile retry: func=0x%X " "attempt=%d",
+                "computed-goto staged live decompile retry: func=0x%X attempt=%d",
                 key,
                 attempt + 1,
             )
@@ -12762,7 +13115,9 @@ def _first_x86_fastcall_register_accesses(
                 first[index] = (
                     "read"
                     if access_type & int(ida_idp.READ_ACCESS)
-                    else "write" if access_type == int(ida_idp.WRITE_ACCESS) else None
+                    else "write"
+                    if access_type == int(ida_idp.WRITE_ACCESS)
+                    else None
                 )
         if all(kind is not None for kind in first):
             break
@@ -13564,8 +13919,7 @@ def _on_preopt_bootstrap_route(
     union_owns_current_mba = bool(
         current_mba_token is not None
         and any(
-            int(key[0]) == int(function_ea)
-            and int(key[1]) == int(current_mba_token)
+            int(key[0]) == int(function_ea) and int(key[1]) == int(current_mba_token)
             for key in (
                 *state.preopt_union_imported_mbas,
                 *state.preopt_union_mutated_mbas,
@@ -14035,9 +14389,8 @@ def _on_preopt_bootstrap_route(
             entry_bridge_ports,
             mutation_gateway=gateway,
         )
-        if (
-            entry_bridge_applied is None
-            or len(entry_bridge_applied) != len(entry_bridge_ports)
+        if entry_bridge_applied is None or len(entry_bridge_applied) != len(
+            entry_bridge_ports
         ):
             return
         decision["microcode_modified"] = True

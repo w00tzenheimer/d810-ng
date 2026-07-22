@@ -76,9 +76,11 @@ def test_portable_state_write_route_requires_anchored_native_corridor() -> None:
 
     with pytest.raises(ValueError, match="source write"):
         PortableStateWriteRouteEvidence(
-            source_identity=source,
+            write_identity=source,
+            delivery_identity=source,
             source_write_ea=0x400FFF,
             delivery_ea=0x401018,
+            delivery_region_start_ea=0x401010,
             delivery_region_end_ea=0x40101D,
             corridor_instruction_eas=(0x400FFF, 0x401018),
             state_var_reg=8,
@@ -89,9 +91,11 @@ def test_portable_state_write_route_requires_anchored_native_corridor() -> None:
 
     with pytest.raises(ValueError, match="corridor"):
         PortableStateWriteRouteEvidence(
-            source_identity=source,
+            write_identity=source,
+            delivery_identity=source,
             source_write_ea=0x401000,
             delivery_ea=0x401018,
+            delivery_region_start_ea=0x401010,
             delivery_region_end_ea=0x40101D,
             corridor_instruction_eas=(0x401000, 0x401010),
             state_var_reg=8,

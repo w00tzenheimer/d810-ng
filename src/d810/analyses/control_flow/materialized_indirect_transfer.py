@@ -433,9 +433,11 @@ class PortableStateWriteRouteEvidence:
     the delivery belongs to this write, without carrying an MBA block serial.
     """
 
-    source_identity: StableBlockIdentity
+    write_identity: StableBlockIdentity
+    delivery_identity: StableBlockIdentity
     source_write_ea: int
     delivery_ea: int
+    delivery_region_start_ea: int
     delivery_region_end_ea: int
     corridor_instruction_eas: tuple[int, ...]
     state_var_reg: int
@@ -447,34 +449,44 @@ class PortableStateWriteRouteEvidence:
     def __post_init__(self) -> None:
         source_write_ea = int(self.source_write_ea)
         delivery_ea = int(self.delivery_ea)
+        delivery_region_start_ea = int(self.delivery_region_start_ea)
         delivery_region_end_ea = int(self.delivery_region_end_ea)
         target_ea = int(self.target_ea)
         corridor = tuple(int(ea) for ea in self.corridor_instruction_eas)
-        if not self.source_identity.native_ranges.contains(source_write_ea):
-            raise ValueError("state-route source write is outside source identity")
-        if not self.source_identity.native_ranges.contains(delivery_ea):
-            raise ValueError("state-route delivery is outside source identity")
-        if delivery_region_end_ea <= delivery_ea:
-            raise ValueError("state-route delivery region must be non-empty")
+        if not self.write_identity.native_ranges.contains(source_write_ea):
+            raise ValueError("state-route source write is outside write identity")
+        if not self.delivery_identity.native_ranges.contains(delivery_ea):
+            raise ValueError("state-route delivery is outside delivery identity")
+        if not (
+            delivery_region_start_ea <= delivery_ea < delivery_region_end_ea
+        ):
+            raise ValueError("state-route delivery must belong to its region")
         if (
             not corridor
             or corridor != tuple(sorted(set(corridor)))
             or corridor[0] != source_write_ea
             or corridor[-1] != delivery_ea
-            or any(
-                not self.source_identity.native_ranges.contains(ea) for ea in corridor
-            )
         ):
             raise ValueError("state-route corridor must span source write to delivery")
         if not self.target_identity.native_ranges.contains(target_ea):
             raise ValueError("state-route target is outside target identity")
-        if self.source_identity.native_key != self.target_identity.native_key:
+        native_keys = {
+            self.write_identity.native_key,
+            self.delivery_identity.native_key,
+            self.target_identity.native_key,
+        }
+        if len(native_keys) != 1:
             raise ValueError("state-route identities require one native key")
         state_var_reg = int(self.state_var_reg)
         if state_var_reg < 0:
             raise ValueError("state-route register must be non-negative")
         object.__setattr__(self, "source_write_ea", source_write_ea)
         object.__setattr__(self, "delivery_ea", delivery_ea)
+        object.__setattr__(
+            self,
+            "delivery_region_start_ea",
+            delivery_region_start_ea,
+        )
         object.__setattr__(self, "delivery_region_end_ea", delivery_region_end_ea)
         object.__setattr__(self, "corridor_instruction_eas", corridor)
         object.__setattr__(self, "state_var_reg", state_var_reg)
@@ -488,6 +500,7 @@ class PortableStateWriteRouteEvidence:
             "proof_kind": str(self.proof_kind),
             "source_write_ea": f"0x{self.source_write_ea:X}",
             "delivery_ea": f"0x{self.delivery_ea:X}",
+            "delivery_region_start_ea": f"0x{self.delivery_region_start_ea:X}",
             "delivery_region_end_ea": f"0x{self.delivery_region_end_ea:X}",
             "corridor_instruction_eas": [
                 f"0x{ea:X}" for ea in self.corridor_instruction_eas

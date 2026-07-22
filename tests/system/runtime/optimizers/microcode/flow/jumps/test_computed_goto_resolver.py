@@ -204,15 +204,11 @@ def test_preopt_entry_bridge_replaces_later_bootstrap_port_atomically() -> None:
         resolver_kind="static_native_bootstrap_route",
     )
 
-    direct, conditional = (
-        computed_goto_resolver._compose_preopt_entry_bridge_ports(
-            (transfer,),
-            (bootstrap,),
-            live_native_eas=frozenset({0x40A59D, 0x40A5AE, 0x40A5C8}),
-            imported_entry_eas=frozenset(
-                {taken_target, fallthrough_target, 0x40BECC}
-            ),
-        )
+    direct, conditional = computed_goto_resolver._compose_preopt_entry_bridge_ports(
+        (transfer,),
+        (bootstrap,),
+        live_native_eas=frozenset({0x40A59D, 0x40A5AE, 0x40A5C8}),
+        imported_entry_eas=frozenset({taken_target, fallthrough_target, 0x40BECC}),
     )
 
     assert direct == ()
@@ -374,9 +370,7 @@ def test_preopt_entry_bridge_capture_publishes_lifecycle_evidence(
     assert state.portable_evidence.preopt_entry_bridges == (evidence,)
 
 
-def test_preopt_entry_bridge_projection_abstains_on_conflicting_live_proofs() -> (
-    None
-):
+def test_preopt_entry_bridge_projection_abstains_on_conflicting_live_proofs() -> None:
     first = EntryBridgeEvidence(
         predicate_ea=0x1004,
         condition_code=5,
@@ -390,10 +384,13 @@ def test_preopt_entry_bridge_projection_abstains_on_conflicting_live_proofs() ->
     )
     second = replace(first, fallthrough_state_constant=0x33)
 
-    assert computed_goto_resolver._preopt_entry_bridge_transfers(
-        (first, second),
-        (),
-    ) == ()
+    assert (
+        computed_goto_resolver._preopt_entry_bridge_transfers(
+            (first, second),
+            (),
+        )
+        == ()
+    )
 
 
 def test_prepatch_generation_retains_pristine_entry_prefix() -> None:
@@ -501,12 +498,15 @@ def test_preopt_union_captures_terminal_carrier_into_session(
         ),
     )
 
-    assert computed_goto_resolver._capture_preopt_union_terminal_return_carriers(
-        state,
-        function_ea=0x40A560,
-        mba=SimpleNamespace(maturity=IDA_MMAT_PREOPTIMIZED),
-        transfers=(transfer,),
-    ) == 1
+    assert (
+        computed_goto_resolver._capture_preopt_union_terminal_return_carriers(
+            state,
+            function_ea=0x40A560,
+            mba=SimpleNamespace(maturity=IDA_MMAT_PREOPTIMIZED),
+            transfers=(transfer,),
+        )
+        == 1
+    )
     assert captured == [
         (
             0x40A560,
@@ -518,9 +518,7 @@ def test_preopt_union_captures_terminal_carrier_into_session(
             ),
         )
     ]
-    assert state.portable_evidence.terminal_return_carrier_requests == (
-        captured[0][1],
-    )
+    assert state.portable_evidence.terminal_return_carrier_requests == (captured[0][1],)
 
 
 def test_branch_state_choice_recovers_default_and_overriding_dispatch_states() -> None:
@@ -791,13 +789,13 @@ def test_static_choice_routes_require_independent_entry_dispatch_replay() -> Non
                 state_constant=0x699BC698,
             ),
         ),
-        route_resolver=lambda source_ea, **kwargs: replayed.append(
-            (source_ea, dict(kwargs["initial_mregs"]))
-        )
-        or {
-            true_state: 0x40F12D,
-            false_state: 0x40DC04,
-        }.get(kwargs["initial_mregs"][28]),
+        route_resolver=lambda source_ea, **kwargs: (
+            replayed.append((source_ea, dict(kwargs["initial_mregs"])))
+            or {
+                true_state: 0x40F12D,
+                false_state: 0x40DC04,
+            }.get(kwargs["initial_mregs"][28])
+        ),
     )
 
     assert replayed == [
@@ -1514,6 +1512,167 @@ def test_connected_fixpoint_snapshot_recovers_final_handler_route(monkeypatch) -
     assert route.target_eas == (0x406000,)
     assert route.selector_state_constant == 0x22222222
     assert route.source_register_values == ((20, 0x22222222),)
+
+
+def test_static_state_write_delivery_selects_last_matching_native_write() -> None:
+    insn = computed_goto_resolver._DecodedStateRouteInstruction
+    decoded = (
+        insn(0x40A5A6, 0x40A5AC, "mov", 16, True, 0x11111111),
+        insn(0x40A5B2, 0x40A5B8, "mov", 16, True, 0xABB95547),
+        insn(0x40A5B8, 0x40A5C2, "lea", 0, True, None),
+        insn(0x40A5C2, 0x40A5C8, "add", 0, True, None),
+        insn(0x40A5C8, 0x40A5CA, "jmp", None, False, None),
+    )
+
+    assert computed_goto_resolver._select_static_state_write_delivery(
+        decoded,
+        state_var_reg=16,
+        state_constant=0xABB95547,
+        delivery_ea=0x40A5C8,
+    ) == (
+        0x40A5B2,
+        (0x40A5B2, 0x40A5B8, 0x40A5C2, 0x40A5C8),
+    )
+
+
+def test_static_state_write_delivery_rejects_conditional_corridor() -> None:
+    insn = computed_goto_resolver._DecodedStateRouteInstruction
+    decoded = (
+        insn(0x401000, 0x401006, "mov", 16, True, 0x12345678),
+        insn(0x401006, 0x401008, "jnz", None, False, None),
+        insn(0x401008, 0x40100A, "jmp", None, False, None),
+    )
+
+    assert (
+        computed_goto_resolver._select_static_state_write_delivery(
+            decoded,
+            state_var_reg=16,
+            state_constant=0x12345678,
+            delivery_ea=0x401008,
+        )
+        is None
+    )
+
+
+def test_static_state_write_routes_publish_before_live_mba(monkeypatch) -> None:
+    plan = _PatchPlan(
+        jmp_ea=0x40A5C8,
+        block_entry=0x40A5A6,
+        patch_start=0x40A5C8,
+        patch_bytes=b"\x90",
+        region_end=0x40A5CD,
+        insn_heads=(0x40A5C8,),
+        new_block_eas=(),
+        target_eas=(0x40B000,),
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={0x40A5C8: (0x40B000,)},
+        reachable_eas=(0x40A560, 0x40A5A6),
+        arch="x86",
+        executed_insns=10,
+        seeds_run=0,
+        patch_plans=(plan,),
+    )
+    route = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40BEB2,
+        source_block_ea=0x40BEB2,
+        materialized_anchor_eas=(),
+        target_eas=(0x40BECC,),
+        selector_state_var_reg=16,
+        selector_state_constant=0xABB95547,
+        resolver_kind="static_handler_entry_route",
+    )
+    decoded = (
+        computed_goto_resolver._DecodedStateRouteInstruction(
+            0x40A5B2, 0x40A5B8, "mov", 16, True, 0xABB95547
+        ),
+        computed_goto_resolver._DecodedStateRouteInstruction(
+            0x40A5C8, 0x40A5CA, "jmp", None, False, None
+        ),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_decode_static_state_route_corridor",
+        lambda _start_ea, _delivery_ea: decoded,
+    )
+    _session, state = _resolver_session(resolution)
+
+    (evidence,) = computed_goto_resolver._discover_static_state_write_routes(
+        state,
+        resolution,
+        (route,),
+    )
+
+    assert evidence.source_write_ea == 0x40A5B2
+    assert evidence.delivery_ea == 0x40A5C8
+    assert evidence.delivery_region_start_ea == 0x40A5C8
+    assert evidence.target_ea == 0x40BECC
+    assert evidence.corridor_instruction_eas == (0x40A5B2, 0x40A5C8)
+    assert state.portable_evidence.state_write_routes == (evidence,)
+    assert state.evidence_generation == 1
+
+
+def test_static_state_write_routes_include_direct_dispatcher_delivery(
+    monkeypatch,
+) -> None:
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={},
+        reachable_eas=(0x40A560, 0x40A5C8),
+        arch="x86",
+        executed_insns=10,
+        seeds_run=0,
+        patch_plans=(),
+    )
+    route = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40BEB2,
+        source_block_ea=0x40BEB2,
+        materialized_anchor_eas=(),
+        target_eas=(0x40BECC,),
+        selector_state_var_reg=16,
+        selector_state_constant=0xABB95547,
+        resolver_kind="static_handler_entry_route",
+        dispatcher_router_eas=(0x40A5F0,),
+    )
+    decoded = (
+        computed_goto_resolver._DecodedStateRouteInstruction(
+            0x40A5B2, 0x40A5B7, "mov", 16, True, 0xABB95547
+        ),
+        computed_goto_resolver._DecodedStateRouteInstruction(
+            0x40A5C8, 0x40A5CA, "jmp", None, False, None
+        ),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_direct_dispatch_delivery_sites",
+        lambda *_args, **_kwargs: (
+            computed_goto_resolver._NativeStateRouteDeliverySite(
+                0x40A59D,
+                0x40A5C8,
+                0x40A5C8,
+                0x40A5CA,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_decode_static_state_route_corridor",
+        lambda _start_ea, _delivery_ea: decoded,
+    )
+    _session, state = _resolver_session(resolution)
+
+    (evidence,) = computed_goto_resolver._discover_static_state_write_routes(
+        state,
+        resolution,
+        (route,),
+    )
+
+    assert evidence.source_write_ea == 0x40A5B2
+    assert evidence.delivery_ea == 0x40A5C8
+    assert evidence.delivery_region_start_ea == 0x40A5C8
+    assert evidence.delivery_region_end_ea == 0x40A5CA
+    assert evidence.target_ea == 0x40BECC
 
 
 def test_static_conditional_state_choice_maps_both_unique_handler_arms() -> None:
@@ -2353,7 +2512,9 @@ def test_stkpnts_merges_detached_call_push_delta_exactly_once(
         lambda candidate, ea: (
             native_call_spd
             if candidate is function and int(ea) == native_call_ea
-            else -1168 if candidate is function else 0
+            else -1168
+            if candidate is function
+            else 0
         ),
     )
     applied: list[tuple[object, int, int]] = []
@@ -8703,7 +8864,7 @@ def test_calls_refresh_reimports_an_unchanged_port_set_for_new_evidence(
     monkeypatch.setattr(
         computed_goto_resolver,
         "prepare_preopt_union_closure",
-        lambda current_state, **_kwargs: (previous if current_state is state else None),
+        lambda current_state, **_kwargs: previous if current_state is state else None,
     )
 
     assert computed_goto_resolver._refresh_preopt_union_from_calls_evidence(
