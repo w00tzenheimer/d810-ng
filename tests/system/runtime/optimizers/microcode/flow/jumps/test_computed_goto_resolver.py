@@ -2078,7 +2078,7 @@ def test_reference_style_route_rebinds_folded_delivery_at_write_owner() -> None:
     )
     handles = {
         0x40A723: SimpleNamespace(serial=30),
-        0x40A607: SimpleNamespace(serial=9),
+        0x40A5CA: SimpleNamespace(serial=6),
         0x40ADF2: SimpleNamespace(serial=75),
     }
 
@@ -2115,7 +2115,16 @@ def test_reference_style_route_rebinds_folded_delivery_at_write_owner() -> None:
     )
     write_owner.tail = SimpleNamespace(ea=0x40A728, opcode=ida_hexrays.m_mov)
     blocks = {
-        9: SimpleNamespace(serial=9, start=0x40A607),
+        6: SimpleNamespace(serial=6, start=0x40A5CA),
+        9: SimpleNamespace(
+            serial=9,
+            start=0x40A607,
+            tail=SimpleNamespace(
+                opcode=ida_hexrays.m_jge,
+                l=SimpleNamespace(t=ida_hexrays.mop_r, r=20),
+                r=SimpleNamespace(t=ida_hexrays.mop_n),
+            ),
+        ),
         30: write_owner,
         31: corridor_helper,
         75: SimpleNamespace(serial=75, start=0x40ADF2),
@@ -2128,7 +2137,7 @@ def test_reference_style_route_rebinds_folded_delivery_at_write_owner() -> None:
             mba,
             _Index(),
             (route,),
-            dispatcher_router_eas=frozenset({0x40A607}),
+            dispatcher_router_eas=frozenset({0x40A5CA}),
             prefer_imported=True,
             diagnostic_rows=diagnostics,
         )
@@ -2155,7 +2164,7 @@ def test_reference_style_route_rebinds_folded_delivery_at_write_owner() -> None:
             mba,
             _Index(),
             (route,),
-            dispatcher_router_eas=frozenset({0x40A607}),
+            dispatcher_router_eas=frozenset({0x40A5CA}),
             prefer_imported=True,
             diagnostic_rows=diagnostics,
         )
