@@ -7054,6 +7054,58 @@ def _decode_static_state_route_corridor(
     return ()
 
 
+def _decode_native_flow_route_inventory(
+    function_ea: int,
+    envelope_end_ea: int,
+) -> tuple[_DecodedNativeFlowInstruction, ...]:
+    """Decode the ordered native facts used by the per-site flow-route scan."""
+    import ida_bytes  # type: ignore[import-untyped]
+    import ida_ua  # type: ignore[import-untyped]
+    import idaapi  # type: ignore[import-untyped]
+    import idautils  # type: ignore[import-untyped]
+
+    decoded: list[_DecodedNativeFlowInstruction] = []
+    for ea in idautils.Heads(int(function_ea), int(envelope_end_ea)):
+        instruction_ea = int(ea)
+        if not ida_bytes.is_code(ida_bytes.get_flags(instruction_ea)):
+            continue
+        instruction = ida_ua.insn_t()
+        size = int(ida_ua.decode_insn(instruction, instruction_ea))
+        if size <= 0:
+            continue
+        mnemonic = (idaapi.print_insn_mnem(instruction_ea) or "").lower()
+        destination_mreg = (
+            _native_register_mreg(_sv_reg_name(instruction.ops[0]))
+            if instruction.ops[0].type == idaapi.o_reg
+            else None
+        )
+        direct_target_ea = (
+            int(instruction.ops[0].addr)
+            if (
+                mnemonic == "jmp" or mnemonic in _SV_JCC_MNEMS
+            )
+            and instruction.ops[0].type in {idaapi.o_near, idaapi.o_far}
+            else None
+        )
+        decoded.append(
+            _DecodedNativeFlowInstruction(
+                instruction_ea,
+                instruction_ea + size,
+                mnemonic,
+                destination_mreg,
+                instruction.ops[0].type == idaapi.o_reg
+                and _insn_writes_first_operand(instruction, idaapi.CF_CHG1),
+                (
+                    int(instruction.ops[1].value)
+                    if instruction.ops[1].type == idaapi.o_imm
+                    else None
+                ),
+                direct_target_ea,
+            )
+        )
+    return tuple(decoded)
+
+
 def _native_direct_dispatch_delivery_sites(
     function_ea: int,
     envelope_end_ea: int,
@@ -7172,6 +7224,57 @@ def _discover_static_state_write_routes(
             int(site.delivery_ea) for site in patch_delivery_sites
         ),
     )
+    reference_routes = _discover_reference_style_immediate_flow_routes(
+        _decode_native_flow_route_inventory(
+            int(resolution.function_ea),
+            int(envelope_end_ea),
+        ),
+        state_var_reg=int(state_var_reg),
+        state_targets=state_targets,
+    )
+    reference_semantic_keys: set[tuple[int, int, int, int]] = set()
+    for route in reference_routes:
+        evidence = PortableStateWriteRouteEvidence(
+            write_identity=StableBlockIdentity.from_intervals(
+                (
+                    NativeEaInterval(
+                        int(route.source_write_ea),
+                        int(route.source_write_ea) + 1,
+                    ),
+                ),
+                native_key=state.native_key,
+            ),
+            delivery_identity=StableBlockIdentity.from_intervals(
+                (
+                    NativeEaInterval(
+                        int(route.delivery_ea),
+                        int(route.delivery_ea) + 1,
+                    ),
+                ),
+                native_key=state.native_key,
+            ),
+            source_write_ea=int(route.source_write_ea),
+            delivery_ea=int(route.delivery_ea),
+            delivery_region_start_ea=int(route.delivery_ea),
+            delivery_region_end_ea=int(route.delivery_end_ea),
+            corridor_instruction_eas=tuple(route.corridor_instruction_eas),
+            state_var_reg=int(state_var_reg),
+            state_constant=int(route.state_constant),
+            target_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(int(route.target_ea), int(route.target_ea) + 1),),
+                native_key=state.native_key,
+            ),
+            target_ea=int(route.target_ea),
+            proof_kind="reference_style_immediate_flow_route",
+        )
+        semantic_key = (
+            int(route.source_write_ea),
+            int(route.delivery_ea),
+            int(route.state_constant),
+            int(state_var_reg),
+        )
+        reference_semantic_keys.add(semantic_key)
+        candidates.setdefault(semantic_key, set()).add(evidence)
     for site in (*patch_delivery_sites, *direct_delivery_sites):
         decoded = _decode_static_state_route_corridor(
             int(site.block_entry_ea),
@@ -7226,6 +7329,8 @@ def _discover_static_state_write_routes(
             int(state_constant),
             int(state_var_reg),
         )
+        if semantic_key in reference_semantic_keys:
+            continue
         candidates.setdefault(semantic_key, set()).add(evidence)
 
     discovered = tuple(
@@ -7245,9 +7350,11 @@ def _discover_static_state_write_routes(
             discovered,
         )
         logger.info(
-            "static state-write routes published: func=0x%X count=%d routes=%s",
+            "static state-write routes published: func=0x%X count=%d "
+            "reference_immediate=%d routes=%s",
             int(resolution.function_ea),
             len(discovered),
+            len(reference_routes),
             [
                 (
                     hex(int(evidence.source_write_ea)),
@@ -7262,12 +7369,13 @@ def _discover_static_state_write_routes(
         logger.info(
             "static state-write route discovery abstained: func=0x%X "
             "reason=no_direct_routes plans=%d direct_deliveries=%d decoded=%d "
-            "assignments=%d "
+            "reference_immediate=%d assignments=%d "
             "mapped=%d delivery_regions=%d state_targets=%d",
             int(resolution.function_ea),
             len(resolution.patch_plans),
             len(direct_delivery_sites),
             decoded_count,
+            len(reference_routes),
             assignment_count,
             mapped_count,
             delivery_region_count,
