@@ -2069,7 +2069,7 @@ def test_reference_style_route_rebinds_folded_delivery_at_write_owner() -> None:
         delivery_ea=0x40A73D,
         delivery_region_start_ea=0x40A734,
         delivery_region_end_ea=0x40A73F,
-        corridor_instruction_eas=(0x40A723, 0x40A734, 0x40A73D),
+        corridor_instruction_eas=(0x40A723, 0x40A728, 0x40A73D),
         state_var_reg=20,
         state_constant=0x7C4FB03D,
         target_identity=identity(0x40ADF2),

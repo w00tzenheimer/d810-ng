@@ -14440,9 +14440,9 @@ def _classify_live_state_write_routes(
             is_folded_direct_delivery = bool(
                 write_tail is not None
                 and int(write_tail.opcode) == int(ida_hexrays.m_goto)
-                and int(write_tail.ea) in {
-                    int(ea) for ea in evidence.corridor_instruction_eas
-                }
+                and int(evidence.source_write_ea)
+                <= int(write_tail.ea)
+                <= int(evidence.delivery_ea)
                 and len(write_successors) == 1
                 and write_successors[0]
                 in router_serials | {int(target_result.block.serial)}
