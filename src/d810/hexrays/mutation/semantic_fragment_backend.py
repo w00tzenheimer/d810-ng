@@ -156,6 +156,31 @@ def _clone_replacement(
     state.staged_block_ids.append(replacement_block.block_id)
 
 
+def _create_empty_block(
+    modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
+    block,
+    *,
+    reference_version: LogicalBlockVersion,
+) -> None:
+    staged = modifier._stage_empty_semantic_block(
+        reference_version=reference_version,
+    )
+    gateway = _gateway(modifier)
+    proxy = gateway.identity_index.logical_proxy_for_handle(staged.handle)
+    if proxy is None:
+        raise SemanticFragmentBackendRejected(
+            f"synthetic fragment block {block.block_id!r} has no logical proxy"
+        )
+    state.bindings[block.block_id] = SemanticFragmentRuntimeBinding(
+        block_id=block.block_id,
+        proxy=proxy,
+        version=staged,
+        state=FragmentBindingState.STAGED,
+    )
+    state.staged_block_ids.append(block.block_id)
+
+
 def _realize_operations(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
@@ -344,9 +369,14 @@ def stage_semantic_fragment(
         for block in plan.blocks:
             if block.role is FragmentBlockRole.REPLACEMENT:
                 _clone_replacement(modifier, state, block)
-            elif block.materialization is FragmentBlockMaterialization.CREATE_EMPTY:
-                raise SemanticFragmentBackendRejected(
-                    "empty synthetic fragment materialization is not implemented"
+        reference_version = state.binding(plan.roots[0]).version
+        for block in plan.blocks:
+            if block.materialization is FragmentBlockMaterialization.CREATE_EMPTY:
+                _create_empty_block(
+                    modifier,
+                    state,
+                    block,
+                    reference_version=reference_version,
                 )
         _realize_operations(modifier, plan, state)
         projection = _project_fragment(modifier, plan, state)
