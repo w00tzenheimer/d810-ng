@@ -50,3 +50,13 @@ class EventEmitter(Generic[E]):
     def emit(self, event: E, *args, **kwargs):
         for handler in self._listeners[event]:
             handler(*args, **kwargs)
+
+    def emit_isolated(self, event: E, *args, **kwargs) -> tuple[Exception, ...]:
+        """Call every listener and return failures without short-circuiting peers."""
+        failures: list[Exception] = []
+        for handler in tuple(self._listeners[event]):
+            try:
+                handler(*args, **kwargs)
+            except Exception as exc:
+                failures.append(exc)
+        return tuple(failures)

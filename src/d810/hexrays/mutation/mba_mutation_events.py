@@ -7,6 +7,7 @@ from enum import Enum
 import uuid
 
 from d810.core.events import EventEmitter
+from d810.core.logging import getLogger
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.typing import Iterable
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
@@ -23,6 +24,9 @@ from d810.ir.block_identity import MbaBlockHandle, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.fragment_plan import FragmentPlan
 from d810.transforms.fragment_validation import FragmentValidationResult
+
+
+logger = getLogger(__name__)
 
 
 class StructuralMutationKind(Enum):
@@ -178,6 +182,17 @@ class MbaMutationAborted:
     discarded_version_ids: tuple[LogicalBlockVersionId, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class MbaMutationObservationFailure:
+    """Structured failure of a non-authoritative mutation observer."""
+
+    phase: str
+    event_name: str
+    mutation_batch_id: str
+    error_type: str
+    error_message: str
+
+
 @dataclass(slots=True)
 class MbaMutationGateway:
     """The sole control plane for serial shifts in a modifier transaction.
@@ -196,6 +211,10 @@ class MbaMutationGateway:
     identity_index: MbaBlockIdentityIndex | None = None
     event_emitter: EventEmitter | None = None
     _receipts: list[MbaMutationReceipt] = field(default_factory=list, repr=False)
+    _observation_failures: list[MbaMutationObservationFailure] = field(
+        default_factory=list,
+        repr=False,
+    )
     _active_kind: StructuralMutationKind | None = field(default=None, init=False)
     _active_description: str = field(default="", init=False)
     _affected_identities: set[StableBlockIdentity] = field(
@@ -244,6 +263,10 @@ class MbaMutationGateway:
         return tuple(self._receipts)
 
     @property
+    def observation_failures(self) -> tuple[MbaMutationObservationFailure, ...]:
+        return tuple(self._observation_failures)
+
+    @property
     def active(self) -> bool:
         return self._active_kind is not None
 
@@ -282,34 +305,70 @@ class MbaMutationGateway:
     ) -> None:
         if self.active:
             raise RuntimeError("a structural mutation batch is already active")
+        if not isinstance(kind, StructuralMutationKind):
+            raise TypeError("structural mutation batch requires a mutation kind")
+        planned_operation_count = int(planned_operation_count)
+        if planned_operation_count < 0:
+            raise ValueError("planned operation count must be non-negative")
+        plan_items = tuple(plan_items)
+        serial_quantity = (
+            None if serial_quantity is None else int(serial_quantity)
+        )
+        batch_id = uuid.uuid4().hex
+        self.identity_index.begin_transaction(batch_id, serial_quantity)
+
         self._reset_fragment_context()
         self._active_kind = kind
         self._active_description = str(description)
-        self._active_batch_id = uuid.uuid4().hex
-        self.identity_index.begin_transaction(
-            self._active_batch_id,
-            None if serial_quantity is None else int(serial_quantity),
-        )
-        self._planned_operation_count = int(planned_operation_count)
-        if self._planned_operation_count < 0:
-            raise ValueError("planned operation count must be non-negative")
+        self._active_batch_id = batch_id
+        self._planned_operation_count = planned_operation_count
         self._affected_identities.clear()
         self._operation_count = 0
-        if self.event_emitter is not None:
-            self.event_emitter.emit(
-                MbaMutationPlanned,
-                MbaMutationPlanned(
-                    session_id=self.session_id,
-                    function_ea=int(self.function_ea),
-                    maturity=int(self.maturity),
-                    mba_generation=int(self.identity_index.generation),
-                    evidence_generation=int(self.identity_index.evidence_generation),
-                    mutation_batch_id=self._active_batch_id,
-                    kind=kind,
-                    planned_operation_count=self._planned_operation_count,
-                    description=self._active_description,
-                    items=tuple(plan_items),
-                ),
+        self._emit_observation(
+            phase="planned",
+            event_type=MbaMutationPlanned,
+            payload=MbaMutationPlanned(
+                session_id=self.session_id,
+                function_ea=int(self.function_ea),
+                maturity=int(self.maturity),
+                mba_generation=int(self.identity_index.generation),
+                evidence_generation=int(self.identity_index.evidence_generation),
+                mutation_batch_id=self._active_batch_id,
+                kind=kind,
+                planned_operation_count=self._planned_operation_count,
+                description=self._active_description,
+                items=plan_items,
+            ),
+            mutation_batch_id=batch_id,
+        )
+
+    def _emit_observation(
+        self,
+        *,
+        phase: str,
+        event_type: type,
+        payload: object,
+        mutation_batch_id: str,
+    ) -> None:
+        emitter = self.event_emitter
+        if emitter is None:
+            return
+        for exc in emitter.emit_isolated(event_type, payload):
+            failure = MbaMutationObservationFailure(
+                phase=str(phase),
+                event_name=event_type.__name__,
+                mutation_batch_id=str(mutation_batch_id),
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+            self._observation_failures.append(failure)
+            logger.error(
+                "mutation observer failed: phase=%s event=%s batch=%s error=%s: %s",
+                failure.phase,
+                failure.event_name,
+                failure.mutation_batch_id,
+                failure.error_type,
+                failure.error_message,
             )
 
     def _fragment_plan_items(
@@ -809,6 +868,7 @@ class MbaMutationGateway:
         )
         self.generation = post_generation
         self._receipts.append(receipt)
+        committed_batch_id = str(self._active_batch_id)
         self._active_kind = None
         self._active_description = ""
         self._active_batch_id = None
@@ -825,33 +885,40 @@ class MbaMutationGateway:
             evidence_generation=int(self.identity_index.evidence_generation),
             receipt=receipt,
         )
-        if self.event_emitter is not None:
-            self.event_emitter.emit(MbaMutationCommitted, committed)
+        self._emit_observation(
+            phase="committed",
+            event_type=MbaMutationCommitted,
+            payload=committed,
+            mutation_batch_id=committed_batch_id,
+        )
         return receipt
 
     def abort(self, *, reason: str = "aborted") -> None:
         """Forget an uncommitted batch; callers must rebuild after SDK failure."""
+        aborted_batch_id = str(self._active_batch_id)
         discarded_version_ids = (
             self.identity_index.abort_proxy_transaction(str(self._active_batch_id))
             if self.active
             else ()
         )
-        if self.active and self.event_emitter is not None:
-            self.event_emitter.emit(
-                MbaMutationAborted,
-                MbaMutationAborted(
+        if self.active:
+            self._emit_observation(
+                phase="aborted",
+                event_type=MbaMutationAborted,
+                payload=MbaMutationAborted(
                     session_id=self.session_id,
                     function_ea=int(self.function_ea),
                     maturity=int(self.maturity),
                     mba_generation=int(self.identity_index.generation),
                     evidence_generation=int(self.identity_index.evidence_generation),
-                    mutation_batch_id=str(self._active_batch_id),
+                    mutation_batch_id=aborted_batch_id,
                     kind=self._active_kind,
                     planned_operation_count=int(self._planned_operation_count),
                     description=self._active_description,
                     reason=str(reason),
                     discarded_version_ids=discarded_version_ids,
                 ),
+                mutation_batch_id=aborted_batch_id,
             )
         self._active_kind = None
         self._active_description = ""
@@ -883,6 +950,7 @@ __all__ = [
     "MbaMutationCommitted",
     "MbaMutationAborted",
     "MbaMutationGateway",
+    "MbaMutationObservationFailure",
     "MbaMutationPlanItem",
     "MbaMutationPlanned",
     "MbaMutationReceipt",
