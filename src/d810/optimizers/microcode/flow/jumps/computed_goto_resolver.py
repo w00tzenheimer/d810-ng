@@ -11413,6 +11413,12 @@ def _preopt_live_conditional_bridge_boundary_ports(
         is_static_state_choice = (
             transfer.resolver_kind == "static_conditional_state_choice_bridge"
         )
+        is_flag_only_live_bridge = bool(
+            transfer.resolver_kind == "conditional_handler_bridge"
+            and transfer.predicate_preserve_live
+            and transfer.predicate_register is None
+            and transfer.predicate_compare_register is None
+        )
         if (
             transfer.resolver_kind
             not in {
@@ -11427,6 +11433,7 @@ def _preopt_live_conditional_bridge_boundary_ports(
             or transfer.predicate_compare_register is not None
             or (
                 not is_static_state_choice
+                and not is_flag_only_live_bridge
                 and (
                     transfer.predicate_register is None
                     or transfer.predicate_size is None
@@ -11462,6 +11469,7 @@ def _preopt_live_conditional_bridge_boundary_ports(
             or true_state == false_state
             or (
                 not is_static_state_choice
+                and not is_flag_only_live_bridge
                 and (
                     (true_state, true_target_ea) not in residual_state_targets
                     or (false_state, false_target_ea) not in residual_state_targets
@@ -11481,7 +11489,7 @@ def _preopt_live_conditional_bridge_boundary_ports(
         predicate_ea = int(transfer.source_jmp_ea)
         source_block_ea = int(transfer.source_block_ea)
         predicate_true_is_taken = transfer.predicate_true_is_taken
-        if is_static_state_choice:
+        if is_static_state_choice or is_flag_only_live_bridge:
             if live_mba is None:
                 continue
             live_source = _find_unique_live_predicate_block(
@@ -11505,13 +11513,22 @@ def _preopt_live_conditional_bridge_boundary_ports(
                 live_source,
                 predicate_ea=predicate_ea,
                 condition_code=int(transfer.condition_code),
-                predicate_register=transfer.predicate_register,
-                predicate_size=transfer.predicate_size,
+                predicate_register=(
+                    None
+                    if is_flag_only_live_bridge
+                    else transfer.predicate_register
+                ),
+                predicate_size=(
+                    None if is_flag_only_live_bridge else transfer.predicate_size
+                ),
                 predicate_constant=(
                     None
-                    if is_static_state_choice
-                    and transfer.predicate_register is None
-                    and transfer.predicate_size is None
+                    if is_flag_only_live_bridge
+                    or (
+                        is_static_state_choice
+                        and transfer.predicate_register is None
+                        and transfer.predicate_size is None
+                    )
                     else (
                         0
                         if transfer.predicate_compare_constant is None
@@ -11634,14 +11651,21 @@ def _preopt_live_conditional_bridge_boundary_ports(
                 if is_static_state_choice and transfer.materialized_anchor_eas
                 else predicate_ea
             ),
-            predicate_size=transfer.predicate_size,
+            predicate_size=(
+                None if is_flag_only_live_bridge else transfer.predicate_size
+            ),
             condition_code=int(transfer.condition_code),
-            predicate_register=transfer.predicate_register,
+            predicate_register=(
+                None if is_flag_only_live_bridge else transfer.predicate_register
+            ),
             predicate_constant=(
                 None
-                if is_static_state_choice
-                and transfer.predicate_register is None
-                and transfer.predicate_size is None
+                if is_flag_only_live_bridge
+                or (
+                    is_static_state_choice
+                    and transfer.predicate_register is None
+                    and transfer.predicate_size is None
+                )
                 else (
                     0
                     if transfer.predicate_compare_constant is None
@@ -11650,14 +11674,18 @@ def _preopt_live_conditional_bridge_boundary_ports(
             ),
             predicate_true_is_taken=bool(predicate_true_is_taken),
         )
-        if is_static_state_choice:
+        if is_static_state_choice or is_flag_only_live_bridge:
             logger.info(
-                "PREOPT static conditional choice port: "
+                "PREOPT exact conditional choice port: "
                 "source=0x%X compare=0x%X predicate=0x%X "
                 "taken_state=0x%X taken_target=0x%X "
                 "fallthrough_state=0x%X fallthrough_target=0x%X",
                 source_block_ea,
-                int(transfer.materialized_anchor_eas[0]),
+                (
+                    int(transfer.materialized_anchor_eas[0])
+                    if transfer.materialized_anchor_eas
+                    else predicate_ea
+                ),
                 predicate_ea,
                 taken_state,
                 taken_target_ea,
