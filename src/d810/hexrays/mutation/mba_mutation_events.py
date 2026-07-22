@@ -15,7 +15,12 @@ from d810.hexrays.ir.logical_block_proxy import (
     LogicalBlockVersionId,
     LogicalBlockVersionTransition,
 )
+from d810.hexrays.ir.semantic_edge import (
+    LogicalSemanticEdgeOperation,
+    SemanticEdgeOperationRejected,
+)
 from d810.ir.block_identity import MbaBlockHandle, StableBlockIdentity
+from d810.ir.semantic_edge import SemanticEdgeRole
 
 
 class StructuralMutationKind(Enum):
@@ -264,6 +269,155 @@ class MbaMutationGateway:
             transaction_id=str(self._active_batch_id),
         )
 
+    def resolve_logical_proxy(self, proxy):
+        """Resolve one logical proxy through this transaction's staged view."""
+        self._require_active()
+        return self.identity_index.resolve_logical_proxy(
+            proxy,
+            transaction_id=str(self._active_batch_id),
+        )
+
+    @staticmethod
+    def _identity_anchor(identity: StableBlockIdentity | None) -> int | None:
+        if identity is None:
+            return None
+        if identity.exact_instruction_eas:
+            return min(int(ea) for ea in identity.exact_instruction_eas)
+        return int(identity.native_ranges.intervals[0].start_ea)
+
+    def _semantic_edge_proxy_metadata(self, mba: object, proxy):
+        binding = self.identity_index.resolve_logical_proxy(proxy)
+        if binding is None:
+            raise SemanticEdgeOperationRejected(
+                f"logical proxy {proxy.proxy_token} has no published version"
+            )
+        identity = binding.handle.stable_identity
+        anchor = self._identity_anchor(identity)
+        if anchor is None:
+            block = mba.get_mblock(int(binding.serial))
+            if block is not None:
+                start = int(getattr(block, "start", -1) or -1)
+                if 0 <= start < 0xFFFFFFFFFFFFFFFF:
+                    anchor = start
+                else:
+                    head = getattr(block, "head", None)
+                    head_ea = int(getattr(head, "ea", -1) or -1)
+                    if 0 <= head_ea < 0xFFFFFFFFFFFFFFFF:
+                        anchor = head_ea
+        return binding, identity, anchor
+
+    def _semantic_edge_plan_items(
+        self,
+        mba: object,
+        operation: LogicalSemanticEdgeOperation,
+    ) -> tuple[MbaMutationPlanItem, ...]:
+        source_binding, source_identity, source_anchor = (
+            self._semantic_edge_proxy_metadata(mba, operation.source)
+        )
+        items: list[MbaMutationPlanItem] = []
+        if SemanticEdgeRole.CONDITIONAL_FALLTHROUGH in operation.roles:
+            items.append(
+                MbaMutationPlanItem(
+                    item_index=len(items),
+                    mutation_kind="materialize_adjacent_fallthrough_helper",
+                    source_serial=(
+                        int(source_binding.serial)
+                        if source_anchor is not None
+                        else None
+                    ),
+                    source_anchor_ea=source_anchor,
+                    source_identity=source_identity,
+                    disposition="planned",
+                    reason="physical conditional fallthrough invariant",
+                )
+            )
+        for edge in operation.edges:
+            target_binding, target_identity, target_anchor = (
+                self._semantic_edge_proxy_metadata(mba, edge.target)
+            )
+            items.append(
+                MbaMutationPlanItem(
+                    item_index=len(items),
+                    mutation_kind=f"semantic_edge_{edge.role.value}",
+                    source_serial=(
+                        int(source_binding.serial)
+                        if source_anchor is not None
+                        else None
+                    ),
+                    source_anchor_ea=source_anchor,
+                    source_identity=source_identity,
+                    target_serial=(
+                        int(target_binding.serial)
+                        if target_anchor is not None
+                        else None
+                    ),
+                    target_anchor_ea=target_anchor,
+                    target_identity=target_identity,
+                    disposition="planned",
+                    reason="logical-proxy semantic edge operation",
+                )
+            )
+        return tuple(items)
+
+    def apply_semantic_edge_operation(
+        self,
+        backend: object,
+        operation: LogicalSemanticEdgeOperation,
+    ) -> MbaMutationReceipt:
+        """Realize and receipt one role-complete logical edge operation.
+
+        Proxy ownership and publication are checked before a transaction is
+        opened.  The injected central mutation backend exposes only this
+        operation's internal realization port; callers cannot select a
+        low-level CFG helper.  Unsupported or stale shapes abort with an
+        explicit exception, and no arm is silently skipped.
+        """
+        if not isinstance(operation, LogicalSemanticEdgeOperation):
+            raise TypeError("semantic edge gateway requires a logical operation")
+        mba = getattr(backend, "mba", None)
+        realize = getattr(backend, "_realize_semantic_edge_operation", None)
+        if mba is None or not callable(realize):
+            raise TypeError(
+                "semantic edge gateway requires the central mutation backend"
+            )
+        if self.active:
+            raise RuntimeError(
+                "semantic edge operation requires an independent gateway batch"
+            )
+        proxies = [operation.source]
+        for edge in operation.edges:
+            proxies.append(edge.target)
+            if edge.expected_target is not None:
+                proxies.append(edge.expected_target)
+        for proxy in proxies:
+            if not self.identity_index.owns_logical_proxy(proxy):
+                raise ValueError(
+                    f"logical proxy {proxy.proxy_token} is not owned by this "
+                    "identity index"
+                )
+
+        plan_items = self._semantic_edge_plan_items(mba, operation)
+        self.begin_batch(
+            StructuralMutationKind.EDGE_REDIRECT,
+            serial_quantity=int(getattr(mba, "qty", 0) or 0),
+            description=(
+                operation.description or "apply logical semantic edge operation"
+            ),
+            planned_operation_count=len(plan_items),
+            plan_items=plan_items,
+        )
+        try:
+            realize(operation)
+        except SemanticEdgeOperationRejected as exc:
+            self.abort(reason=str(exc))
+            raise
+        except Exception as exc:
+            self.abort(
+                reason=(f"semantic edge backend raised {type(exc).__name__}: {exc}")
+            )
+            raise
+        return self.commit()
+
     def stage_replacement(
         self,
         *,
@@ -469,9 +623,11 @@ class MbaMutationGateway:
 
     def abort(self, *, reason: str = "aborted") -> None:
         """Forget an uncommitted batch; callers must rebuild after SDK failure."""
-        discarded_version_ids = self.identity_index.abort_proxy_transaction(
-            str(self._active_batch_id)
-        ) if self.active else ()
+        discarded_version_ids = (
+            self.identity_index.abort_proxy_transaction(str(self._active_batch_id))
+            if self.active
+            else ()
+        )
         if self.active and self.event_emitter is not None:
             self.event_emitter.emit(
                 MbaMutationAborted,

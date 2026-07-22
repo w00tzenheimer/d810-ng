@@ -263,12 +263,18 @@ from d810.hexrays.mutation.insn_snapshot_materializer import (
     materialize_insn_snapshots,
 )
 from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
+from d810.hexrays.ir.semantic_edge import (
+    LogicalSemanticEdge,
+    LogicalSemanticEdgeOperation,
+    SemanticEdgeOperationRejected,
+)
 from d810.hexrays.mutation.ir_translator import lift
 from d810.ir.block_identity import (
     BlockHandleProvenance,
     MbaBlockHandle,
     StableBlockIdentity,
 )
+from d810.ir.semantic_edge import SemanticEdgeRole
 
 if TYPE_CHECKING:
     pass
@@ -2862,6 +2868,405 @@ class DeferredGraphModifier:
         except Exception:
             self._finish_mutation_batch(0)
             raise
+
+    @staticmethod
+    def _semantic_edge_block_label(block: object) -> str:
+        return (
+            f"blk{int(getattr(block, 'serial', -1))}"
+            f"@0x{int(getattr(block, 'start', 0)):X}"
+        )
+
+    def _semantic_edge_live_binding(self, proxy):
+        gateway = self._mutation_gateway
+        if gateway is None or not gateway.active:
+            raise RuntimeError(
+                "semantic edge realization requires an active mutation gateway"
+            )
+        binding = gateway.resolve_logical_proxy(proxy)
+        if binding is None:
+            raise SemanticEdgeOperationRejected(
+                f"logical proxy {proxy.proxy_token} has no transaction-local version"
+            )
+        block = self.mba.get_mblock(int(binding.serial))
+        if block is None:
+            raise SemanticEdgeOperationRejected(
+                f"logical proxy {proxy.proxy_token} has no live MBA block"
+            )
+        return binding, block
+
+    def _semantic_edge_conditional_arms(self, source):
+        label = self._semantic_edge_block_label(source)
+        tail = source.tail
+        if (
+            int(source.nsucc()) != 2
+            or tail is None
+            or not _is_redirectable_conditional_tail(tail)
+            or getattr(tail, "d", None) is None
+            or int(tail.d.t) != int(ida_hexrays.mop_b)
+        ):
+            raise SemanticEdgeOperationRejected(
+                f"semantic conditional role requires a two-way conditional at {label}"
+            )
+        taken_serial = int(tail.d.b)
+        successors = tuple(int(successor) for successor in source.succset)
+        fallthroughs = tuple(
+            successor for successor in successors if successor != taken_serial
+        )
+        if taken_serial not in successors or len(fallthroughs) != 1:
+            raise SemanticEdgeOperationRejected(
+                f"conditional arm topology is inconsistent at {label}"
+            )
+        taken = self.mba.get_mblock(taken_serial)
+        fallthrough = self.mba.get_mblock(fallthroughs[0])
+        if taken is None or fallthrough is None:
+            raise SemanticEdgeOperationRejected(
+                f"conditional arm target is missing at {label}"
+            )
+        return taken, fallthrough
+
+    def _semantic_edge_proxy_for_live_block(self, block):
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise RuntimeError("semantic edge realization requires a gateway")
+        handle = gateway.identity_index.handle_for_serial(int(block.serial))
+        proxy = gateway.identity_index.logical_proxy_for_handle(handle)
+        if proxy is None:
+            raise SemanticEdgeOperationRejected(
+                "conditional sibling has no logical proxy at "
+                f"{self._semantic_edge_block_label(block)}"
+            )
+        return proxy
+
+    def _semantic_edge_mark(self, *blocks) -> None:
+        for block in blocks:
+            if block is None:
+                continue
+            if int(block.serial) != int(self.mba.qty) - 1:
+                block.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+
+    def _semantic_edge_record(self, source_binding, target_binding) -> None:
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise RuntimeError("semantic edge realization requires a gateway")
+        gateway.record_edge_redirect(
+            source=source_binding.handle,
+            target=target_binding.handle,
+        )
+
+    def _semantic_edge_redirect_direct(
+        self,
+        operation: LogicalSemanticEdgeOperation,
+        edge: LogicalSemanticEdge,
+    ) -> None:
+        source_binding, source = self._semantic_edge_live_binding(operation.source)
+        target_binding, target = self._semantic_edge_live_binding(edge.target)
+        source_successors = tuple(int(value) for value in source.succset)
+        if len(source_successors) == 0:
+            if edge.expected_target is not None:
+                raise SemanticEdgeOperationRejected(
+                    "zero-way edge materialization cannot name an expected target"
+                )
+            if source.tail is not None and _is_redirectable_conditional_tail(source.tail):
+                raise SemanticEdgeOperationRejected(
+                    "zero-way conditional requires both semantic edge roles"
+                )
+            changed = self._apply_terminal_goto_change(
+                source,
+                int(target.serial),
+            )
+        elif len(source_successors) == 1:
+            if edge.expected_target is None:
+                raise SemanticEdgeOperationRejected(
+                    "one-way redirect requires an expected target proxy"
+                )
+            expected_binding, _expected = self._semantic_edge_live_binding(
+                edge.expected_target
+            )
+            if int(source_successors[0]) != int(expected_binding.serial):
+                raise SemanticEdgeOperationRejected(
+                    "expected direct target does not own the live edge"
+                )
+            changed = self._apply_goto_change(source, int(target.serial))
+        else:
+            raise SemanticEdgeOperationRejected(
+                "direct role supports only zero-way materialization or one-way redirect at "
+                f"{self._semantic_edge_block_label(source)}"
+            )
+        if not changed:
+            raise SemanticEdgeOperationRejected(
+                "Hex-Rays rejected the direct semantic edge mutation at "
+                f"{self._semantic_edge_block_label(source)}"
+            )
+        self._semantic_edge_record(source_binding, target_binding)
+
+    def _semantic_edge_redirect_taken(
+        self,
+        operation: LogicalSemanticEdgeOperation,
+        edge: LogicalSemanticEdge,
+    ) -> None:
+        source_binding, source = self._semantic_edge_live_binding(operation.source)
+        target_binding, target = self._semantic_edge_live_binding(edge.target)
+        taken, fallthrough = self._semantic_edge_conditional_arms(source)
+        if edge.expected_target is None:
+            raise SemanticEdgeOperationRejected(
+                "conditional taken redirect requires an expected target proxy"
+            )
+        expected_binding, _expected = self._semantic_edge_live_binding(
+            edge.expected_target
+        )
+        if int(taken.serial) != int(expected_binding.serial):
+            raise SemanticEdgeOperationRejected(
+                "expected taken target does not own the live arm"
+            )
+        if int(target.serial) == int(fallthrough.serial):
+            raise SemanticEdgeOperationRejected(
+                "conditional taken and fallthrough targets must remain distinct"
+            )
+        if not self._apply_target_change(
+            source,
+            int(target.serial),
+            old_target=int(taken.serial),
+        ):
+            raise SemanticEdgeOperationRejected(
+                "Hex-Rays rejected the conditional taken-arm mutation at "
+                f"{self._semantic_edge_block_label(source)}"
+            )
+        self._semantic_edge_record(source_binding, target_binding)
+
+    def _semantic_edge_redirect_fallthrough(
+        self,
+        operation: LogicalSemanticEdgeOperation,
+        edge: LogicalSemanticEdge,
+    ) -> None:
+        source_binding, source = self._semantic_edge_live_binding(operation.source)
+        target_binding, target = self._semantic_edge_live_binding(edge.target)
+        taken, fallthrough = self._semantic_edge_conditional_arms(source)
+        if edge.expected_target is None:
+            raise SemanticEdgeOperationRejected(
+                "conditional fallthrough redirect requires an expected target proxy"
+            )
+        expected_binding, _expected = self._semantic_edge_live_binding(
+            edge.expected_target
+        )
+        if int(fallthrough.serial) != int(expected_binding.serial):
+            raise SemanticEdgeOperationRejected(
+                "expected fallthrough target does not own the live arm"
+            )
+        if (
+            source.nextb is None
+            or int(source.nextb.serial) != int(fallthrough.serial)
+        ):
+            raise SemanticEdgeOperationRejected(
+                "invalid physical fallthrough topology at "
+                f"{self._semantic_edge_block_label(source)}"
+            )
+        if int(target.serial) == int(taken.serial):
+            raise SemanticEdgeOperationRejected(
+                "conditional taken and fallthrough targets must remain distinct"
+            )
+        taken_proxy = self._semantic_edge_proxy_for_live_block(taken)
+        helper_serial = self._build_fallthrough_goto_helper(source, target)
+        if helper_serial is None:
+            raise SemanticEdgeOperationRejected(
+                "Hex-Rays could not build the adjacent fallthrough helper"
+            )
+
+        source_binding, source = self._semantic_edge_live_binding(operation.source)
+        target_binding, target = self._semantic_edge_live_binding(edge.target)
+        expected_binding, fallthrough = self._semantic_edge_live_binding(
+            edge.expected_target
+        )
+        _taken_binding, taken = self._semantic_edge_live_binding(taken_proxy)
+        helper = self.mba.get_mblock(int(helper_serial))
+        if (
+            helper is None
+            or source.nextb is None
+            or int(helper.serial) != int(source.serial) + 1
+            or int(source.nextb.serial) != int(helper.serial)
+        ):
+            raise SemanticEdgeOperationRejected(
+                "fallthrough helper is not physically adjacent to the source"
+            )
+        successors = tuple(int(value) for value in source.succset)
+        if (
+            int(expected_binding.serial) not in successors
+            or int(taken.serial) not in successors
+        ):
+            raise SemanticEdgeOperationRejected(
+                "conditional topology changed while staging fallthrough helper"
+            )
+
+        source.succset.clear()
+        source.succset.push_back(int(helper.serial))
+        source.succset.push_back(int(taken.serial))
+        if int(source.serial) in {int(value) for value in fallthrough.predset}:
+            fallthrough.predset._del(int(source.serial))
+        if int(source.serial) not in {int(value) for value in helper.predset}:
+            helper.predset.push_back(int(source.serial))
+        self._semantic_edge_mark(source, helper, fallthrough, taken, target)
+        self._semantic_edge_record(source_binding, target_binding)
+
+    def _semantic_edge_reconstruct_conditional(
+        self,
+        operation: LogicalSemanticEdgeOperation,
+    ) -> None:
+        by_role = {edge.role: edge for edge in operation.edges}
+        taken_edge = by_role[SemanticEdgeRole.CONDITIONAL_TAKEN]
+        fallthrough_edge = by_role[SemanticEdgeRole.CONDITIONAL_FALLTHROUGH]
+        source_binding, source = self._semantic_edge_live_binding(operation.source)
+        taken_binding, taken = self._semantic_edge_live_binding(taken_edge.target)
+        fallthrough_binding, fallthrough = self._semantic_edge_live_binding(
+            fallthrough_edge.target
+        )
+        label = self._semantic_edge_block_label(source)
+        tail = source.tail
+        if (
+            tail is None
+            or not _is_redirectable_conditional_tail(tail)
+            or int(tail.ea) != int(operation.predicate_anchor_ea)
+        ):
+            raise SemanticEdgeOperationRejected(
+                f"conditional reconstruction predicate does not match {label}"
+            )
+        if int(source.nsucc()) not in {0, 2}:
+            raise SemanticEdgeOperationRejected(
+                f"conditional reconstruction requires zero-way or two-way source at {label}"
+            )
+        if int(taken.serial) == int(fallthrough.serial):
+            raise SemanticEdgeOperationRejected(
+                "conditional reconstruction targets must be distinct"
+            )
+
+        old_proxies = ()
+        if int(source.nsucc()) == 0:
+            if (
+                taken_edge.expected_target is not None
+                or fallthrough_edge.expected_target is not None
+            ):
+                raise SemanticEdgeOperationRejected(
+                    "zero-way conditional reconstruction cannot name old arms"
+                )
+        else:
+            old_taken, old_fallthrough = self._semantic_edge_conditional_arms(source)
+            if (
+                taken_edge.expected_target is None
+                or fallthrough_edge.expected_target is None
+            ):
+                raise SemanticEdgeOperationRejected(
+                    "two-way conditional reconstruction requires both expected arms"
+                )
+            expected_taken_binding, _ = self._semantic_edge_live_binding(
+                taken_edge.expected_target
+            )
+            expected_fallthrough_binding, _ = self._semantic_edge_live_binding(
+                fallthrough_edge.expected_target
+            )
+            if (
+                int(old_taken.serial) != int(expected_taken_binding.serial)
+                or int(old_fallthrough.serial)
+                != int(expected_fallthrough_binding.serial)
+            ):
+                raise SemanticEdgeOperationRejected(
+                    "conditional reconstruction expected arms are stale"
+                )
+            if (
+                source.nextb is None
+                or int(source.nextb.serial) != int(old_fallthrough.serial)
+            ):
+                raise SemanticEdgeOperationRejected(
+                    f"invalid physical fallthrough topology at {label}"
+                )
+            old_proxies = (
+                taken_edge.expected_target,
+                fallthrough_edge.expected_target,
+            )
+
+        helper_serial = self._build_fallthrough_goto_helper(source, fallthrough)
+        if helper_serial is None:
+            raise SemanticEdgeOperationRejected(
+                "Hex-Rays could not build the adjacent fallthrough helper"
+            )
+        source_binding, source = self._semantic_edge_live_binding(operation.source)
+        taken_binding, taken = self._semantic_edge_live_binding(taken_edge.target)
+        fallthrough_binding, fallthrough = self._semantic_edge_live_binding(
+            fallthrough_edge.target
+        )
+        old_blocks = tuple(
+            self._semantic_edge_live_binding(proxy)[1] for proxy in old_proxies
+        )
+        helper = self.mba.get_mblock(int(helper_serial))
+        if (
+            helper is None
+            or source.nextb is None
+            or int(helper.serial) != int(source.serial) + 1
+            or int(source.nextb.serial) != int(helper.serial)
+        ):
+            raise SemanticEdgeOperationRejected(
+                "fallthrough helper is not physically adjacent to the source"
+            )
+        tail = source.tail
+        if (
+            tail is None
+            or not _is_redirectable_conditional_tail(tail)
+            or int(tail.ea) != int(operation.predicate_anchor_ea)
+        ):
+            raise SemanticEdgeOperationRejected(
+                "conditional predicate changed while staging its destinations"
+            )
+
+        for old_block in old_blocks:
+            if int(source.serial) in {int(value) for value in old_block.predset}:
+                old_block.predset._del(int(source.serial))
+        source.succset.clear()
+        source.succset.push_back(int(helper.serial))
+        source.succset.push_back(int(taken.serial))
+        tail.d = ida_hexrays.mop_t()
+        tail.d.make_blkref(int(taken.serial))
+        source.type = int(ida_hexrays.BLT_2WAY)
+        source.flags &= ~int(ida_hexrays.MBL_GOTO)
+        if int(source.serial) not in {int(value) for value in helper.predset}:
+            helper.predset.push_back(int(source.serial))
+        if int(source.serial) not in {int(value) for value in taken.predset}:
+            taken.predset.push_back(int(source.serial))
+        self._semantic_edge_mark(
+            source,
+            helper,
+            taken,
+            fallthrough,
+            *old_blocks,
+        )
+        self._semantic_edge_record(source_binding, taken_binding)
+        self._semantic_edge_record(source_binding, fallthrough_binding)
+
+    def _realize_semantic_edge_operation(
+        self,
+        operation: LogicalSemanticEdgeOperation,
+    ) -> None:
+        """Backend-only role dispatcher for the gateway operation.
+
+        This is intentionally not a queue API.  Callers submit one logical
+        operation to :class:`MbaMutationGateway`; only the gateway invokes this
+        method inside the owning transaction.
+        """
+        if not isinstance(operation, LogicalSemanticEdgeOperation):
+            raise TypeError("semantic edge backend requires a logical operation")
+        if len(operation.edges) == 2:
+            self._semantic_edge_reconstruct_conditional(operation)
+            return
+        edge = operation.edges[0]
+        if edge.role is SemanticEdgeRole.DIRECT:
+            self._semantic_edge_redirect_direct(operation, edge)
+            return
+        if edge.role is SemanticEdgeRole.CONDITIONAL_TAKEN:
+            self._semantic_edge_redirect_taken(operation, edge)
+            return
+        if edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH:
+            self._semantic_edge_redirect_fallthrough(operation, edge)
+            return
+        raise SemanticEdgeOperationRejected(
+            f"unsupported semantic edge role: {edge.role!r}"
+        )
 
     def restore_pruned_conditional_now(
         self,
