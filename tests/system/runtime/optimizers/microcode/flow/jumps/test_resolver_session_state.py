@@ -1965,6 +1965,114 @@ def test_calls_done_stages_restart_when_preopt_union_refresh_abstains(
     ]
 
 
+@pytest.mark.parametrize(
+    ("preopt_refreshed", "expected_reason"),
+    (
+        (True, "computed_goto_preopt_template_refreshed"),
+        (False, "computed_goto_calls_evidence"),
+    ),
+)
+def test_calls_done_retains_changed_evidence_during_active_materialization(
+    monkeypatch, preopt_refreshed: bool, expected_reason: str
+) -> None:
+    import d810.hexrays.mutation.detached_handler_island as island
+    import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as resolver
+
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(),
+        resolver_attachment=None,
+        native_key=NATIVE_KEY,
+    )
+    state = resolver_session_state(session)
+    existing = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40AC95,
+        source_block_ea=0x40AC70,
+        materialized_anchor_eas=(0x40AC95,),
+        target_eas=(0x40AF00, 0x40B03E),
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    discovered = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40AFB5,
+        source_block_ea=0x40AF00,
+        materialized_anchor_eas=(0x40AFB5,),
+        target_eas=(0x40B03E, 0x40C20C),
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    state.native_preanalysis.facts = _native_facts((existing,))
+    state.native_preanalysis.evidence_generation = 1
+    state.native_preanalysis.bound_preopt_generation = 1
+    state.begin_materialization(object())
+    redo: list[tuple[str, dict[str, object]]] = []
+
+    monkeypatch.setattr(
+        island,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_keep_static_equality_route_blocks",
+        lambda _mba, _transfers: 0,
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_recover_static_equality_route_transfers_from_mba",
+        lambda _resolution, _transfers, _mba: (),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_recover_condition_chain_handler_transfers_from_mba",
+        lambda _transfers, _mba: (discovered,),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "recover_conditional_handler_bridge_transfers_from_mba",
+        lambda _transfers, _mba, imported_predicate_eas: (),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "discover_static_native_bootstrap_routes",
+        lambda _function_ea, _state: False,
+    )
+    monkeypatch.setattr(resolver, "_entry_bridge_ready", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        resolver,
+        "_materialize_residual_state_routes_from_mba",
+        lambda _resolution, _transfers, _mba: (0, ()),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_refresh_preopt_union_from_calls_evidence",
+        lambda _state, _mba: preopt_refreshed,
+    )
+    monkeypatch.setattr(
+        resolver,
+        "request_hexrays_redo",
+        lambda decision, reason, **kwargs: redo.append((reason, kwargs)),
+    )
+    decision = {"session": session}
+
+    _on_calls_done_preanalysis(
+        function_ea=0x40A560,
+        mba=object(),
+        decision=decision,
+    )
+
+    assert frozenset(state.materialized_transfers) == {existing, discovered}
+    assert decision["defer_generated_restart"] is True
+    assert state.native_preanalysis.has_pending_generated_restart
+    assert redo == [
+        (
+            expected_reason,
+            {
+                "function_ea": 0x40A560,
+                "materialized_count": 0,
+                "round": 1,
+            },
+        )
+    ]
+
+
 def test_terminal_requests_and_live_bindings_are_released_with_the_session() -> None:
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),

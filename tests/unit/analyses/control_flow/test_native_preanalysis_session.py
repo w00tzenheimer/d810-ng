@@ -85,6 +85,43 @@ def test_evidence_observer_sees_generation_and_preopt_bind_transitions() -> None
     ]
 
 
+def test_evidence_observer_sees_generated_restart_request_and_consumption() -> None:
+    observed = []
+    state = NativePreanalysisSessionState(
+        evidence_generation=2,
+        bound_preopt_generation=1,
+        event_observer=observed.append,
+    )
+
+    assert state.request_generated_restart()
+    assert not state.request_generated_restart()
+    assert state.consume_generated_restart()
+
+    assert [
+        (row.operation, row.outcome, row.evidence_family, row.reason)
+        for row in observed
+    ] == [
+        (
+            "generated_restart_requested",
+            "accepted",
+            "controller_restart",
+            "CALLS staged a controller-owned generated-MBA restart",
+        ),
+        (
+            "generated_restart_requested",
+            "declined",
+            "controller_restart",
+            "evidence generation already owns a controlled redo",
+        ),
+        (
+            "generated_restart_consumed",
+            "accepted",
+            "controller_restart",
+            "flowchart consumed the staged generated-MBA restart",
+        ),
+    ]
+
+
 def test_resolver_evidence_observer_names_the_changed_family() -> None:
     observed = []
     source = StableBlockIdentity.from_intervals(
