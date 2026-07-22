@@ -180,8 +180,11 @@ def test_lifecycle_owns_native_state_write_delivery_routes() -> None:
     assert state.resolver_evidence.state_write_routes == (route,)
     assert state.state_write_route_inventory_revision == 1
     assert state.pending_state_write_routes_for_publication() == (route,)
+    assert state.needs_state_write_route_binding()
     state.mark_state_write_routes_published((route,))
     assert state.pending_state_write_routes_for_publication() == ()
+    state.mark_state_write_routes_bound()
+    assert not state.needs_state_write_route_binding()
     assert observed[-1].evidence_family == "state_write_routes"
     assert observed[-1].reason == "native state-write route evidence changed"
 

@@ -95,9 +95,11 @@ from d810.analyses.control_flow.call_abi import (
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
+    PortableStateWriteRouteEvidence,
     TerminalReturnCarrierRequest,
 )
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 
 
 def test_preopt_entry_bridge_projects_exact_portable_state_targets() -> None:
@@ -1673,6 +1675,121 @@ def test_static_state_write_routes_include_direct_dispatcher_delivery(
     assert evidence.delivery_region_start_ea == 0x40A5C8
     assert evidence.delivery_region_end_ea == 0x40A5CA
     assert evidence.target_ea == 0x40BECC
+
+
+def test_state_write_route_rebind_requires_live_dispatcher_successor() -> None:
+    import ida_hexrays
+
+    from d810.ir.block_identity import RebindResult, RebindStatus
+
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    _session, state = _resolver_session(resolution)
+    identity = lambda ea: StableBlockIdentity.from_intervals(
+        (NativeEaInterval(ea, ea + 1),), native_key=state.native_key
+    )
+    route = PortableStateWriteRouteEvidence(
+        write_identity=identity(0x40A5B2),
+        delivery_identity=identity(0x40A5C8),
+        source_write_ea=0x40A5B2,
+        delivery_ea=0x40A5C8,
+        delivery_region_start_ea=0x40A5C8,
+        delivery_region_end_ea=0x40A5CA,
+        corridor_instruction_eas=(0x40A5B2, 0x40A5C8),
+        state_var_reg=20,
+        state_constant=0xABB95547,
+        target_identity=identity(0x40BECC),
+        target_ea=0x40BECC,
+    )
+    handles = {
+        0x40A5B2: SimpleNamespace(serial=3),
+        0x40A5C8: SimpleNamespace(serial=3),
+        0x40A5F0: SimpleNamespace(serial=5),
+        0x40BECC: SimpleNamespace(serial=9),
+    }
+
+    class _Index:
+        native_key = state.native_key
+
+        @staticmethod
+        def rebind_imported_identity(candidate):
+            anchor = candidate.native_ranges.intervals[0].start_ea
+            handle = handles.get(anchor)
+            return (
+                RebindResult(RebindStatus.BOUND, handle)
+                if handle is not None
+                else RebindResult.missing()
+            )
+
+        rebind_identity = rebind_imported_identity
+
+    delivery = SimpleNamespace(
+        serial=3,
+        start=0x40A59D,
+        tail=SimpleNamespace(ea=0x40A5C8, opcode=ida_hexrays.m_goto),
+        nsucc=lambda: 1,
+        succ=lambda _index: 5,
+    )
+    blocks = {
+        3: delivery,
+        5: SimpleNamespace(serial=5, start=0x40A5F0),
+        9: SimpleNamespace(serial=9, start=0x40BECC),
+    }
+    mba = SimpleNamespace(get_mblock=lambda serial: blocks.get(int(serial)))
+
+    pending, already, unbound = (
+        computed_goto_resolver._classify_live_state_write_routes(
+            mba,
+            _Index(),
+            (route,),
+            dispatcher_router_eas=frozenset({0x40A5F0}),
+            prefer_imported=True,
+        )
+    )
+
+    assert len(pending) == 1
+    assert pending[0].delivery.serial == 3
+    assert pending[0].target.serial == 9
+    assert already == ()
+    assert unbound == 0
+
+    delivery.nsucc = lambda: 0
+    pending, already, unbound = (
+        computed_goto_resolver._classify_live_state_write_routes(
+            mba,
+            _Index(),
+            (route,),
+            dispatcher_router_eas=frozenset({0x40A5F0}),
+            prefer_imported=True,
+        )
+    )
+    assert len(pending) == 1
+    assert pending[0].delivery.serial == 3
+    assert pending[0].target.serial == 9
+    assert pending[0].old_target_serial is None
+    assert already == ()
+    assert unbound == 0
+
+    delivery.nsucc = lambda: 1
+    delivery.succ = lambda _index: 7
+    pending, already, unbound = (
+        computed_goto_resolver._classify_live_state_write_routes(
+            mba,
+            _Index(),
+            (route,),
+            dispatcher_router_eas=frozenset({0x40A5F0}),
+            prefer_imported=True,
+        )
+    )
+    assert pending == ()
+    assert already == ()
+    assert unbound == 1
 
 
 def test_static_conditional_state_choice_maps_both_unique_handler_arms() -> None:
