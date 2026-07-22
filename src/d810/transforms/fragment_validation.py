@@ -70,6 +70,10 @@ class FragmentValidationPostcondition(str, Enum):
     VALUE_RANGE_PROVEN = "value_range_proven"
     IDENTITY_OWNERSHIP = "identity_ownership"
     VERSION_LINEAGE = "version_lineage"
+    POSTVALIDATION_SCOPE = "postvalidation_scope"
+    ROOT_AUTHORITY = "root_authority"
+    OBSERVABLE_OPERATION = "observable_operation"
+    POSTVALIDATION_COVERAGE = "postvalidation_coverage"
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,6 +311,51 @@ class FragmentValidationResult:
     @property
     def failures(self) -> tuple[FragmentValidationOutcome, ...]:
         return tuple(outcome for outcome in self.outcomes if not outcome.passed)
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedFragmentObservation:
+    """Read-only observable semantics after root publication.
+
+    The backend reports semantic operation identities and validation outcomes,
+    not physical block survival.  This allows an optimizer to coalesce or
+    delete staged blocks while preserving the predicate, destinations, data
+    flow, and terminal behavior required by the plan.
+    """
+
+    plan_id: str
+    atomic_group_id: str
+    published_root_ids: tuple[str, ...]
+    observable_operations: tuple[FragmentOperation, ...]
+    semantic_outcomes: tuple[FragmentValidationOutcome, ...]
+
+    def __post_init__(self) -> None:
+        plan_id = _identifier(self.plan_id, "published fragment plan id")
+        atomic_group_id = _identifier(
+            self.atomic_group_id,
+            "published fragment atomic group id",
+        )
+        published_root_ids = tuple(
+            _identifier(root, "published fragment root")
+            for root in self.published_root_ids
+        )
+        observable_operations = tuple(self.observable_operations)
+        semantic_outcomes = tuple(self.semantic_outcomes)
+        if any(
+            not isinstance(operation, FragmentOperation)
+            for operation in observable_operations
+        ):
+            raise TypeError("published fragment contains an invalid operation")
+        if any(
+            not isinstance(outcome, FragmentValidationOutcome)
+            for outcome in semantic_outcomes
+        ):
+            raise TypeError("published fragment contains an invalid outcome")
+        object.__setattr__(self, "plan_id", plan_id)
+        object.__setattr__(self, "atomic_group_id", atomic_group_id)
+        object.__setattr__(self, "published_root_ids", published_root_ids)
+        object.__setattr__(self, "observable_operations", observable_operations)
+        object.__setattr__(self, "semantic_outcomes", semantic_outcomes)
 
 
 def _outcome(
@@ -871,15 +920,161 @@ def validate_fragment_projection(
     )
 
 
+def _required_postpublication_outcomes(
+    plan: FragmentPlan,
+) -> tuple[tuple[FragmentValidationPostcondition, str], ...]:
+    required: list[tuple[FragmentValidationPostcondition, str]] = []
+    required.extend(
+        (FragmentValidationPostcondition.ORIGINAL_SUPERSESSION, block_id)
+        for block_id in plan.owned_originals
+    )
+    required.extend(
+        (FragmentValidationPostcondition.DISPATCHER_ABSENCE, block_id)
+        for block_id in plan.prohibited_dispatcher_blocks
+    )
+    for obligation in plan.data_flow_obligations:
+        required.extend(
+            (
+                (
+                    FragmentValidationPostcondition.USE_DEF_INTEGRITY,
+                    obligation.obligation_id,
+                ),
+                (
+                    FragmentValidationPostcondition.DEF_USE_INTEGRITY,
+                    obligation.obligation_id,
+                ),
+            )
+        )
+    required.extend(
+        (FragmentValidationPostcondition.FLAG_CORRIDOR_INTEGRITY, corridor.corridor_id)
+        for corridor in plan.flag_corridors
+    )
+    required.extend(
+        (FragmentValidationPostcondition.VALUE_RANGE_PROVEN, assumption.assumption_id)
+        for assumption in plan.value_range_assumptions
+    )
+    required.extend(
+        (FragmentValidationPostcondition.IDENTITY_OWNERSHIP, block.block_id)
+        for block in plan.blocks
+    )
+    required.extend(
+        (FragmentValidationPostcondition.VERSION_LINEAGE, block.block_id)
+        for block in plan.blocks
+        if block.role
+        in {
+            FragmentBlockRole.REPLACEMENT,
+            FragmentBlockRole.SYNTHETIC,
+        }
+    )
+    return tuple(required)
+
+
+def validate_published_fragment_observation(
+    plan: FragmentPlan,
+    observation: PublishedFragmentObservation,
+) -> FragmentValidationResult:
+    """Validate post-publication semantics without requiring block survival."""
+    if not isinstance(plan, FragmentPlan):
+        raise TypeError("published fragment validation requires a FragmentPlan")
+    if not isinstance(observation, PublishedFragmentObservation):
+        raise TypeError(
+            "published fragment validation requires a PublishedFragmentObservation"
+        )
+
+    outcomes = list(observation.semantic_outcomes)
+    observed_operation_ids = tuple(
+        operation.operation_id for operation in observation.observable_operations
+    )
+    scope_valid = (
+        observation.plan_id == plan.plan_id
+        and observation.atomic_group_id == plan.atomic_group_id
+        and len(set(observation.published_root_ids))
+        == len(observation.published_root_ids)
+        and len(set(observed_operation_ids)) == len(observed_operation_ids)
+    )
+    _outcome(
+        outcomes,
+        FragmentValidationPostcondition.POSTVALIDATION_SCOPE,
+        plan.plan_id,
+        scope_valid,
+        "published observation has the exact plan scope"
+        if scope_valid
+        else "published observation plan, atomic group, or identity set drifted",
+        *observation.published_root_ids,
+    )
+
+    observed_roots = set(observation.published_root_ids)
+    planned_roots = set(plan.roots)
+    for root in plan.roots:
+        passed = root in observed_roots and observed_roots == planned_roots
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.ROOT_AUTHORITY,
+            root,
+            passed,
+            "planned root owns published authority"
+            if passed
+            else "published root authority is missing or contains an unplanned root",
+            root,
+        )
+
+    observed_by_id = {
+        operation.operation_id: operation
+        for operation in observation.observable_operations
+    }
+    for operation in plan.operations:
+        observed = observed_by_id.get(operation.operation_id)
+        passed = observed == operation and len(observed_by_id) == len(plan.operations)
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.OBSERVABLE_OPERATION,
+            operation.operation_id,
+            passed,
+            "published observable operation matches predicate and destinations"
+            if passed
+            else "published operation is missing, extra, or semantically different",
+            operation.source_block_id,
+            *(edge.target_block_id for edge in operation.edges),
+        )
+
+    semantic_outcomes = observation.semantic_outcomes
+    for postcondition, subject_id in _required_postpublication_outcomes(plan):
+        matching = tuple(
+            outcome
+            for outcome in semantic_outcomes
+            if outcome.postcondition is postcondition
+            and outcome.subject_id == subject_id
+        )
+        passed = len(matching) == 1 and matching[0].passed
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.POSTVALIDATION_COVERAGE,
+            f"{postcondition.value}:{subject_id}",
+            passed,
+            "required semantic postcondition is present and passed"
+            if passed
+            else "required semantic postcondition is missing, duplicated, or failed",
+            *(() if not matching else matching[0].block_ids),
+        )
+
+    return FragmentValidationResult(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        outcomes=tuple(outcomes),
+    )
+
+
 __all__ = [
     "FragmentBindingState",
     "FragmentValidationOutcome",
     "FragmentValidationPostcondition",
     "FragmentValidationResult",
+    "PublishedFragmentObservation",
     "ProjectedDataFlowRelation",
     "ProjectedFragment",
     "ProjectedFragmentBlock",
     "ProjectedIdentityBinding",
     "ProjectedRangeFact",
     "validate_fragment_projection",
+    "validate_published_fragment_observation",
 ]
