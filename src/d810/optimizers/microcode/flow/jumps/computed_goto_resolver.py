@@ -15021,7 +15021,7 @@ def _rebind_preopt_entry_consumer_route(
     def block_native_origins(block: object | None) -> tuple[int, ...]:
         if block is None:
             return ()
-        instruction = block.head
+        instruction = getattr(block, "head", None)
         origins: list[int] = []
         while instruction is not None:
             live_ea = int(instruction.ea)
@@ -15032,6 +15032,13 @@ def _rebind_preopt_entry_consumer_route(
                 break
             instruction = instruction.next
         return tuple(dict.fromkeys(origins))
+
+    def successor_serials_for(block: object | None) -> tuple[int, ...]:
+        if block is None or not callable(getattr(block, "nsucc", None)):
+            return ()
+        return tuple(
+            int(block.succ(index)) for index in range(int(block.nsucc()))
+        )
 
     def owned_native_ea(native_ea: int) -> bool:
         return any(
@@ -15058,25 +15065,48 @@ def _rebind_preopt_entry_consumer_route(
             ):
                 return None
             owned.append((current, min(origins)))
-            block_successors = tuple(
-                int(block.succ(index)) for index in range(int(block.nsucc()))
-            )
-            if not block_successors:
+            corridor_successors = successor_serials_for(block)
+            if not corridor_successors:
                 return tuple(owned)
-            if len(block_successors) != 1:
+            if len(corridor_successors) != 1:
                 return None
-            current = int(block_successors[0])
+            current = int(corridor_successors[0])
         return tuple(owned)
 
     successors = tuple(
         int(source.succ(successor_index))
         for successor_index in range(int(source.nsucc()))
     )
-    successor_labels = tuple(
-        f"blk{int(serial)}@0x{int(router_ea_by_serial[serial]):X}"
-        if serial in router_ea_by_serial
-        else f"blk{int(serial)}@0x{int(getattr(mba.get_mblock(int(serial)), 'start', 0) or 0):X}"
+    def successor_label(serial: int) -> str:
+        if int(serial) in router_ea_by_serial:
+            anchor_ea = int(router_ea_by_serial[int(serial)])
+        else:
+            block = mba.get_mblock(int(serial))
+            origins = block_native_origins(block)
+            anchor_ea = (
+                min(origins)
+                if origins
+                else int(getattr(block, "start", 0) or 0)
+            )
+        return f"blk{int(serial)}@0x{int(anchor_ea):X}"
+
+    successor_labels = tuple(successor_label(serial) for serial in successors)
+    successor_details = tuple(
+        {
+            "block": successor_label(serial),
+            "native_origins": tuple(
+                f"0x{int(origin_ea):X}"
+                for origin_ea in block_native_origins(mba.get_mblock(int(serial)))
+            ),
+            "successors": tuple(
+                successor_label(successor)
+                for successor in successor_serials_for(
+                    mba.get_mblock(int(serial))
+                )
+            ),
+        }
         for serial in successors
+        if mba.get_mblock(int(serial)) is not None
     )
     router_labels = tuple(
         f"blk{int(serial)}@0x{int(router_ea):X}"
@@ -15109,6 +15139,7 @@ def _rebind_preopt_entry_consumer_route(
             ),
             source_block=f"blk{int(source.serial)}@0x{int(consumer_ea):X}",
             source_successors=successor_labels,
+            source_successor_details=successor_details,
             dispatcher_routers=router_labels,
             rewrite_eas=tuple(f"0x{int(ea):X}" for ea in rewrite_eas),
             rewrite_origins=tuple(
@@ -15144,6 +15175,7 @@ def _rebind_preopt_entry_consumer_route(
         ),
         source_block=f"blk{int(source.serial)}@0x{int(consumer_ea):X}",
         source_successors=successor_labels,
+        source_successor_details=successor_details,
         dispatcher_routers=router_labels,
         rewrite_eas=tuple(f"0x{int(ea):X}" for ea in rewrite_eas),
         rewrite_origins=tuple(f"0x{int(ea):X}" for ea in rewrite_origins),
