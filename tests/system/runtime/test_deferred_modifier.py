@@ -3857,6 +3857,86 @@ class TestStagedAtomicApply:
         assert gateway.receipts[-1].planned_operation_count == 1
         assert gateway.receipts[-1].operation_count == 1
 
+    def test_staged_atomic_redirects_two_way_fallthrough_to_staged_copy(
+        self,
+        monkeypatch,
+    ):
+        """A committed swap must not leave the original on a fallthrough arm."""
+        mba = _StagedFakeMBA()
+        source = _StagedFakeBlock(5, nsucc=1, succ_serial=20)
+        source.predset.push_back(4)
+        pred = _StagedFakeBlock(4, nsucc=2, succ_serial=5)
+        pred.succset.push_back(30)
+        pred.type = ida_hexrays.BLT_2WAY
+        pred.tail = SimpleNamespace(
+            opcode=ida_hexrays.m_jcnd,
+            ea=0x401000,
+            d=SimpleNamespace(t=ida_hexrays.mop_b, b=30),
+        )
+        old_target = _StagedFakeBlock(20, nsucc=0)
+        branch_target = _StagedFakeBlock(30, nsucc=0)
+        stop = _StagedFakeBlock(40, nsucc=0)
+        stop.type = ida_hexrays.BLT_STOP
+        mba.blocks.update(
+            {
+                4: pred,
+                5: source,
+                20: old_target,
+                30: branch_target,
+                40: stop,
+            }
+        )
+        mba.qty = max(mba.blocks) + 1
+        _staged_patch_wiring(monkeypatch, mba)
+
+        fallthrough_rewrites: list[tuple[int, int, int]] = []
+        modifier = dm.DeferredGraphModifier(
+            mba,
+            mutation_gateway=make_mutation_gateway(mba),
+        )
+
+        def _redirect_fallthrough(block, new_target, *, old_target):
+            fallthrough_rewrites.append(
+                (int(block.serial), int(old_target), int(new_target))
+            )
+            block.succset._del(int(old_target))
+            block.succset.push_back(int(new_target))
+            source.predset._del(int(block.serial))
+            copy = mba.get_mblock(int(new_target))
+            assert copy is not None
+            copy.predset.push_back(int(block.serial))
+            return True
+
+        monkeypatch.setattr(
+            modifier,
+            "_apply_fallthrough_change",
+            _redirect_fallthrough,
+        )
+        modifier.modifications = [
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=5,
+                new_target=30,
+                description="goto 5 -> 30 through conditional fallthrough",
+            ),
+        ]
+
+        applied = modifier.apply(
+            run_optimize_local=False,
+            run_deep_cleaning=False,
+            staged_atomic=True,
+        )
+
+        assert applied == 1
+        assert len(fallthrough_rewrites) == 1
+        _pred_serial, original_serial, copy_serial = fallthrough_rewrites[0]
+        assert original_serial == 5
+        assert copy_serial in tuple(pred.succset)
+        assert original_serial not in tuple(pred.succset)
+        assert 5 in mba.removed_blocks
+        assert modifier._mutation_gateway.receipts[-1].planned_operation_count == 1
+        assert modifier._mutation_gateway.receipts[-1].operation_count == 1
+
     def test_staged_atomic_terminal_goto_stages_copy_and_redirects_preds(
         self,
         monkeypatch,
