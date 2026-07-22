@@ -6131,6 +6131,20 @@ class DeferredGraphModifier:
             reverse=True,
         ):
             try:
+                current_serial = int(block.serial)
+                outgoing = tuple(int(successor) for successor in block.succset)
+                for successor_serial in outgoing:
+                    block.succset._del(successor_serial)
+                    successor = self.mba.get_mblock(successor_serial)
+                    if successor is not None:
+                        successor.predset._del(current_serial)
+                incoming = tuple(int(predecessor) for predecessor in block.predset)
+                for predecessor_serial in incoming:
+                    block.predset._del(predecessor_serial)
+                    predecessor = self.mba.get_mblock(predecessor_serial)
+                    if predecessor is not None:
+                        predecessor.succset._del(current_serial)
+                block.mark_lists_dirty()
                 remover(block)
                 removed += 1
             except Exception:
