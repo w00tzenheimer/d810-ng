@@ -36,6 +36,7 @@ from d810.optimizers.microcode.flow.flattening.state_machine_cff_unflattener imp
     _unique_materialized_handler_region_identities,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.flowgraph import BlockKind
 from d810.ir.maturity import IRMaturity
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
@@ -317,6 +318,92 @@ def test_portable_terminal_route_round_trip_preserves_native_source_anchor() -> 
     )
 
     assert rebound == (route,)
+
+
+def test_portable_terminal_route_projects_external_identity_to_unique_stop() -> None:
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        PortableMaterializedStateRoute,
+    )
+
+    state = 0x19A7218A
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C7E5, 0x40C7FC),), native_key=NATIVE_KEY
+    )
+    terminal_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C898, 0x40C8A2),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=2,
+        bindings=((source_identity, 263), (terminal_identity, 272)),
+        native_key=NATIVE_KEY,
+    )
+    blocks = {
+        263: SimpleNamespace(serial=263, kind=BlockKind.ONE_WAY),
+        272: SimpleNamespace(serial=272, kind=BlockKind.EXTERNAL),
+        274: SimpleNamespace(serial=274, kind=BlockKind.STOP),
+    }
+    evidence = (
+        PortableMaterializedStateRoute(
+            source_identity=source_identity,
+            state_constant=state,
+            target_identity=terminal_identity,
+            proof_kind="terminal_state_route",
+            target_native_ea=0x40C898,
+        ),
+    )
+
+    rebound = _rebind_portable_materialized_state_routes(
+        evidence,
+        index,
+        handler_by_state={state: 272},
+        flow_graph=SimpleNamespace(blocks=blocks, get_block=blocks.get),
+    )
+
+    assert len(rebound) == 1
+    assert rebound[0].source_block_serial == 263
+    assert rebound[0].target_handler_serial == 274
+    assert rebound[0].target_native_ea == 0x40C898
+
+
+def test_portable_terminal_route_abstains_without_unique_stop() -> None:
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        PortableMaterializedStateRoute,
+    )
+
+    state = 0x19A7218A
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C7E5, 0x40C7FC),), native_key=NATIVE_KEY
+    )
+    terminal_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C898, 0x40C8A2),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=2,
+        bindings=((source_identity, 263), (terminal_identity, 272)),
+        native_key=NATIVE_KEY,
+    )
+    blocks = {
+        263: SimpleNamespace(serial=263, kind=BlockKind.ONE_WAY),
+        272: SimpleNamespace(serial=272, kind=BlockKind.EXTERNAL),
+        273: SimpleNamespace(serial=273, kind=BlockKind.STOP),
+        274: SimpleNamespace(serial=274, kind=BlockKind.STOP),
+    }
+    evidence = (
+        PortableMaterializedStateRoute(
+            source_identity=source_identity,
+            state_constant=state,
+            target_identity=terminal_identity,
+            proof_kind="terminal_state_route",
+            target_native_ea=0x40C898,
+        ),
+    )
+
+    assert not _rebind_portable_materialized_state_routes(
+        evidence,
+        index,
+        handler_by_state={state: 272},
+        flow_graph=SimpleNamespace(blocks=blocks, get_block=blocks.get),
+    )
 
 
 def test_portable_state_route_rebind_uses_current_authoritative_handler_map() -> None:

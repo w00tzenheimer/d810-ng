@@ -79,6 +79,7 @@ from d810.transforms.minimal_unflatten_emit import (
     _applied_conditional_boundary_edge_keys,
     _applied_direct_boundary_edge_keys,
     _exact_live_state_edge_keys,
+    _prefer_exact_terminal_route_fragments,
     _preserve_deferred_materialized_handler_exit_paths,
     _recover_initial_state,
     _prove_bound_bootstrap_entry_routes,
@@ -2616,6 +2617,21 @@ def test_exact_terminal_state_writer_routes_to_canonical_stop(_seam) -> None:
         ),
         state_var_reg=state_reg,
     ) == [RedirectGoto(from_serial=261, old_target=262, new_target=313)]
+
+
+def test_exact_terminal_route_fragment_rejects_same_source_sibling_rewrites() -> None:
+    terminal = RedirectGoto(from_serial=261, old_target=262, new_target=313)
+    unrelated = RedirectGoto(from_serial=100, old_target=101, new_target=102)
+
+    assert _prefer_exact_terminal_route_fragments(
+        [
+            ConvertToGoto(block_serial=261, goto_target=250),
+            RedirectGoto(from_serial=261, old_target=262, new_target=250),
+            unrelated,
+            terminal,
+        ],
+        [terminal],
+    ) == [unrelated, terminal]
 
 
 def test_materialized_state_route_rebinds_external_handler_placeholder(
