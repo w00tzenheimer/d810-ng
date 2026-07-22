@@ -337,6 +337,392 @@ def test_preopt_entry_bridge_projects_one_atomic_live_boundary_port() -> None:
     assert port.resolver_kind == "preopt_entry_bridge"
 
 
+def test_preopt_entry_bridge_defers_to_matching_stack_carried_consumer() -> None:
+    taken_state = 0xA0716E5B
+    fallthrough_state = 0xEC71CA67
+    store_ea = 0x40A5AE
+    consumer_load_ea = 0x40BECC
+    taken_target_ea = 0x40C26D
+    fallthrough_target_ea = 0x40B9A6
+    evidence = EntryBridgeEvidence(
+        predicate_ea=0x40A5A0,
+        condition_code=5,
+        predicate_stack_identity=(0x20, 4),
+        stack_cell_identity=(0x80, 4),
+        taken_state_constant=taken_state,
+        fallthrough_state_constant=fallthrough_state,
+        source_store_ea=store_ea,
+        canonical_stack_cell_identity=(0x40, 4),
+        canonical_predicate_stack_identity=(-0x20, 4),
+        predicate_block_ea=0x40A59D,
+        taken_arm_entry_ea=0x40A5C0,
+        fallthrough_arm_entry_ea=0x40A5B0,
+        conditional_tail_ea=0x40A5AB,
+    )
+    routes = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40C253,
+            source_block_ea=0x40C253,
+            materialized_anchor_eas=(),
+            target_eas=(taken_target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=taken_state,
+            resolver_kind="static_handler_entry_route",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40B98C,
+            source_block_ea=0x40B98C,
+            materialized_anchor_eas=(),
+            target_eas=(fallthrough_target_ea,),
+            selector_state_var_reg=20,
+            selector_state_constant=fallthrough_state,
+            resolver_kind="static_handler_entry_route",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40A5AB,
+            source_block_ea=0x40A59D,
+            materialized_anchor_eas=(store_ea,),
+            target_eas=(taken_target_ea, fallthrough_target_ea),
+            condition_code=5,
+            true_target_ea=taken_target_ea,
+            false_target_ea=fallthrough_target_ea,
+            selector_state_var_reg=20,
+            resolver_kind="preopt_entry_bridge",
+            predicate_size=4,
+            predicate_true_state=taken_state,
+            predicate_false_state=fallthrough_state,
+            state_carrier_store_ea=store_ea,
+            state_carrier_consumer_load_eas=(consumer_load_ea,),
+            state_carrier_ida_stkoff=0x40,
+        ),
+    )
+
+    assert (
+        computed_goto_resolver._preopt_entry_bridge_boundary_ports(
+            (evidence,),
+            routes,
+            logical_source_anchor_ea=0x40A5C8,
+        )
+        == ()
+    )
+
+
+def test_stack_carried_consumer_reserves_imported_dispatcher_envelope() -> None:
+    consumer_entry_ea = 0x40BECC
+    consumer_load_ea = 0x40BECC
+    generic_cut = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=consumer_entry_ea,
+        predicate_ea=0x40BED0,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=0x40B6C0,
+        fallthrough_target_ea=0x40A607,
+        state_register=20,
+        taken_state=None,
+        fallthrough_state=None,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        resolver_kind="resolver_proven_register_compare_cut",
+    )
+    unrelated_cut = replace(
+        generic_cut,
+        source_block_ea=0x40BF00,
+        predicate_ea=0x40BF08,
+    )
+    choice = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40A5AB,
+        source_block_ea=0x40A59D,
+        materialized_anchor_eas=(0x40A5AE,),
+        target_eas=(0x40C26D, 0x40B9A6),
+        condition_code=5,
+        true_target_ea=0x40C26D,
+        false_target_ea=0x40B9A6,
+        selector_state_var_reg=20,
+        resolver_kind="preopt_entry_bridge",
+        predicate_size=4,
+        predicate_true_state=0xA0716E5B,
+        predicate_false_state=0xEC71CA67,
+        state_carrier_store_ea=0x40A5AE,
+        state_carrier_consumer_load_eas=(consumer_load_ea,),
+        state_carrier_ida_stkoff=0x40,
+    )
+
+    native_cfg = NativeCfg(
+        {
+            consumer_entry_ea: NativeBlock(consumer_entry_ea, 0x40BEE1),
+            0x40BF00: NativeBlock(0x40BF00, 0x40BF10),
+        }
+    )
+    supersession_diagnostic: dict[str, object] = {}
+    assert computed_goto_resolver._without_replaced_imported_dispatcher_ports(
+        (generic_cut, unrelated_cut),
+        (
+            choice,
+            replace(
+                choice,
+                resolver_kind="static_stack_carried_state_choice",
+                true_target_ea=choice.false_target_ea,
+                false_target_ea=choice.true_target_ea,
+                predicate_true_state=choice.predicate_false_state,
+                predicate_false_state=choice.predicate_true_state,
+            ),
+        ),
+        native_cfg=native_cfg,
+        diagnostic=supersession_diagnostic,
+    ) == (unrelated_cut,)
+    assert supersession_diagnostic["outcome"] == "suppressed"
+    assert supersession_diagnostic["choice_count"] == 2
+    assert supersession_diagnostic["signature_count"] == 1
+    assert supersession_diagnostic["suppressed_port_count"] == 1
+    assert computed_goto_resolver._refresh_preopt_union_boundary_ports(
+        DetachedSnippetBoundaryPorts((), (generic_cut, unrelated_cut)),
+        DetachedSnippetBoundaryPorts((), ()),
+        replacement_transfers=(choice,),
+        native_cfg=native_cfg,
+    ) == DetachedSnippetBoundaryPorts((), (unrelated_cut,))
+
+
+def test_preopt_entry_bridge_publishes_unique_native_stack_consumer() -> None:
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40A5AB,
+        source_block_ea=0x40A59D,
+        materialized_anchor_eas=(0x40A5AE,),
+        target_eas=(0x40C26D, 0x40B9A6),
+        condition_code=5,
+        true_target_ea=0x40C26D,
+        false_target_ea=0x40B9A6,
+        selector_state_var_reg=20,
+        resolver_kind="preopt_entry_bridge",
+        predicate_size=4,
+        predicate_true_state=0xA0716E5B,
+        predicate_false_state=0xEC71CA67,
+        state_carrier_store_ea=0x40A5AE,
+        state_carrier_ida_stkoff=0x40,
+    )
+
+    bound = computed_goto_resolver._bind_preopt_entry_bridge_consumers(
+        (transfer,),
+        consumer_load_eas_by_displacement={0x40: (0x40BECC,)},
+        store_displacement_resolver=lambda store_ea: (
+            0x40 if int(store_ea) == 0x40A5AE else None
+        ),
+    )
+    assert bound == (
+        replace(
+            transfer,
+            state_carrier_stack_displacement=0x40,
+            state_carrier_consumer_load_eas=(0x40BECC,),
+        ),
+    )
+    assert computed_goto_resolver._bind_preopt_entry_consumer_owned_ranges(
+        bound,
+        native_cfg=NativeCfg(
+            {0x40BECC: NativeBlock(0x40BECC, 0x40BEE7)}
+        ),
+    ) == (
+        replace(bound[0], owned_native_ranges=((0x40BECC, 0x40BEE7),)),
+    )
+
+
+def test_entry_consumer_rebinds_root_handles_and_synthetic_load_origin() -> None:
+    consumer_load_ea = 0x40BECC
+    true_target_ea = 0x40C26D
+    false_target_ea = 0x40B9A6
+    router_ea = 0x40A607
+    other_router_ea = 0x40B6C0
+    synthetic_load_ea = 0xF0000001
+    load = SimpleNamespace(ea=synthetic_load_ea, next=None)
+    source = SimpleNamespace(
+        serial=20,
+        head=load,
+        tail=load,
+        nsucc=lambda: 2,
+        succ=lambda index: (40, 41)[index],
+    )
+    blocks = {
+        20: source,
+        30: SimpleNamespace(serial=30),
+        31: SimpleNamespace(serial=31),
+        40: SimpleNamespace(serial=40),
+        41: SimpleNamespace(serial=41),
+    }
+    handles = {
+        "consumer": SimpleNamespace(serial=20),
+        "true": SimpleNamespace(serial=30),
+        "false": SimpleNamespace(serial=31),
+    }
+
+    class _Index:
+        native_key = NATIVE_KEY
+
+        @staticmethod
+        def resolve(handle):
+            return handles.get(handle)
+
+        @staticmethod
+        def rebind_imported_identity(identity):
+            anchor_ea = identity.native_ranges.intervals[0].start_ea
+            return SimpleNamespace(
+                block=(
+                    SimpleNamespace(
+                        serial=40 if int(anchor_ea) == router_ea else 41
+                    )
+                    if int(anchor_ea) in {router_ea, other_router_ea}
+                    else None
+                )
+            )
+
+    evidence = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40A5AB,
+        source_block_ea=0x40A59D,
+        materialized_anchor_eas=(0x40A5AE,),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        selector_state_var_reg=20,
+        resolver_kind="preopt_entry_bridge",
+        predicate_size=4,
+        predicate_true_state=0xA0716E5B,
+        predicate_false_state=0xEC71CA67,
+        state_carrier_store_ea=0x40A5AE,
+        state_carrier_consumer_load_eas=(consumer_load_ea,),
+        state_carrier_ida_stkoff=0x40,
+    )
+
+    diagnostic: dict[str, object] = {}
+    rebound = computed_goto_resolver._rebind_preopt_entry_consumer_route(
+        SimpleNamespace(get_mblock=lambda serial: blocks.get(int(serial))),
+        _Index(),
+        evidence,
+        imported_root_handles={
+            consumer_load_ea: "consumer",
+            true_target_ea: "true",
+            false_target_ea: "false",
+        },
+        imported_instruction_origins={synthetic_load_ea: consumer_load_ea},
+        dispatcher_router_eas=frozenset({router_ea, other_router_ea}),
+        diagnostic=diagnostic,
+    )
+
+    assert rebound is not None
+    assert rebound.source is source
+    assert rebound.true_target is blocks[30]
+    assert rebound.false_target is blocks[31]
+    assert rebound.old_dispatcher_serial == 40
+    assert rebound.rewrite_ea == synthetic_load_ea
+    assert diagnostic == {
+        "outcome": "bound",
+        "reason": "direct_dispatcher_successor",
+        "source_block": "blk20@0x40BECC",
+        "source_successors": ("blk40@0x40A607", "blk41@0x40B6C0"),
+        "dispatcher_routers": ("blk40@0x40A607", "blk41@0x40B6C0"),
+        "rewrite_eas": ("0xF0000001",),
+        "rewrite_origins": ("0x40BECC",),
+        "true_target_block": "blk30@0x40C26D",
+        "false_target_block": "blk31@0x40B9A6",
+    }
+
+
+def test_entry_consumer_rebinds_single_owned_native_corridor() -> None:
+    consumer_load_ea = 0x40BECC
+    consumer_tail_ea = 0x40BEE5
+    true_target_ea = 0x40C26D
+    false_target_ea = 0x40B9A6
+    synthetic_load_ea = 0xF0000001
+    synthetic_tail_ea = 0xF0000002
+    load = SimpleNamespace(ea=synthetic_load_ea, next=None)
+    source = SimpleNamespace(
+        serial=20,
+        head=load,
+        tail=load,
+        nsucc=lambda: 1,
+        succ=lambda _index: 40,
+    )
+    tail = SimpleNamespace(ea=synthetic_tail_ea, next=None)
+    corridor = SimpleNamespace(
+        serial=40,
+        head=tail,
+        tail=tail,
+        nsucc=lambda: 0,
+        succ=lambda _index: (_ for _ in ()).throw(IndexError()),
+    )
+    blocks = {
+        20: source,
+        30: SimpleNamespace(serial=30),
+        31: SimpleNamespace(serial=31),
+        40: corridor,
+        41: SimpleNamespace(serial=41),
+    }
+    handles = {
+        "consumer": SimpleNamespace(serial=20),
+        "true": SimpleNamespace(serial=30),
+        "false": SimpleNamespace(serial=31),
+    }
+
+    class _Index:
+        native_key = NATIVE_KEY
+
+        @staticmethod
+        def resolve(handle):
+            return handles.get(handle)
+
+        @staticmethod
+        def rebind_imported_identity(identity):
+            anchor_ea = identity.native_ranges.intervals[0].start_ea
+            return SimpleNamespace(
+                block=(
+                    SimpleNamespace(serial=41)
+                    if int(anchor_ea) == 0x40A607
+                    else None
+                )
+            )
+
+    evidence = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40A5AB,
+        source_block_ea=0x40A59D,
+        materialized_anchor_eas=(0x40A5AE,),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        selector_state_var_reg=20,
+        resolver_kind="preopt_entry_bridge",
+        predicate_size=4,
+        predicate_true_state=0xA0716E5B,
+        predicate_false_state=0xEC71CA67,
+        state_carrier_store_ea=0x40A5AE,
+        state_carrier_consumer_load_eas=(consumer_load_ea,),
+        state_carrier_ida_stkoff=0x40,
+        owned_native_ranges=((consumer_load_ea, consumer_tail_ea + 2),),
+    )
+    diagnostic: dict[str, object] = {}
+
+    rebound = computed_goto_resolver._rebind_preopt_entry_consumer_route(
+        SimpleNamespace(get_mblock=lambda serial: blocks.get(int(serial))),
+        _Index(),
+        evidence,
+        imported_root_handles={
+            consumer_load_ea: "consumer",
+            true_target_ea: "true",
+            false_target_ea: "false",
+        },
+        imported_instruction_origins={
+            synthetic_load_ea: consumer_load_ea,
+            synthetic_tail_ea: consumer_tail_ea,
+        },
+        dispatcher_router_eas=frozenset({0x40A607}),
+        diagnostic=diagnostic,
+    )
+
+    assert rebound is not None
+    assert rebound.old_dispatcher_serial == 40
+    assert diagnostic["outcome"] == "bound"
+    assert diagnostic["reason"] == "owned_consumer_corridor"
+    assert diagnostic["owned_corridor_blocks"] == ("blk40@0x40BEE5",)
+
+
 def test_preopt_entry_bridge_capture_publishes_lifecycle_evidence(
     monkeypatch,
 ) -> None:

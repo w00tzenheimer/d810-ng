@@ -283,6 +283,8 @@ class PreoptUnionPreparationResult:
     seed_eas: tuple[int, ...] = ()
     native_ranges: tuple[tuple[int, int], ...] = ()
     imported_block_entry_eas: tuple[int, ...] = ()
+    entry_consumer_routes: tuple[MaterializedIndirectTransfer, ...] = ()
+    entry_consumer_port_diagnostic: tuple[tuple[str, object], ...] = ()
     abstention_reasons: tuple[str, ...] = ()
 
 

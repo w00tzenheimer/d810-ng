@@ -157,6 +157,7 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.transforms.graph_modification import SyntheticStackValueEqualsCondition
 from d810.hexrays.preanalysis.flowchart_preanalysis import (
     register_flowchart_preanalysis_handler,
     request_hexrays_redo,
@@ -8579,8 +8580,10 @@ def _preopt_entry_bridge_boundary_ports(
     evidence = evidence_rows[0]
     stack_identity = evidence.canonical_stack_cell_identity
     transfer = _preopt_entry_bridge_transfer(evidence, transfers)
+    consumer_choice = _matching_preopt_entry_consumer_choice(evidence, transfers)
     if (
         transfer is None
+        or consumer_choice is not None
         or stack_identity is None
         or int(stack_identity[1]) <= 0
         or transfer.true_target_ea is None
@@ -8616,6 +8619,272 @@ def _preopt_entry_bridge_boundary_ports(
             predicate_true_is_taken=True,
         ),
     )
+
+
+def _matching_preopt_entry_consumer_choice(
+    evidence: EntryBridgeEvidence,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+) -> MaterializedIndirectTransfer | None:
+    """Return the unique carried choice that consumes the entry predicate.
+
+    The pristine entry comparison selects two states and stores the result in
+    one stack cell.  The reference transaction belongs at the later load of
+    that same cell, not at the pristine predicate.  Match only portable native
+    evidence: producer EA, both state constants, one consumer load, and an IDA
+    stack identity established from the connected producer.
+    """
+    expected_states = {
+        int(evidence.taken_state_constant) & _MASK32,
+        int(evidence.fallthrough_state_constant) & _MASK32,
+    }
+    candidates = tuple(
+        transfer
+        for transfer in transfers
+        if transfer.resolver_kind
+        in {"preopt_entry_bridge", "static_stack_carried_state_choice"}
+        and transfer.state_carrier_store_ea is not None
+        and int(transfer.state_carrier_store_ea) == int(evidence.source_store_ea)
+        and transfer.predicate_true_state is not None
+        and transfer.predicate_false_state is not None
+        and {
+            int(transfer.predicate_true_state) & _MASK32,
+            int(transfer.predicate_false_state) & _MASK32,
+        }
+        == expected_states
+        and len(transfer.state_carrier_consumer_load_eas) == 1
+        and transfer.state_carrier_ida_stkoff is not None
+        and transfer.predicate_size is not None
+        and int(transfer.predicate_size) > 0
+        and transfer.true_target_ea is not None
+        and transfer.false_target_ea is not None
+    )
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _bind_preopt_entry_bridge_consumers(
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    consumer_load_eas_by_displacement: Mapping[int, Sequence[int]],
+    store_displacement_resolver=None,
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Attach the unique native stack consumer to a portable entry proof."""
+    if store_displacement_resolver is None:
+        import ida_ua  # type: ignore[import-untyped]
+
+        def store_displacement_resolver(store_ea: int) -> int | None:
+            instruction = ida_ua.insn_t()
+            if int(ida_ua.decode_insn(instruction, int(store_ea))) <= 0:
+                return None
+            if (idaapi.print_insn_mnem(int(store_ea)) or "").lower() != "mov":
+                return None
+            return _sv_stack_pointer_displacement(instruction.ops[0])
+
+    bound: list[MaterializedIndirectTransfer] = []
+    for transfer in transfers:
+        store_ea = transfer.state_carrier_store_ea
+        if transfer.resolver_kind != "preopt_entry_bridge" or store_ea is None:
+            continue
+        displacement = store_displacement_resolver(int(store_ea))
+        if displacement is None:
+            continue
+        consumers = tuple(
+            sorted(
+                {
+                    int(ea)
+                    for ea in consumer_load_eas_by_displacement.get(
+                        int(displacement) & _MASK32,
+                        (),
+                    )
+                }
+            )
+        )
+        if len(consumers) != 1:
+            continue
+        bound.append(
+            replace(
+                transfer,
+                state_carrier_stack_displacement=(int(displacement) & _MASK32),
+                state_carrier_consumer_load_eas=consumers,
+            )
+        )
+    return tuple(bound)
+
+
+def _bind_preopt_entry_consumer_owned_ranges(
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    native_cfg: NativeCfg,
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Attach the exact native consumer block as its replacement corridor."""
+    bound: list[MaterializedIndirectTransfer] = []
+    for transfer in transfers:
+        if len(transfer.state_carrier_consumer_load_eas) != 1:
+            bound.append(transfer)
+            continue
+        (consumer_ea,) = transfer.state_carrier_consumer_load_eas
+        block = native_cfg.blocks_by_ea.get(int(consumer_ea))
+        if (
+            block is None
+            or int(block.start_ea) != int(consumer_ea)
+            or int(block.end_ea) <= int(consumer_ea)
+        ):
+            bound.append(transfer)
+            continue
+        bound.append(
+            replace(
+                transfer,
+                owned_native_ranges=(
+                    (int(block.start_ea), int(block.end_ea)),
+                ),
+            )
+        )
+    return tuple(bound)
+
+
+def _without_replaced_imported_dispatcher_ports(
+    ports: tuple[DetachedSnippetConditionalBoundaryPort, ...],
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    native_cfg: NativeCfg | None,
+    diagnostic: dict[str, object] | None = None,
+) -> tuple[DetachedSnippetConditionalBoundaryPort, ...]:
+    """Reserve one imported consumer envelope for the atomic route batch."""
+    if diagnostic is not None:
+        diagnostic.clear()
+    choices = tuple(
+        transfer
+        for transfer in transfers
+        if transfer.resolver_kind
+        in {"preopt_entry_bridge", "static_stack_carried_state_choice"}
+        and len(transfer.state_carrier_consumer_load_eas) == 1
+        and transfer.state_carrier_store_ea is not None
+        and transfer.state_carrier_ida_stkoff is not None
+        and transfer.predicate_size is not None
+        and int(transfer.predicate_size) > 0
+        and transfer.predicate_true_state is not None
+        and transfer.predicate_false_state is not None
+        and transfer.true_target_ea is not None
+        and transfer.false_target_ea is not None
+    )
+    choice_rows = tuple(
+        {
+            "resolver_kind": str(transfer.resolver_kind),
+            "consumer_load_ea": (
+                f"0x{int(transfer.state_carrier_consumer_load_eas[0]):X}"
+            ),
+            "store_ea": f"0x{int(transfer.state_carrier_store_ea):X}",
+            "ida_stkoff": int(transfer.state_carrier_ida_stkoff),
+            "predicate_size": int(transfer.predicate_size),
+            "states": tuple(
+                f"0x{int(value) & _MASK32:X}"
+                for value in sorted(
+                    {
+                        int(transfer.predicate_true_state),
+                        int(transfer.predicate_false_state),
+                    }
+                )
+            ),
+            "targets": tuple(
+                f"0x{int(value):X}"
+                for value in sorted(
+                    {
+                        int(transfer.true_target_ea),
+                        int(transfer.false_target_ea),
+                    }
+                )
+            ),
+        }
+        for transfer in choices
+    )
+    signatures = {
+        (
+            int(transfer.state_carrier_consumer_load_eas[0]),
+            int(transfer.state_carrier_store_ea),
+            int(transfer.state_carrier_ida_stkoff),
+            int(transfer.predicate_size),
+            frozenset(
+                {
+                    int(transfer.predicate_true_state) & _MASK32,
+                    int(transfer.predicate_false_state) & _MASK32,
+                }
+            ),
+            frozenset(
+                {
+                    int(transfer.true_target_ea),
+                    int(transfer.false_target_ea),
+                }
+            ),
+        )
+        for transfer in choices
+    }
+    if diagnostic is not None:
+        diagnostic.update(
+            {
+                "choice_count": len(choices),
+                "signature_count": len(signatures),
+                "choices": choice_rows,
+            }
+        )
+    if native_cfg is None or len(signatures) != 1:
+        if diagnostic is not None:
+            diagnostic.update(
+                {
+                    "outcome": "abstained",
+                    "reason": (
+                        "native_cfg_missing"
+                        if native_cfg is None
+                        else "ambiguous_consumer_envelopes"
+                    ),
+                    "suppressed_port_count": 0,
+                }
+            )
+        return ports
+    consumer_load_ea = int(next(iter(signatures))[0])
+    entries = {
+        int(entry_ea)
+        for entry_ea, block in native_cfg.blocks_by_ea.items()
+        if int(block.start_ea) <= int(consumer_load_ea) < int(block.end_ea)
+    }
+    if len(entries) != 1:
+        if diagnostic is not None:
+            diagnostic.update(
+                {
+                    "outcome": "abstained",
+                    "reason": "consumer_native_entry_not_unique",
+                    "consumer_entries": tuple(
+                        f"0x{int(entry_ea):X}" for entry_ea in sorted(entries)
+                    ),
+                    "suppressed_port_count": 0,
+                }
+            )
+        return ports
+    (consumer_entry_ea,) = entries
+    retained = tuple(
+        port
+        for port in ports
+        if not (
+            port.source_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+            and int(port.source_block_ea) == int(consumer_entry_ea)
+            and port.old_taken_target_ea is None
+            and port.old_fallthrough_target_ea is None
+            and port.logical_source_anchor_ea is None
+        )
+    )
+    suppressed_count = len(ports) - len(retained)
+    if diagnostic is not None:
+        diagnostic.update(
+            {
+                "outcome": "suppressed" if suppressed_count else "not_present",
+                "reason": (
+                    "consumer_route_owns_envelope"
+                    if suppressed_count
+                    else "matching_dispatcher_port_not_present"
+                ),
+                "consumer_entry_ea": f"0x{int(consumer_entry_ea):X}",
+                "suppressed_port_count": int(suppressed_count),
+            }
+        )
+    return retained
 
 
 def _capture_preopt_entry_bridge_evidence(
@@ -10901,6 +11170,7 @@ def _preopt_union_boundary_ports(
     ) = None,
     native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]] | None = None,
     logical_entry_bridge_source_eas: Sequence[int] = (),
+    entry_consumer_port_diagnostic: dict[str, object] | None = None,
 ) -> DetachedSnippetBoundaryPorts | None:
     """Convert exact resolver cuts to the existing atomic port contract."""
     imported_entry_eas = {int(entry_ea) for entry_ea in closure.included_block_eas}
@@ -11308,6 +11578,14 @@ def _preopt_union_boundary_ports(
                 if native_stack_frame_offsets_by_ea is None
                 else native_stack_frame_offsets_by_ea
             ),
+        )
+    )
+    conditional_ports = list(
+        _without_replaced_imported_dispatcher_ports(
+            tuple(conditional_ports),
+            transfers,
+            native_cfg=native_cfg,
+            diagnostic=entry_consumer_port_diagnostic,
         )
     )
     try:
@@ -13023,6 +13301,27 @@ def _merge_preopt_union_boundary_ports(
         raise
 
 
+def _refresh_preopt_union_boundary_ports(
+    previous: DetachedSnippetBoundaryPorts,
+    current: DetachedSnippetBoundaryPorts,
+    *,
+    replacement_transfers: tuple[MaterializedIndirectTransfer, ...],
+    native_cfg: NativeCfg | None,
+    diagnostic: dict[str, object] | None = None,
+) -> DetachedSnippetBoundaryPorts:
+    """Merge monotonic proofs, then apply current fragment supersessions."""
+    merged = _merge_preopt_union_boundary_ports(previous, current)
+    return DetachedSnippetBoundaryPorts(
+        direct=merged.direct,
+        conditional=_without_replaced_imported_dispatcher_ports(
+            merged.conditional,
+            replacement_transfers,
+            native_cfg=native_cfg,
+            diagnostic=diagnostic,
+        ),
+    )
+
+
 def prepare_preopt_union_closure(
     state: ResolverSessionState,
     *,
@@ -13100,6 +13399,19 @@ def prepare_preopt_union_closure(
         transfers = transfers + tuple(
             transfer for transfer in entry_bridge_transfers if transfer not in transfers
         )
+    stack_carrier_consumer_load_eas = _static_stack_carrier_consumer_load_eas(
+        resolution
+    )
+    entry_consumer_routes = _bind_preopt_entry_bridge_consumers(
+        entry_bridge_transfers,
+        consumer_load_eas_by_displacement=stack_carrier_consumer_load_eas,
+    )
+    if entry_consumer_routes:
+        transfers = tuple(
+            transfer
+            for transfer in transfers
+            if transfer not in entry_bridge_transfers
+        ) + entry_consumer_routes
     region = (
         PreoptUnionRegionPlan(
             seed_eas=prepatch_source.seed_eas,
@@ -13238,7 +13550,28 @@ def prepare_preopt_union_closure(
                 *(abstention.reason.value for abstention in closure.abstentions),
                 *(() if closure.native_ranges else ("empty_native_closure",)),
             )
+    owned_entry_consumer_routes = _bind_preopt_entry_consumer_owned_ranges(
+        entry_consumer_routes,
+        native_cfg=native_cfg,
+    )
+    if owned_entry_consumer_routes:
+        transfers = tuple(
+            next(
+                (
+                    owned
+                    for original, owned in zip(
+                        entry_consumer_routes,
+                        owned_entry_consumer_routes,
+                    )
+                    if transfer == original
+                ),
+                transfer,
+            )
+            for transfer in transfers
+        )
+        entry_consumer_routes = owned_entry_consumer_routes
     effective_closure = closure
+    entry_consumer_port_diagnostic: dict[str, object] = {}
     boundary_ports = _preopt_union_boundary_ports(
         effective_closure,
         live_native_eas=live_native_eas,
@@ -13247,21 +13580,25 @@ def prepare_preopt_union_closure(
         native_cfg=native_cfg,
         imported_seed_eas=tuple(int(ea) for ea in region.seed_eas),
         stack_carrier_consumer_load_eas_by_displacement=(
-            _static_stack_carrier_consumer_load_eas(resolution)
+            stack_carrier_consumer_load_eas
         ),
         native_stack_frame_offsets_by_ea=dict(resolution.native_stack_frame_offsets),
         logical_entry_bridge_source_eas=tuple(
             int(route.source_anchor_ea)
             for route in state.native_preanalysis.bootstrap_routes.values()
         ),
+        entry_consumer_port_diagnostic=entry_consumer_port_diagnostic,
     )
     if boundary_ports is None:
         return _preopt_union_abstention(key, "incomplete_boundary_topology")
     if refresh_existing and refresh_baseline_boundary_ports is not None:
         try:
-            boundary_ports = _merge_preopt_union_boundary_ports(
+            boundary_ports = _refresh_preopt_union_boundary_ports(
                 refresh_baseline_boundary_ports,
                 boundary_ports,
+                replacement_transfers=transfers,
+                native_cfg=native_cfg,
+                diagnostic=entry_consumer_port_diagnostic,
             )
         except ValueError as exc:
             logger.info(
@@ -13348,6 +13685,10 @@ def prepare_preopt_union_closure(
         seed_eas=tuple(int(seed_ea) for seed_ea in region.seed_eas),
         native_ranges=normalized_ranges,
         imported_block_entry_eas=tuple(effective_closure.included_block_eas),
+        entry_consumer_routes=entry_consumer_routes,
+        entry_consumer_port_diagnostic=tuple(
+            entry_consumer_port_diagnostic.items()
+        ),
     )
 
     def generate(maturity: int):
@@ -14546,6 +14887,288 @@ class _ReboundStateWriteRoute(NamedTuple):
     predicate_ea: int | None
 
 
+class _ReboundEntryConsumerRoute(NamedTuple):
+    evidence: MaterializedIndirectTransfer
+    source: object
+    true_target: object
+    false_target: object
+    old_dispatcher_serial: int
+    rewrite_ea: int
+
+
+def _rebind_preopt_entry_consumer_route(
+    mba: object,
+    index: object,
+    evidence: MaterializedIndirectTransfer,
+    *,
+    imported_root_handles: Mapping[int, object],
+    imported_instruction_origins: Mapping[int, int],
+    dispatcher_router_eas: frozenset[int],
+    diagnostic: dict[str, object] | None = None,
+) -> _ReboundEntryConsumerRoute | None:
+    """Bind the imported stack consumer and both semantic handler targets."""
+    if diagnostic is not None:
+        diagnostic.clear()
+
+    def finish_diagnostic(
+        *,
+        outcome: str,
+        reason: str,
+        **details: object,
+    ) -> None:
+        if diagnostic is not None:
+            diagnostic.update(
+                {
+                    "outcome": str(outcome),
+                    "reason": str(reason),
+                    **details,
+                }
+            )
+
+    if (
+        len(evidence.state_carrier_consumer_load_eas) != 1
+        or evidence.true_target_ea is None
+        or evidence.false_target_ea is None
+    ):
+        finish_diagnostic(
+            outcome="abstained",
+            reason="incomplete_portable_consumer_evidence",
+            consumer_load_eas=tuple(
+                f"0x{int(ea):X}"
+                for ea in evidence.state_carrier_consumer_load_eas
+            ),
+            true_target_ea=(
+                None
+                if evidence.true_target_ea is None
+                else f"0x{int(evidence.true_target_ea):X}"
+            ),
+            false_target_ea=(
+                None
+                if evidence.false_target_ea is None
+                else f"0x{int(evidence.false_target_ea):X}"
+            ),
+        )
+        return None
+    (consumer_ea,) = evidence.state_carrier_consumer_load_eas
+
+    def imported_block(native_ea: int):
+        handle = imported_root_handles.get(int(native_ea))
+        if handle is not None:
+            bound = index.resolve(handle)
+            return None if bound is None else mba.get_mblock(int(bound.serial))
+        identity = StableBlockIdentity.from_intervals(
+            (NativeEaInterval(int(native_ea), int(native_ea) + 1),),
+            native_key=index.native_key,
+        )
+        rebound = index.rebind_imported_identity(identity)
+        return None if rebound.block is None else mba.get_mblock(int(rebound.block.serial))
+
+    source = imported_block(int(consumer_ea))
+    true_target = imported_block(int(evidence.true_target_ea))
+    false_target = imported_block(int(evidence.false_target_ea))
+    if source is None or true_target is None or false_target is None:
+        finish_diagnostic(
+            outcome="abstained",
+            reason="imported_root_binding_missing",
+            source_bound=source is not None,
+            true_target_bound=true_target is not None,
+            false_target_bound=false_target is not None,
+        )
+        return None
+    source_instructions = []
+    instruction = source.head
+    while instruction is not None:
+        source_instructions.append(instruction)
+        if instruction is source.tail or instruction == source.tail:
+            break
+        instruction = instruction.next
+    rewrite_eas = tuple(
+        int(instruction.ea)
+        for instruction in source_instructions
+        if int(instruction.ea) == int(consumer_ea)
+        or imported_instruction_origins.get(int(instruction.ea)) == int(consumer_ea)
+    )
+    rewrite_origins = tuple(
+        int(imported_instruction_origins.get(int(rewrite_ea), int(rewrite_ea)))
+        for rewrite_ea in rewrite_eas
+    )
+    if len(rewrite_eas) != 1:
+        finish_diagnostic(
+            outcome="abstained",
+            reason="consumer_rewrite_not_unique",
+            source_block=f"blk{int(source.serial)}@0x{int(consumer_ea):X}",
+            source_instruction_eas=tuple(
+                f"0x{int(instruction.ea):X}" for instruction in source_instructions
+            ),
+            source_instruction_origins=tuple(
+                f"0x{int(imported_instruction_origins.get(int(instruction.ea), int(instruction.ea))):X}"
+                for instruction in source_instructions
+            ),
+            rewrite_eas=tuple(f"0x{int(ea):X}" for ea in rewrite_eas),
+        )
+        return None
+    router_ea_by_serial: dict[int, int] = {}
+    for router_ea in sorted(dispatcher_router_eas):
+        identity = StableBlockIdentity.from_intervals(
+            (NativeEaInterval(int(router_ea), int(router_ea) + 1),),
+            native_key=index.native_key,
+        )
+        rebound = index.rebind_imported_identity(identity)
+        if rebound.block is not None:
+            router_ea_by_serial[int(rebound.block.serial)] = int(router_ea)
+    router_serials = set(router_ea_by_serial)
+
+    def block_native_origins(block: object | None) -> tuple[int, ...]:
+        if block is None:
+            return ()
+        instruction = block.head
+        origins: list[int] = []
+        while instruction is not None:
+            live_ea = int(instruction.ea)
+            origins.append(
+                int(imported_instruction_origins.get(live_ea, live_ea))
+            )
+            if instruction is block.tail or instruction == block.tail:
+                break
+            instruction = instruction.next
+        return tuple(dict.fromkeys(origins))
+
+    def owned_native_ea(native_ea: int) -> bool:
+        return any(
+            int(start_ea) <= int(native_ea) < int(end_ea)
+            for start_ea, end_ea in evidence.owned_native_ranges
+        )
+
+    def owned_corridor_from(
+        first_serial: int,
+    ) -> tuple[tuple[int, int], ...] | None:
+        current = int(first_serial)
+        visited: set[int] = set()
+        owned: list[tuple[int, int]] = []
+        while current not in router_serials:
+            if current in visited:
+                return None
+            visited.add(current)
+            block = mba.get_mblock(current)
+            origins = block_native_origins(block)
+            if (
+                block is None
+                or not origins
+                or not all(owned_native_ea(origin_ea) for origin_ea in origins)
+            ):
+                return None
+            owned.append((current, min(origins)))
+            block_successors = tuple(
+                int(block.succ(index)) for index in range(int(block.nsucc()))
+            )
+            if not block_successors:
+                return tuple(owned)
+            if len(block_successors) != 1:
+                return None
+            current = int(block_successors[0])
+        return tuple(owned)
+
+    successors = tuple(
+        int(source.succ(successor_index))
+        for successor_index in range(int(source.nsucc()))
+    )
+    successor_labels = tuple(
+        f"blk{int(serial)}@0x{int(router_ea_by_serial[serial]):X}"
+        if serial in router_ea_by_serial
+        else f"blk{int(serial)}@0x{int(getattr(mba.get_mblock(int(serial)), 'start', 0) or 0):X}"
+        for serial in successors
+    )
+    router_labels = tuple(
+        f"blk{int(serial)}@0x{int(router_ea):X}"
+        for serial, router_ea in sorted(router_ea_by_serial.items())
+    )
+    direct_dispatcher_successors = bool(
+        len(successors) in (1, 2)
+        and router_serials
+        and set(successors).issubset(router_serials)
+    )
+    owned_corridor = (
+        None
+        if direct_dispatcher_successors
+        or len(successors) != 1
+        or not router_serials
+        or not evidence.owned_native_ranges
+        else owned_corridor_from(int(successors[0]))
+    )
+    if not direct_dispatcher_successors and owned_corridor is None:
+        finish_diagnostic(
+            outcome="abstained",
+            reason=(
+                "source_successor_shape"
+                if len(successors) not in (1, 2)
+                else (
+                    "dispatcher_router_binding_missing"
+                    if not router_serials
+                    else "source_successor_outside_dispatcher_routers"
+                )
+            ),
+            source_block=f"blk{int(source.serial)}@0x{int(consumer_ea):X}",
+            source_successors=successor_labels,
+            dispatcher_routers=router_labels,
+            rewrite_eas=tuple(f"0x{int(ea):X}" for ea in rewrite_eas),
+            rewrite_origins=tuple(
+                f"0x{int(origin_ea):X}" for origin_ea in rewrite_origins
+            ),
+            true_target_block=(
+                f"blk{int(true_target.serial)}@0x{int(evidence.true_target_ea):X}"
+            ),
+            false_target_block=(
+                f"blk{int(false_target.serial)}@0x{int(evidence.false_target_ea):X}"
+            ),
+            owned_native_ranges=tuple(
+                (f"0x{int(start_ea):X}", f"0x{int(end_ea):X}")
+                for start_ea, end_ea in evidence.owned_native_ranges
+            ),
+        )
+        return None
+    if owned_corridor is not None:
+        successor_labels = tuple(
+            f"blk{int(serial)}@0x{int(anchor_ea):X}"
+            for serial, anchor_ea in owned_corridor[:1]
+        )
+    owned_corridor_labels = tuple(
+        f"blk{int(serial)}@0x{int(anchor_ea):X}"
+        for serial, anchor_ea in (owned_corridor or ())
+    )
+    finish_diagnostic(
+        outcome="bound",
+        reason=(
+            "direct_dispatcher_successor"
+            if direct_dispatcher_successors
+            else "owned_consumer_corridor"
+        ),
+        source_block=f"blk{int(source.serial)}@0x{int(consumer_ea):X}",
+        source_successors=successor_labels,
+        dispatcher_routers=router_labels,
+        rewrite_eas=tuple(f"0x{int(ea):X}" for ea in rewrite_eas),
+        rewrite_origins=tuple(f"0x{int(ea):X}" for ea in rewrite_origins),
+        true_target_block=(
+            f"blk{int(true_target.serial)}@0x{int(evidence.true_target_ea):X}"
+        ),
+        false_target_block=(
+            f"blk{int(false_target.serial)}@0x{int(evidence.false_target_ea):X}"
+        ),
+        **(
+            {}
+            if direct_dispatcher_successors
+            else {"owned_corridor_blocks": owned_corridor_labels}
+        ),
+    )
+    return _ReboundEntryConsumerRoute(
+        evidence,
+        source,
+        true_target,
+        false_target,
+        int(successors[0]),
+        int(rewrite_eas[0]),
+    )
+
+
 def _rebind_route_identity(index, identity, *, imported_first: bool):
     """Rebind one route identity to an explicit native ownership class."""
     from d810.ir.block_identity import RebindStatus
@@ -15245,7 +15868,10 @@ def rebind_live_preopt_routes(
     )
     entry_bridge_ports: tuple[DetachedSnippetConditionalBoundaryPort, ...] = ()
     if union_prepared and not union_imported:
-        entry_transfers = state.materialized_transfers
+        entry_transfers = (
+            *state.materialized_transfers,
+            *preparation.entry_consumer_routes,
+        )
         recovered_entry_routes = tuple(
             transfer
             for transfer in _recover_static_handler_entry_route_transfers(
@@ -15398,6 +16024,12 @@ def rebind_live_preopt_routes(
         for transfer in state.materialized_transfers
         for router_ea in transfer.dispatcher_router_eas
     )
+    imported_instruction_origins = dict(
+        state.imported_instruction_origins_for(int(current_mba_token or 0))
+    )
+    imported_root_handles = dict(
+        state.imported_root_handles_for(int(current_mba_token or 0))
+    )
     state_write_diagnostics: list[dict[str, object]] = []
     (
         state_write_pending,
@@ -15409,13 +16041,44 @@ def rebind_live_preopt_routes(
         state.portable_evidence.state_write_routes,
         dispatcher_router_eas=dispatcher_router_eas,
         union_imported=union_imported,
-        imported_instruction_origins=dict(
-            state.imported_instruction_origins_for(int(current_mba_token or 0))
-        ),
-        imported_root_handles=dict(
-            state.imported_root_handles_for(int(current_mba_token or 0))
-        ),
+        imported_instruction_origins=imported_instruction_origins,
+        imported_root_handles=imported_root_handles,
         diagnostic_rows=state_write_diagnostics,
+    )
+    entry_consumer_choice = (
+        _matching_preopt_entry_consumer_choice(
+            state.portable_evidence.preopt_entry_bridges[0],
+            preparation.entry_consumer_routes,
+        )
+        if union_imported
+        and len(state.portable_evidence.preopt_entry_bridges) == 1
+        else None
+    )
+    entry_consumer_diagnostic: dict[str, object] = {}
+    entry_consumer_route = (
+        None
+        if entry_consumer_choice is None
+        else _rebind_preopt_entry_consumer_route(
+            mba,
+            index,
+            entry_consumer_choice,
+            imported_root_handles=imported_root_handles,
+            imported_instruction_origins=imported_instruction_origins,
+            dispatcher_router_eas=dispatcher_router_eas,
+            diagnostic=entry_consumer_diagnostic,
+        )
+    )
+    entry_bootstrap_routes = tuple(
+        route
+        for route in (*state_write_pending, *state_write_already)
+        if entry_consumer_choice is not None
+        and len(entry_consumer_choice.state_carrier_consumer_load_eas) == 1
+        and int(route.evidence.target_ea)
+        == int(entry_consumer_choice.state_carrier_consumer_load_eas[0])
+    )
+    entry_consumer_complete = bool(
+        entry_consumer_choice is None
+        or (entry_consumer_route is not None and len(entry_bootstrap_routes) == 1)
     )
     session = decision.get("session")
     session_id = getattr(session, "identity_key", None)
@@ -15456,7 +16119,10 @@ def rebind_live_preopt_routes(
     )
     reference_fragment_complete = bool(
         not reference_state_write_routes
-        or reference_state_write_routes == rebound_reference_routes
+        or (
+            reference_state_write_routes == rebound_reference_routes
+            and entry_consumer_complete
+        )
     )
     if session_id is not None and reference_state_write_routes:
         maturity = getattr(mba, "maturity", None)
@@ -15490,6 +16156,13 @@ def rebind_live_preopt_routes(
                         len(reference_state_write_routes)
                         - len(rebound_reference_routes)
                     ),
+                    "entry_consumer_expected": entry_consumer_choice is not None,
+                    "entry_consumer_bound": entry_consumer_route is not None,
+                    "entry_bootstrap_routes": len(entry_bootstrap_routes),
+                    "entry_consumer_diagnostic": entry_consumer_diagnostic,
+                    "entry_consumer_port_diagnostic": dict(
+                        preparation.entry_consumer_port_diagnostic
+                    ),
                 },
             )
         )
@@ -15509,6 +16182,11 @@ def rebind_live_preopt_routes(
             for route in state_write_pending
             if route.evidence.proof_kind != "reference_style_immediate_flow_route"
         )
+    entry_consumer_pending = (
+        entry_consumer_route
+        if reference_fragment_complete and entry_consumer_choice is not None
+        else None
+    )
     state_write_pending_by_source = {
         int(route.delivery.serial): int(route.target.serial)
         for route in state_write_pending
@@ -15706,6 +16384,7 @@ def rebind_live_preopt_routes(
         and not conditional_already
         and not conditional_materialize
         and not entry_bridge_ports
+        and entry_consumer_pending is None
     ):
         if union_imported and not state.native_preanalysis.bootstrap_routes:
             state.native_preanalysis.mark_preopt_bound()
@@ -15715,6 +16394,11 @@ def rebind_live_preopt_routes(
         *(int(route.delivery.serial) for route in state_write_pending),
         *(int(route[2].serial) for route in conditional_pending),
         *(int(route[3].serial) for route in conditional_materialize),
+        *(
+            ()
+            if entry_consumer_pending is None
+            else (int(entry_consumer_pending.source.serial),)
+        ),
     ]
     if len(set(pending_source_serials)) != len(pending_source_serials):
         return
@@ -15725,6 +16409,7 @@ def rebind_live_preopt_routes(
         or state_write_pending
         or conditional_pending
         or conditional_materialize
+        or entry_consumer_pending is not None
     ):
         modifier = DeferredGraphModifier(mba, mutation_gateway=gateway)
         for route in terminal_routes:
@@ -15787,6 +16472,38 @@ def rebind_live_preopt_routes(
                     description=description,
                     rule_priority=100,
                 )
+        if entry_consumer_pending is not None:
+            evidence = entry_consumer_pending.evidence
+            assert evidence.state_carrier_ida_stkoff is not None
+            assert evidence.predicate_size is not None
+            assert evidence.predicate_true_state is not None
+            modifier.queue_lower_conditional_state_transition(
+                source_serial=int(entry_consumer_pending.source.serial),
+                old_dispatcher_serial=int(
+                    entry_consumer_pending.old_dispatcher_serial
+                ),
+                rewrite_from_ea=int(entry_consumer_pending.rewrite_ea),
+                condition_operand=SyntheticStackValueEqualsCondition(
+                    stack_stkoff=int(
+                        mba.stkoff_ida2vd(int(evidence.state_carrier_ida_stkoff))
+                    ),
+                    stack_size=int(evidence.predicate_size),
+                    value=int(evidence.predicate_true_state) & _MASK32,
+                ),
+                false_target_serial=int(
+                    entry_consumer_pending.false_target.serial
+                ),
+                true_target_serial=int(entry_consumer_pending.true_target.serial),
+                proof_id=(
+                    "reference_stack_carried_entry_consumer:"
+                    f"0x{int(evidence.state_carrier_consumer_load_eas[0]):X}"
+                ),
+                description=(
+                    "lower reference stack-carried entry consumer "
+                    f"load@0x{int(evidence.state_carrier_consumer_load_eas[0]):X}"
+                ),
+                rule_priority=1000,
+            )
         for (
             source_ea,
             target_ea,
@@ -15832,6 +16549,7 @@ def rebind_live_preopt_routes(
                 or state_write_pending
                 or conditional_pending
                 or conditional_materialize
+                or entry_consumer_pending is not None
             )
             else 0
         )
@@ -15841,6 +16559,7 @@ def rebind_live_preopt_routes(
             + len(state_write_pending)
             + len(conditional_pending)
             + len(conditional_materialize)
+            + (1 if entry_consumer_pending is not None else 0)
         )
         if deferred_applied != expected_applied:
             return
