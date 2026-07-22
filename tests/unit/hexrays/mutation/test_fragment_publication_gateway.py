@@ -23,6 +23,7 @@ from d810.ir.flowgraph import BlockKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.fragment_plan import (
     FragmentBlock,
+    FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentEdge,
     FragmentOperation,
@@ -62,6 +63,11 @@ def _block(
     return FragmentBlock(
         block_id=block_id,
         role=role,
+        materialization=(
+            FragmentBlockMaterialization.CLONE_PUBLISHED
+            if role is FragmentBlockRole.REPLACEMENT
+            else FragmentBlockMaterialization.REUSE_PUBLISHED
+        ),
         semantic_anchor_ea=start_ea,
         stable_identity=_identity(start_ea) if identity is None else identity,
         replaces_block_id=replaces,

@@ -33,6 +33,14 @@ class FragmentBlockRole(str, Enum):
     SYNTHETIC = "synthetic"
 
 
+class FragmentBlockMaterialization(str, Enum):
+    """Portable instruction for realizing one plan-local block."""
+
+    REUSE_PUBLISHED = "reuse_published"
+    CLONE_PUBLISHED = "clone_published"
+    CREATE_EMPTY = "create_empty"
+
+
 class FragmentDataFlowRole(str, Enum):
     """Observable semantic responsibility protected by a data-flow proof."""
 
@@ -64,6 +72,7 @@ class FragmentBlock:
 
     block_id: str
     role: FragmentBlockRole
+    materialization: FragmentBlockMaterialization
     semantic_anchor_ea: int
     stable_identity: StableBlockIdentity | None = None
     replaces_block_id: str | None = None
@@ -76,6 +85,25 @@ class FragmentBlock:
         )
         if not isinstance(self.role, FragmentBlockRole):
             raise TypeError("fragment block requires a FragmentBlockRole")
+        if not isinstance(self.materialization, FragmentBlockMaterialization):
+            raise TypeError(
+                "fragment block requires a FragmentBlockMaterialization"
+            )
+
+        required_materialization = {
+            FragmentBlockRole.ORIGINAL: FragmentBlockMaterialization.REUSE_PUBLISHED,
+            FragmentBlockRole.REPLACEMENT: FragmentBlockMaterialization.CLONE_PUBLISHED,
+            FragmentBlockRole.EXTERNAL: FragmentBlockMaterialization.REUSE_PUBLISHED,
+            FragmentBlockRole.SYNTHETIC: FragmentBlockMaterialization.CREATE_EMPTY,
+        }[self.role]
+        if self.materialization is not required_materialization:
+            requirement = {
+                FragmentBlockRole.ORIGINAL: "original fragment block must reuse published authority",
+                FragmentBlockRole.REPLACEMENT: "replacement fragment block must clone its published original",
+                FragmentBlockRole.EXTERNAL: "external fragment block must reuse published authority",
+                FragmentBlockRole.SYNTHETIC: "synthetic fragment block must create an empty staged block",
+            }[self.role]
+            raise FragmentPlanRejected(requirement)
 
         if self.role is FragmentBlockRole.SYNTHETIC:
             if self.stable_identity is not None:
@@ -652,6 +680,7 @@ class FragmentPlan:
 
 __all__ = [
     "FragmentBlock",
+    "FragmentBlockMaterialization",
     "FragmentBlockRole",
     "FragmentDataFlowObligation",
     "FragmentDataFlowRole",

@@ -9,6 +9,7 @@ from d810.ir.flowgraph import BlockKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.fragment_plan import (
     FragmentBlock,
+    FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentDataFlowObligation,
     FragmentDataFlowRole,
@@ -55,6 +56,11 @@ def _native_block(
     return FragmentBlock(
         block_id=block_id,
         role=role,
+        materialization=(
+            FragmentBlockMaterialization.CLONE_PUBLISHED
+            if role is FragmentBlockRole.REPLACEMENT
+            else FragmentBlockMaterialization.REUSE_PUBLISHED
+        ),
         semantic_anchor_ea=start_ea,
         stable_identity=_identity(start_ea),
         replaces_block_id=replaces,
@@ -67,6 +73,7 @@ def _plan() -> FragmentPlan:
     replacement = FragmentBlock(
         block_id="replacement",
         role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
         semantic_anchor_ea=0x1000,
         stable_identity=original.stable_identity,
         replaces_block_id=original.block_id,
@@ -315,6 +322,7 @@ def test_operation_disconnected_from_fragment_roots_is_rejected() -> None:
     synthetic = FragmentBlock(
         block_id="detached.helper",
         role=FragmentBlockRole.SYNTHETIC,
+        materialization=FragmentBlockMaterialization.CREATE_EMPTY,
         semantic_anchor_ea=0x6000,
     )
     plan = replace(
