@@ -34,6 +34,7 @@ from d810.optimizers.microcode.flow.flattening.state_machine_cff_unflattener imp
     _unflatten_recovery_epoch_generation,
     _unique_materialized_handler_entry_route_source_eas,
     _unique_materialized_handler_region_identities,
+    _validated_materialized_target_eas,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockKind
@@ -404,6 +405,18 @@ def test_portable_terminal_route_abstains_without_unique_stop() -> None:
         handler_by_state={state: 272},
         flow_graph=SimpleNamespace(blocks=blocks, get_block=blocks.get),
     )
+
+
+def test_validated_materialized_targets_retain_preopt_union_seed_ownership() -> None:
+    preparation = SimpleNamespace(seed_eas=(0x40B9A6, 0x40C26D))
+    resolver_state = SimpleNamespace(
+        portable_evidence=SimpleNamespace(preopt_union_preparation=preparation)
+    )
+
+    assert _validated_materialized_target_eas(
+        (0x40B9A6,),
+        resolver_state,
+    ) == frozenset({0x40B9A6, 0x40C26D})
 
 
 def test_portable_state_route_rebind_uses_current_authoritative_handler_map() -> None:

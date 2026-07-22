@@ -226,6 +226,32 @@ def _should_defer_unbound_materialized_preopt(
     )
 
 
+def _validated_materialized_target_eas(
+    live_receipt_target_eas: object,
+    resolver_state: object,
+) -> frozenset[int]:
+    """Join live import receipts with the portable PREOPT union inventory.
+
+    A PREOPT union seed is an ownership fact published before MBA regeneration;
+    it must remain eligible when CALLS rebuilds exact state-to-handler routing.
+    Live detached-import receipts cover later adapter-local materialization, but
+    cannot replace that portable inventory without dropping union-only handlers.
+    """
+    targets = {int(ea) for ea in live_receipt_target_eas if int(ea) > 0}
+    preparation = getattr(
+        getattr(resolver_state, "portable_evidence", None),
+        "preopt_union_preparation",
+        None,
+    )
+    if preparation is not None:
+        targets.update(
+            int(ea)
+            for ea in getattr(preparation, "seed_eas", ())
+            if int(ea) > 0
+        )
+    return frozenset(targets)
+
+
 def _materialized_identity_evidence_ready(
     analysis_seeds: ABCMapping[str, object],
 ) -> bool:
@@ -1913,21 +1939,14 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             and materialized_state_var_reg is not None
             and materialized_indirect_transfers
         ):
+            validated_materialized_target_eas = _validated_materialized_target_eas(
+                imported_detached_snippet_target_eas(mba),
+                resolver_state,
+            )
             equality_target_eas = unique_materialized_equality_target_eas(
                 materialized_indirect_transfers,
                 materialized_state_var_reg,
-                validated_candidate_target_eas=frozenset(
-                    {
-                        *imported_detached_snippet_target_eas(mba),
-                        *(
-                            resolver_state.portable_evidence.preopt_union_preparation.seed_eas
-                            if isinstance(resolver_state, ResolverSessionState)
-                            and resolver_state.portable_evidence.preopt_union_preparation
-                            is not None
-                            else ()
-                        ),
-                    }
-                ),
+                validated_candidate_target_eas=validated_materialized_target_eas,
             )
             entry_route_source_eas = (
                 _unique_materialized_handler_entry_route_source_eas(
@@ -2125,7 +2144,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     ),
                 )
             )
-            imported_target_eas = frozenset(imported_detached_snippet_target_eas(mba))
+            imported_target_eas = _validated_materialized_target_eas(
+                imported_detached_snippet_target_eas(mba),
+                resolver_state,
+            )
             equality_target_eas = unique_materialized_equality_target_eas(
                 materialized_indirect_transfers,
                 materialized_state_var_reg,
