@@ -14408,6 +14408,7 @@ def _classify_live_state_write_routes(
     unbound = 0
     delivery_targets: dict[int, int] = {}
     for evidence in routes:
+        folded_shape_details: dict[str, object] = {}
         write_result = _rebind_route_identity(
             index,
             evidence.write_identity,
@@ -14456,6 +14457,17 @@ def _classify_live_state_write_routes(
                 int(write.succ(successor_index))
                 for successor_index in range(int(write.nsucc()))
             )
+            folded_shape_details.update(
+                write_tail_ea=(
+                    None if write_tail is None else f"0x{int(write_tail.ea):X}"
+                ),
+                write_tail_opcode=(
+                    None if write_tail is None else int(write_tail.opcode)
+                ),
+                write_successors=[
+                    block_ref(successor) for successor in write_successors
+                ],
+            )
             semantic_target_serial = int(target_result.block.serial)
 
             def is_accepted_delivery_target(serial: int) -> bool:
@@ -14490,6 +14502,43 @@ def _classify_live_state_write_routes(
                             int(corridor_helper.nsucc())
                         )
                     )
+                )
+                folded_shape_details.update(
+                    corridor_helper=(
+                        None
+                        if corridor_helper is None
+                        else block_ref(int(corridor_helper.serial))
+                    ),
+                    helper_head_ea=(
+                        None
+                        if helper_head is None
+                        else f"0x{int(helper_head.ea):X}"
+                    ),
+                    helper_head_opcode=(
+                        None if helper_head is None else int(helper_head.opcode)
+                    ),
+                    helper_head_has_next=(
+                        False
+                        if helper_head is None
+                        else getattr(helper_head, "next", None) is not None
+                    ),
+                    helper_tail_ea=(
+                        None
+                        if helper_tail is None
+                        else f"0x{int(helper_tail.ea):X}"
+                    ),
+                    helper_tail_opcode=(
+                        None if helper_tail is None else int(helper_tail.opcode)
+                    ),
+                    helper_successors=[
+                        block_ref(successor) for successor in helper_successors
+                    ],
+                    helper_targets_state_dispatcher=(
+                        len(helper_successors) == 1
+                        and is_state_dispatcher_successor(
+                            helper_successors[0], evidence
+                        )
+                    ),
                 )
                 is_folded_direct_delivery = bool(
                     corridor_helper is not None
@@ -14585,6 +14634,7 @@ def _classify_live_state_write_routes(
                 write_status=write_result.status.value,
                 delivery_status=delivery_result.status.value,
                 target_status=target_result.status.value,
+                **folded_shape_details,
             )
             continue
         if write is None or delivery is None or target is None:
