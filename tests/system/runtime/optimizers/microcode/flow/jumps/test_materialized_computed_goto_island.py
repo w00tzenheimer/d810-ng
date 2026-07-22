@@ -286,6 +286,7 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
         "preopt_union_seed_count": 2,
         "preopt_union_boundary_port_count": 1,
     }
+    assert state.native_preanalysis.bound_preopt_generation == 1
     assert state.current_imported_instruction_origins == ((0xFFFFFFFFFFFFFF01, 0x2000),)
 
 
@@ -375,6 +376,8 @@ def test_live_bootstrap_endpoint_does_not_suppress_prepared_union(monkeypatch) -
     assert decision["microcode_modified"] is True
     assert state.preopt_union_imported_mbas == {(0x1000, 77, 0)}
     assert state.preopt_union_mutated_mbas == set()
+    assert state.native_preanalysis.bound_preopt_generation == 1
+    assert state.native_preanalysis.needs_bootstrap_route_binding()
 
 
 def test_preopt_success_records_session_owned_union_ownership(monkeypatch) -> None:
@@ -593,6 +596,7 @@ def test_post_mutation_preopt_abstention_suppresses_locopt_fallback(
 
     assert fallback_calls == []
     assert (0x1000, 122, 0) in state.preopt_union_mutated_mbas
+    assert state.native_preanalysis.bound_preopt_generation is None
     assert preopt_decision["microcode_modified"] is True
     assert preopt_decision["details"] == {
         "preopt_union_post_mutation_abstention": True,
@@ -649,6 +653,7 @@ def test_empty_external_placeholder_is_not_a_preopt_union_success(
     )
 
     assert (0x1000, 123, 7) not in state.preopt_union_imported_mbas
+    assert state.native_preanalysis.bound_preopt_generation is None
     assert decision == {"session": session}
 
 
