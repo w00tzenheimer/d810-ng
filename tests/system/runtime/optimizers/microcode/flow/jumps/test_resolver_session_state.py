@@ -1890,6 +1890,81 @@ def test_calls_done_refreshes_completed_preopt_union_before_requesting_redo(
     ]
 
 
+def test_calls_done_stages_restart_when_preopt_union_refresh_abstains(
+    monkeypatch,
+) -> None:
+    import d810.hexrays.mutation.detached_handler_island as island
+    import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as resolver
+
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(),
+        resolver_attachment=None,
+        native_key=NATIVE_KEY,
+    )
+    state = resolver_session_state(session)
+    existing = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40AC95,
+        source_block_ea=0x40AC70,
+        materialized_anchor_eas=(0x40AC95,),
+        target_eas=(0x40AF00, 0x40B03E),
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    discovered = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40AFB5,
+        source_block_ea=0x40AF00,
+        materialized_anchor_eas=(0x40AFB5,),
+        target_eas=(0x40B03E, 0x40C20C),
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    state.native_preanalysis.facts = _native_facts((existing,))
+    state.materialized = True
+    state.native_preanalysis.evidence_generation = 1
+    state.native_preanalysis.bound_preopt_generation = 1
+    redo: list[tuple[str, dict[str, object]]] = []
+
+    monkeypatch.setattr(
+        island,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_recover_condition_chain_handler_transfers_from_mba",
+        lambda _transfers, _mba: (discovered,),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "recover_conditional_handler_bridge_transfers_from_mba",
+        lambda _transfers, _mba, imported_predicate_eas: (),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_refresh_preopt_union_from_calls_evidence",
+        lambda _state, _mba: False,
+    )
+    monkeypatch.setattr(
+        resolver,
+        "request_hexrays_redo",
+        lambda decision, reason, **kwargs: redo.append((reason, kwargs)),
+    )
+    decision = {"session": session}
+
+    _on_calls_done_preanalysis(
+        function_ea=0x40A560,
+        mba=object(),
+        decision=decision,
+    )
+
+    assert decision["defer_generated_restart"] is True
+    assert state.native_preanalysis.has_pending_generated_restart
+    assert redo == [
+        (
+            "computed_goto_calls_evidence",
+            {"function_ea": 0x40A560, "evidence_generation": 2},
+        )
+    ]
+
+
 def test_terminal_requests_and_live_bindings_are_released_with_the_session() -> None:
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(),
