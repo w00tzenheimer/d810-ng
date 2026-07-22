@@ -6392,7 +6392,11 @@ class DeferredGraphModifier:
                 pass
 
         # Apply the intended mutation to the *copy*.
-        mutation_ok = self._apply_destructive_on_copy(new_blk, mod)
+        mutation_ok = self._apply_destructive_on_copy(
+            new_blk,
+            mod,
+            original_blk=target_blk,
+        )
         if not mutation_ok:
             logger.warning(
                 "staged_atomic stage: mutation failed on copy blk[%d] for mod[%d] %s",
@@ -6426,6 +6430,8 @@ class DeferredGraphModifier:
         self,
         copy_blk: "ida_hexrays.mblock_t",
         mod: "GraphModification",
+        *,
+        original_blk: "ida_hexrays.mblock_t | None" = None,
     ) -> bool:
         """Apply a destructive-expressible mod to the freshly-copied block.
 
@@ -6473,9 +6479,30 @@ class DeferredGraphModifier:
                 target_serial=mod.new_target,
             )
         if mod.mod_type == ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION:
+            copied_old_dispatcher = mod.old_target
+            copy_successors = tuple(int(successor) for successor in copy_blk.succset)
+            if (
+                copied_old_dispatcher is not None
+                and int(copied_old_dispatcher) not in copy_successors
+                and original_blk is not None
+            ):
+                original_successors = tuple(
+                    int(successor) for successor in original_blk.succset
+                )
+                matching_indices = tuple(
+                    index
+                    for index, successor in enumerate(original_successors)
+                    if int(successor) == int(copied_old_dispatcher)
+                )
+                if (
+                    len(matching_indices) != 1
+                    or len(original_successors) != len(copy_successors)
+                ):
+                    return False
+                copied_old_dispatcher = copy_successors[matching_indices[0]]
             return self._apply_lower_conditional_state_transition(
                 copy_blk,
-                old_dispatcher_serial=mod.old_target,
+                old_dispatcher_serial=copied_old_dispatcher,
                 rewrite_from_ea=mod.rewrite_from_ea,
                 condition_operand=mod.condition_operand,
                 false_target_serial=mod.false_target,
