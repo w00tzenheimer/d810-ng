@@ -15113,6 +15113,34 @@ def _rebind_preopt_entry_consumer_route(
             current = int(corridor_successors[0])
         return tuple(owned)
 
+    def owned_consumer_diamond(
+        first_serial: int,
+        second_serial: int,
+    ) -> tuple[tuple[int, int], ...] | None:
+        """Return one closed owned arm-to-merge diamond, or abstain."""
+        for arm_serial, merge_serial in (
+            (int(first_serial), int(second_serial)),
+            (int(second_serial), int(first_serial)),
+        ):
+            arm = mba.get_mblock(arm_serial)
+            merge = mba.get_mblock(merge_serial)
+            arm_origins = block_native_origins(arm)
+            merge_origins = block_native_origins(merge)
+            if (
+                not arm_origins
+                or not merge_origins
+                or not all(owned_native_ea(origin_ea) for origin_ea in arm_origins)
+                or not all(owned_native_ea(origin_ea) for origin_ea in merge_origins)
+                or successor_serials_for(arm) != (merge_serial,)
+                or successor_serials_for(merge)
+            ):
+                continue
+            return (
+                (arm_serial, min(arm_origins)),
+                (merge_serial, min(merge_origins)),
+            )
+        return None
+
     successors = tuple(
         int(source.succ(successor_index))
         for successor_index in range(int(source.nsucc()))
@@ -15157,14 +15185,21 @@ def _rebind_preopt_entry_consumer_route(
         and router_serials
         and set(successors).issubset(router_serials)
     )
-    owned_corridor = (
-        None
-        if direct_dispatcher_successors
-        or len(successors) != 1
-        or not router_serials
-        or not evidence.owned_native_ranges
-        else owned_corridor_from(int(successors[0]))
-    )
+    owned_corridor = None
+    owned_shape_reason = "owned_consumer_corridor"
+    if (
+        not direct_dispatcher_successors
+        and router_serials
+        and evidence.owned_native_ranges
+    ):
+        if len(successors) == 1:
+            owned_corridor = owned_corridor_from(int(successors[0]))
+        elif len(successors) == 2:
+            owned_corridor = owned_consumer_diamond(
+                int(successors[0]),
+                int(successors[1]),
+            )
+            owned_shape_reason = "owned_consumer_diamond"
     if not direct_dispatcher_successors and owned_corridor is None:
         finish_diagnostic(
             outcome="abstained",
@@ -15211,7 +15246,7 @@ def _rebind_preopt_entry_consumer_route(
         reason=(
             "direct_dispatcher_successor"
             if direct_dispatcher_successors
-            else "owned_consumer_corridor"
+            else owned_shape_reason
         ),
         source_block=f"blk{int(source.serial)}@0x{int(consumer_ea):X}",
         source_successors=successor_labels,

@@ -818,6 +818,119 @@ def test_entry_consumer_rebinds_single_owned_native_corridor() -> None:
     assert diagnostic["owned_corridor_blocks"] == ("blk40@0x40BEE5",)
 
 
+def test_entry_consumer_rebinds_closed_owned_native_diamond() -> None:
+    consumer_load_ea = 0x40BECC
+    true_target_ea = 0x40C26D
+    false_target_ea = 0x40B9A6
+    synthetic_load_ea = 0xF0000001
+    synthetic_arm_ea = 0xF0000002
+    synthetic_merge_ea = 0xF0000003
+    load = SimpleNamespace(ea=synthetic_load_ea, next=None)
+    arm_tail = SimpleNamespace(ea=synthetic_arm_ea, next=None)
+    merge_tail = SimpleNamespace(ea=synthetic_merge_ea, next=None)
+    source = SimpleNamespace(
+        serial=20,
+        head=load,
+        tail=load,
+        nsucc=lambda: 2,
+        succ=lambda index: (40, 41)[index],
+    )
+    arm = SimpleNamespace(
+        serial=40,
+        head=arm_tail,
+        tail=arm_tail,
+        nsucc=lambda: 1,
+        succ=lambda _index: 41,
+    )
+    merge = SimpleNamespace(
+        serial=41,
+        head=merge_tail,
+        tail=merge_tail,
+        nsucc=lambda: 0,
+        succ=lambda _index: (_ for _ in ()).throw(IndexError()),
+    )
+    blocks = {
+        20: source,
+        30: SimpleNamespace(serial=30),
+        31: SimpleNamespace(serial=31),
+        40: arm,
+        41: merge,
+        50: SimpleNamespace(serial=50),
+    }
+    handles = {
+        "consumer": SimpleNamespace(serial=20),
+        "true": SimpleNamespace(serial=30),
+        "false": SimpleNamespace(serial=31),
+    }
+
+    class _Index:
+        native_key = NATIVE_KEY
+
+        @staticmethod
+        def resolve(handle):
+            return handles.get(handle)
+
+        @staticmethod
+        def rebind_imported_identity(identity):
+            anchor_ea = identity.native_ranges.intervals[0].start_ea
+            return SimpleNamespace(
+                block=(
+                    SimpleNamespace(serial=50)
+                    if int(anchor_ea) == 0x40A607
+                    else None
+                )
+            )
+
+    evidence = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40A5AB,
+        source_block_ea=0x40A59D,
+        materialized_anchor_eas=(0x40A5AE,),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        selector_state_var_reg=20,
+        resolver_kind="preopt_entry_bridge",
+        predicate_size=4,
+        predicate_stack_ida_stkoff=-0x20,
+        predicate_true_state=0xA0716E5B,
+        predicate_false_state=0xEC71CA67,
+        state_carrier_store_ea=0x40A5AE,
+        state_carrier_consumer_load_eas=(consumer_load_ea,),
+        state_carrier_ida_stkoff=0x40,
+        owned_native_ranges=((consumer_load_ea, 0x40BEE7),),
+    )
+    diagnostic: dict[str, object] = {}
+
+    rebound = computed_goto_resolver._rebind_preopt_entry_consumer_route(
+        SimpleNamespace(get_mblock=lambda serial: blocks.get(int(serial))),
+        _Index(),
+        evidence,
+        imported_root_handles={
+            consumer_load_ea: "consumer",
+            true_target_ea: "true",
+            false_target_ea: "false",
+        },
+        imported_instruction_origins={
+            synthetic_load_ea: consumer_load_ea,
+            synthetic_arm_ea: 0x40BEDE,
+            synthetic_merge_ea: 0x40BEE1,
+        },
+        dispatcher_router_eas=frozenset({0x40A607}),
+        diagnostic=diagnostic,
+    )
+
+    assert rebound is not None
+    assert rebound.source is source
+    assert rebound.old_dispatcher_serial == 40
+    assert diagnostic["outcome"] == "bound"
+    assert diagnostic["reason"] == "owned_consumer_diamond"
+    assert diagnostic["owned_corridor_blocks"] == (
+        "blk40@0x40BEDE",
+        "blk41@0x40BEE1",
+    )
+
+
 def test_preopt_entry_bridge_capture_publishes_lifecycle_evidence(
     monkeypatch,
 ) -> None:
