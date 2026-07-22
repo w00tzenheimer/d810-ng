@@ -10361,6 +10361,128 @@ def test_preopt_live_conditional_bridge_projects_physical_taken_and_fallthrough_
     assert port.fallthrough_target_ea == expected_fallthrough_target_ea
 
 
+def test_preopt_live_conditional_bridge_revalidates_flag_only_cmov_predicate(
+    monkeypatch,
+) -> None:
+    """A native CMOV condition may survive without explicit mop operands."""
+    predicate_ea = 0x40C4C3
+    source_ea = 0x40C4B4
+    true_state = 0x2B8162DC
+    false_state = 0x456A4274
+    true_target_ea = 0x40ADA2
+    false_target_ea = 0x40B199
+    live_source = SimpleNamespace(serial=7, start=source_ea)
+    transfers = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=predicate_ea,
+            source_block_ea=0x40A560,
+            materialized_anchor_eas=(predicate_ea,),
+            target_eas=(true_target_ea, false_target_ea),
+            condition_code=5,
+            true_target_ea=true_target_ea,
+            false_target_ea=false_target_ea,
+            selector_state_var_reg=20,
+            resolver_kind="conditional_handler_bridge",
+            predicate_size=4,
+            predicate_compare_constant=5,
+            predicate_true_state=true_state,
+            predicate_false_state=false_state,
+            predicate_true_is_taken=True,
+            predicate_preserve_live=True,
+        ),
+    )
+    native_cfg = NativeCfg(
+        {
+            source_ea: NativeBlock(source_ea, 0x40C4C6),
+            true_target_ea: NativeBlock(true_target_ea, true_target_ea + 1),
+            false_target_ea: NativeBlock(false_target_ea, false_target_ea + 1),
+        }
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_find_unique_live_predicate_block",
+        lambda _mba, candidate_ea: (
+            live_source if int(candidate_ea) == predicate_ea else None
+        ),
+    )
+    orientations = []
+
+    def orient(*_args, **kwargs):
+        orientations.append(kwargs)
+        return False
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "exact_live_predicate_true_is_taken",
+        orient,
+    )
+
+    ports = computed_goto_resolver._preopt_live_conditional_bridge_boundary_ports(
+        transfers,
+        live_mba=object(),
+        live_native_eas=frozenset({source_ea, predicate_ea}),
+        imported_entry_eas=frozenset({true_target_ea, false_target_ea}),
+        native_cfg=native_cfg,
+    )
+
+    assert ports is not None
+    assert len(ports) == 1
+    (port,) = ports
+    assert port.source_block_ea == source_ea
+    assert port.predicate_ea == predicate_ea
+    assert port.taken_target_ea == false_target_ea
+    assert port.fallthrough_target_ea == true_target_ea
+    assert port.predicate_register is None
+    assert port.predicate_size is None
+    assert port.predicate_constant is None
+    assert port.predicate_true_is_taken is False
+    assert orientations == [
+        {
+            "predicate_ea": predicate_ea,
+            "condition_code": 5,
+            "predicate_register": None,
+            "predicate_size": None,
+            "predicate_constant": None,
+        }
+    ]
+
+
+def test_preopt_live_conditional_bridge_rejects_unbound_flag_only_cmov_predicate(
+    monkeypatch,
+) -> None:
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40C4C3,
+        source_block_ea=0x40C4B4,
+        materialized_anchor_eas=(0x40C4C3,),
+        target_eas=(0x40ADA2, 0x40B199),
+        condition_code=5,
+        true_target_ea=0x40ADA2,
+        false_target_ea=0x40B199,
+        selector_state_var_reg=20,
+        resolver_kind="conditional_handler_bridge",
+        predicate_size=4,
+        predicate_compare_constant=5,
+        predicate_true_state=0x2B8162DC,
+        predicate_false_state=0x456A4274,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_find_unique_live_predicate_block",
+        lambda *_args, **_kwargs: None,
+    )
+
+    ports = computed_goto_resolver._preopt_live_conditional_bridge_boundary_ports(
+        (transfer,),
+        live_mba=object(),
+        live_native_eas=frozenset({0x40C4B4, 0x40C4C3}),
+        imported_entry_eas=frozenset({0x40ADA2, 0x40B199}),
+    )
+
+    assert ports == ()
+
+
 def test_preopt_stack_carried_choice_is_deferred_to_its_live_consumer(
     monkeypatch,
 ) -> None:
