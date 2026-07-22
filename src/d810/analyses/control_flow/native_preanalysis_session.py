@@ -28,6 +28,7 @@ from d810.analyses.control_flow.native_semantic_closure import (
     NativeCfg,
     NativeSemanticClosure,
 )
+from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.core.native_preanalysis_key import (
     NativePreanalysisKey,
     NativePreanalysisKeyMismatch,
@@ -313,6 +314,7 @@ class ResolverPortableEvidence:
     computed_goto_resolution: ComputedGotoResolution | None = None
     preopt_union_preparation: PreoptUnionPreparationResult | None = None
     prepatch_preopt_union_source: PrepatchPreoptUnionSource | None = None
+    preopt_entry_bridges: tuple[EntryBridgeEvidence, ...] = ()
 
     def require_key(self, expected: NativePreanalysisKey) -> None:
         """Reject resolver evidence captured for another native identity."""
@@ -581,6 +583,55 @@ class NativePreanalysisSessionState:
             key,
             advance_generation=False,
             prepatch_preopt_union_source=source,
+        )
+
+    def merge_preopt_entry_bridge_evidence(
+        self,
+        key: NativePreanalysisKey,
+        evidence: EntryBridgeEvidence,
+    ) -> bool:
+        """Retain serial-free PREOPT entry choices across regeneration."""
+        if not isinstance(evidence, EntryBridgeEvidence):
+            raise TypeError("PREOPT entry bridge must be portable evidence")
+        current = self._resolver_evidence_for(key)
+
+        def semantic_identity(row: EntryBridgeEvidence) -> tuple[int, ...]:
+            return (
+                int(row.conditional_tail_ea or row.predicate_ea),
+                int(row.source_store_ea),
+                int(row.condition_code),
+                int(row.taken_state_constant),
+                int(row.fallthrough_state_constant),
+            )
+
+        if evidence not in current.preopt_entry_bridges and any(
+            semantic_identity(row) == semantic_identity(evidence)
+            for row in current.preopt_entry_bridges
+        ):
+            self._observe_transition(
+                operation="evidence_coalesced",
+                previous_generation=int(self.evidence_generation),
+                evidence_family="preopt_entry_bridge",
+                reason=(
+                    "equivalent stable entry bridge observed after maturity-local "
+                    "block splitting"
+                ),
+            )
+            return False
+        merged = tuple(
+            sorted(
+                set((*current.preopt_entry_bridges, evidence)),
+                key=lambda row: (
+                    int(row.conditional_tail_ea or row.predicate_ea),
+                    int(row.source_store_ea),
+                    int(row.taken_state_constant),
+                    int(row.fallthrough_state_constant),
+                ),
+            )
+        )
+        return self._replace_resolver_evidence(
+            key,
+            preopt_entry_bridges=merged,
         )
 
     def record_bootstrap_route_binding(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from dataclasses import replace
 
 import pytest
 
@@ -24,6 +25,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     PrepatchPreoptUnionSource,
     NativePreanalysisSessionState,
 )
+from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.analyses.control_flow.native_semantic_closure import (
     NativeCfg,
     NativeSemanticClosure,
@@ -318,6 +320,44 @@ def test_lifecycle_owns_portable_resolution_and_union_evidence() -> None:
     assert evidence.preopt_union_preparation is preparation
     assert evidence.prepatch_preopt_union_source is source
     assert state.evidence_generation == 0
+
+
+def test_lifecycle_owns_portable_preopt_entry_bridge_evidence() -> None:
+    evidence = EntryBridgeEvidence(
+        predicate_ea=0x40A5A0,
+        condition_code=5,
+        predicate_stack_identity=(0x20, 4),
+        stack_cell_identity=(0x80, 4),
+        taken_state_constant=0xA0716E5B,
+        fallthrough_state_constant=0xEC71CA67,
+        source_store_ea=0x40A5C0,
+        canonical_stack_cell_identity=(0x40, 4),
+        canonical_predicate_stack_identity=(-0x20, 4),
+        predicate_block_ea=0x40A560,
+        taken_arm_entry_ea=0x40A5C0,
+        fallthrough_arm_entry_ea=0x40A5B0,
+        conditional_tail_ea=0x40A5AB,
+    )
+    state = NativePreanalysisSessionState()
+
+    assert state.merge_preopt_entry_bridge_evidence(NATIVE_KEY, evidence)
+    assert not state.merge_preopt_entry_bridge_evidence(NATIVE_KEY, evidence)
+    assert state.resolver_evidence is not None
+    assert state.resolver_evidence.preopt_entry_bridges == (evidence,)
+    assert state.evidence_generation == 1
+
+    split_live_observation = replace(
+        evidence,
+        predicate_block_ea=0x40A59D,
+        taken_arm_entry_ea=0x40A5AE,
+        fallthrough_arm_entry_ea=0x40A5B7,
+    )
+    assert not state.merge_preopt_entry_bridge_evidence(
+        NATIVE_KEY,
+        split_live_observation,
+    )
+    assert state.resolver_evidence.preopt_entry_bridges == (evidence,)
+    assert state.evidence_generation == 1
 
 
 def test_lifecycle_merges_native_transfer_facts_and_static_bootstrap_routes() -> None:
