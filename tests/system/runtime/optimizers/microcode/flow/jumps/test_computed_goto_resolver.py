@@ -2021,6 +2021,27 @@ def test_reference_style_state_write_route_rebinds_conditional_dispatch_cut() ->
         }
     ]
 
+    delivery.tail.d = SimpleNamespace(t=ida_hexrays.mop_v)
+    delivery.nsucc = lambda: 0
+    diagnostics.clear()
+    pending, already, unbound = (
+        computed_goto_resolver._classify_live_state_write_routes(
+            mba,
+            _Index(),
+            (route,),
+            dispatcher_router_eas=frozenset({0x40A5F0, 0x40A615}),
+            prefer_imported=True,
+            diagnostic_rows=diagnostics,
+        )
+    )
+
+    assert len(pending) == 1
+    assert pending[0].collapse_conditional is True
+    assert already == ()
+    assert unbound == 0
+    assert diagnostics[0]["reason"] == "materialize_reference_zero_way"
+    assert diagnostics[0]["successors"] == []
+
 
 def test_static_conditional_state_choice_maps_both_unique_handler_arms() -> None:
     choice = _make_static_conditional_state_choice(
