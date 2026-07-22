@@ -14278,21 +14278,18 @@ def _on_calls_done_preanalysis(
             calls_evidence_changed = merge_calls_evidence()
             if not calls_evidence_changed:
                 return
-            if _refresh_preopt_union_from_calls_evidence(
+            preopt_refreshed = _refresh_preopt_union_from_calls_evidence(
                 state,
                 mba,
-            ) and request_generated_restart(
-                "computed_goto_preopt_template_refreshed",
+            )
+            request_generated_restart(
+                (
+                    "computed_goto_preopt_template_refreshed"
+                    if preopt_refreshed
+                    else "computed_goto_calls_evidence"
+                ),
                 evidence_generation=state.evidence_generation,
-            ):
-                return
-            if state.native_preanalysis.request_controlled_redo():
-                request_hexrays_redo(
-                    decision,
-                    "computed_goto_calls_evidence",
-                    function_ea=key,
-                    evidence_generation=state.evidence_generation,
-                )
+            )
             return
 
         materialization = state.materialization
