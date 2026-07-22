@@ -12811,6 +12811,30 @@ def _merge_preopt_union_boundary_ports(
             or refreshed.resolver_kind != baseline.resolver_kind
         ):
             return False
+        if baseline.predicate_true_is_taken not in (True, False) or (
+            refreshed.predicate_true_is_taken not in (True, False)
+        ):
+            return False
+
+        def logical_arm_order(
+            port: DetachedSnippetConditionalBoundaryPort,
+        ) -> DetachedSnippetConditionalBoundaryPort:
+            if port.predicate_true_is_taken:
+                return port
+            return replace(
+                port,
+                old_taken_target_ea=port.old_fallthrough_target_ea,
+                old_fallthrough_target_ea=port.old_taken_target_ea,
+                taken_target_ea=port.fallthrough_target_ea,
+                fallthrough_target_ea=port.taken_target_ea,
+                taken_state=port.fallthrough_state,
+                fallthrough_state=port.taken_state,
+                taken_target_owner=port.fallthrough_target_owner,
+                fallthrough_target_owner=port.taken_target_owner,
+                old_taken_target_owner=port.old_fallthrough_target_owner,
+                old_fallthrough_target_owner=port.old_taken_target_owner,
+            )
+
         maturity_local_shape = {
             "predicate_size": None,
             "condition_code": None,
@@ -12818,8 +12842,11 @@ def _merge_preopt_union_boundary_ports(
             "predicate_constant": None,
             "predicate_true_is_taken": None,
         }
-        return replace(baseline, **maturity_local_shape) == replace(
-            refreshed,
+        return replace(
+            logical_arm_order(baseline),
+            **maturity_local_shape,
+        ) == replace(
+            logical_arm_order(refreshed),
             **maturity_local_shape,
         )
 
