@@ -52,6 +52,9 @@ class MaterializedIndirectTransfer:
     source_block_ea: int
     materialized_anchor_eas: tuple[int, ...]
     target_eas: tuple[int, ...]
+    #: Exact native EA of the conditional branch introduced by delivery.
+    #: The complete anchor tuple cannot safely stand in for this semantic role.
+    materialized_predicate_ea: int | None = None
     next_target_ea: int | None = None
     condition_code: int | None = None
     true_target_ea: int | None = None
@@ -167,6 +170,9 @@ class MaterializedIndirectTransfer:
             "materialized_anchor_eas": [
                 f"0x{int(ea):X}" for ea in self.materialized_anchor_eas
             ],
+            "materialized_predicate_ea": optional_hex(
+                self.materialized_predicate_ea
+            ),
             "target_eas": [f"0x{int(ea):X}" for ea in self.target_eas],
             "next_target_ea": optional_hex(self.next_target_ea),
             "condition_code": self.condition_code,

@@ -3492,6 +3492,11 @@ def _static_materialized_transfers(
                 source_block_ea=int(plan.block_entry),
                 materialized_anchor_eas=anchors,
                 target_eas=targets,
+                materialized_predicate_ea=(
+                    int(plan.new_block_eas[0])
+                    if len(targets) == 2 and plan.new_block_eas
+                    else None
+                ),
                 next_target_ea=(
                     next_target_by_ea.get(targets[0]) if len(targets) == 1 else None
                 ),
@@ -9217,6 +9222,7 @@ def _canonicalize_imported_transfer_eas(
         materialized_anchor_eas=tuple(
             int(native(anchor_ea)) for anchor_ea in transfer.materialized_anchor_eas
         ),
+        materialized_predicate_ea=native(transfer.materialized_predicate_ea),
         predicate_predecessor_ea=native(transfer.predicate_predecessor_ea),
     )
 
@@ -10447,6 +10453,15 @@ def _capture_prepatch_preopt_union_source(
             ),
         )
 
+    capture_boundary_ports = _preopt_union_boundary_ports(
+        closure,
+        live_native_eas=frozenset(),
+        transfers=enriched,
+        native_cfg=cfg_result.cfg,
+    )
+    if capture_boundary_ports is None:
+        return abstain("prepatch_boundary_topology")
+
     normalized_ranges = tuple(
         (int(native_range.start_ea), int(native_range.end_ea))
         for native_range in closure.native_ranges
@@ -10500,6 +10515,7 @@ def _capture_prepatch_preopt_union_source(
             int(region.primary_seed_ea),
             preopt_mba,
             normalized_ranges,
+            boundary_ports=capture_boundary_ports,
             owned_block_entry_eas=tuple(closure.included_block_eas),
             terminal_return_entry_eas=terminal_return_entry_eas,
             resolver_proven_internal_successor_eas=(
@@ -10684,6 +10700,110 @@ def _preopt_union_boundary_ports(
             return DetachedSnippetBoundaryPortOwner.LIVE
         return None
 
+    def conditional_port(
+        transfer: MaterializedIndirectTransfer,
+        *,
+        source_owner: DetachedSnippetBoundaryPortOwner,
+        source_block_ea: int | None = None,
+        predicate_ea: int | None = None,
+        predicate_true_is_taken: bool | None = None,
+    ) -> DetachedSnippetConditionalBoundaryPort | None:
+        if (
+            transfer.condition_code is None
+            or transfer.true_target_ea is None
+            or transfer.false_target_ea is None
+            or transfer.selector_state_var_reg is None
+            or transfer.selector_compare_constant is None
+        ):
+            return None
+        true_target_ea = int(transfer.true_target_ea)
+        false_target_ea = int(transfer.false_target_ea)
+        true_owner = target_owner(true_target_ea)
+        false_owner = target_owner(false_target_ea)
+        if true_owner is None or false_owner is None:
+            return None
+        if predicate_true_is_taken is False:
+            taken_target_ea = false_target_ea
+            fallthrough_target_ea = true_target_ea
+            taken_owner = false_owner
+            fallthrough_owner = true_owner
+        else:
+            taken_target_ea = true_target_ea
+            fallthrough_target_ea = false_target_ea
+            taken_owner = true_owner
+            fallthrough_owner = false_owner
+        terminal_target_eas = {
+            int(target_ea)
+            for target_ea in (true_target_ea, false_target_ea)
+            for block in (
+                None
+                if native_cfg is None
+                else native_cfg.blocks_by_ea.get(int(target_ea))
+            ,)
+            if block is not None and block.terminal is NativeTerminalKind.RETURN
+        }
+        equality_target_ea = (
+            true_target_ea
+            if int(transfer.condition_code) == 4
+            else (
+                false_target_ea if int(transfer.condition_code) == 5 else None
+            )
+        )
+        terminal_return_boundary = bool(
+            len(terminal_target_eas) == 1
+            and equality_target_ea is not None
+            and equality_target_ea in terminal_target_eas
+        )
+        terminal_state = int(transfer.selector_compare_constant) & _MASK32
+        return DetachedSnippetConditionalBoundaryPort(
+            source_block_ea=(
+                int(transfer.source_block_ea)
+                if source_block_ea is None
+                else int(source_block_ea)
+            ),
+            predicate_ea=(
+                int(transfer.source_jmp_ea)
+                if predicate_ea is None
+                else int(predicate_ea)
+            ),
+            old_taken_target_ea=None,
+            old_fallthrough_target_ea=None,
+            taken_target_ea=taken_target_ea,
+            fallthrough_target_ea=fallthrough_target_ea,
+            state_register=(
+                int(transfer.selector_state_var_reg)
+                if terminal_return_boundary
+                else None
+            ),
+            taken_state=(
+                terminal_state
+                if terminal_return_boundary
+                and taken_target_ea in terminal_target_eas
+                else None
+            ),
+            fallthrough_state=(
+                terminal_state
+                if terminal_return_boundary
+                and fallthrough_target_ea in terminal_target_eas
+                else None
+            ),
+            source_owner=source_owner,
+            taken_target_owner=taken_owner,
+            fallthrough_target_owner=fallthrough_owner,
+            resolver_kind=(
+                "preopt_terminal_return_boundary"
+                if terminal_return_boundary
+                else "resolver_proven_register_compare_cut"
+            ),
+            predicate_size=4,
+            condition_code=int(transfer.condition_code),
+            predicate_register=int(transfer.selector_state_var_reg),
+            predicate_constant=(
+                int(transfer.selector_compare_constant) & _MASK32
+            ),
+            predicate_true_is_taken=predicate_true_is_taken,
+        )
+
     direct_ports: list[DetachedSnippetDirectBoundaryPort] = []
     conditional_ports: list[DetachedSnippetConditionalBoundaryPort] = []
     for (source_ea, source_instruction_ea), edges in sorted(edges_by_source.items()):
@@ -10705,85 +10825,13 @@ def _preopt_union_boundary_ports(
             == target_eas
         )
         if len(target_eas) == 2 and len(conditional_candidates) == 1:
-            transfer = conditional_candidates[0]
-            assert transfer.true_target_ea is not None
-            assert transfer.false_target_ea is not None
-            assert transfer.selector_state_var_reg is not None
-            assert transfer.selector_compare_constant is not None
-            assert transfer.condition_code is not None
-            true_target_ea = int(transfer.true_target_ea)
-            false_target_ea = int(transfer.false_target_ea)
-            true_owner = target_owner(true_target_ea)
-            false_owner = target_owner(false_target_ea)
-            if true_owner is None or false_owner is None:
+            port = conditional_port(
+                conditional_candidates[0],
+                source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            )
+            if port is None:
                 return None
-            terminal_target_eas = {
-                int(target_ea)
-                for target_ea in (true_target_ea, false_target_ea)
-                for block in (
-                    None
-                    if native_cfg is None
-                    else native_cfg.blocks_by_ea.get(int(target_ea))
-                ,)
-                if block is not None
-                and block.terminal is NativeTerminalKind.RETURN
-            }
-            equality_target_ea = (
-                true_target_ea
-                if int(transfer.condition_code) == 4
-                else (
-                    false_target_ea
-                    if int(transfer.condition_code) == 5
-                    else None
-                )
-            )
-            terminal_return_boundary = bool(
-                len(terminal_target_eas) == 1
-                and equality_target_ea is not None
-                and equality_target_ea in terminal_target_eas
-            )
-            terminal_state = int(transfer.selector_compare_constant) & _MASK32
-            conditional_ports.append(
-                DetachedSnippetConditionalBoundaryPort(
-                    source_block_ea=source_ea,
-                    predicate_ea=source_instruction_ea,
-                    old_taken_target_ea=None,
-                    old_fallthrough_target_ea=None,
-                    taken_target_ea=true_target_ea,
-                    fallthrough_target_ea=false_target_ea,
-                    state_register=(
-                        int(transfer.selector_state_var_reg)
-                        if terminal_return_boundary
-                        else None
-                    ),
-                    taken_state=(
-                        terminal_state
-                        if terminal_return_boundary
-                        and true_target_ea in terminal_target_eas
-                        else None
-                    ),
-                    fallthrough_state=(
-                        terminal_state
-                        if terminal_return_boundary
-                        and false_target_ea in terminal_target_eas
-                        else None
-                    ),
-                    source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
-                    taken_target_owner=true_owner,
-                    fallthrough_target_owner=false_owner,
-                    resolver_kind=(
-                        "preopt_terminal_return_boundary"
-                        if terminal_return_boundary
-                        else "resolver_proven_register_compare_cut"
-                    ),
-                    predicate_size=4,
-                    condition_code=int(transfer.condition_code),
-                    predicate_register=int(transfer.selector_state_var_reg),
-                    predicate_constant=(
-                        int(transfer.selector_compare_constant) & _MASK32
-                    ),
-                )
-            )
+            conditional_ports.append(port)
             continue
         if len(target_eas) != 1:
             logger.info(
@@ -10839,6 +10887,62 @@ def _preopt_union_boundary_ports(
                     provenance=(edges[0].provenance or "resolver_proven_native_cut"),
                 )
             )
+    portable_terminal_candidates: dict[
+        tuple[int, int],
+        list[MaterializedIndirectTransfer],
+    ] = {}
+    for transfer in transfers:
+        if (
+            (int(transfer.source_block_ea), int(transfer.source_jmp_ea))
+            in edges_by_source
+            or int(transfer.source_block_ea) in imported_entry_eas
+            or transfer.materialized_predicate_ea is None
+            or transfer.condition_code is None
+            or transfer.true_target_ea is None
+            or transfer.false_target_ea is None
+            or transfer.selector_state_var_reg is None
+            or transfer.selector_compare_constant is None
+            or target_owner(int(transfer.true_target_ea)) is None
+            or target_owner(int(transfer.false_target_ea)) is None
+        ):
+            continue
+        source_key = (
+            int(transfer.source_block_ea),
+            int(transfer.materialized_predicate_ea),
+        )
+        candidate_port = conditional_port(
+            transfer,
+            source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            source_block_ea=source_key[0],
+            predicate_ea=source_key[1],
+            predicate_true_is_taken=True,
+        )
+        if (
+            candidate_port is not None
+            and candidate_port.resolver_kind == "preopt_terminal_return_boundary"
+        ):
+            portable_terminal_candidates.setdefault(source_key, []).append(transfer)
+    for source_key, candidates in sorted(portable_terminal_candidates.items()):
+        if len(candidates) != 1:
+            logger.info(
+                "PREOPT union boundary rejected: "
+                "reason=ambiguous_portable_terminal_source source=0x%X "
+                "instruction=0x%X candidates=%d",
+                source_key[0],
+                source_key[1],
+                len(candidates),
+            )
+            return None
+        port = conditional_port(
+            candidates[0],
+            source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            source_block_ea=source_key[0],
+            predicate_ea=source_key[1],
+            predicate_true_is_taken=True,
+        )
+        if port is None:
+            return None
+        conditional_ports.append(port)
     live_conditional_ports = _preopt_live_conditional_bridge_boundary_ports(
         transfers,
         live_mba=live_mba,
