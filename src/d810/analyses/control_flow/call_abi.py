@@ -1,4 +1,5 @@
 """Portable proof rules for narrowly-scoped call ABI corrections."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,6 +28,33 @@ class StackCallAbiProof:
     callee_purges_stack: bool = True
 
 
+def project_detached_call_stack_point(
+    *,
+    native_spd: int,
+    canonical_spd: int,
+    route_call_delta: int,
+) -> int | None:
+    """Merge native and detached-route stack evidence exactly once.
+
+    IDA may report the canonical function-frame SPD for a call discovered only
+    through a detached route, in which case the raw PREOPT push depth completes
+    the coordinate.  It may instead already include that push depth.  Those are
+    the only two consistent observations; a third value is conflicting evidence
+    and must not be projected into Hex-Rays' transient stack-point table.
+    """
+    native = int(native_spd)
+    canonical = int(canonical_spd)
+    delta = int(route_call_delta)
+    if delta > 0:
+        return None
+    projected = canonical + delta
+    if native == canonical:
+        return projected
+    if native == projected:
+        return native
+    return None
+
+
 def prove_three_argument_callee_purged_call(
     evidence: StackCallAbiEvidence,
 ) -> StackCallAbiProof | None:
@@ -40,9 +68,9 @@ def prove_three_argument_callee_purged_call(
     word_size = int(evidence.word_size)
     argument_count = 3
     stack_argument_bytes = argument_count * word_size
-    expected_offsets = tuple(
-        range(-stack_argument_bytes, 0, word_size)
-    ) if word_size > 0 else ()
+    expected_offsets = (
+        tuple(range(-stack_argument_bytes, 0, word_size)) if word_size > 0 else ()
+    )
     offsets = tuple(sorted(int(offset) for offset in evidence.outgoing_stack_offsets))
     if (
         word_size <= 0
@@ -62,6 +90,7 @@ def prove_three_argument_callee_purged_call(
 
 
 __all__ = [
+    "project_detached_call_stack_point",
     "StackCallAbiEvidence",
     "StackCallAbiProof",
     "prove_three_argument_callee_purged_call",
