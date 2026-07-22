@@ -1352,6 +1352,22 @@ def instruction_backed_materialized_handler_owners(
     return owners
 
 
+def materialized_atomic_predicate_eas(
+    transfers: Sequence[MaterializedIndirectTransfer],
+) -> tuple[int, ...]:
+    """Return live predicate instructions owned by complete route fragments."""
+    required: set[int] = set()
+    for transfer in transfers:
+        if (
+            not is_conditional_handler_bridge_kind(transfer.resolver_kind)
+            or not transfer.predicate_preserve_live
+            or int(transfer.source_jmp_ea) <= 0
+        ):
+            continue
+        required.add(int(transfer.source_jmp_ea))
+    return tuple(sorted(required))
+
+
 def select_materialized_handler_owner_serial(
     *,
     state_constant: int,
@@ -1359,6 +1375,8 @@ def select_materialized_handler_owner_serial(
     exact_target_serial: int,
     exact_target_ea: int,
     flow_graph: FlowGraph,
+    atomic_predicate_eas: Sequence[int],
+    native_instruction_eas_by_serial: Mapping[int, Sequence[int]],
 ) -> int:
     """Prefer a live dispatcher owner only when it owns the exact target EA.
 
@@ -1375,11 +1393,29 @@ def select_materialized_handler_owner_serial(
         return int(exact_target_serial)
     live_block = flow_graph.get_block(int(live_owner))
     target_ea = int(exact_target_ea)
-    if live_block is None or (
-        int(live_block.start_ea) != target_ea
-        and not any(
-            int(instruction.ea) == target_ea
-            for instruction in live_block.insn_snapshots
+    live_instruction_eas = frozenset(
+        int(ea) for ea in native_instruction_eas_by_serial.get(int(live_owner), ())
+    )
+    exact_instruction_eas = frozenset(
+        int(ea)
+        for ea in native_instruction_eas_by_serial.get(
+            int(exact_target_serial), ()
+        )
+    )
+    required_instruction_eas = tuple(
+        int(predicate_ea)
+        for predicate_ea in atomic_predicate_eas
+        if int(predicate_ea) in exact_instruction_eas
+    )
+    if (
+        live_block is None
+        or (
+            int(live_block.start_ea) != target_ea
+            and target_ea not in live_instruction_eas
+        )
+        or not all(
+            int(required_ea) in live_instruction_eas
+            for required_ea in required_instruction_eas
         )
     ):
         return int(exact_target_serial)
@@ -1750,6 +1786,7 @@ __all__ = [
     "instruction_backed_materialized_handler_owners",
     "lookup_state_keyed_transfer_target",
     "lookup_singleton_transfer_target",
+    "materialized_atomic_predicate_eas",
     "materialized_state_register_candidates",
     "materialized_terminal_target_eas_by_source",
     "merge_materialized_handler_maps",
