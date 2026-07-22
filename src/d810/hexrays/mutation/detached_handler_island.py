@@ -6794,6 +6794,70 @@ def _apply_boundary_port_batch(
     return tuple(applied)
 
 
+def apply_live_conditional_boundary_ports(
+    mba: object,
+    function_ea: int,
+    ports: tuple[DetachedSnippetConditionalBoundaryPort, ...],
+    *,
+    mutation_gateway: MbaMutationGateway,
+) -> tuple[DetachedSnippetBoundaryPortResult, ...] | None:
+    """Apply an all-live conditional fragment through the mutation gateway."""
+    if not ports:
+        return ()
+    if any(
+        port.source_owner is not DetachedSnippetBoundaryPortOwner.LIVE
+        or port.taken_target_owner is not DetachedSnippetBoundaryPortOwner.LIVE
+        or port.fallthrough_target_owner
+        is not DetachedSnippetBoundaryPortOwner.LIVE
+        or port.logical_source_owner
+        not in (None, DetachedSnippetBoundaryPortOwner.LIVE)
+        for port in ports
+    ):
+        return None
+    try:
+        normalized = normalize_detached_snippet_boundary_ports((), ports)
+    except ValueError:
+        return None
+    records = tuple(
+        DetachedSnippetTemplateConditionalBoundaryPort(
+            port=port,
+            source_serial=None,
+            logical_source_serial=None,
+            taken_target_serial=None,
+            fallthrough_target_serial=None,
+        )
+        for port in normalized.conditional
+    )
+    template = DetachedSnippetTemplate(
+        function_ea=int(function_ea),
+        target_ea=int(function_ea),
+        maturity=int(getattr(mba, "maturity", -1)),
+        root_source_serial=-1,
+        blocks=(),
+        stack_vd_to_ida=(),
+        owned_ranges=(),
+        boundary_ports=DetachedSnippetTemplateBoundaryPorts(
+            direct=(),
+            conditional=records,
+        ),
+    )
+    selected = (template,)
+    batch = _preflight_boundary_port_batch(
+        mba,
+        selected,
+        mutation_gateway=mutation_gateway,
+    )
+    if batch is None:
+        return None
+    return _apply_boundary_port_batch(
+        mba,
+        batch,
+        {},
+        selected_templates=selected,
+        mutation_gateway=mutation_gateway,
+    )
+
+
 def _materialize_detached_snippet_templates(
     mba: object,
     function_ea: int,
@@ -8978,6 +9042,7 @@ __all__ = [
     "capture_detached_snippet_companion_templates",
     "capture_detached_snippet_template",
     "capture_preopt_union_snippet_template",
+    "apply_live_conditional_boundary_ports",
     "bind_preopt_union_snippet_boundary_ports",
     "clear_detached_handler_call_templates",
     "prepare_detached_callinfo_template",
