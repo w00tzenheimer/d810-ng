@@ -13560,7 +13560,20 @@ def _on_preopt_bootstrap_route(
         != int(function_ea)
     ):
         return
-    _capture_preopt_entry_bridge_evidence(state, mba)
+    current_mba_token = state.current_mba_token
+    union_owns_current_mba = bool(
+        current_mba_token is not None
+        and any(
+            int(key[0]) == int(function_ea)
+            and int(key[1]) == int(current_mba_token)
+            for key in (
+                *state.preopt_union_imported_mbas,
+                *state.preopt_union_mutated_mbas,
+            )
+        )
+    )
+    if not union_owns_current_mba:
+        _capture_preopt_entry_bridge_evidence(state, mba)
     if (
         not state.native_preanalysis.needs_preopt_binding()
         and not state.native_preanalysis.needs_bootstrap_route_binding()
