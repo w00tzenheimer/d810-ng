@@ -123,6 +123,65 @@ def test_call_result_carriers_are_lifecycle_owned_across_live_binding_release() 
     )
 
 
+def test_imported_instruction_origins_are_current_mba_owned_and_normalized() -> None:
+    state = ResolverSessionState(
+        native_preanalysis=NativePreanalysisSessionState(), native_key=NATIVE_KEY
+    )
+
+    assert state.bind_current_imported_instruction_origins(
+        0x1234,
+        (
+            (0xFFFFFFFFFFFFFF02, 0x40EAA8),
+            (0xFFFFFFFFFFFFFF01, 0x40EAA7),
+            (0xFFFFFFFFFFFFFF01, 0x40EAA7),
+        ),
+    )
+    assert state.imported_instruction_origins_for(0x1234) == (
+        (0xFFFFFFFFFFFFFF01, 0x40EAA7),
+        (0xFFFFFFFFFFFFFF02, 0x40EAA8),
+    )
+    assert state.imported_instruction_origins_for(0x5678) == ()
+    assert not state.bind_current_imported_instruction_origins(
+        0x1234,
+        (
+            (0xFFFFFFFFFFFFFF02, 0x40EAA8),
+            (0xFFFFFFFFFFFFFF01, 0x40EAA7),
+        ),
+    )
+
+    state.release_live_bindings()
+
+    assert state.current_mba_token is None
+    assert state.current_imported_instruction_origins == ()
+
+
+@pytest.mark.parametrize(
+    ("mba_token", "origins"),
+    (
+        (0, ()),
+        (0x1234, ((0, 0x40EAA7),)),
+        (0x1234, ((0xFFFFFFFFFFFFFF01, 0),)),
+        (
+            0x1234,
+            (
+                (0xFFFFFFFFFFFFFF01, 0x40EAA7),
+                (0xFFFFFFFFFFFFFF01, 0x40EAA8),
+            ),
+        ),
+    ),
+)
+def test_current_mba_imported_origins_reject_invalid_coordinates(
+    mba_token: int,
+    origins: tuple[tuple[int, int], ...],
+) -> None:
+    state = ResolverSessionState(
+        native_preanalysis=NativePreanalysisSessionState(), native_key=NATIVE_KEY
+    )
+
+    with pytest.raises(ValueError):
+        state.bind_current_imported_instruction_origins(mba_token, origins)
+
+
 def test_portable_dispatcher_region_merges_without_snapshot_serials() -> None:
     state = ResolverSessionState(
         native_preanalysis=NativePreanalysisSessionState(), native_key=NATIVE_KEY

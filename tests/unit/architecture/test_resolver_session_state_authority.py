@@ -104,6 +104,14 @@ RESOLVER_SESSION_FIELD_INVENTORY = {
         FieldLifetime.CALLBACK_LOCAL,
         "live MBA attempt deduplication coordinates",
     ),
+    "current_mba_token": FieldInventory(
+        FieldLifetime.CALLBACK_LOCAL,
+        "current MBA generation token for imported instruction provenance",
+    ),
+    "current_imported_instruction_origins": FieldInventory(
+        FieldLifetime.CALLBACK_LOCAL,
+        "current MBA synthetic-to-native instruction provenance",
+    ),
 }
 
 

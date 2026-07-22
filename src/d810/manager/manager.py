@@ -99,6 +99,7 @@ def _initialize_resolver_attachment(session):
 def _build_current_mba_identity_index(*, session, mba):
     """Hex-Rays-owned live-index port injected into the lifecycle coordinator."""
     from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+    from d810.hexrays.mutation.detached_handler_island import stable_mba_identity
     from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
         resolver_session_state,
     )
@@ -108,7 +109,7 @@ def _build_current_mba_identity_index(*, session, mba):
         return state.identity_index
 
     imported_instruction_origins = dict(
-        state.portable_evidence.imported_instruction_origins
+        state.imported_instruction_origins_for(stable_mba_identity(mba))
     )
     from d810.core.maturity_labels import mmat_label
     from d810.core.observability import emit as emit_diagnostic

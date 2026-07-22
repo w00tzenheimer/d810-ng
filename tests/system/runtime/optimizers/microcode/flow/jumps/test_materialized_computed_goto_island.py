@@ -250,9 +250,7 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
         island,
         "imported_detached_snippet_instruction_origins",
         lambda current_mba: (
-            ((0xFFFFFFFFFFFFFF01, 0x2000),)
-            if current_mba is mba
-            else ()
+            ((0xFFFFFFFFFFFFFF01, 0x2000),) if current_mba is mba else ()
         ),
     )
     gateway = make_mutation_gateway(mba)
@@ -288,9 +286,7 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
         "preopt_union_seed_count": 2,
         "preopt_union_boundary_port_count": 1,
     }
-    assert state.portable_evidence.imported_instruction_origins == (
-        (0xFFFFFFFFFFFFFF01, 0x2000),
-    )
+    assert state.current_imported_instruction_origins == ((0xFFFFFFFFFFFFFF01, 0x2000),)
 
 
 def test_preopt_handler_skips_union_when_bootstrap_route_is_live(monkeypatch) -> None:

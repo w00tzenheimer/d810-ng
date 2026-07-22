@@ -35,52 +35,6 @@ from tests.native_preanalysis import make_native_key
 NATIVE_KEY = make_native_key()
 
 
-def test_imported_instruction_origins_are_session_owned_and_normalized() -> None:
-    state = NativePreanalysisSessionState()
-
-    assert state.set_imported_instruction_origins(
-        NATIVE_KEY,
-        (
-            (0xFFFFFFFFFFFFFF02, 0x40EAA8),
-            (0xFFFFFFFFFFFFFF01, 0x40EAA7),
-            (0xFFFFFFFFFFFFFF01, 0x40EAA7),
-        ),
-    )
-
-    assert state.resolver_evidence_for(NATIVE_KEY).imported_instruction_origins == (
-        (0xFFFFFFFFFFFFFF01, 0x40EAA7),
-        (0xFFFFFFFFFFFFFF02, 0x40EAA8),
-    )
-    assert state.evidence_generation == 0
-    assert not state.set_imported_instruction_origins(
-        NATIVE_KEY,
-        (
-            (0xFFFFFFFFFFFFFF02, 0x40EAA8),
-            (0xFFFFFFFFFFFFFF01, 0x40EAA7),
-        ),
-    )
-
-
-@pytest.mark.parametrize(
-    "origins",
-    (
-        ((0, 0x40EAA7),),
-        ((0xFFFFFFFFFFFFFF01, 0),),
-        (
-            (0xFFFFFFFFFFFFFF01, 0x40EAA7),
-            (0xFFFFFFFFFFFFFF01, 0x40EAA8),
-        ),
-    ),
-)
-def test_imported_instruction_origins_reject_invalid_or_conflicting_entries(
-    origins: tuple[tuple[int, int], ...],
-) -> None:
-    state = NativePreanalysisSessionState()
-
-    with pytest.raises(ValueError):
-        state.set_imported_instruction_origins(NATIVE_KEY, origins)
-
-
 def test_changed_route_evidence_advances_once_and_binds_once() -> None:
     source = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
@@ -117,7 +71,10 @@ def test_evidence_observer_sees_generation_and_preopt_bind_transitions() -> None
     state.mark_evidence_changed()
     state.mark_preopt_bound()
 
-    assert [(row.operation, row.previous_generation, row.resulting_generation) for row in observed] == [
+    assert [
+        (row.operation, row.previous_generation, row.resulting_generation)
+        for row in observed
+    ] == [
         ("evidence_changed", 0, 1),
         ("preopt_bound", 1, 1),
     ]
