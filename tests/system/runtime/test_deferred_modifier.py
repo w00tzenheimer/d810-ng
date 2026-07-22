@@ -3573,6 +3573,7 @@ class TestStagedAtomicClassification:
             dm.ModificationType.EDGE_REMOVE,
             dm.ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL,
             dm.ModificationType.MATERIALIZE_ZERO_WAY_GOTO,
+            dm.ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
         }
         actual = {
             mt
@@ -3694,6 +3695,70 @@ class TestStagedAtomicApply:
         assert tuple(source_copy.succset) == (int(target_copy.serial),)
         assert int(source_copy.serial) in tuple(target_copy.predset)
         assert int(source_copy.serial) not in tuple(target.predset)
+
+    def test_staged_atomic_conditional_lowering_mutates_only_the_copy(
+        self,
+        monkeypatch,
+    ):
+        """Conditional lowering must use copy-and-swap in staged mode."""
+        mba = _StagedFakeMBA()
+        source = _StagedFakeBlock(5, nsucc=1, succ_serial=20)
+        source.predset.push_back(4)
+        pred = _StagedFakeBlock(4, nsucc=1, succ_serial=5)
+        dispatcher = _StagedFakeBlock(20, nsucc=0)
+        false_target = _StagedFakeBlock(30, nsucc=0)
+        true_target = _StagedFakeBlock(40, nsucc=0)
+        stop = _StagedFakeBlock(50, nsucc=0)
+        stop.type = ida_hexrays.BLT_STOP
+        mba.blocks.update(
+            {
+                4: pred,
+                5: source,
+                20: dispatcher,
+                30: false_target,
+                40: true_target,
+                50: stop,
+            }
+        )
+        mba.qty = max(mba.blocks) + 1
+        _staged_patch_wiring(monkeypatch, mba)
+
+        lowered_blocks: list[object] = []
+
+        def _lower(copy_block, **_kwargs):
+            lowered_blocks.append(copy_block)
+            copy_block.succset.clear()
+            copy_block.succset.push_back(40)
+            return True
+
+        modifier = dm.DeferredGraphModifier(
+            mba,
+            mutation_gateway=make_mutation_gateway(mba),
+        )
+        monkeypatch.setattr(
+            modifier,
+            "_apply_lower_conditional_state_transition",
+            _lower,
+        )
+        modifier.queue_lower_conditional_state_transition(
+            source_serial=5,
+            old_dispatcher_serial=20,
+            rewrite_from_ea=0x401000,
+            condition_operand=object(),
+            false_target_serial=30,
+            true_target_serial=40,
+        )
+
+        applied = modifier.apply(
+            run_optimize_local=False,
+            run_deep_cleaning=False,
+            staged_atomic=True,
+        )
+
+        assert applied == 1
+        assert len(lowered_blocks) == 1
+        assert lowered_blocks[0] is not source
+        assert 5 in mba.removed_blocks
 
     def test_staged_atomic_goto_change_stages_copy_and_redirects_preds(
         self,
