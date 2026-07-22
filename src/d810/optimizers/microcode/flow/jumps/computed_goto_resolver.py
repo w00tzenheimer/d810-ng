@@ -8653,6 +8653,7 @@ def _matching_preopt_entry_consumer_choice(
         }
         == expected_states
         and len(transfer.state_carrier_consumer_load_eas) == 1
+        and transfer.predicate_stack_ida_stkoff is not None
         and transfer.state_carrier_ida_stkoff is not None
         and transfer.predicate_size is not None
         and int(transfer.predicate_size) > 0
@@ -14897,6 +14898,44 @@ class _ReboundEntryConsumerRoute(NamedTuple):
     rewrite_ea: int
 
 
+class _PreoptEntryConsumerCondition(NamedTuple):
+    """Live stack predicate and its orientation against portable target arms."""
+
+    condition_operand: SyntheticStackValueEqualsCondition
+    condition_true_is_transfer_true: bool
+
+
+def _preopt_entry_consumer_condition(
+    transfer: MaterializedIndirectTransfer,
+    mba: object,
+) -> _PreoptEntryConsumerCondition | None:
+    """Rebind the original entry predicate without re-testing encoded state."""
+    if (
+        transfer.resolver_kind != "preopt_entry_bridge"
+        or transfer.predicate_stack_ida_stkoff is None
+        or transfer.predicate_size is None
+        or int(transfer.predicate_size) <= 0
+        or transfer.condition_code not in {4, 5}
+        or transfer.true_target_ea is None
+        or transfer.false_target_ea is None
+    ):
+        return None
+    try:
+        stack_stkoff = int(
+            mba.stkoff_ida2vd(int(transfer.predicate_stack_ida_stkoff))
+        )
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+    return _PreoptEntryConsumerCondition(
+        SyntheticStackValueEqualsCondition(
+            stack_stkoff=stack_stkoff,
+            stack_size=int(transfer.predicate_size),
+            value=0,
+        ),
+        int(transfer.condition_code) == 4,
+    )
+
+
 def _rebind_preopt_entry_consumer_route(
     mba: object,
     index: object,
@@ -16101,6 +16140,11 @@ def rebind_live_preopt_routes(
             diagnostic=entry_consumer_diagnostic,
         )
     )
+    entry_consumer_condition = (
+        None
+        if entry_consumer_choice is None
+        else _preopt_entry_consumer_condition(entry_consumer_choice, mba)
+    )
     entry_bootstrap_routes = tuple(
         route
         for route in (*state_write_pending, *state_write_already)
@@ -16111,7 +16155,11 @@ def rebind_live_preopt_routes(
     )
     entry_consumer_complete = bool(
         entry_consumer_choice is None
-        or (entry_consumer_route is not None and len(entry_bootstrap_routes) == 1)
+        or (
+            entry_consumer_route is not None
+            and entry_consumer_condition is not None
+            and len(entry_bootstrap_routes) == 1
+        )
     )
     session = decision.get("session")
     session_id = getattr(session, "identity_key", None)
@@ -16191,6 +16239,7 @@ def rebind_live_preopt_routes(
                     ),
                     "entry_consumer_expected": entry_consumer_choice is not None,
                     "entry_consumer_bound": entry_consumer_route is not None,
+                    "entry_predicate_bound": entry_consumer_condition is not None,
                     "entry_bootstrap_routes": len(entry_bootstrap_routes),
                     "entry_consumer_diagnostic": entry_consumer_diagnostic,
                     "entry_consumer_port_diagnostic": dict(
@@ -16507,32 +16556,28 @@ def rebind_live_preopt_routes(
                 )
         if entry_consumer_pending is not None:
             evidence = entry_consumer_pending.evidence
-            assert evidence.state_carrier_ida_stkoff is not None
-            assert evidence.predicate_size is not None
-            assert evidence.predicate_true_state is not None
+            assert entry_consumer_condition is not None
+            if entry_consumer_condition.condition_true_is_transfer_true:
+                condition_true_target = entry_consumer_pending.true_target
+                condition_false_target = entry_consumer_pending.false_target
+            else:
+                condition_true_target = entry_consumer_pending.false_target
+                condition_false_target = entry_consumer_pending.true_target
             modifier.queue_lower_conditional_state_transition(
                 source_serial=int(entry_consumer_pending.source.serial),
                 old_dispatcher_serial=int(
                     entry_consumer_pending.old_dispatcher_serial
                 ),
                 rewrite_from_ea=int(entry_consumer_pending.rewrite_ea),
-                condition_operand=SyntheticStackValueEqualsCondition(
-                    stack_stkoff=int(
-                        mba.stkoff_ida2vd(int(evidence.state_carrier_ida_stkoff))
-                    ),
-                    stack_size=int(evidence.predicate_size),
-                    value=int(evidence.predicate_true_state) & _MASK32,
-                ),
-                false_target_serial=int(
-                    entry_consumer_pending.false_target.serial
-                ),
-                true_target_serial=int(entry_consumer_pending.true_target.serial),
+                condition_operand=entry_consumer_condition.condition_operand,
+                false_target_serial=int(condition_false_target.serial),
+                true_target_serial=int(condition_true_target.serial),
                 proof_id=(
-                    "reference_stack_carried_entry_consumer:"
+                    "reference_original_entry_predicate:"
                     f"0x{int(evidence.state_carrier_consumer_load_eas[0]):X}"
                 ),
                 description=(
-                    "lower reference stack-carried entry consumer "
+                    "lower reference original-predicate entry consumer "
                     f"load@0x{int(evidence.state_carrier_consumer_load_eas[0]):X}"
                 ),
                 rule_priority=1000,
