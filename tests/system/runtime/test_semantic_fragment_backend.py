@@ -281,6 +281,21 @@ def _change_fake_zero_way_successor(
     return True
 
 
+def _insert_fake_goto_instruction(
+    block: _Block,
+    target_serial: int,
+    nop_previous_instruction: bool = False,
+) -> None:
+    if nop_previous_instruction and block.tail is not None:
+        block.make_nop(block.tail)
+    goto = _Instruction(
+        ida_hexrays.m_goto,
+        block.mba.entry_ea,
+        int(target_serial),
+    )
+    block.insert_into_block(goto, block.tail)
+
+
 def _plan(gateway, *, entry: int, original: int, target: int, dispatcher: int):
     index = gateway.identity_index
 
@@ -339,6 +354,77 @@ def _plan(gateway, *, entry: int, original: int, target: int, dispatcher: int):
     )
 
 
+def _conditional_plan(
+    gateway,
+    *,
+    entry: int,
+    original: int,
+    taken: int,
+    fallthrough: int,
+    dispatcher: int,
+) -> FragmentPlan:
+    index = gateway.identity_index
+
+    def _native(block_id: str, role: FragmentBlockRole, serial: int):
+        handle = index.handle_for_serial(serial)
+        assert handle is not None
+        assert handle.stable_identity is not None
+        rebound = index.resolve(handle)
+        assert rebound is not None and rebound.anchor_ea is not None
+        return FragmentBlock(
+            block_id=block_id,
+            role=role,
+            materialization=(
+                FragmentBlockMaterialization.CLONE_PUBLISHED
+                if role is FragmentBlockRole.REPLACEMENT
+                else FragmentBlockMaterialization.REUSE_PUBLISHED
+            ),
+            semantic_anchor_ea=int(rebound.anchor_ea),
+            stable_identity=handle.stable_identity,
+        )
+
+    original_block = _native("original", FragmentBlockRole.ORIGINAL, original)
+    replacement = FragmentBlock(
+        block_id="replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=original_block.semantic_anchor_ea,
+        stable_identity=original_block.stable_identity,
+        replaces_block_id=original_block.block_id,
+    )
+    return FragmentPlan(
+        plan_id="runtime-conditional-fragment",
+        atomic_group_id="condition@0x401010",
+        native_key=gateway.native_key,
+        blocks=(
+            _native("entry", FragmentBlockRole.EXTERNAL, entry),
+            original_block,
+            replacement,
+            _native("taken", FragmentBlockRole.EXTERNAL, taken),
+            _native("fallthrough", FragmentBlockRole.EXTERNAL, fallthrough),
+            _native("dispatcher", FragmentBlockRole.EXTERNAL, dispatcher),
+        ),
+        roots=(replacement.block_id,),
+        owned_originals=(original_block.block_id,),
+        prohibited_dispatcher_blocks=("dispatcher",),
+        operations=(
+            FragmentOperation(
+                operation_id="conditional-route",
+                source_block_id=replacement.block_id,
+                predicate_anchor_ea=0x401010,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        target_block_id="taken",
+                    ),
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                        target_block_id="fallthrough",
+                    ),
+                ),
+            ),
+        ),
+    )
 def test_backend_stages_hidden_replacement_and_projects_root_publication() -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
@@ -463,4 +549,105 @@ def test_backend_stages_plan_owned_empty_synthetic_block(monkeypatch) -> None:
     assert tuple(entry.succset) == (1,)
     assert tuple(original.succset) == (3,)
     assert tuple(target.predset) == ()
+    assert gateway.active is False
+
+
+def test_backend_stages_complete_conditional_with_owned_fallthrough_helper(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_0WAY)
+    taken = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    fallthrough = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(5, start=0x401050, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    original.type = int(ida_hexrays.BLT_0WAY)
+    original.tail = _Instruction(ida_hexrays.m_jz, 0x401010)
+    original.head = original.tail
+    mba = _Mba((entry, original, taken, fallthrough, dispatcher, stop))
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    plan = _conditional_plan(
+        gateway,
+        entry=0,
+        original=1,
+        taken=2,
+        fallthrough=3,
+        dispatcher=4,
+    )
+    gateway._begin_semantic_fragment_batch(modifier, plan)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    result = validate_fragment_projection(plan, projection)
+    assert result.passed, result.failures
+    helpers = projection.fallthrough_helpers
+    assert len(helpers) == 1
+    helper = helpers[0]
+    assert helper.operation_id == "conditional-route"
+    assert helper.source_block_id == "replacement"
+    assert helper.semantic_target_block_id == "fallthrough"
+    assert projection.block("replacement").successors == (
+        helper.helper_block_id,
+        "taken",
+    )
+    assert projection.block(helper.helper_block_id).successors == ("fallthrough",)
+    assert projection.binding(helper.helper_block_id).state is FragmentBindingState.STAGED
+    assert projection.binding(helper.helper_block_id).stable_identity is None
+    assert mba.qty == 8
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime conditional staging test cleanup")
+
+    assert mba.qty == 6
+    assert tuple(entry.succset) == (1,)
+    assert tuple(original.succset) == ()
+    assert tuple(taken.predset) == ()
+    assert tuple(fallthrough.predset) == ()
+    assert gateway.active is False
+
+
+def test_conditional_staging_failure_discards_helper_and_replacement(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_0WAY)
+    taken = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    fallthrough = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(5, start=0x401050, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    original.type = int(ida_hexrays.BLT_0WAY)
+    original.tail = _Instruction(ida_hexrays.m_jz, 0x401010)
+    original.head = original.tail
+    mba = _Mba((entry, original, taken, fallthrough, dispatcher, stop))
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    plan = _conditional_plan(
+        gateway,
+        entry=0,
+        original=1,
+        taken=2,
+        fallthrough=3,
+        dispatcher=4,
+    )
+    gateway._begin_semantic_fragment_batch(modifier, plan)
+
+    def _reject_after_helper(*_blocks) -> None:
+        raise RuntimeError("post-helper failure")
+
+    monkeypatch.setattr(modifier, "_semantic_edge_mark", _reject_after_helper)
+
+    with pytest.raises(RuntimeError, match="post-helper failure"):
+        modifier._stage_semantic_fragment(plan)
+    gateway.abort(reason="runtime conditional failure cleanup")
+
+    assert mba.qty == 6
+    assert tuple(entry.succset) == (1,)
+    assert tuple(original.succset) == ()
+    assert tuple(taken.predset) == ()
+    assert tuple(fallthrough.predset) == ()
     assert gateway.active is False

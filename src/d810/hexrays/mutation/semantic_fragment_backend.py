@@ -16,6 +16,7 @@ from d810.hexrays.ir.semantic_edge import (
     LogicalSemanticEdgeOperation,
 )
 from d810.ir.flowgraph import BlockKind
+from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
@@ -23,6 +24,7 @@ from d810.transforms.fragment_plan import (
 )
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
+    ProjectedFallthroughHelper,
     ProjectedFragment,
     ProjectedFragmentBlock,
     ProjectedIdentityBinding,
@@ -57,6 +59,9 @@ class SemanticFragmentBackendState:
     atomic_group_id: str
     bindings: dict[str, SemanticFragmentRuntimeBinding] = field(default_factory=dict)
     staged_block_ids: list[str] = field(default_factory=list)
+    fallthrough_helpers: list[ProjectedFallthroughHelper] = field(
+        default_factory=list
+    )
     projection: ProjectedFragment | None = None
 
     def binding(self, block_id: str) -> SemanticFragmentRuntimeBinding:
@@ -187,23 +192,62 @@ def _realize_operations(
     state: SemanticFragmentBackendState,
 ) -> None:
     for operation in plan.operations:
-        if len(operation.edges) != 1:
-            raise SemanticFragmentBackendRejected(
-                "conditional semantic fragment staging requires an owned helper"
-            )
         source = state.binding(operation.source_block_id)
-        edge = operation.edges[0]
-        target = state.binding(edge.target_block_id)
-        modifier._realize_semantic_edge_operation(
+        helper_version = modifier._realize_semantic_edge_operation(
             LogicalSemanticEdgeOperation(
                 source=source.proxy,
-                edges=(
+                edges=tuple(
                     LogicalSemanticEdge(
                         role=edge.role,
-                        target=target.proxy,
-                    ),
+                        target=state.binding(edge.target_block_id).proxy,
+                    )
+                    for edge in operation.edges
                 ),
+                predicate_anchor_ea=operation.predicate_anchor_ea,
                 description=f"fragment operation {operation.operation_id}",
+            )
+        )
+        if len(operation.edges) == 1:
+            if helper_version is not None:
+                raise SemanticFragmentBackendRejected(
+                    "direct fragment operation unexpectedly created a helper"
+                )
+            continue
+        if helper_version is None:
+            raise SemanticFragmentBackendRejected(
+                "conditional fragment operation did not create a fallthrough helper"
+            )
+        helper_block_id = f"fallthrough-helper:{operation.operation_id}"
+        if helper_block_id in state.bindings:
+            raise SemanticFragmentBackendRejected(
+                f"conditional helper id collision: {helper_block_id!r}"
+            )
+        gateway = _gateway(modifier)
+        helper_proxy = gateway.identity_index.logical_proxy_for_handle(
+            helper_version.handle
+        )
+        if helper_proxy is None:
+            raise SemanticFragmentBackendRejected(
+                "conditional fallthrough helper has no logical proxy"
+            )
+        state.bindings[helper_block_id] = SemanticFragmentRuntimeBinding(
+            block_id=helper_block_id,
+            proxy=helper_proxy,
+            version=helper_version,
+            state=FragmentBindingState.STAGED,
+        )
+        state.staged_block_ids.append(helper_block_id)
+        fallthrough_target = next(
+            edge.target_block_id
+            for edge in operation.edges
+            if edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+        )
+        state.fallthrough_helpers.append(
+            ProjectedFallthroughHelper(
+                helper_block_id=helper_block_id,
+                operation_id=operation.operation_id,
+                source_block_id=operation.source_block_id,
+                semantic_target_block_id=fallthrough_target,
             )
         )
 
@@ -336,6 +380,7 @@ def _project_fragment(
         entry_block_id=entry_ids[0],
         blocks=projected_blocks,
         identity_bindings=projected_bindings,
+        fallthrough_helpers=tuple(state.fallthrough_helpers),
     )
 
 

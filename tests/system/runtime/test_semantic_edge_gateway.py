@@ -58,6 +58,10 @@ class _BlockReference:
         self.t = int(ida_hexrays.mop_b)
         self.b = int(serial)
 
+    def erase(self) -> None:
+        self.t = int(ida_hexrays.mop_z)
+        self.b = -1
+
 
 class _Block:
     def __init__(self, serial: int, *, start: int):
@@ -170,7 +174,7 @@ def _apply(
 
 
 def _install_helper_builder(monkeypatch) -> None:
-    def _build(self, source, target, **_kwargs):
+    def _build(self, source, target, *, created_handle=None, **_kwargs):
         insertion_serial = int(source.serial) + 1
         old_qty = int(self.mba.qty)
         for block in tuple(self.mba.blocks.values()):
@@ -210,7 +214,11 @@ def _install_helper_builder(monkeypatch) -> None:
         self.mba.blocks[insertion_serial] = helper
         self.mba.qty += 1
         self.mba._relink()
-        self._record_serial_insertion(insertion_serial, old_qty)
+        self._record_serial_insertion(
+            insertion_serial,
+            old_qty,
+            created=created_handle,
+        )
         return insertion_serial
 
     monkeypatch.setattr(

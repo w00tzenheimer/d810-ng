@@ -1105,6 +1105,11 @@ class DeferredGraphModifier:
         init=False,
         repr=False,
     )
+    _pending_semantic_helper_version: LogicalBlockVersion | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self._mutation_gateway = self.mutation_gateway
@@ -3051,7 +3056,7 @@ class DeferredGraphModifier:
         self,
         operation: LogicalSemanticEdgeOperation,
         edge: LogicalSemanticEdge,
-    ) -> None:
+    ) -> LogicalBlockVersion:
         source_binding, source = self._semantic_edge_live_binding(operation.source)
         target_binding, target = self._semantic_edge_live_binding(edge.target)
         taken, fallthrough = self._semantic_edge_conditional_arms(source)
@@ -3079,11 +3084,10 @@ class DeferredGraphModifier:
                 "conditional taken and fallthrough targets must remain distinct"
             )
         taken_proxy = self._semantic_edge_proxy_for_live_block(taken)
-        helper_serial = self._build_fallthrough_goto_helper(source, target)
-        if helper_serial is None:
-            raise SemanticEdgeOperationRejected(
-                "Hex-Rays could not build the adjacent fallthrough helper"
-            )
+        helper_serial, helper_version = self._stage_semantic_fallthrough_helper(
+            source,
+            target,
+        )
 
         source_binding, source = self._semantic_edge_live_binding(operation.source)
         target_binding, target = self._semantic_edge_live_binding(edge.target)
@@ -3119,11 +3123,12 @@ class DeferredGraphModifier:
             helper.predset.push_back(int(source.serial))
         self._semantic_edge_mark(source, helper, fallthrough, taken, target)
         self._semantic_edge_record(source_binding, target_binding)
+        return helper_version
 
     def _semantic_edge_reconstruct_conditional(
         self,
         operation: LogicalSemanticEdgeOperation,
-    ) -> None:
+    ) -> LogicalBlockVersion:
         by_role = {edge.role: edge for edge in operation.edges}
         taken_edge = by_role[SemanticEdgeRole.CONDITIONAL_TAKEN]
         fallthrough_edge = by_role[SemanticEdgeRole.CONDITIONAL_FALLTHROUGH]
@@ -3195,11 +3200,10 @@ class DeferredGraphModifier:
                 fallthrough_edge.expected_target,
             )
 
-        helper_serial = self._build_fallthrough_goto_helper(source, fallthrough)
-        if helper_serial is None:
-            raise SemanticEdgeOperationRejected(
-                "Hex-Rays could not build the adjacent fallthrough helper"
-            )
+        helper_serial, helper_version = self._stage_semantic_fallthrough_helper(
+            source,
+            fallthrough,
+        )
         source_binding, source = self._semantic_edge_live_binding(operation.source)
         taken_binding, taken = self._semantic_edge_live_binding(taken_edge.target)
         fallthrough_binding, fallthrough = self._semantic_edge_live_binding(
@@ -3234,7 +3238,7 @@ class DeferredGraphModifier:
         source.succset.clear()
         source.succset.push_back(int(helper.serial))
         source.succset.push_back(int(taken.serial))
-        tail.d = ida_hexrays.mop_t()
+        tail.d.erase()
         tail.d.make_blkref(int(taken.serial))
         source.type = int(ida_hexrays.BLT_2WAY)
         source.flags &= ~int(ida_hexrays.MBL_GOTO)
@@ -3251,11 +3255,12 @@ class DeferredGraphModifier:
         )
         self._semantic_edge_record(source_binding, taken_binding)
         self._semantic_edge_record(source_binding, fallthrough_binding)
+        return helper_version
 
     def _realize_semantic_edge_operation(
         self,
         operation: LogicalSemanticEdgeOperation,
-    ) -> None:
+    ) -> LogicalBlockVersion | None:
         """Backend-only role dispatcher for the gateway operation.
 
         This is intentionally not a queue API.  Callers submit one logical
@@ -3264,22 +3269,34 @@ class DeferredGraphModifier:
         """
         if not isinstance(operation, LogicalSemanticEdgeOperation):
             raise TypeError("semantic edge backend requires a logical operation")
-        if len(operation.edges) == 2:
-            self._semantic_edge_reconstruct_conditional(operation)
-            return
-        edge = operation.edges[0]
-        if edge.role is SemanticEdgeRole.DIRECT:
-            self._semantic_edge_redirect_direct(operation, edge)
-            return
-        if edge.role is SemanticEdgeRole.CONDITIONAL_TAKEN:
-            self._semantic_edge_redirect_taken(operation, edge)
-            return
-        if edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH:
-            self._semantic_edge_redirect_fallthrough(operation, edge)
-            return
-        raise SemanticEdgeOperationRejected(
-            f"unsupported semantic edge role: {edge.role!r}"
-        )
+        self._pending_semantic_helper_version = None
+        result: LogicalBlockVersion | None = None
+        try:
+            if len(operation.edges) == 2:
+                result = self._semantic_edge_reconstruct_conditional(operation)
+            else:
+                edge = operation.edges[0]
+                if edge.role is SemanticEdgeRole.DIRECT:
+                    self._semantic_edge_redirect_direct(operation, edge)
+                elif edge.role is SemanticEdgeRole.CONDITIONAL_TAKEN:
+                    self._semantic_edge_redirect_taken(operation, edge)
+                elif edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH:
+                    result = self._semantic_edge_redirect_fallthrough(
+                        operation,
+                        edge,
+                    )
+                else:
+                    raise SemanticEdgeOperationRejected(
+                        f"unsupported semantic edge role: {edge.role!r}"
+                    )
+        except Exception:
+            pending = self._pending_semantic_helper_version
+            self._pending_semantic_helper_version = None
+            if pending is not None:
+                self._discard_detached_semantic_versions((pending,))
+            raise
+        self._pending_semantic_helper_version = None
+        return result
 
     def _stage_semantic_fragment(self, plan: FragmentPlan):
         """Backend-only detached materialization port used by the gateway."""
@@ -3330,6 +3347,11 @@ class DeferredGraphModifier:
             if successor is not None:
                 successor.predset._del(block_serial)
                 successor.mark_lists_dirty()
+        for predecessor_serial in tuple(int(value) for value in block.predset):
+            predecessor = self.mba.get_mblock(predecessor_serial)
+            if predecessor is not None:
+                predecessor.succset._del(block_serial)
+                predecessor.mark_lists_dirty()
         block.succset.clear()
         block.predset.clear()
         block.mark_lists_dirty()
@@ -3442,6 +3464,51 @@ class DeferredGraphModifier:
         except Exception:
             self._discard_semantic_fragment_blocks((created,))
             raise
+
+    def _stage_semantic_fallthrough_helper(
+        self,
+        source,
+        target,
+    ) -> tuple[int, LogicalBlockVersion]:
+        """Create one adjacent helper with a new transaction-local lineage."""
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise SemanticEdgeOperationRejected(
+                "semantic fallthrough helper materialization has no gateway"
+            )
+        created_handle = gateway.identity_index.create_synthetic_handle()
+        expected_serial = int(source.serial) + 1
+        old_qty = int(self.mba.qty)
+        try:
+            helper_serial = self._build_fallthrough_goto_helper(
+                source,
+                target,
+                created_handle=created_handle,
+            )
+        except Exception:
+            if int(self.mba.qty) == old_qty + 1:
+                created = self.mba.get_mblock(expected_serial)
+                if created is not None:
+                    self._discard_semantic_fragment_blocks((created,))
+            raise
+        proxy = gateway.identity_index.logical_proxy_for_handle(created_handle)
+        staged = (
+            None
+            if proxy is None
+            else proxy.resolve(
+                transaction_id=self._semantic_fragment_transaction_id()
+            )
+        )
+        if helper_serial is None or staged is None:
+            if int(self.mba.qty) == old_qty + 1:
+                created = self.mba.get_mblock(expected_serial)
+                if created is not None:
+                    self._discard_semantic_fragment_blocks((created,))
+            raise SemanticEdgeOperationRejected(
+                "Hex-Rays could not create an owned fallthrough helper"
+            )
+        self._pending_semantic_helper_version = staged
+        return int(helper_serial), staged
 
     def _discard_detached_semantic_versions(
         self,
@@ -9747,6 +9814,7 @@ class DeferredGraphModifier:
         state_register: int | None = None,
         state_size: int | None = None,
         state_value: int | None = None,
+        created_handle: MbaBlockHandle | None = None,
     ) -> int | None:
         """Create a 1-way NOP-goto block directly after ``blk`` that gotos
         ``target_blk``, returning its serial (the 2-way fall-through arm).
@@ -9788,7 +9856,11 @@ class DeferredGraphModifier:
                 for instruction in self._block_instructions(nop_block)
             ),
         )
-        self._record_serial_insertion(int(nop_block.serial), old_qty)
+        self._record_serial_insertion(
+            int(nop_block.serial),
+            old_qty,
+            created=created_handle,
+        )
         # Strip the cloned body to a single NOP, then append the goto.
         cur = nop_block.head
         while cur is not None:
