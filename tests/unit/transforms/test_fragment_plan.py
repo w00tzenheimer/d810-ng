@@ -253,6 +253,31 @@ def test_fragment_plan_rejects_direct_operation_with_predicate() -> None:
         )
 
 
+def test_fragment_plan_rejects_multiple_operations_for_one_source() -> None:
+    plan = _valid_plan()
+    duplicate_source = FragmentOperation(
+        operation_id="second-condition",
+        source_block_id=plan.operations[0].source_block_id,
+        predicate_anchor_ea=plan.operations[0].predicate_anchor_ea,
+        edges=plan.operations[0].edges,
+    )
+
+    with pytest.raises(FragmentPlanRejected, match="duplicate fragment operation source"):
+        FragmentPlan(
+            plan_id=plan.plan_id,
+            atomic_group_id=plan.atomic_group_id,
+            native_key=plan.native_key,
+            blocks=plan.blocks,
+            roots=plan.roots,
+            owned_originals=plan.owned_originals,
+            prohibited_dispatcher_blocks=plan.prohibited_dispatcher_blocks,
+            operations=plan.operations + (duplicate_source,),
+            data_flow_obligations=plan.data_flow_obligations,
+            flag_corridors=plan.flag_corridors,
+            value_range_assumptions=plan.value_range_assumptions,
+        )
+
+
 def test_fragment_plan_requires_replacement_identity_to_match_original() -> None:
     plan = _valid_plan()
     original = plan.block("predicate.original")
