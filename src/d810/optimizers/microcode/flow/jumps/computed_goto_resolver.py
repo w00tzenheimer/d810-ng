@@ -11377,20 +11377,113 @@ def _preopt_live_conditional_bridge_boundary_ports(
         and transfer.selector_state_constant is not None
         and len(transfer.target_eas) == 1
     }
-    live_bridge_semantics_by_source: dict[
+    live_predicate_proofs: dict[int, tuple[object | None, bool | None]] = {}
+
+    def exact_live_predicate_proof(
+        transfer: MaterializedIndirectTransfer,
+    ) -> tuple[object | None, bool | None]:
+        transfer_key = id(transfer)
+        cached = live_predicate_proofs.get(transfer_key)
+        if cached is not None:
+            return cached
+        predicate_ea = int(transfer.source_jmp_ea)
+        live_source = (
+            None
+            if live_mba is None
+            else _find_unique_live_predicate_block(live_mba, predicate_ea)
+        )
+        if live_source is None:
+            proof = (None, None)
+        else:
+            is_flag_only = bool(
+                transfer.resolver_kind == "conditional_handler_bridge"
+                and transfer.predicate_preserve_live
+                and transfer.predicate_register is None
+                and transfer.predicate_compare_register is None
+            )
+            orientation = exact_live_predicate_true_is_taken(
+                live_source,
+                predicate_ea=predicate_ea,
+                condition_code=int(transfer.condition_code),
+                predicate_register=(
+                    None if is_flag_only else transfer.predicate_register
+                ),
+                predicate_size=None if is_flag_only else transfer.predicate_size,
+                predicate_constant=(
+                    None
+                    if is_flag_only
+                    or (
+                        transfer.resolver_kind
+                        == "static_conditional_state_choice_bridge"
+                        and transfer.predicate_register is None
+                        and transfer.predicate_size is None
+                    )
+                    else (
+                        0
+                        if transfer.predicate_compare_constant is None
+                        else int(transfer.predicate_compare_constant)
+                    )
+                ),
+            )
+            proof = (
+                live_source,
+                orientation if orientation in (True, False) else None,
+            )
+        live_predicate_proofs[transfer_key] = proof
+        return proof
+
+    eligible_live_bridge_semantics_by_source: dict[
         int,
         set[frozenset[tuple[int, int]]],
     ] = {}
     for transfer in transfers:
         if (
             transfer.resolver_kind != "conditional_handler_bridge"
+            or transfer.condition_code not in {2, 3, 4, 5, 6, 7, 12, 13, 14, 15}
             or transfer.predicate_true_state is None
             or transfer.predicate_false_state is None
             or transfer.true_target_ea is None
             or transfer.false_target_ea is None
+            or transfer.predicate_compare_register is not None
+            or (
+                not (
+                    transfer.predicate_preserve_live
+                    and transfer.predicate_register is None
+                )
+                and (
+                    transfer.predicate_register is None
+                    or transfer.predicate_size is None
+                    or int(transfer.predicate_size) <= 0
+                )
+            )
         ):
             continue
-        live_bridge_semantics_by_source.setdefault(
+        live_source = (
+            None
+            if live_mba is None
+            else _find_unique_live_predicate_block(
+                live_mba,
+                int(transfer.source_jmp_ea),
+            )
+        )
+        if live_source is None:
+            continue
+        if transfer.predicate_preserve_live:
+            _live_source, live_orientation = exact_live_predicate_proof(transfer)
+            if live_orientation not in (True, False):
+                continue
+        else:
+            true_state = int(transfer.predicate_true_state) & _MASK32
+            false_state = int(transfer.predicate_false_state) & _MASK32
+            if (
+                transfer.predicate_true_is_taken not in (True, False)
+                or (true_state, int(transfer.true_target_ea))
+                not in residual_state_targets
+                or (false_state, int(transfer.false_target_ea))
+                not in residual_state_targets
+            ):
+                continue
+        eligible_live_bridge_semantics_by_source.setdefault(
             int(transfer.source_jmp_ea),
             set(),
         ).add(
@@ -11467,7 +11560,7 @@ def _preopt_live_conditional_bridge_boundary_ports(
                     ),
                 }
             )
-            if static_semantics in live_bridge_semantics_by_source.get(
+            if static_semantics in eligible_live_bridge_semantics_by_source.get(
                 int(transfer.source_jmp_ea),
                 set(),
             ):
@@ -11502,13 +11595,69 @@ def _preopt_live_conditional_bridge_boundary_ports(
         source_block_ea = int(transfer.source_block_ea)
         predicate_true_is_taken = transfer.predicate_true_is_taken
         if is_static_state_choice or is_exact_live_bridge:
-            if live_mba is None:
-                continue
-            live_source = _find_unique_live_predicate_block(
-                live_mba,
-                predicate_ea,
+            live_source, live_predicate_orientation = exact_live_predicate_proof(
+                transfer
             )
-            if live_source is None:
+            native_static_predicate_proven = False
+            if (
+                live_source is None
+                and is_static_state_choice
+                and predicate_true_is_taken in (True, False)
+                and native_cfg is not None
+            ):
+                native_predicate_blocks = tuple(
+                    block
+                    for block in native_cfg.blocks_by_ea.values()
+                    if int(block.start_ea) <= predicate_ea < int(block.end_ea)
+                )
+                if len(native_predicate_blocks) == 1:
+                    native_predicate = native_predicate_blocks[0]
+                    native_taken_edges = tuple(
+                        edge
+                        for edge in native_predicate.outgoing_edges
+                        if edge.kind is NativeEdgeKind.CONDITIONAL_TRUE
+                        and edge.target_ea is not None
+                        and edge.source_instruction_ea is not None
+                        and int(edge.source_instruction_ea) == predicate_ea
+                    )
+                    native_fallthrough_edges = tuple(
+                        edge
+                        for edge in native_predicate.outgoing_edges
+                        if edge.kind is NativeEdgeKind.CONDITIONAL_FALSE
+                        and edge.target_ea is not None
+                        and edge.source_instruction_ea is not None
+                        and int(edge.source_instruction_ea) == predicate_ea
+                    )
+                    complete_native_fork = bool(
+                        len(native_taken_edges) == 1
+                        and len(native_fallthrough_edges) == 1
+                        and int(native_taken_edges[0].target_ea)
+                        != int(native_fallthrough_edges[0].target_ea)
+                    )
+                    one_way_native_shape = bool(
+                        len(native_predicate.outgoing_edges) == 1
+                        and native_predicate.outgoing_edges[0].kind
+                        is NativeEdgeKind.DIRECT_JUMP
+                        and native_predicate.outgoing_edges[0].target_ea is not None
+                        and (
+                            native_predicate.outgoing_edges[0].source_instruction_ea
+                            is None
+                            or int(
+                                native_predicate.outgoing_edges[0].source_instruction_ea
+                            )
+                            == predicate_ea
+                        )
+                    )
+                    # IDA's native flow graph may omit an unreferenced
+                    # fallthrough even though isolated PREOPT generation still
+                    # retains the exact jcc.  Portable state-choice evidence
+                    # supplies the semantic arms; the template importer must
+                    # still revalidate the exact predicate and both successors
+                    # before applying the atomic mutation.
+                    native_static_predicate_proven = bool(
+                        complete_native_fork or one_way_native_shape
+                    )
+            if live_source is None and not native_static_predicate_proven:
                 logger.info(
                     "PREOPT exact conditional choice abstained: "
                     "source=0x%X compare=%s predicate=0x%X reason=live_predicate",
@@ -11521,41 +11670,20 @@ def _preopt_live_conditional_bridge_boundary_ports(
                     predicate_ea,
                 )
                 continue
-            predicate_true_is_taken = exact_live_predicate_true_is_taken(
-                live_source,
-                predicate_ea=predicate_ea,
-                condition_code=int(transfer.condition_code),
-                predicate_register=(
-                    None
-                    if is_flag_only_live_bridge
-                    else transfer.predicate_register
-                ),
-                predicate_size=(
-                    None if is_flag_only_live_bridge else transfer.predicate_size
-                ),
-                predicate_constant=(
-                    None
-                    if is_flag_only_live_bridge
-                    or (
-                        is_static_state_choice
-                        and transfer.predicate_register is None
-                        and transfer.predicate_size is None
-                    )
-                    else (
-                        0
-                        if transfer.predicate_compare_constant is None
-                        else int(transfer.predicate_compare_constant)
-                    )
-                ),
-            )
+            if live_source is not None:
+                predicate_true_is_taken = live_predicate_orientation
             if predicate_true_is_taken not in (True, False):
                 logger.info(
                     "PREOPT exact conditional choice abstained: "
-                    "source=blk%d@0x%X predicate=0x%X reason=orientation",
-                    int(live_source.serial),
-                    int(live_source.start),
+                    "source=%s predicate=0x%X reason=orientation",
+                    (
+                        f"blk{int(live_source.serial)}@0x{int(live_source.start):X}"
+                        if live_source is not None
+                        else f"native@0x{source_block_ea:X}"
+                    ),
                     predicate_ea,
                 )
+                continue
         if predicate_true_is_taken not in (True, False):
             continue
         native_source = None
