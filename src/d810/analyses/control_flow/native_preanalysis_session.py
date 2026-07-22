@@ -364,6 +364,8 @@ class NativePreanalysisSessionState:
     )
     transfer_inventory_revision: int = 0
     published_transfer_inventory_revision: int | None = None
+    state_write_route_inventory_revision: int = 0
+    published_state_write_route_inventory_revision: int | None = None
     redo_generation: int | None = None
     pending_generated_restart_generation: int | None = None
     event_observer: Callable[[EvidenceLifecycleTransition], None] | None = field(
@@ -473,7 +475,11 @@ class NativePreanalysisSessionState:
     ) -> bool:
         """Merge native write-to-delivery route authority into the lifecycle."""
         for route in routes:
-            for identity in (route.source_identity, route.target_identity):
+            for identity in (
+                route.write_identity,
+                route.delivery_identity,
+                route.target_identity,
+            ):
                 if identity.native_key != key:
                     raise NativePreanalysisKeyMismatch(
                         key,
@@ -482,12 +488,15 @@ class NativePreanalysisSessionState:
                     )
         current = self._resolver_evidence_for(key)
         merged = tuple(dict.fromkeys((*current.state_write_routes, *routes)))
-        return self._replace_resolver_evidence(
+        changed = self._replace_resolver_evidence(
             key,
             evidence_family="state_write_routes",
             evidence_reason="native state-write route evidence changed",
             state_write_routes=merged,
         )
+        if changed:
+            self.state_write_route_inventory_revision += 1
+        return changed
 
     def merge_portable_dispatcher_region_identity(
         self,
@@ -1075,6 +1084,31 @@ class NativePreanalysisSessionState:
         if self.facts is not None and transfers == self.facts.transfers:
             self.published_transfer_inventory_revision = (
                 self.transfer_inventory_revision
+            )
+
+    def pending_state_write_routes_for_publication(
+        self,
+    ) -> tuple[PortableStateWriteRouteEvidence, ...]:
+        """Return the current portable route inventory once per revision."""
+        current = self.resolver_evidence
+        if (
+            self.published_state_write_route_inventory_revision
+            == self.state_write_route_inventory_revision
+            or current is None
+            or not current.state_write_routes
+        ):
+            return ()
+        return current.state_write_routes
+
+    def mark_state_write_routes_published(
+        self,
+        routes: tuple[PortableStateWriteRouteEvidence, ...],
+    ) -> None:
+        """Acknowledge only an event containing the exact current inventory."""
+        current = self.resolver_evidence
+        if current is not None and routes == current.state_write_routes:
+            self.published_state_write_route_inventory_revision = (
+                self.state_write_route_inventory_revision
             )
 
     def request_controlled_redo(self) -> bool:

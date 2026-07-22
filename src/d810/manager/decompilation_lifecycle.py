@@ -588,6 +588,7 @@ class DecompilationLifecycleCoordinator:
 
     def capture_flowgraph(self, payload: FlowgraphReadyPayload) -> None:
         """Collect and persist portable flowgraph facts in their existing order."""
+        self._publish_state_write_route_facts(payload)
         self._publish_materialized_transfer_facts(payload)
         self._publish_rebound_bootstrap_route_facts(payload)
         runtime = self.preanalysis_runtime
@@ -605,6 +606,74 @@ class DecompilationLifecycleCoordinator:
                     int(payload.func_ea),
                     payload.provider_phase.friendly_provider_level,
                 )
+
+    def _publish_state_write_route_facts(
+        self,
+        payload: FlowgraphReadyPayload,
+    ) -> None:
+        """Persist native state-write delivery authority on a real snapshot."""
+        if payload.snapshot is None:
+            return
+        session = self.current_session(int(payload.func_ea))
+        if session is None:
+            return
+        routes = session.native_preanalysis.pending_state_write_routes_for_publication()
+        if not routes:
+            return
+        try:
+            from d810.analyses.value_flow.observation import FactObservation
+            from d810.core.observability import emit
+            from d810.core.observability_events import FactObservationsObserved
+
+            generation = int(session.native_preanalysis.evidence_generation)
+            inventory_revision = int(
+                session.native_preanalysis.state_write_route_inventory_revision
+            )
+            observations = []
+            for route in routes:
+                payload_row = route.diagnostic_payload(generation=generation)
+                payload_row["inventory_revision"] = inventory_revision
+                semantic_row = dict(payload_row)
+                semantic_row.pop("generation", None)
+                semantic_row.pop("inventory_revision", None)
+                fingerprint = hashlib.sha256(
+                    json.dumps(
+                        semantic_row,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()[:20]
+                observations.append(
+                    FactObservation(
+                        fact_id=(
+                            "state_write_route:"
+                            f"generation={generation}:"
+                            f"revision={inventory_revision}:proof={fingerprint}"
+                        ),
+                        kind="StateWriteRouteEvidenceFact",
+                        semantic_key=f"state_write_route:proof={fingerprint}",
+                        maturity=str(payload.provider_phase.friendly_provider_level),
+                        phase="pre_d810",
+                        confidence=1.0,
+                        source_ea=int(route.source_write_ea),
+                        payload=payload_row,
+                        evidence=(str(route.proof_kind),),
+                    )
+                )
+            emit(
+                FactObservationsObserved(
+                    snapshot=payload.snapshot,
+                    func_ea=int(payload.func_ea),
+                    observations=tuple(observations),
+                )
+            )
+            session.native_preanalysis.mark_state_write_routes_published(routes)
+        except Exception:
+            logger.debug(
+                "state-write route diagnostic publication failed for func=0x%x",
+                int(payload.func_ea),
+                exc_info=True,
+            )
 
     def _publish_rebound_bootstrap_route_facts(
         self,

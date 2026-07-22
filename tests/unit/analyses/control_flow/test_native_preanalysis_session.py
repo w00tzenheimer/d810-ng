@@ -159,9 +159,11 @@ def test_lifecycle_owns_native_state_write_delivery_routes() -> None:
         native_key=NATIVE_KEY,
     )
     route = PortableStateWriteRouteEvidence(
-        source_identity=source,
+        write_identity=source,
+        delivery_identity=source,
         source_write_ea=0x40A5B2,
         delivery_ea=0x40A5C8,
+        delivery_region_start_ea=0x40A5B8,
         delivery_region_end_ea=0x40A5CD,
         corridor_instruction_eas=(0x40A5B2, 0x40A5B8, 0x40A5C2, 0x40A5C8),
         state_var_reg=16,
@@ -176,6 +178,10 @@ def test_lifecycle_owns_native_state_write_delivery_routes() -> None:
     assert not state.merge_state_write_routes(NATIVE_KEY, (route,))
     assert state.resolver_evidence is not None
     assert state.resolver_evidence.state_write_routes == (route,)
+    assert state.state_write_route_inventory_revision == 1
+    assert state.pending_state_write_routes_for_publication() == (route,)
+    state.mark_state_write_routes_published((route,))
+    assert state.pending_state_write_routes_for_publication() == ()
     assert observed[-1].evidence_family == "state_write_routes"
     assert observed[-1].reason == "native state-write route evidence changed"
 
@@ -183,12 +189,17 @@ def test_lifecycle_owns_native_state_write_delivery_routes() -> None:
 def test_state_write_delivery_route_rejects_mismatched_native_key() -> None:
     other_key = make_native_key(profile_fingerprint="sha256:other-profile")
     route = PortableStateWriteRouteEvidence(
-        source_identity=StableBlockIdentity.from_intervals(
+        write_identity=StableBlockIdentity.from_intervals(
             (NativeEaInterval(0x40A5B2, 0x40A5C9),),
+            native_key=other_key,
+        ),
+        delivery_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40A5C8, 0x40A5C9),),
             native_key=other_key,
         ),
         source_write_ea=0x40A5B2,
         delivery_ea=0x40A5C8,
+        delivery_region_start_ea=0x40A5B8,
         delivery_region_end_ea=0x40A5CD,
         corridor_instruction_eas=(0x40A5B2, 0x40A5C8),
         state_var_reg=16,
