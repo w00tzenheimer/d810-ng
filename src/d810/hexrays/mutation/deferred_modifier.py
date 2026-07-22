@@ -210,6 +210,7 @@ from d810.hexrays.mutation.mba_mutation_events import (
     StructuralMutationKind,
 )
 from d810.hexrays.mutation.semantic_fragment_backend import (
+    SemanticFragmentBackendRejected,
     SemanticFragmentBackendState,
     discard_staged_semantic_fragment,
     stage_semantic_fragment,
@@ -273,6 +274,7 @@ from d810.hexrays.ir.semantic_edge import (
     LogicalSemanticEdgeOperation,
     SemanticEdgeOperationRejected,
 )
+from d810.hexrays.ir.logical_block_proxy import LogicalBlockVersion
 from d810.hexrays.mutation.ir_translator import lift
 from d810.ir.block_identity import (
     BlockHandleProvenance,
@@ -280,6 +282,7 @@ from d810.ir.block_identity import (
     StableBlockIdentity,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.transforms.fragment_plan import FragmentPlan
 
 if TYPE_CHECKING:
     pass
@@ -3281,6 +3284,129 @@ class DeferredGraphModifier:
     def _stage_semantic_fragment(self, plan: FragmentPlan):
         """Backend-only detached materialization port used by the gateway."""
         return stage_semantic_fragment(self, plan)
+
+    def _semantic_fragment_transaction_id(self) -> str:
+        gateway = self._mutation_gateway
+        if gateway is None or not gateway.active:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment materialization requires an active gateway"
+            )
+        batch_id = gateway.active_batch_id
+        if batch_id is None:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment materialization has no active transaction id"
+            )
+        return batch_id
+
+    def _resolve_semantic_fragment_version(
+        self,
+        version: LogicalBlockVersion,
+    ):
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment materialization has no gateway"
+            )
+        binding = gateway.identity_index.resolve_logical_version(
+            version,
+            transaction_id=self._semantic_fragment_transaction_id(),
+        )
+        if binding is None:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment logical version has no live transaction binding"
+            )
+        block = self.mba.get_mblock(int(binding.serial))
+        if block is None:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment logical version is absent from the live MBA"
+            )
+        return block
+
+    def _detach_semantic_fragment_block(self, block) -> None:
+        """Detach one unpublished block without exposing a publication root."""
+        block_serial = int(block.serial)
+        for successor_serial in tuple(int(value) for value in block.succset):
+            successor = self.mba.get_mblock(successor_serial)
+            if successor is not None:
+                successor.predset._del(block_serial)
+                successor.mark_lists_dirty()
+        block.succset.clear()
+        block.predset.clear()
+        block.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+
+    def _discard_semantic_fragment_blocks(self, blocks: tuple[object, ...]) -> None:
+        remover = getattr(self.mba, "remove_block", None)
+        if not callable(remover):
+            raise SemanticFragmentBackendRejected(
+                "live MBA cannot discard staged semantic fragment blocks"
+            )
+        for block in sorted(
+            blocks,
+            key=lambda candidate: int(candidate.serial),
+            reverse=True,
+        ):
+            self._detach_semantic_fragment_block(block)
+            remover(block)
+        if blocks:
+            self.mba.mark_chains_dirty()
+
+    def _stage_detached_semantic_replacement(
+        self,
+        *,
+        original_version: LogicalBlockVersion,
+    ) -> LogicalBlockVersion:
+        """Clone and detach one replacement behind its logical proxy."""
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment materialization has no gateway"
+            )
+        original = self._resolve_semantic_fragment_version(original_version)
+        if int(original.serial) == 0:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment cannot clone the positional entry block"
+            )
+        if int(original.type) in {
+            int(ida_hexrays.BLT_STOP),
+            int(ida_hexrays.BLT_XTRN),
+        }:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment cannot clone a special Hex-Rays block"
+            )
+
+        clone = copy_block_keep(self.mba, original, int(self.mba.qty) - 1)
+        if clone is None:
+            raise SemanticFragmentBackendRejected(
+                "Hex-Rays could not clone semantic fragment block"
+            )
+        try:
+            replacement_handle = gateway.identity_index.create_native_handle(
+                original_version.handle.stable_identity,
+                provenance=original_version.handle.provenance,
+            )
+            staged = gateway.stage_inserted_replacement(
+                original=original_version.handle,
+                replacement=replacement_handle,
+                insertion_serial=int(clone.serial),
+                returned_serial=int(clone.serial),
+            )
+            self._detach_semantic_fragment_block(clone)
+            return staged
+        except Exception:
+            self._discard_semantic_fragment_blocks((clone,))
+            raise
+
+    def _discard_detached_semantic_versions(
+        self,
+        versions: tuple[LogicalBlockVersion, ...],
+    ) -> None:
+        """Discard unpublished physical versions in reverse live order."""
+        blocks = tuple(
+            self._resolve_semantic_fragment_version(version)
+            for version in versions
+        )
+        self._discard_semantic_fragment_blocks(blocks)
 
     def _discard_staged_semantic_fragment(self, plan: FragmentPlan) -> None:
         """Backend-only discard port for unpublished fragment versions."""

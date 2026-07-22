@@ -15,7 +15,6 @@ from d810.hexrays.ir.semantic_edge import (
     LogicalSemanticEdge,
     LogicalSemanticEdgeOperation,
 )
-from d810.hexrays.mutation.cfg_mutations import copy_block_keep
 from d810.ir.flowgraph import BlockKind
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
@@ -138,62 +137,15 @@ def _live_block_for_binding(
     return block
 
 
-def _detach_staged_block(modifier: DeferredGraphModifier, block) -> None:
-    block_serial = int(block.serial)
-    for successor_serial in tuple(int(value) for value in block.succset):
-        successor = modifier.mba.get_mblock(successor_serial)
-        if successor is not None:
-            successor.predset._del(block_serial)
-            successor.mark_lists_dirty()
-    block.succset.clear()
-    block.predset.clear()
-    block.mark_lists_dirty()
-    modifier.mba.mark_chains_dirty()
-
-
 def _clone_replacement(
     modifier: DeferredGraphModifier,
     state: SemanticFragmentBackendState,
     replacement_block,
 ) -> None:
-    gateway = _gateway(modifier)
     original_binding = state.binding(str(replacement_block.replaces_block_id))
-    original_live = _live_block_for_binding(modifier, original_binding)
-    if int(original_live.serial) == 0:
-        raise SemanticFragmentBackendRejected(
-            "semantic fragment cannot clone the positional entry block"
-        )
-    if int(original_live.type) in {
-        int(ida_hexrays.BLT_STOP),
-        int(ida_hexrays.BLT_XTRN),
-    }:
-        raise SemanticFragmentBackendRejected(
-            "semantic fragment cannot clone a special Hex-Rays block"
-        )
-
-    insertion_serial = int(modifier.mba.qty) - 1
-    clone = copy_block_keep(modifier.mba, original_live, insertion_serial)
-    if clone is None:
-        raise SemanticFragmentBackendRejected(
-            f"Hex-Rays could not clone fragment block {replacement_block.block_id!r}"
-        )
-    try:
-        replacement_handle = gateway.identity_index.create_native_handle(
-            original_binding.version.handle.stable_identity,
-            provenance=original_binding.version.handle.provenance,
-        )
-        staged = gateway.stage_inserted_replacement(
-            original=original_binding.version.handle,
-            replacement=replacement_handle,
-            insertion_serial=int(clone.serial),
-            returned_serial=int(clone.serial),
-        )
-    except Exception:
-        remover = getattr(modifier.mba, "remove_block", None)
-        if callable(remover):
-            _detach_staged_block(modifier, clone)
-            remover(clone)
-        raise
+    staged = modifier._stage_detached_semantic_replacement(
+        original_version=original_binding.version,
+    )
 
     state.bindings[replacement_block.block_id] = SemanticFragmentRuntimeBinding(
         block_id=replacement_block.block_id,
@@ -202,7 +154,6 @@ def _clone_replacement(
         state=FragmentBindingState.STAGED,
     )
     state.staged_block_ids.append(replacement_block.block_id)
-    _detach_staged_block(modifier, clone)
 
 
 def _realize_operations(
@@ -274,7 +225,6 @@ def _project_fragment(
     plan: FragmentPlan,
     state: SemanticFragmentBackendState,
 ) -> ProjectedFragment:
-    transaction_id = _transaction_id(modifier)
     live_by_id = {
         block_id: _live_block_for_binding(modifier, binding)
         for block_id, binding in state.bindings.items()
@@ -417,19 +367,12 @@ def discard_staged_semantic_fragment(
         return
     if state.plan_id != plan.plan_id or state.atomic_group_id != plan.atomic_group_id:
         raise RuntimeError("staged semantic fragment does not match discard request")
-    remover = getattr(modifier.mba, "remove_block", None)
-    if not callable(remover):
-        raise RuntimeError("live MBA cannot discard staged semantic fragment blocks")
-
-    resolved = []
-    for block_id in state.staged_block_ids:
-        binding = state.binding(block_id)
-        block = _live_block_for_binding(modifier, binding)
-        resolved.append((int(block.serial), block))
-    for _serial, block in sorted(resolved, key=lambda item: item[0], reverse=True):
-        _detach_staged_block(modifier, block)
-        remover(block)
-    modifier.mba.mark_chains_dirty()
+    modifier._discard_detached_semantic_versions(
+        tuple(
+            state.binding(block_id).version
+            for block_id in state.staged_block_ids
+        )
+    )
     modifier._semantic_fragment_state = None
 
 
