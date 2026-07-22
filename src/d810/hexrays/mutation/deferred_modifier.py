@@ -209,6 +209,11 @@ from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationPlanItem,
     StructuralMutationKind,
 )
+from d810.hexrays.mutation.semantic_fragment_backend import (
+    SemanticFragmentBackendState,
+    discard_staged_semantic_fragment,
+    stage_semantic_fragment,
+)
 from d810.hexrays.mutation.cfg_verify import (
     capture_failure_artifact)
 from d810.hexrays.mutation.cfg_verify import (
@@ -1092,6 +1097,11 @@ class DeferredGraphModifier:
     # The receipt gateway owns current-MBA serial bindings.  This modifier
     # retains neither an EA-to-serial cache nor a private serial-remap table.
     _mutation_gateway: MbaMutationGateway | None = field(default=None, init=False)
+    _semantic_fragment_state: SemanticFragmentBackendState | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self._mutation_gateway = self.mutation_gateway
@@ -3267,6 +3277,14 @@ class DeferredGraphModifier:
         raise SemanticEdgeOperationRejected(
             f"unsupported semantic edge role: {edge.role!r}"
         )
+
+    def _stage_semantic_fragment(self, plan: FragmentPlan):
+        """Backend-only detached materialization port used by the gateway."""
+        return stage_semantic_fragment(self, plan)
+
+    def _discard_staged_semantic_fragment(self, plan: FragmentPlan) -> None:
+        """Backend-only discard port for unpublished fragment versions."""
+        discard_staged_semantic_fragment(self, plan)
 
     def restore_pruned_conditional_now(
         self,

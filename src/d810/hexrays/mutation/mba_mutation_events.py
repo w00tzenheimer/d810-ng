@@ -270,6 +270,10 @@ class MbaMutationGateway:
     def active(self) -> bool:
         return self._active_kind is not None
 
+    @property
+    def active_batch_id(self) -> str | None:
+        return self._active_batch_id
+
     def _reset_fragment_context(self) -> None:
         self._active_fragment_plan = None
         self._active_prepublication_validation = None
