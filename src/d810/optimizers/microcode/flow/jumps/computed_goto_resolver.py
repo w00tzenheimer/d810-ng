@@ -14316,6 +14316,7 @@ def _classify_live_state_write_routes(
     *,
     dispatcher_router_eas: frozenset[int],
     prefer_imported: bool,
+    diagnostic_rows: list[dict[str, object]] | None = None,
 ) -> tuple[
     tuple[_ReboundStateWriteRoute, ...],
     tuple[_ReboundStateWriteRoute, ...],
@@ -14323,6 +14324,51 @@ def _classify_live_state_write_routes(
 ]:
     """Bind direct state deliveries that still point at a proven dispatcher."""
     import ida_hexrays  # type: ignore[import-untyped]
+
+    def block_ref(serial: int) -> str:
+        block = mba.get_mblock(int(serial))
+        anchor_ea = int(getattr(block, "start", 0) or 0)
+        return f"blk{int(serial)}@0x{anchor_ea:X}"
+
+    def diagnose(
+        evidence: PortableStateWriteRouteEvidence,
+        *,
+        outcome: str,
+        reason: str,
+        write: object | None = None,
+        delivery: object | None = None,
+        target: object | None = None,
+        **details: object,
+    ) -> None:
+        if diagnostic_rows is None:
+            return
+        diagnostic_rows.append(
+            {
+                "source_write_ea": f"0x{int(evidence.source_write_ea):X}",
+                "delivery_ea": f"0x{int(evidence.delivery_ea):X}",
+                "target_ea": f"0x{int(evidence.target_ea):X}",
+                "state_constant": f"0x{int(evidence.state_constant):X}",
+                "proof_kind": str(evidence.proof_kind),
+                "outcome": str(outcome),
+                "reason": str(reason),
+                "write_block": (
+                    None
+                    if write is None
+                    else f"blk{int(write.serial)}@0x{int(evidence.source_write_ea):X}"
+                ),
+                "delivery_block": (
+                    None
+                    if delivery is None
+                    else f"blk{int(delivery.serial)}@0x{int(evidence.delivery_ea):X}"
+                ),
+                "target_block": (
+                    None
+                    if target is None
+                    else f"blk{int(target.serial)}@0x{int(evidence.target_ea):X}"
+                ),
+                **details,
+            }
+        )
 
     router_serials: set[int] = set()
     for router_ea in sorted(dispatcher_router_eas):
@@ -14374,12 +14420,28 @@ def _classify_live_state_write_routes(
                 delivery_result.status.value,
                 target_result.status.value,
             )
+            diagnose(
+                evidence,
+                outcome="abstained",
+                reason="identity_rebind_failed",
+                write_status=write_result.status.value,
+                delivery_status=delivery_result.status.value,
+                target_status=target_result.status.value,
+            )
             continue
         write = mba.get_mblock(int(write_result.block.serial))
         delivery = mba.get_mblock(int(delivery_result.block.serial))
         target = mba.get_mblock(int(target_result.block.serial))
         if write is None or delivery is None or target is None:
             unbound += 1
+            diagnose(
+                evidence,
+                outcome="abstained",
+                reason="live_block_missing",
+                write=write,
+                delivery=delivery,
+                target=target,
+            )
             continue
         tail = delivery.tail
         successors = tuple(
@@ -14417,6 +14479,20 @@ def _classify_live_state_write_routes(
                 None if tail is None else int(tail.opcode),
                 successors,
             )
+            diagnose(
+                evidence,
+                outcome="abstained",
+                reason="non_authoritative_live_shape",
+                write=write,
+                delivery=delivery,
+                target=target,
+                tail_ea=(None if tail is None else f"0x{int(tail.ea):X}"),
+                tail_opcode=(None if tail is None else int(tail.opcode)),
+                successors=[block_ref(successor) for successor in successors],
+                dispatcher_routers=[
+                    block_ref(serial) for serial in sorted(router_serials)
+                ],
+            )
             continue
         old_target_serial = int(successors[0]) if successors else None
         rebound = _ReboundStateWriteRoute(
@@ -14436,12 +14512,37 @@ def _classify_live_state_write_routes(
                     for route in pending
                     if int(route.delivery.serial) != int(delivery.serial)
                 ]
+                diagnose(
+                    evidence,
+                    outcome="abstained",
+                    reason="conflicting_delivery_target",
+                    write=write,
+                    delivery=delivery,
+                    target=target,
+                )
                 continue
             delivery_targets[int(delivery.serial)] = int(target.serial)
             pending.append(rebound)
+            diagnose(
+                evidence,
+                outcome="pending",
+                reason="collapse_reference_conditional",
+                write=write,
+                delivery=delivery,
+                target=target,
+                successors=[block_ref(successor) for successor in successors],
+            )
             continue
         if old_target_serial == int(target_result.block.serial):
             already.append(rebound)
+            diagnose(
+                evidence,
+                outcome="already_applied",
+                reason="direct_target_matches",
+                write=write,
+                delivery=delivery,
+                target=target,
+            )
             continue
         if old_target_serial is not None and old_target_serial not in router_serials:
             unbound += 1
@@ -14455,6 +14556,18 @@ def _classify_live_state_write_routes(
                 int(target.serial),
                 int(target.start),
             )
+            diagnose(
+                evidence,
+                outcome="abstained",
+                reason="direct_successor_not_dispatcher",
+                write=write,
+                delivery=delivery,
+                target=target,
+                successor=block_ref(old_target_serial),
+                dispatcher_routers=[
+                    block_ref(serial) for serial in sorted(router_serials)
+                ],
+            )
             continue
         previous_target = delivery_targets.get(int(delivery.serial))
         if previous_target is not None and previous_target != int(target.serial):
@@ -14464,9 +14577,25 @@ def _classify_live_state_write_routes(
                 for route in pending
                 if int(route.delivery.serial) != int(delivery.serial)
             ]
+            diagnose(
+                evidence,
+                outcome="abstained",
+                reason="conflicting_delivery_target",
+                write=write,
+                delivery=delivery,
+                target=target,
+            )
             continue
         delivery_targets[int(delivery.serial)] = int(target.serial)
         pending.append(rebound)
+        diagnose(
+            evidence,
+            outcome="pending",
+            reason="redirect_direct_delivery",
+            write=write,
+            delivery=delivery,
+            target=target,
+        )
     return tuple(pending), tuple(already), int(unbound)
 
 
@@ -14719,6 +14848,7 @@ def _on_preopt_bootstrap_route(
         for transfer in state.materialized_transfers
         for router_ea in transfer.dispatcher_router_eas
     )
+    state_write_diagnostics: list[dict[str, object]] = []
     (
         state_write_pending,
         state_write_already,
@@ -14729,7 +14859,37 @@ def _on_preopt_bootstrap_route(
         state.portable_evidence.state_write_routes,
         dispatcher_router_eas=dispatcher_router_eas,
         prefer_imported=union_imported,
+        diagnostic_rows=state_write_diagnostics,
     )
+    session = decision.get("session")
+    session_id = getattr(session, "identity_key", None)
+    if session_id is not None and state_write_diagnostics:
+        maturity = getattr(mba, "maturity", None)
+        emit_diagnostic(
+            LifecycleEventObserved(
+                session_id=str(session_id),
+                func_ea=int(function_ea),
+                event_kind="state_write_route_binding",
+                provider="hexrays",
+                maturity=(
+                    None if maturity is None else maturity_to_string(int(maturity))
+                ),
+                phase="preopt_route_rebind",
+                evidence_generation=int(state.evidence_generation),
+                mba_generation_before=int(
+                    getattr(session, "current_mba_generation", 0)
+                ),
+                mba_generation_after=int(
+                    getattr(session, "current_mba_generation", 0)
+                ),
+                summary=(
+                    f"bound {len(state_write_pending)} pending and "
+                    f"{len(state_write_already)} already-applied state routes; "
+                    f"abstained {state_write_unbound}"
+                ),
+                payload={"routes": state_write_diagnostics},
+            )
+        )
     state_write_pending_by_source = {
         int(route.delivery.serial): int(route.target.serial)
         for route in state_write_pending
