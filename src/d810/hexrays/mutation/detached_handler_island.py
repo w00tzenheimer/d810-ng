@@ -3971,6 +3971,16 @@ def _exact_jcc_predicate_true_is_taken(
         and int(predicate.opcode) == int(ida_hexrays.m_jcnd)
         and int(predicate.l.t) == int(ida_hexrays.mop_d)
     ):
+        explicit_comparison_metadata = (
+            predicate_register,
+            predicate_size,
+            predicate_constant,
+        )
+        explicit_comparison_complete = (
+            all(value is not None for value in explicit_comparison_metadata)
+            and int(predicate_size or 0) > 0
+        )
+
         def expression_orientation(expression: object) -> bool | None:
             if int(expression.ea) != int(predicate_ea):
                 return None
@@ -4015,9 +4025,10 @@ def _exact_jcc_predicate_true_is_taken(
         if (
             int(successor_count) != 2
             or int(predicate.ea) != int(predicate_ea)
-            or predicate_register is not None
-            or predicate_size is not None
-            or predicate_constant is not None
+            or not (
+                all(value is None for value in explicit_comparison_metadata)
+                or explicit_comparison_complete
+            )
         ):
             return None
         return expression_orientation(predicate.l.d)
