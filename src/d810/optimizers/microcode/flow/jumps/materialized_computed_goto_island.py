@@ -422,6 +422,7 @@ def _restore_preopt_terminal_return_carriers(
     state.preopt_union_imported_mbas.add(
         _preopt_union_import_key(int(function_ea), mba)
     )
+    state.native_preanalysis.mark_preopt_bound()
     _record_preopt_modification(
         decision,
         preopt_union_root_ea=primary_seed_ea,
@@ -430,11 +431,12 @@ def _restore_preopt_terminal_return_carriers(
     )
     logger.info(
         "PREOPT union import succeeded: func=0x%X primary=0x%X "
-        "seeds=%s boundary_ports=%d",
+        "seeds=%s boundary_ports=%d bound_generation=%d",
         int(function_ea),
         primary_seed_ea,
         [hex(int(seed_ea)) for seed_ea in seed_eas],
         expected_boundary_ports,
+        int(state.native_preanalysis.bound_preopt_generation or 0),
     )
 
 
