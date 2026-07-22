@@ -14429,14 +14429,19 @@ def _classify_live_state_write_routes(
             # PREOPT can fold the native delivery jump into the block that owns
             # the state write.  The delivery EA then has no independent live
             # identity, but the reference proof remains actionable when the
-            # write owner's exact surviving goto is inside that proof corridor
-            # and still points either at a dispatcher router or at the proven
-            # semantic target.
+            # write owner's exact surviving goto, or its one-instruction
+            # fallthrough helper, is inside that proof corridor and still
+            # points either at a dispatcher router or at the proven semantic
+            # target.
             write_tail = write.tail
             write_successors = tuple(
                 int(write.succ(successor_index))
                 for successor_index in range(int(write.nsucc()))
             )
+            accepted_targets = router_serials | {
+                int(target_result.block.serial)
+            }
+            delivery_successors = write_successors
             is_folded_direct_delivery = bool(
                 write_tail is not None
                 and int(write_tail.opcode) == int(ida_hexrays.m_goto)
@@ -14444,9 +14449,42 @@ def _classify_live_state_write_routes(
                 <= int(write_tail.ea)
                 <= int(evidence.delivery_ea)
                 and len(write_successors) == 1
-                and write_successors[0]
-                in router_serials | {int(target_result.block.serial)}
+                and write_successors[0] in accepted_targets
             )
+            if not is_folded_direct_delivery and len(write_successors) == 1:
+                corridor_helper = mba.get_mblock(int(write_successors[0]))
+                helper_head = (
+                    None if corridor_helper is None else corridor_helper.head
+                )
+                helper_tail = (
+                    None if corridor_helper is None else corridor_helper.tail
+                )
+                helper_successors = (
+                    ()
+                    if corridor_helper is None
+                    else tuple(
+                        int(corridor_helper.succ(successor_index))
+                        for successor_index in range(
+                            int(corridor_helper.nsucc())
+                        )
+                    )
+                )
+                is_folded_direct_delivery = bool(
+                    corridor_helper is not None
+                    and helper_head is not None
+                    and helper_tail is not None
+                    and getattr(helper_head, "next", None) is None
+                    and int(helper_head.ea) == int(helper_tail.ea)
+                    and int(helper_head.opcode) == int(helper_tail.opcode)
+                    and int(helper_tail.opcode) == int(ida_hexrays.m_goto)
+                    and int(evidence.source_write_ea)
+                    <= int(helper_tail.ea)
+                    <= int(evidence.delivery_ea)
+                    and len(helper_successors) == 1
+                    and helper_successors[0] in accepted_targets
+                )
+                if is_folded_direct_delivery:
+                    delivery_successors = helper_successors
             if is_folded_direct_delivery:
                 old_target_serial = int(write_successors[0])
                 rebound = _ReboundStateWriteRoute(
@@ -14458,7 +14496,7 @@ def _classify_live_state_write_routes(
                     False,
                     False,
                 )
-                if old_target_serial == int(target_result.block.serial):
+                if delivery_successors[0] == int(target_result.block.serial):
                     already.append(rebound)
                     diagnose(
                         evidence,
@@ -14472,6 +14510,10 @@ def _classify_live_state_write_routes(
                         target_status=target_result.status.value,
                         successors=[
                             block_ref(successor) for successor in write_successors
+                        ],
+                        delivery_successors=[
+                            block_ref(successor)
+                            for successor in delivery_successors
                         ],
                     )
                 else:
@@ -14488,6 +14530,10 @@ def _classify_live_state_write_routes(
                         target_status=target_result.status.value,
                         successors=[
                             block_ref(successor) for successor in write_successors
+                        ],
+                        delivery_successors=[
+                            block_ref(successor)
+                            for successor in delivery_successors
                         ],
                     )
                 continue

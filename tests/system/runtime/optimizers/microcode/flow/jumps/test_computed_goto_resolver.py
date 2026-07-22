@@ -2077,8 +2077,8 @@ def test_reference_style_route_rebinds_folded_delivery_at_write_owner() -> None:
         proof_kind="reference_style_immediate_flow_route",
     )
     handles = {
-        0x40A723: SimpleNamespace(serial=18),
-        0x40A607: SimpleNamespace(serial=6),
+        0x40A723: SimpleNamespace(serial=30),
+        0x40A607: SimpleNamespace(serial=9),
         0x40ADF2: SimpleNamespace(serial=75),
     }
 
@@ -2098,15 +2098,26 @@ def test_reference_style_route_rebinds_folded_delivery_at_write_owner() -> None:
         rebind_identity = rebind_imported_identity
 
     write_owner = SimpleNamespace(
-        serial=18,
-        start=0x40A702,
+        serial=30,
+        start=0x40A708,
         tail=SimpleNamespace(ea=0x40A734, opcode=ida_hexrays.m_goto),
         nsucc=lambda: 1,
-        succ=lambda _index: 6,
+        succ=lambda _index: 31,
     )
+    helper_tail = SimpleNamespace(ea=0x40A734, opcode=ida_hexrays.m_goto)
+    corridor_helper = SimpleNamespace(
+        serial=31,
+        start=0x40A734,
+        head=helper_tail,
+        tail=helper_tail,
+        nsucc=lambda: 1,
+        succ=lambda _index: 9,
+    )
+    write_owner.tail = SimpleNamespace(ea=0x40A728, opcode=ida_hexrays.m_mov)
     blocks = {
-        6: SimpleNamespace(serial=6, start=0x40A607),
-        18: write_owner,
+        9: SimpleNamespace(serial=9, start=0x40A607),
+        30: write_owner,
+        31: corridor_helper,
         75: SimpleNamespace(serial=75, start=0x40ADF2),
     }
     mba = SimpleNamespace(get_mblock=lambda serial: blocks.get(int(serial)))
@@ -2124,19 +2135,20 @@ def test_reference_style_route_rebinds_folded_delivery_at_write_owner() -> None:
     )
 
     assert len(pending) == 1
-    assert pending[0].write.serial == 18
-    assert pending[0].delivery.serial == 18
+    assert pending[0].write.serial == 30
+    assert pending[0].delivery.serial == 30
     assert pending[0].target.serial == 75
-    assert pending[0].old_target_serial == 6
+    assert pending[0].old_target_serial == 31
     assert pending[0].collapse_conditional is False
     assert pending[0].materialize_zero_way is False
     assert already == ()
     assert unbound == 0
     assert diagnostics[0]["reason"] == "redirect_folded_reference_delivery"
     assert diagnostics[0]["delivery_status"] == "missing"
-    assert diagnostics[0]["successors"] == ["blk6@0x40A607"]
+    assert diagnostics[0]["successors"] == ["blk31@0x40A734"]
+    assert diagnostics[0]["delivery_successors"] == ["blk9@0x40A607"]
 
-    write_owner.succ = lambda _index: 75
+    corridor_helper.succ = lambda _index: 75
     diagnostics.clear()
     pending, already, unbound = (
         computed_goto_resolver._classify_live_state_write_routes(
