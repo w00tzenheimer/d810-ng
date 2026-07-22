@@ -510,9 +510,17 @@ class FragmentPlan:
             "fragment data-flow obligation",
         )
         known_sites: set[FragmentValueSite] = set()
+        site_by_id: dict[str, FragmentValueSite] = {}
         for obligation in data_flow_obligations:
             sites = (obligation.definition, *obligation.uses)
             self._require_sites_known(sites, block_by_id)
+            for site in sites:
+                prior = site_by_id.get(site.site_id)
+                if prior is not None and prior != site:
+                    raise FragmentPlanRejected(
+                        f"fragment value site id {site.site_id!r} is ambiguous"
+                    )
+                site_by_id[site.site_id] = site
             known_sites.update(sites)
 
         flag_corridors = tuple(self.flag_corridors)
