@@ -1986,6 +1986,7 @@ def test_reference_style_state_write_route_rebinds_conditional_dispatch_cut() ->
     }
     mba = SimpleNamespace(get_mblock=lambda serial: blocks.get(int(serial)))
 
+    diagnostics = []
     pending, already, unbound = (
         computed_goto_resolver._classify_live_state_write_routes(
             mba,
@@ -1993,6 +1994,7 @@ def test_reference_style_state_write_route_rebinds_conditional_dispatch_cut() ->
             (route,),
             dispatcher_router_eas=frozenset({0x40A5F0, 0x40A615}),
             prefer_imported=True,
+            diagnostic_rows=diagnostics,
         )
     )
 
@@ -2003,6 +2005,21 @@ def test_reference_style_state_write_route_rebinds_conditional_dispatch_cut() ->
     assert pending[0].collapse_conditional is True
     assert already == ()
     assert unbound == 0
+    assert diagnostics == [
+        {
+            "source_write_ea": "0x40A7C2",
+            "delivery_ea": "0x40A7DF",
+            "target_ea": "0x40BCAF",
+            "state_constant": "0xB34CE2DF",
+            "proof_kind": "reference_style_immediate_flow_route",
+            "outcome": "pending",
+            "reason": "collapse_reference_conditional",
+            "write_block": "blk3@0x40A7C2",
+            "delivery_block": "blk3@0x40A7DF",
+            "target_block": "blk9@0x40BCAF",
+            "successors": ["blk5@0x40A5F0", "blk7@0x40A615"],
+        }
+    ]
 
 
 def test_static_conditional_state_choice_maps_both_unique_handler_arms() -> None:
