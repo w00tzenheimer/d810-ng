@@ -1361,6 +1361,134 @@ def _split_nonterminal_raw_call_blocks(
     return tuple(result)
 
 
+def _split_boundary_target_entry_blocks(
+    blocks: tuple[DetachedSnippetBlockTemplate, ...],
+    boundary_ports: DetachedSnippetBoundaryPorts,
+) -> tuple[DetachedSnippetBlockTemplate, ...] | None:
+    """Make every imported semantic target an exact template entry.
+
+    Hex-Rays can place an unreferenced native handler immediately after the
+    dispatcher tail in one microcode block.  A boundary target that merely
+    selects that containing block lands before the handler and can execute the
+    resolver tail again.  Split at the first instruction carrying each exact
+    imported target EA so native semantic identity also becomes CFG identity.
+    Existing predecessors continue to enter the prefix; only explicit boundary
+    ports bind the new suffix.
+    """
+    target_eas = {
+        int(port.target_ea)
+        for port in boundary_ports.direct
+        if port.target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+    }
+    target_eas.update(
+        int(target_ea)
+        for port in boundary_ports.conditional
+        for target_ea, owner in (
+            (port.taken_target_ea, port.taken_target_owner),
+            (port.fallthrough_target_ea, port.fallthrough_target_owner),
+            (port.old_taken_target_ea, port.old_taken_target_owner),
+            (port.old_fallthrough_target_ea, port.old_fallthrough_target_owner),
+        )
+        if target_ea is not None
+        and owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+    )
+    if not target_eas:
+        return blocks
+
+    split_indexes_by_serial: dict[int, set[int]] = {}
+    for target_ea in sorted(target_eas):
+        matches = tuple(
+            (block, indexes[0])
+            for block in blocks
+            for indexes in (
+                tuple(
+                    index
+                    for index, instruction in enumerate(block.instructions)
+                    if int(instruction.ea) == int(target_ea)
+                ),
+            )
+            if indexes
+        )
+        if len(matches) > 1:
+            logger.info(
+                "detached snippet target-entry split abstained: "
+                "target=0x%X matches=%s reason=ambiguous_exact_instruction",
+                int(target_ea),
+                tuple(
+                    "blk%d@0x%X[index=%d]"
+                    % (
+                        int(block.source_serial),
+                        int(block.native_entry_ea),
+                        int(index),
+                    )
+                    for block, index in matches
+                ),
+            )
+            return None
+        if len(matches) == 1 and int(matches[0][1]) > 0:
+            split_indexes_by_serial.setdefault(
+                int(matches[0][0].source_serial),
+                set(),
+            ).add(int(matches[0][1]))
+    if not split_indexes_by_serial:
+        return blocks
+
+    next_serial = max(
+        (int(block.source_serial) for block in blocks),
+        default=-1,
+    ) + 1
+    result: list[DetachedSnippetBlockTemplate] = []
+    for block in blocks:
+        split_indexes = tuple(
+            sorted(split_indexes_by_serial.get(int(block.source_serial), ()))
+        )
+        if not split_indexes:
+            result.append(block)
+            continue
+        starts = (0, *split_indexes)
+        ends = (*split_indexes, len(block.instructions))
+        chunks = tuple(
+            block.instructions[start:end] for start, end in zip(starts, ends)
+        )
+        if any(not chunk for chunk in chunks):
+            return None
+        chunk_serials = [int(block.source_serial)]
+        for _chunk in chunks[1:]:
+            chunk_serials.append(next_serial)
+            next_serial += 1
+        chunk_entry_eas = [int(block.native_entry_ea)]
+        chunk_entry_eas.extend(int(chunk[0].ea) for chunk in chunks[1:])
+        for index, chunk in enumerate(chunks):
+            is_last = index + 1 == len(chunks)
+            result.append(
+                DetachedSnippetBlockTemplate(
+                    source_serial=int(chunk_serials[index]),
+                    native_entry_ea=int(chunk_entry_eas[index]),
+                    native_end_ea=(
+                        int(block.native_end_ea)
+                        if is_last
+                        else int(chunk_entry_eas[index + 1])
+                    ),
+                    instructions=chunk,
+                    block_type=(
+                        int(block.block_type)
+                        if is_last
+                        else int(ida_hexrays.BLT_1WAY)
+                    ),
+                    block_flags=int(block.block_flags),
+                    successor_serials=(
+                        block.successor_serials
+                        if is_last
+                        else (int(chunk_serials[index + 1]),)
+                    ),
+                    external_successor_eas=(
+                        block.external_successor_eas if is_last else (0,)
+                    ),
+                )
+            )
+    return tuple(result)
+
+
 def _select_template_block_serial_by_native_ea(
     blocks: tuple[DetachedSnippetBlockTemplate, ...],
     owned_ranges: tuple[tuple[int, int], ...],
@@ -2186,10 +2314,21 @@ def _capture_detached_snippet_template(
             owned_entries=owned_entries,
             owned_ranges=normalized_ranges,
         )
+    boundary_split_templates = _split_boundary_target_entry_blocks(
+        captured_templates,
+        boundary_ports,
+    )
+    if boundary_split_templates is None:
+        logger.info(
+            "detached snippet capture abstained: target=0x%X "
+            "reason=boundary_target_entry_split_conflict",
+            int(target_ea),
+        )
+        return False
     normalized_templates = (
-        _split_nonterminal_raw_call_blocks(captured_templates)
+        _split_nonterminal_raw_call_blocks(boundary_split_templates)
         if int(mba.maturity) == int(ida_hexrays.MMAT_PREOPTIMIZED)
-        else captured_templates
+        else boundary_split_templates
     )
     if normalized_templates is None:
         logger.info(
@@ -2223,11 +2362,38 @@ def _capture_detached_snippet_template(
     )
     if template_boundary_ports is None:
         return False
+    exact_root_instruction_serials = tuple(
+        int(block.source_serial)
+        for block in normalized_templates
+        if any(
+            int(instruction.ea) == int(target_ea)
+            for instruction in block.instructions
+        )
+    )
+    normalized_serials = {
+        int(block.source_serial) for block in normalized_templates
+    }
+    normalized_root_source_serial = (
+        int(exact_root_instruction_serials[0])
+        if len(exact_root_instruction_serials) == 1
+        else (
+            int(root_source_serial)
+            if int(root_source_serial) in normalized_serials
+            else None
+        )
+    )
+    if normalized_root_source_serial is None:
+        logger.info(
+            "detached snippet capture abstained: target=0x%X "
+            "reason=normalized_root_missing",
+            int(target_ea),
+        )
+        return False
     template_cache[(int(function_ea), int(target_ea))] = DetachedSnippetTemplate(
         function_ea=int(function_ea),
         target_ea=int(target_ea),
         maturity=int(mba.maturity),
-        root_source_serial=int(root_source_serial),
+        root_source_serial=int(normalized_root_source_serial),
         blocks=normalized_templates,
         stack_vd_to_ida=tuple(sorted(stack_map.items())),
         owned_ranges=normalized_ranges,

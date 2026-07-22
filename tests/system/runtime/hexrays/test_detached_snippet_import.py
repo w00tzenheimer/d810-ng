@@ -9174,6 +9174,66 @@ def test_template_ranges_backfill_microcode_silent_native_entry() -> None:
     assert backfilled[0].native_end_ea == native_end_ea
 
 
+def test_boundary_target_entry_splits_off_preceding_dispatcher_tail() -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+        DetachedSnippetBoundaryPorts,
+    )
+
+    dispatcher_tail_ea = 0x40C629
+    handler_entry_ea = 0x40C62F
+    handler_tail_ea = 0x40C634
+    successor_serial = 9
+    block = detached_handler_island.DetachedSnippetBlockTemplate(
+        source_serial=7,
+        native_entry_ea=dispatcher_tail_ea,
+        native_end_ea=0x40C640,
+        instructions=(
+            _Instruction(ida_hexrays.m_mov, dispatcher_tail_ea),
+            _Instruction(ida_hexrays.m_mov, handler_entry_ea),
+            _Instruction(ida_hexrays.m_goto, handler_tail_ea),
+        ),
+        block_type=int(ida_hexrays.BLT_1WAY),
+        block_flags=0,
+        successor_serials=(successor_serial,),
+        external_successor_eas=(0,),
+    )
+    port = _direct_boundary_port(
+        source_block_ea=0x40BC36,
+        source_instruction_ea=0x40BC50,
+        endpoint_block_ea=0x40BC36,
+        old_successor_eas=(),
+        target_ea=handler_entry_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        endpoint_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+        delivery_mode="terminal_goto",
+    )
+
+    split = detached_handler_island._split_boundary_target_entry_blocks(
+        (block,),
+        DetachedSnippetBoundaryPorts(direct=(port,), conditional=()),
+    )
+
+    assert split is not None
+    assert len(split) == 2
+    prefix, handler = split
+    assert prefix.source_serial == 7
+    assert prefix.native_entry_ea == dispatcher_tail_ea
+    assert prefix.native_end_ea == handler_entry_ea
+    assert tuple(instruction.ea for instruction in prefix.instructions) == (
+        dispatcher_tail_ea,
+    )
+    assert prefix.successor_serials == (handler.source_serial,)
+    assert prefix.external_successor_eas == (0,)
+    assert handler.native_entry_ea == handler_entry_ea
+    assert tuple(instruction.ea for instruction in handler.instructions) == (
+        handler_entry_ea,
+        handler_tail_ea,
+    )
+    assert handler.successor_serials == (successor_serial,)
+
+
 def test_preopt_union_range_publication_relocates_stale_created_proxies(
     monkeypatch,
 ) -> None:
