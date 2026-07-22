@@ -155,7 +155,8 @@ def test_preopt_entry_bridge_projects_exact_portable_state_targets() -> None:
         true_target_ea=taken_target,
         false_target_ea=fallthrough_target,
         selector_state_var_reg=20,
-        resolver_kind="static_conditional_state_choice_bridge",
+        resolver_kind="preopt_entry_bridge",
+        predicate_size=4,
         predicate_true_state=taken_state,
         predicate_false_state=fallthrough_state,
         predicate_true_is_taken=True,
@@ -163,6 +164,179 @@ def test_preopt_entry_bridge_projects_exact_portable_state_targets() -> None:
         state_carrier_store_ea=0x40A5C0,
         state_carrier_ida_stkoff=0x40,
     )
+
+
+def test_preopt_entry_bridge_replaces_later_bootstrap_port_atomically() -> None:
+    owner = DetachedSnippetBoundaryPortOwner
+    taken_state = 0xA0716E5B
+    fallthrough_state = 0xEC71CA67
+    taken_target = 0x40C26D
+    fallthrough_target = 0x40B9A6
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40A5AB,
+        source_block_ea=0x40A59D,
+        materialized_anchor_eas=(0x40A5AE,),
+        target_eas=(taken_target, fallthrough_target),
+        condition_code=5,
+        true_target_ea=taken_target,
+        false_target_ea=fallthrough_target,
+        selector_state_var_reg=20,
+        resolver_kind="preopt_entry_bridge",
+        predicate_size=4,
+        predicate_true_state=taken_state,
+        predicate_false_state=fallthrough_state,
+        predicate_true_is_taken=True,
+        state_carrier_store_ea=0x40A5AE,
+        state_carrier_ida_stkoff=0x40,
+    )
+    bootstrap = DetachedSnippetDirectBoundaryPort(
+        source_block_ea=0x40A5AE,
+        source_instruction_ea=0x40A5C8,
+        endpoint_block_ea=0x40A5C8,
+        old_successor_eas=(0x40BEC0,),
+        target_ea=0x40BECC,
+        state_register=20,
+        state_constant=0xABB95547,
+        source_owner=owner.LIVE,
+        endpoint_owner=owner.LIVE,
+        target_owner=owner.IMPORTED,
+        delivery_mode="redirect_edge",
+        resolver_kind="static_native_bootstrap_route",
+    )
+
+    direct, conditional = (
+        computed_goto_resolver._compose_preopt_entry_bridge_ports(
+            (transfer,),
+            (bootstrap,),
+            live_native_eas=frozenset({0x40A59D, 0x40A5AE, 0x40A5C8}),
+            imported_entry_eas=frozenset(
+                {taken_target, fallthrough_target, 0x40BECC}
+            ),
+        )
+    )
+
+    assert direct == ()
+    assert len(conditional) == 1
+    port = conditional[0]
+    assert port.predicate_ea == 0x40A5AB
+    assert port.logical_source_anchor_ea == 0x40A5C8
+    assert port.logical_source_owner is owner.LIVE
+    assert port.predicate_ida_stkoff == 0x40
+    assert port.predicate_size == 4
+    assert port.predicate_stack_value == taken_state
+    assert port.taken_target_ea == taken_target
+    assert port.fallthrough_target_ea == fallthrough_target
+    assert port.taken_target_owner is owner.IMPORTED
+    assert port.fallthrough_target_owner is owner.IMPORTED
+
+
+def test_preopt_entry_bridge_uses_portable_bootstrap_anchor_without_direct_port() -> (
+    None
+):
+    owner = DetachedSnippetBoundaryPortOwner
+    taken_state = 0xA0716E5B
+    fallthrough_state = 0xEC71CA67
+    taken_target = 0x40C26D
+    fallthrough_target = 0x40B9A6
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40A5AB,
+        source_block_ea=0x40A59D,
+        materialized_anchor_eas=(0x40A5AE,),
+        target_eas=(taken_target, fallthrough_target),
+        condition_code=5,
+        true_target_ea=taken_target,
+        false_target_ea=fallthrough_target,
+        selector_state_var_reg=20,
+        resolver_kind="preopt_entry_bridge",
+        predicate_size=4,
+        predicate_true_state=taken_state,
+        predicate_false_state=fallthrough_state,
+        predicate_true_is_taken=True,
+        state_carrier_store_ea=0x40A5AE,
+        state_carrier_ida_stkoff=0x40,
+    )
+
+    direct, conditional = computed_goto_resolver._compose_preopt_entry_bridge_ports(
+        (transfer,),
+        (),
+        live_native_eas=frozenset({0x40A59D, 0x40A5AE}),
+        imported_entry_eas=frozenset({taken_target, fallthrough_target}),
+        logical_source_anchor_eas=(0x40A5C8,),
+    )
+
+    assert direct == ()
+    assert len(conditional) == 1
+    port = conditional[0]
+    assert port.logical_source_anchor_ea == 0x40A5C8
+    assert port.logical_source_owner is owner.LIVE
+    assert port.taken_target_owner is owner.IMPORTED
+    assert port.fallthrough_target_owner is owner.IMPORTED
+
+
+def test_preopt_entry_bridge_projects_one_atomic_live_boundary_port() -> None:
+    taken_state = 0xA0716E5B
+    fallthrough_state = 0xEC71CA67
+    taken_target = 0x40C26D
+    fallthrough_target = 0x40B9A6
+    evidence = EntryBridgeEvidence(
+        predicate_ea=0x40A5A0,
+        condition_code=5,
+        predicate_stack_identity=(0x20, 4),
+        stack_cell_identity=(0x80, 4),
+        taken_state_constant=taken_state,
+        fallthrough_state_constant=fallthrough_state,
+        source_store_ea=0x40A5AE,
+        canonical_stack_cell_identity=(0x40, 4),
+        canonical_predicate_stack_identity=(-0x20, 4),
+        predicate_block_ea=0x40A59D,
+        taken_arm_entry_ea=0x40A5C0,
+        fallthrough_arm_entry_ea=0x40A5B0,
+        conditional_tail_ea=0x40A5AB,
+    )
+    routes = (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40C253,
+            source_block_ea=0x40C253,
+            materialized_anchor_eas=(),
+            target_eas=(taken_target,),
+            selector_state_var_reg=20,
+            selector_state_constant=taken_state,
+            resolver_kind="static_handler_entry_route",
+        ),
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40B98C,
+            source_block_ea=0x40B98C,
+            materialized_anchor_eas=(),
+            target_eas=(fallthrough_target,),
+            selector_state_var_reg=20,
+            selector_state_constant=fallthrough_state,
+            resolver_kind="static_handler_entry_route",
+        ),
+    )
+
+    ports = computed_goto_resolver._preopt_entry_bridge_boundary_ports(
+        (evidence,),
+        routes,
+        logical_source_anchor_ea=0x40A5C8,
+    )
+
+    assert len(ports) == 1
+    port = ports[0]
+    assert port.source_block_ea == 0x40A59D
+    assert port.predicate_ea == 0x40A5AB
+    assert port.logical_source_anchor_ea == 0x40A5C8
+    assert port.predicate_ida_stkoff == 0x40
+    assert port.predicate_size == 4
+    assert port.predicate_stack_value == taken_state
+    assert port.taken_target_ea == taken_target
+    assert port.fallthrough_target_ea == fallthrough_target
+    assert port.taken_state == taken_state
+    assert port.fallthrough_state == fallthrough_state
+    assert port.source_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert port.logical_source_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert port.taken_target_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert port.fallthrough_target_owner is DetachedSnippetBoundaryPortOwner.LIVE
+    assert port.resolver_kind == "preopt_entry_bridge"
 
 
 def test_preopt_entry_bridge_capture_publishes_lifecycle_evidence(

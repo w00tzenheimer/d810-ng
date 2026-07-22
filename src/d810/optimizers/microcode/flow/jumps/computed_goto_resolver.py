@@ -181,6 +181,7 @@ from d810.hexrays.hooks.optimization_suppression import (
     suppress_d810_optimization,
 )
 from d810.hexrays.mutation.detached_handler_island import (
+    apply_live_conditional_boundary_ports,
     bind_preopt_union_snippet_boundary_ports,
     capture_detached_callinfo_templates,
     capture_preopt_union_snippet_template,
@@ -7929,7 +7930,12 @@ def _preopt_entry_bridge_transfer(
         true_target_ea=int(taken_target),
         false_target_ea=int(fallthrough_target),
         selector_state_var_reg=int(state_register),
-        resolver_kind="static_conditional_state_choice_bridge",
+        resolver_kind="preopt_entry_bridge",
+        predicate_size=(
+            None
+            if evidence.canonical_stack_cell_identity is None
+            else int(evidence.canonical_stack_cell_identity[1])
+        ),
         predicate_true_state=int(evidence.taken_state_constant) & _MASK32,
         predicate_false_state=(
             int(evidence.fallthrough_state_constant) & _MASK32
@@ -7954,6 +7960,57 @@ def _preopt_entry_bridge_transfers(
         return ()
     transfer = _preopt_entry_bridge_transfer(evidence_rows[0], transfers)
     return () if transfer is None else (transfer,)
+
+
+def _preopt_entry_bridge_boundary_ports(
+    evidence_rows: tuple[EntryBridgeEvidence, ...],
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    logical_source_anchor_ea: int | None,
+) -> tuple[DetachedSnippetConditionalBoundaryPort, ...]:
+    """Project one entry proof as one all-live, fragment-atomic port."""
+    if len(evidence_rows) != 1:
+        return ()
+    evidence = evidence_rows[0]
+    stack_identity = evidence.canonical_stack_cell_identity
+    transfer = _preopt_entry_bridge_transfer(evidence, transfers)
+    if (
+        transfer is None
+        or stack_identity is None
+        or int(stack_identity[1]) <= 0
+        or transfer.true_target_ea is None
+        or transfer.false_target_ea is None
+        or transfer.predicate_true_state is None
+        or transfer.predicate_false_state is None
+        or logical_source_anchor_ea is None
+        or int(logical_source_anchor_ea) <= int(evidence.source_store_ea)
+    ):
+        return ()
+    owner = DetachedSnippetBoundaryPortOwner.LIVE
+    return (
+        DetachedSnippetConditionalBoundaryPort(
+            source_block_ea=int(transfer.source_block_ea),
+            predicate_ea=int(transfer.source_jmp_ea),
+            old_taken_target_ea=None,
+            old_fallthrough_target_ea=None,
+            taken_target_ea=int(transfer.true_target_ea),
+            fallthrough_target_ea=int(transfer.false_target_ea),
+            state_register=transfer.selector_state_var_reg,
+            taken_state=int(transfer.predicate_true_state) & _MASK32,
+            fallthrough_state=int(transfer.predicate_false_state) & _MASK32,
+            source_owner=owner,
+            taken_target_owner=owner,
+            fallthrough_target_owner=owner,
+            resolver_kind="preopt_entry_bridge",
+            logical_source_anchor_ea=int(logical_source_anchor_ea),
+            logical_source_owner=owner,
+            predicate_ida_stkoff=int(stack_identity[0]),
+            predicate_stack_value=int(transfer.predicate_true_state) & _MASK32,
+            predicate_size=int(stack_identity[1]),
+            condition_code=int(evidence.condition_code),
+            predicate_true_is_taken=True,
+        ),
+    )
 
 
 def _capture_preopt_entry_bridge_evidence(
@@ -10218,6 +10275,7 @@ def _preopt_union_boundary_ports(
         Mapping[int, Sequence[int]] | None
     ) = None,
     native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]] | None = None,
+    logical_entry_bridge_source_eas: Sequence[int] = (),
 ) -> DetachedSnippetBoundaryPorts | None:
     """Convert exact resolver cuts to the existing atomic port contract."""
     imported_entry_eas = {int(entry_ea) for entry_ea in closure.included_block_eas}
@@ -10449,6 +10507,14 @@ def _preopt_union_boundary_ports(
     if live_entry_ports is None:
         return None
     direct_ports.extend(live_entry_ports)
+    direct_ports, portable_entry_ports = _compose_preopt_entry_bridge_ports(
+        transfers,
+        tuple(direct_ports),
+        live_native_eas=live_native_eas,
+        imported_entry_eas=frozenset(imported_entry_eas),
+        logical_source_anchor_eas=logical_entry_bridge_source_eas,
+    )
+    conditional_ports.extend(portable_entry_ports)
     composed_direct_ports, entry_choice_ports = (
         _compose_preopt_stack_carried_entry_choice_ports(
             transfers,
@@ -11517,6 +11583,138 @@ def _compose_preopt_stack_carrier_router_ports(
     return tuple(result)
 
 
+def _compose_preopt_entry_bridge_ports(
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    direct_ports: tuple[DetachedSnippetDirectBoundaryPort, ...],
+    *,
+    live_native_eas: frozenset[int],
+    imported_entry_eas: frozenset[int],
+    logical_source_anchor_eas: Sequence[int] = (),
+) -> tuple[
+    tuple[DetachedSnippetDirectBoundaryPort, ...],
+    tuple[DetachedSnippetConditionalBoundaryPort, ...],
+]:
+    """Replace or synthesize a later bootstrap edge with one entry choice.
+
+    The pristine entry predicate is proof provenance only.  The logical source
+    is the unique later portable bootstrap terminal, so all prologue side
+    effects between the predicate, carrier store, and route survive.  A
+    captured live-to-imported direct port is replaced when present; otherwise
+    the session-owned bootstrap evidence supplies the same native anchor.
+    """
+
+    def target_owner(target_ea: int) -> DetachedSnippetBoundaryPortOwner | None:
+        if int(target_ea) in imported_entry_eas:
+            return DetachedSnippetBoundaryPortOwner.IMPORTED
+        if int(target_ea) in live_native_eas:
+            return DetachedSnippetBoundaryPortOwner.LIVE
+        return None
+
+    choices = tuple(
+        choice
+        for choice in transfers
+        if choice.resolver_kind == "preopt_entry_bridge"
+        and choice.state_carrier_store_ea is not None
+        and choice.state_carrier_ida_stkoff is not None
+        and choice.predicate_size is not None
+        and int(choice.predicate_size) > 0
+        and choice.predicate_true_state is not None
+        and choice.predicate_false_state is not None
+        and choice.true_target_ea is not None
+        and choice.false_target_ea is not None
+        and choice.selector_state_var_reg is not None
+        and choice.condition_code is not None
+    )
+    if len(choices) != 1:
+        return direct_ports, ()
+    (choice,) = choices
+    assert choice.state_carrier_store_ea is not None
+    store_ea = int(choice.state_carrier_store_ea)
+    direct_candidates = tuple(
+        port
+        for port in direct_ports
+        if port.source_owner is DetachedSnippetBoundaryPortOwner.LIVE
+        and port.endpoint_owner is DetachedSnippetBoundaryPortOwner.LIVE
+        and port.target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+        and port.delivery_mode == "redirect_edge"
+        and int(port.source_instruction_ea) > store_ea
+    )
+    candidate_anchor_eas = {
+        *(int(port.source_instruction_ea) for port in direct_candidates),
+        *(
+            int(anchor_ea)
+            for anchor_ea in logical_source_anchor_eas
+            if int(anchor_ea) > store_ea
+        ),
+    }
+    if len(candidate_anchor_eas) != 1:
+        return direct_ports, ()
+    (logical_source_anchor_ea,) = candidate_anchor_eas
+    matching_direct_ports = tuple(
+        port
+        for port in direct_candidates
+        if int(port.source_instruction_ea) == logical_source_anchor_ea
+    )
+    if len(matching_direct_ports) > 1:
+        return direct_ports, ()
+    bootstrap = matching_direct_ports[0] if matching_direct_ports else None
+    assert choice.true_target_ea is not None
+    assert choice.false_target_ea is not None
+    true_target_ea = int(choice.true_target_ea)
+    false_target_ea = int(choice.false_target_ea)
+    true_owner = target_owner(true_target_ea)
+    false_owner = target_owner(false_target_ea)
+    if (
+        true_target_ea == false_target_ea
+        or true_owner is None
+        or false_owner is None
+    ):
+        return direct_ports, ()
+    assert choice.selector_state_var_reg is not None
+    assert choice.predicate_true_state is not None
+    assert choice.predicate_false_state is not None
+    assert choice.state_carrier_ida_stkoff is not None
+    assert choice.predicate_size is not None
+    assert choice.condition_code is not None
+    conditional = DetachedSnippetConditionalBoundaryPort(
+        source_block_ea=int(choice.source_block_ea),
+        predicate_ea=int(choice.source_jmp_ea),
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=true_target_ea,
+        fallthrough_target_ea=false_target_ea,
+        state_register=int(choice.selector_state_var_reg),
+        taken_state=int(choice.predicate_true_state) & _MASK32,
+        fallthrough_state=int(choice.predicate_false_state) & _MASK32,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=true_owner,
+        fallthrough_target_owner=false_owner,
+        resolver_kind="preopt_entry_bridge",
+        logical_source_anchor_ea=int(logical_source_anchor_ea),
+        logical_source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        predicate_ida_stkoff=int(choice.state_carrier_ida_stkoff),
+        predicate_stack_value=int(choice.predicate_true_state) & _MASK32,
+        predicate_size=int(choice.predicate_size),
+        condition_code=int(choice.condition_code),
+        predicate_true_is_taken=True,
+    )
+    logger.info(
+        "PREOPT entry bridge ports: rows=%s",
+        [
+            (
+                f"0x{int(conditional.predicate_ea):X}",
+                f"0x{int(conditional.logical_source_anchor_ea or 0):X}",
+                f"0x{int(conditional.taken_target_ea):X}",
+                f"0x{int(conditional.fallthrough_target_ea):X}",
+            )
+        ],
+    )
+    return (
+        tuple(port for port in direct_ports if port is not bootstrap),
+        (conditional,),
+    )
+
+
 def _compose_preopt_stack_carried_entry_choice_ports(
     transfers: tuple[MaterializedIndirectTransfer, ...],
     direct_ports: tuple[DetachedSnippetDirectBoundaryPort, ...],
@@ -12070,6 +12268,10 @@ def prepare_preopt_union_closure(
             _static_stack_carrier_consumer_load_eas(resolution)
         ),
         native_stack_frame_offsets_by_ea=dict(resolution.native_stack_frame_offsets),
+        logical_entry_bridge_source_eas=tuple(
+            int(route.source_anchor_ea)
+            for route in state.native_preanalysis.bootstrap_routes.values()
+        ),
     )
     if boundary_ports is None:
         return _preopt_union_abstention(key, "incomplete_boundary_topology")
@@ -13414,6 +13616,37 @@ def _on_preopt_bootstrap_route(
         and int(details.get("preopt_union_root_ea", -1))
         == int(preparation.primary_seed_ea)
     )
+    entry_bridge_ports: tuple[DetachedSnippetConditionalBoundaryPort, ...] = ()
+    if union_prepared and not union_imported:
+        entry_transfers = state.materialized_transfers
+        recovered_entry_routes = tuple(
+            transfer
+            for transfer in _recover_static_handler_entry_route_transfers(
+                entry_transfers
+            )
+            if transfer not in entry_transfers
+        )
+        if recovered_entry_routes:
+            entry_transfers = (*entry_transfers, *recovered_entry_routes)
+        entry_store_eas = {
+            int(evidence.source_store_ea)
+            for evidence in state.portable_evidence.preopt_entry_bridges
+        }
+        later_bootstrap_anchors = {
+            int(route.source_anchor_ea)
+            for route in state.native_preanalysis.bootstrap_routes.values()
+            if len(entry_store_eas) == 1
+            and int(route.source_anchor_ea) > next(iter(entry_store_eas))
+        }
+        entry_bridge_ports = _preopt_entry_bridge_boundary_ports(
+            state.portable_evidence.preopt_entry_bridges,
+            entry_transfers,
+            logical_source_anchor_ea=(
+                next(iter(later_bootstrap_anchors))
+                if len(later_bootstrap_anchors) == 1
+                else None
+            ),
+        )
 
     def live_range_identity(block, anchor_ea: int):
         start_ea = int(getattr(block, "start", 0) or 0)
@@ -13691,6 +13924,7 @@ def _on_preopt_bootstrap_route(
         and not conditional_pending
         and not conditional_already
         and not conditional_materialize
+        and not entry_bridge_ports
     ):
         if union_imported and not state.native_preanalysis.bootstrap_routes:
             state.native_preanalysis.mark_preopt_bound()
@@ -13780,6 +14014,33 @@ def _on_preopt_bootstrap_route(
         applied += deferred_applied
         decision["microcode_modified"] = True
 
+    entry_bridge_applied = ()
+    if entry_bridge_ports:
+        entry_bridge_applied = apply_live_conditional_boundary_ports(
+            mba,
+            function_ea,
+            entry_bridge_ports,
+            mutation_gateway=gateway,
+        )
+        if (
+            entry_bridge_applied is None
+            or len(entry_bridge_applied) != len(entry_bridge_ports)
+        ):
+            return
+        decision["microcode_modified"] = True
+        for port in entry_bridge_ports:
+            logger.info(
+                "PREOPT_ENTRY_BRIDGE func=0x%X predicate=0x%X "
+                "carrier=0x%X taken=0x%X fallthrough=0x%X "
+                "evidence_generation=%d applied=True",
+                int(function_ea),
+                int(port.predicate_ea),
+                int(port.logical_source_anchor_ea or 0),
+                int(port.taken_target_ea),
+                int(port.fallthrough_target_ea),
+                int(state.evidence_generation),
+            )
+
     rebound_all = (*already_routed, *pending_routes)
     for route in rebound_all:
         newly_rebound = state.native_preanalysis.mark_bootstrap_route_rebound(
@@ -13853,6 +14114,7 @@ def _on_preopt_bootstrap_route(
         or conditional_already
         or conditional_pending
         or conditional_materialize
+        or entry_bridge_applied
     ):
         state.native_preanalysis.mark_preopt_bound()
 

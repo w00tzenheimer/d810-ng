@@ -289,7 +289,7 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
     assert state.current_imported_instruction_origins == ((0xFFFFFFFFFFFFFF01, 0x2000),)
 
 
-def test_preopt_handler_skips_union_when_bootstrap_route_is_live(monkeypatch) -> None:
+def test_live_bootstrap_endpoint_does_not_suppress_prepared_union(monkeypatch) -> None:
     session, state = _resolver_state()
     source_ea = 0x40D348
     handler_ea = 0x40EAA7
@@ -338,23 +338,42 @@ def test_preopt_handler_skips_union_when_bootstrap_route_is_live(monkeypatch) ->
         "get_prepared_preopt_union_closure",
         lambda candidate_state: preparation if candidate_state is state else None,
     )
+    monkeypatch.setattr(island, "stable_mba_identity", lambda _mba: 77)
+    monkeypatch.setattr(
+        island,
+        "has_instruction_backed_native_block",
+        lambda _mba, _ea: True,
+    )
+    imports: list[tuple[object, int, tuple[int, ...]]] = []
+
+    def import_union(current_mba, function_ea, target_eas, **_kwargs):
+        imports.append((current_mba, function_ea, target_eas))
+        return _ImportResult(roots=((0x2000, 8),))
+
     monkeypatch.setattr(
         island,
         "materialize_preopt_union_snippet_templates",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("live bootstrap route must not clone the full union")
-        ),
+        import_union,
+    )
+    monkeypatch.setattr(
+        island,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: (),
     )
 
-    decision: dict[str, object] = {"session": session}
+    decision: dict[str, object] = {
+        "session": session,
+        "mutation_gateway": make_mutation_gateway(mba),
+    }
     island._restore_preopt_terminal_return_carriers(
         function_ea=0x1000,
         mba=mba,
         decision=decision,
     )
 
-    assert decision == {"session": session}
-    assert state.preopt_union_imported_mbas == set()
+    assert imports == [(mba, 0x1000, (0x2000,))]
+    assert decision["microcode_modified"] is True
+    assert state.preopt_union_imported_mbas == {(0x1000, 77, 0)}
     assert state.preopt_union_mutated_mbas == set()
 
 
