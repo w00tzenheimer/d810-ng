@@ -793,6 +793,54 @@ def test_preopt_union_capture_rebinds_resolver_proven_internal_successor(
     assert captured_source.external_successor_eas == (0,)
 
 
+def test_preopt_union_capture_lowers_proven_zero_way_route_before_import(
+    monkeypatch,
+) -> None:
+    """A proven indirect route becomes a closed direct edge in the template."""
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    delivery_ea = 0x40A70E
+    target_ea = 0x40ADF2
+    source = _MBA(
+        (
+            _Block(
+                0,
+                delivery_ea,
+                (_Instruction(ida_hexrays.m_ijmp, delivery_ea),),
+            ),
+            _Block(
+                1,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        delivery_ea,
+        source,
+        ((delivery_ea, delivery_ea + 1), (target_ea, target_ea + 1)),
+        owned_block_entry_eas=(delivery_ea, target_ea),
+        resolver_proven_internal_successor_eas={delivery_ea: target_ea},
+    )
+    template = detached_handler_island._PREOPT_UNION_SNIPPET_TEMPLATES[
+        (function_ea, delivery_ea)
+    ]
+    captured_source = next(
+        block for block in template.blocks if block.native_entry_ea == delivery_ea
+    )
+
+    assert captured_source.successor_serials == (1,)
+    assert captured_source.external_successor_eas == (0,)
+    assert captured_source.block_type == ida_hexrays.BLT_1WAY
+    assert captured_source.block_flags & ida_hexrays.MBL_GOTO
+    assert captured_source.instructions[-1].opcode == ida_hexrays.m_goto
+    assert captured_source.instructions[-1].l.t == ida_hexrays.mop_b
+    assert captured_source.instructions[-1].l.b == 1
+
+
 def test_range_capture_includes_resolver_created_leader_without_native_anchor(
     monkeypatch,
 ) -> None:

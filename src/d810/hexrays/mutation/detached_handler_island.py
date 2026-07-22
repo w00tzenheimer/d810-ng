@@ -2080,6 +2080,34 @@ def _capture_detached_snippet_template(
         external_successors: list[int] = []
         lower_synthetic_exit_to_return = False
         append_native_exit_return = False
+        proven_internal_target_ea = (
+            None
+            if block.tail is None
+            else resolver_proven_internal_successor_eas.get(int(block.tail.ea))
+        )
+        proven_internal_target_serial: int | None = None
+        if proven_internal_target_ea is not None:
+            target_serials = tuple(
+                int(candidate_serial)
+                for candidate_serial, candidate in included.items()
+                if _unique_block_native_ea(candidate)
+                == int(proven_internal_target_ea)
+            )
+            if len(target_serials) != 1:
+                logger.info(
+                    "detached snippet capture abstained: target=0x%X "
+                    "source=blk%d@0x%X resolver_ea=0x%X "
+                    "proven_target=0x%X matches=%s "
+                    "reason=non_unique_resolver_proven_internal_successor",
+                    int(target_ea),
+                    int(block.serial),
+                    int(block.start),
+                    int(block.tail.ea),
+                    int(proven_internal_target_ea),
+                    target_serials,
+                )
+                return False
+            proven_internal_target_serial = int(target_serials[0])
         native_entry = _unique_block_native_ea(block)
         if (
             native_entry is None
@@ -2146,31 +2174,9 @@ def _capture_detached_snippet_template(
                 else None
             )
             if successor_ea is None and block.tail is not None:
-                proven_internal_target_ea = resolver_proven_internal_successor_eas.get(
-                    int(block.tail.ea)
-                )
                 if proven_internal_target_ea is not None:
-                    target_serials = tuple(
-                        int(candidate_serial)
-                        for candidate_serial, candidate in included.items()
-                        if _unique_block_native_ea(candidate)
-                        == int(proven_internal_target_ea)
-                    )
-                    if len(target_serials) != 1:
-                        logger.info(
-                            "detached snippet capture abstained: target=0x%X "
-                            "source=blk%d@0x%X resolver_ea=0x%X "
-                            "proven_target=0x%X matches=%s "
-                            "reason=non_unique_resolver_proven_internal_successor",
-                            int(target_ea),
-                            int(block.serial),
-                            int(block.start),
-                            int(block.tail.ea),
-                            int(proven_internal_target_ea),
-                            target_serials,
-                        )
-                        return False
-                    internal_successors.append(target_serials[0])
+                    assert proven_internal_target_serial is not None
+                    internal_successors.append(proven_internal_target_serial)
                     external_successors.append(0)
                     continue
                 successor_ea = _resolver_cut_target_for_synthetic_successor(
@@ -2217,6 +2223,61 @@ def _capture_detached_snippet_template(
             external_successors.append(int(successor_ea))
 
         template_block_type = int(block.type)
+        template_block_flags = int(block.flags)
+        if proven_internal_target_serial is not None:
+            incompatible_internal_successors = tuple(
+                successor
+                for successor in internal_successors
+                if int(successor) != int(proven_internal_target_serial)
+            )
+            incompatible_external_successors = tuple(
+                external_ea
+                for external_ea in external_successors
+                if int(external_ea) > 0
+            )
+            tail = instructions[-1] if instructions else None
+            supported_tail = bool(
+                tail is not None
+                and block.tail is not None
+                and int(tail.ea) == int(block.tail.ea)
+                and int(tail.opcode)
+                in {
+                    int(ida_hexrays.m_goto),
+                    int(ida_hexrays.m_icall),
+                    int(ida_hexrays.m_ijmp),
+                }
+            )
+            if (
+                incompatible_internal_successors
+                or incompatible_external_successors
+                or int(block.nsucc()) > 1
+                or not supported_tail
+            ):
+                logger.info(
+                    "detached snippet capture abstained: target=0x%X "
+                    "source=blk%d@0x%X resolver_ea=0x%X "
+                    "proven_target=0x%X internal=%s external=%s "
+                    "nsucc=%d opcode=%s reason=resolver_route_shape_conflict",
+                    int(target_ea),
+                    int(block.serial),
+                    int(block.start),
+                    int(block.tail.ea),
+                    int(proven_internal_target_ea or 0),
+                    tuple(internal_successors),
+                    tuple(external_successors),
+                    int(block.nsucc()),
+                    None if tail is None else int(tail.opcode),
+                )
+                return False
+            assert tail is not None
+            tail.opcode = int(ida_hexrays.m_goto)
+            tail.l.make_blkref(int(proven_internal_target_serial))
+            tail.r.erase()
+            tail.d.erase()
+            internal_successors = [int(proven_internal_target_serial)]
+            external_successors = [0]
+            template_block_type = int(ida_hexrays.BLT_1WAY)
+            template_block_flags |= int(ida_hexrays.MBL_GOTO)
         if (
             int(native_entry) in terminal_return_entries
             and not instructions
@@ -2277,7 +2338,7 @@ def _capture_detached_snippet_template(
                 native_end_ea=int(block.end),
                 instructions=instructions,
                 block_type=template_block_type,
-                block_flags=int(block.flags),
+                block_flags=template_block_flags,
                 successor_serials=tuple(internal_successors),
                 external_successor_eas=tuple(external_successors),
             )
