@@ -39,3 +39,7 @@ Reference parity audit on SHA256 244907...35e4c: unchanged ../cff/rhadamanthys-l
 **2026-07-22T21:27:09Z**
 
 Phase 1 migration checkpoint: the versioned-proxy bridge covers explicit replacement staging, transaction-local resolution, commit lineage, abort discard lineage, and deterministic native-EA ambiguity. It is not Phase 1 acceptance. Before architecture acceptance, migrate every initial binding and insert/split/clone/remove path to proxy authority, delete _stale_tokens and direct baseline-token mutation as semantic authority, and add an architecture test proving no structural mutation path bypasses proxy commit/abort. Exact A560 remains prohibited until that removal is complete.
+
+**2026-07-22T21:38:41Z**
+
+Phase 1 cutover update: every initial live binding now owns a logical proxy; insert, replacement, split, clone, and removal use transaction-local serial overlays plus proxy stage/commit/abort; _stale_tokens was deleted; refresh rebuilds proxy authority while preserving uniquely proved handles. Evidence: 63 local identity/gateway/architecture tests green and pinned Docker resolver/deferred runtime 133/133 green at .tmp/phase1-versioned-proxy-runtime-full2.txt. Phase 1 remains open: planned-serial resolution still exists for legacy DeferredGraphModifier callers and receipts do not yet version every semantic edge edit; Phase 2 must replace that with the single role-aware semantic-edge operation before acceptance.

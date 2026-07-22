@@ -2989,9 +2989,9 @@ class DeferredGraphModifier:
                 fallthrough_start_ea,
             )
             return False
-        source_binding = gateway.identity_index.resolve(source_handle)
-        taken_binding = gateway.identity_index.resolve(taken_handle)
-        fallthrough_binding = gateway.identity_index.resolve(fallthrough_handle)
+        source_binding = gateway.resolve_block(source_handle)
+        taken_binding = gateway.resolve_block(taken_handle)
+        fallthrough_binding = gateway.resolve_block(fallthrough_handle)
         source = (
             None
             if source_binding is None
@@ -9214,7 +9214,11 @@ class DeferredGraphModifier:
         # SWIG block proxies are not stable across ``copy_block_keep``.  Keep a
         # serial-free live handle through the insertion and reacquire the
         # current C++ target from the gateway-owned identity index.
-        target_binding = gateway.identity_index.resolve(target_handle)
+        target_binding = (
+            gateway.resolve_block(target_handle)
+            if gateway.active
+            else gateway.identity_index.resolve(target_handle)
+        )
         current_target = (
             None
             if target_binding is None

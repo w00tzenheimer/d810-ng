@@ -1120,6 +1120,11 @@ def test_block_target_change_rewrites_fallthrough_via_helper_and_remaps_later_ta
     monkeypatch.setattr(dm, "change_1way_block_successor", _change_1way)
     monkeypatch.setattr(dm, "change_2way_block_conditional_successor", _change_2way)
 
+    modifier._begin_mutation_batch(
+        serial_quantity=300,
+        planned_operation_count=2,
+    )
+
     ok_fallthrough = modifier._apply_single(
         dm.GraphModification(
             dm.ModificationType.BLOCK_TARGET_CHANGE,
@@ -1144,6 +1149,7 @@ def test_block_target_change_rewrites_fallthrough_via_helper_and_remaps_later_ta
     assert modifier.current_serial_for_planned(16) == 17
     assert modifier.current_serial_for_planned(17) == 18
     assert modifier.current_serial_for_planned(202) == 203
+    modifier._mutation_gateway.commit()
 
 
 def test_block_target_change_fallthrough_helper_preserves_target_ea_after_serial_drift(
@@ -1234,6 +1240,10 @@ def test_conditional_lowering_helper_remaps_later_branch_targets(monkeypatch):
     modifier = dm.DeferredGraphModifier(
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
+    modifier._begin_mutation_batch(
+        serial_quantity=30,
+        planned_operation_count=2,
+    )
     assert modifier._build_fallthrough_goto_helper(guard, target) == 11
 
     captured: list[tuple[int, int | None]] = []
@@ -1255,6 +1265,7 @@ def test_conditional_lowering_helper_remaps_later_branch_targets(monkeypatch):
 
     assert modifier.current_serial_for_planned(20) == 21
     assert captured == [(21, 10)]
+    modifier._mutation_gateway.commit()
 
 
 def test_restore_pruned_conditional_preserves_predicate_and_builds_both_arms(

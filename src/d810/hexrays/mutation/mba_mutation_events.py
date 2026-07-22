@@ -205,11 +205,13 @@ class MbaMutationGateway:
     ) -> None:
         if self.active:
             raise RuntimeError("a structural mutation batch is already active")
-        if serial_quantity is not None:
-            self.identity_index.begin_transaction(int(serial_quantity))
         self._active_kind = kind
         self._active_description = str(description)
         self._active_batch_id = uuid.uuid4().hex
+        self.identity_index.begin_transaction(
+            self._active_batch_id,
+            None if serial_quantity is None else int(serial_quantity),
+        )
         self._planned_operation_count = int(planned_operation_count)
         if self._planned_operation_count < 0:
             raise ValueError("planned operation count must be non-negative")
@@ -249,14 +251,10 @@ class MbaMutationGateway:
             # active batch, callers are describing the current live MBA; a
             # baseline retained by an earlier transaction must not shift it.
             return serial
-        baseline_handle = self.identity_index._baseline_tokens.get(serial)
-        if baseline_handle is None:
-            self.identity_index.ensure_serial_space(serial + 1)
-            baseline_handle = self.identity_index._baseline_tokens[serial]
-        bound = self.identity_index.resolve(
-            self.identity_index._handles_by_token[baseline_handle]
+        return self.identity_index.resolve_planned_serial(
+            str(self._active_batch_id),
+            serial,
         )
-        return None if bound is None else bound.serial
 
     def resolve_block(self, handle: MbaBlockHandle):
         """Resolve through this transaction's staged logical version."""
@@ -296,6 +294,7 @@ class MbaMutationGateway:
         self._require_active()
         created = created or self.identity_index.create_synthetic_handle()
         self.identity_index.record_insert(
+            transaction_id=str(self._active_batch_id),
             insertion_serial=int(insertion_serial),
             created=created,
             returned_serial=int(returned_serial),
@@ -309,6 +308,7 @@ class MbaMutationGateway:
     ) -> None:
         self._require_active()
         self.identity_index.record_realized_serial(
+            transaction_id=str(self._active_batch_id),
             expected_serial=int(expected_serial),
             returned_serial=int(returned_serial),
         )
@@ -328,7 +328,10 @@ class MbaMutationGateway:
 
     def record_remove(self, handle: MbaBlockHandle) -> None:
         self._require_active()
-        self.identity_index.mark_removed(handle)
+        self.identity_index.mark_removed(
+            handle,
+            transaction_id=str(self._active_batch_id),
+        )
         self._record_handle(handle)
         self._operation_count += 1
 
@@ -343,6 +346,7 @@ class MbaMutationGateway:
         """Record one SDK split through the receipt-owning control plane."""
         self._require_active()
         self.identity_index.record_split(
+            transaction_id=str(self._active_batch_id),
             original=original,
             retained=retained,
             created_tail=created_tail,
@@ -371,6 +375,7 @@ class MbaMutationGateway:
             )
         )
         self.identity_index.record_clone(
+            transaction_id=str(self._active_batch_id),
             source=source,
             created=created,
             returned_serial=int(returned_serial),
@@ -387,7 +392,12 @@ class MbaMutationGateway:
         identities, handles, and integer coordinates.
         """
         self._require_active()
+        transaction_id = str(self._active_batch_id)
         self.identity_index.refresh_from_mba(mba)
+        self.identity_index.begin_transaction(
+            transaction_id,
+            int(getattr(mba, "qty", 0) or 0),
+        )
         self._operation_count += 1
 
     def record_external_sdk_operations(
@@ -407,7 +417,12 @@ class MbaMutationGateway:
         count = int(operation_count)
         if count < 0:
             raise ValueError("external SDK operation count must be non-negative")
+        transaction_id = str(self._active_batch_id)
         self.identity_index.refresh_from_mba(mba)
+        self.identity_index.begin_transaction(
+            transaction_id,
+            int(getattr(mba, "qty", 0) or 0),
+        )
         self._operation_count += count
 
     def commit(self) -> MbaMutationReceipt:

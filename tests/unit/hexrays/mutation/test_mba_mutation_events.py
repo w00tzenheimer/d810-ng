@@ -87,9 +87,12 @@ def test_gateway_shifts_live_bindings_before_emitting_its_commit_receipt() -> No
     gateway.begin_batch(StructuralMutationKind.BLOCK_INSERT, serial_quantity=10)
     created = gateway.record_insert(insertion_serial=4, returned_serial=4)
 
-    assert index.rebind_identity(source).block.serial == 6
-    assert index.rebind_identity(target).block.serial == 10
-    assert index.resolve(created).serial == 4
+    assert index.rebind_identity(source).block.serial == 5
+    assert index.rebind_identity(target).block.serial == 9
+    assert index.resolve(created) is None
+    assert gateway.resolve_block(index.handle_for_serial(5)).serial == 6
+    assert gateway.resolve_block(index.handle_for_serial(9)).serial == 10
+    assert gateway.resolve_block(created).serial == 4
     receipt = gateway.commit()
 
     assert receipt.operation_count == 1
@@ -262,19 +265,36 @@ def test_index_keeps_clone_and_split_handles_transaction_local() -> None:
     retained = index.create_native_handle(identity)
     split_tail = index.create_synthetic_handle()
 
+    index.begin_transaction("split-clone", 9)
     index.record_split(
+        transaction_id="split-clone",
         original=original,
         retained=retained,
         created_tail=split_tail,
         returned_tail_serial=9,
     )
-    assert index.resolve(original) is None
-    assert index.resolve(retained).serial == 8
-    assert index.resolve(split_tail).serial == 9
+    assert index.resolve(original).serial == 8
+    assert index.resolve(retained) is not None
+    assert index.resolve(
+        original,
+        transaction_id="split-clone",
+    ).handle is retained
+    assert index.resolve(
+        split_tail,
+        transaction_id="split-clone",
+    ).serial == 9
 
     clone = index.create_native_handle(identity)
-    index.record_clone(source=retained, created=clone, returned_serial=10)
+    index.record_clone(
+        transaction_id="split-clone",
+        source=retained,
+        created=clone,
+        returned_serial=10,
+    )
+    index.commit_proxy_transaction("split-clone")
+    index.advance_generation()
 
+    assert index.resolve(original).handle is retained
     assert index.resolve(clone).serial == 10
     assert index.rebind_identity(identity).status.name == "AMBIGUOUS"
 
@@ -386,13 +406,15 @@ def test_unknown_sdk_effect_refreshes_before_commit_and_stales_synthetic_handles
     )
     original = index.handle_for_serial(5)
     assert original is not None
-    index.begin_transaction(6)
+    index.begin_transaction("uncommitted-insert", 6)
     synthetic = index.create_synthetic_handle()
     index.record_insert(
+        transaction_id="uncommitted-insert",
         insertion_serial=6,
         created=synthetic,
         returned_serial=6,
     )
+    index.abort_proxy_transaction("uncommitted-insert")
 
     blocks = {
         1: Block(1, 0x401000, Insn(0x401000)),
@@ -516,3 +538,135 @@ def test_gateway_abort_discards_staged_version_and_preserves_published_authority
     assert index.resolve(original).generation == 3
     assert index.generation == 3
     assert aborted[-1].discarded_version_ids == (staged.version_id,)
+
+
+def test_gateway_insert_is_transaction_local_and_abort_restores_bindings() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=((identity, 4),),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(4)
+    assert original is not None
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_INSERT,
+        serial_quantity=5,
+    )
+    created = gateway.record_insert(insertion_serial=3, returned_serial=3)
+
+    assert index.resolve(original).serial == 4
+    assert gateway.resolve_block(original).serial == 5
+    assert index.resolve(created) is None
+    assert gateway.resolve_block(created).serial == 3
+
+    gateway.abort(reason="publisher rejected fragment")
+
+    assert index.resolve(original).serial == 4
+    assert index.resolve(created) is None
+    assert index.generation == 3
+
+
+def test_gateway_insert_commit_publishes_new_proxy_and_shifted_bindings() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=((identity, 4),),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(4)
+    assert original is not None
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_INSERT,
+        serial_quantity=5,
+    )
+    created = gateway.record_insert(insertion_serial=3, returned_serial=3)
+
+    receipt = gateway.commit()
+
+    assert index.resolve(original).serial == 5
+    assert index.resolve(created).serial == 3
+    assert any(
+        transition.retired_version_id is None
+        and transition.promoted_version_id is not None
+        for transition in receipt.version_transitions
+    )
+
+
+def test_gateway_remove_is_transaction_local_and_abort_preserves_block() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=((identity, 4),),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(4)
+    assert original is not None
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+    gateway.begin_batch(StructuralMutationKind.BLOCK_REMOVE, serial_quantity=5)
+    gateway.record_remove(original)
+
+    assert index.resolve(original).serial == 4
+    assert gateway.resolve_block(original) is None
+
+    gateway.abort(reason="postcondition failed")
+
+    assert index.resolve(original).serial == 4
+
+
+def test_gateway_remove_commit_retires_proxy_without_promoting_version() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=((identity, 4),),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(4)
+    assert original is not None
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+    gateway.begin_batch(StructuralMutationKind.BLOCK_REMOVE, serial_quantity=5)
+    gateway.record_remove(original)
+
+    receipt = gateway.commit()
+
+    assert index.resolve(original) is None
+    assert any(
+        transition.retired_version_id is not None
+        and transition.promoted_version_id is None
+        for transition in receipt.version_transitions
+    )
