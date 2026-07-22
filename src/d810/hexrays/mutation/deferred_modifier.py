@@ -1821,9 +1821,9 @@ class DeferredGraphModifier:
         description: str = "",
         rule_priority: int = 0,
     ) -> None:
-        """Queue atomic replacement of a generated zero-way predicate.
+        """Queue atomic replacement of a generated zero-way transfer.
 
-        The exact native predicate is removed together with its zero-way shape
+        The exact native transfer is removed together with its zero-way shape
         and replaced by one proven direct edge.  This operation is deliberately
         distinct from ``BLOCK_CONVERT_TO_GOTO`` because a zero-way conditional
         cannot pass through an intermediate one-way conditional CFG state.
@@ -8445,7 +8445,7 @@ class DeferredGraphModifier:
         predicate_ea: int | None,
         target_serial: int | None,
     ) -> bool:
-        """Replace one exact generated zero-way predicate with a direct edge.
+        """Replace one exact generated zero-way transfer with a direct edge.
 
         This helper is used on a staged copy.  The original zero-way
         ``m_jcnd`` remains live until the copy contains both the replacement
@@ -8458,9 +8458,14 @@ class DeferredGraphModifier:
             or blk.tail is None
             or int(blk.nsucc()) != 0
             or int(blk.tail.ea) != int(predicate_ea)
-            or not ida_hexrays.is_mcode_jcond(int(blk.tail.opcode))
-            or getattr(blk.tail, "d", None) is None
-            or int(blk.tail.d.t) != int(ida_hexrays.mop_v)
+            or not (
+                int(blk.tail.opcode) == int(ida_hexrays.m_ijmp)
+                or (
+                    ida_hexrays.is_mcode_jcond(int(blk.tail.opcode))
+                    and getattr(blk.tail, "d", None) is not None
+                    and int(blk.tail.d.t) == int(ida_hexrays.mop_v)
+                )
+            )
         ):
             logger.warning(
                 "materialize_zero_way_goto: source blk[%d] no longer "

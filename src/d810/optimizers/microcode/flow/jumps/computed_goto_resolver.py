@@ -14471,10 +14471,15 @@ def _classify_live_state_write_routes(
             )
             is_folded_zero_way_delivery = bool(
                 write_tail is not None
-                and ida_hexrays.is_mcode_jcond(int(write_tail.opcode))
                 and len(write_successors) == 0
-                and getattr(write_tail, "d", None) is not None
-                and int(write_tail.d.t) == int(ida_hexrays.mop_v)
+                and (
+                    int(write_tail.opcode) == int(ida_hexrays.m_ijmp)
+                    or (
+                        ida_hexrays.is_mcode_jcond(int(write_tail.opcode))
+                        and getattr(write_tail, "d", None) is not None
+                        and int(write_tail.d.t) == int(ida_hexrays.mop_v)
+                    )
+                )
                 and int(evidence.source_write_ea)
                 <= int(write_tail.ea)
                 <= int(evidence.delivery_ea)
