@@ -36,6 +36,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     PortableMaterializedStateRoute,
     exact_materialized_handler_override_serial,
     instruction_backed_materialized_handler_owners,
+    materialized_atomic_predicate_eas,
     materialized_state_register_candidates,
     materialized_dispatcher_router_native_ranges,
     mutation_authoritative_materialized_transfers,
@@ -2284,6 +2285,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
             )
             materialized_handler_owners.update(materialized_handler_overrides)
+            atomic_predicate_eas = materialized_atomic_predicate_eas(
+                materialized_indirect_transfers
+            )
             imported_handler_serials: set[int] = set()
             for state_constant, target_ea in equality_target_eas.items():
                 target_block = find_materialized_handler_block_by_native_ea(
@@ -2302,6 +2306,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     exact_target_serial=target_serial,
                     exact_target_ea=int(target_ea),
                     flow_graph=source.flow_graph,
+                    atomic_predicate_eas=atomic_predicate_eas,
+                    native_instruction_eas_by_serial=native_origin_eas_by_serial,
                 )
                 if selected_owner != target_serial:
                     existing_entry_ea = materialized_handler_entry_eas.get(

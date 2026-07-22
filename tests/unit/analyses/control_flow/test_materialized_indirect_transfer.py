@@ -23,6 +23,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     instruction_backed_materialized_handler_owners,
     lookup_state_keyed_transfer_target,
     lookup_singleton_transfer_target,
+    materialized_atomic_predicate_eas,
     materialized_dispatcher_router_native_ranges,
     mutation_authoritative_materialized_transfers,
     native_origin_blocks_in_ranges,
@@ -524,6 +525,8 @@ def test_instruction_backed_handler_owner_precedes_imported_clone():
             exact_target_serial=670,
             exact_target_ea=0x40E387,
             flow_graph=graph,
+            atomic_predicate_eas=(),
+            native_instruction_eas_by_serial={194: (0x40E37B, 0x40E387)},
         )
         == 194
     )
@@ -544,6 +547,8 @@ def test_adjacent_router_arm_does_not_replace_explicit_handler_entry():
             exact_target_serial=777,
             exact_target_ea=0x40EAA7,
             flow_graph=graph,
+            atomic_predicate_eas=(),
+            native_instruction_eas_by_serial={268: (0x40EA9B, 0x40EAA5)},
         )
         == 777
     )
@@ -559,9 +564,52 @@ def test_imported_handler_owner_fills_missing_live_state():
             exact_target_serial=670,
             exact_target_ea=0x40E387,
             flow_graph=graph,
+            atomic_predicate_eas=(),
+            native_instruction_eas_by_serial={},
         )
         == 670
     )
+
+
+def test_conditional_fragment_requires_its_predicate_owner() -> None:
+    state = 0x6487820D
+    graph = FlowGraph(
+        blocks={
+            112: _block(112, 0x40B2E9, (0x40B2F5,)),
+            352: _block(352, 0x40A560, (0x40B2F5, 0x40B30C)),
+        },
+        entry_serial=112,
+        func_ea=0x40A560,
+    )
+
+    assert (
+        select_materialized_handler_owner_serial(
+            state_constant=state,
+            instruction_backed_owners={state: 112},
+            exact_target_serial=352,
+            exact_target_ea=0x40B2F5,
+            flow_graph=graph,
+            atomic_predicate_eas=(0x40B30C,),
+            native_instruction_eas_by_serial={
+                112: (0x40B2F5,),
+                352: (0x40B2F5, 0x40B30C),
+            },
+        )
+        == 352
+    )
+
+
+def test_materialized_handler_requirements_retain_atomic_predicate() -> None:
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40B30C,
+        source_block_ea=0x40A560,
+        materialized_anchor_eas=(0x40B30C,),
+        target_eas=(0x40C3F3, 0x40C0D4),
+        predicate_preserve_live=True,
+        resolver_kind="conditional_handler_bridge",
+    )
+
+    assert materialized_atomic_predicate_eas((transfer,)) == (0x40B30C,)
 
 
 @pytest.mark.parametrize(
