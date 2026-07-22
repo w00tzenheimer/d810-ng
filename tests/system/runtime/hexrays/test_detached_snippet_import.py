@@ -5052,6 +5052,9 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
         fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
         logical_source_anchor_ea=predicate_ea,
         condition_code=5,
+        predicate_register=8,
+        predicate_size=4,
+        predicate_constant=7,
         predicate_true_is_taken=True,
     )
     assert detached_handler_island.capture_detached_snippet_template(
@@ -5078,7 +5081,7 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
     template.blocks[1].instructions[-1].d.erase()
     assert int(template.blocks[1].instructions[-1].d.t) == int(ida_hexrays.mop_z)
     record = template.boundary_ports.conditional[0]
-    assert record.source_serial == 1
+    assert record.source_serial == 0
     imported_source = detached_handler_island._BoundaryPortBlockBinding(
         native_ea=source_block_ea,
         imported_key=(source_block_ea, 1),
@@ -5090,6 +5093,14 @@ def test_preopt_import_preserves_exact_imported_predicate_for_imported_arms(
             templates_by_target={source_block_ea: template},
         )
         is True
+    )
+    assert (
+        detached_handler_island._exact_imported_predicate_true_is_taken(
+            replace(port, predicate_constant=None),
+            imported_source,
+            templates_by_target={source_block_ea: template},
+        )
+        is None
     )
     assert (
         detached_handler_island._exact_imported_predicate_true_is_taken(
