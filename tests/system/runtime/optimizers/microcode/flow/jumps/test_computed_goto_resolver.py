@@ -1662,6 +1662,11 @@ def test_static_state_write_routes_publish_before_live_mba(monkeypatch) -> None:
         "_decode_static_state_route_corridor",
         lambda _start_ea, _delivery_ea: decoded,
     )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_decode_native_flow_route_inventory",
+        lambda *_args: (),
+    )
     _session, state = _resolver_session(resolution)
 
     (evidence,) = computed_goto_resolver._discover_static_state_write_routes(
@@ -1726,6 +1731,11 @@ def test_static_state_write_routes_include_direct_dispatcher_delivery(
         "_decode_static_state_route_corridor",
         lambda _start_ea, _delivery_ea: decoded,
     )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_decode_native_flow_route_inventory",
+        lambda *_args: (),
+    )
     _session, state = _resolver_session(resolution)
 
     (evidence,) = computed_goto_resolver._discover_static_state_write_routes(
@@ -1739,6 +1749,57 @@ def test_static_state_write_routes_include_direct_dispatcher_delivery(
     assert evidence.delivery_region_start_ea == 0x40A5C8
     assert evidence.delivery_region_end_ea == 0x40A5CA
     assert evidence.target_ea == 0x40BECC
+
+
+def test_static_state_write_routes_publish_reference_style_inventory(
+    monkeypatch,
+) -> None:
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={},
+        reachable_eas=(0x40A560, 0x40A5C8),
+        arch="x86",
+        executed_insns=10,
+        seeds_run=0,
+        patch_plans=(),
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40BEB2,
+        source_block_ea=0x40BEB2,
+        materialized_anchor_eas=(),
+        target_eas=(0x40BECC,),
+        selector_state_var_reg=16,
+        selector_state_constant=0xABB95547,
+        resolver_kind="static_handler_entry_route",
+    )
+    insn = computed_goto_resolver._DecodedNativeFlowInstruction
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_decode_native_flow_route_inventory",
+        lambda *_args: (
+            insn(0x40A5B2, 0x40A5B8, "mov", 16, True, 0xABB95547),
+            insn(0x40A5B8, 0x40A5BE, "cmp", 16, False, 0x11111111),
+            insn(0x40A5BE, 0x40A5C0, "jne", None, False, None, 0x40A5F0),
+        ),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_direct_dispatch_delivery_sites",
+        lambda *_args, **_kwargs: (),
+    )
+    _session, state = _resolver_session(resolution)
+
+    (evidence,) = computed_goto_resolver._discover_static_state_write_routes(
+        state,
+        resolution,
+        (transfer,),
+    )
+
+    assert evidence.source_write_ea == 0x40A5B2
+    assert evidence.delivery_ea == 0x40A5BE
+    assert evidence.delivery_region_end_ea == 0x40A5C0
+    assert evidence.target_ea == 0x40BECC
+    assert evidence.proof_kind == "reference_style_immediate_flow_route"
 
 
 def test_state_write_route_rebind_requires_live_dispatcher_successor() -> None:
