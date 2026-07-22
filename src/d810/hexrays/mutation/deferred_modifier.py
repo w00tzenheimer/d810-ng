@@ -6656,9 +6656,9 @@ class DeferredGraphModifier:
                     pred_blk, copy_serial, verify=False,
                 )
             elif pred_blk.nsucc() == 2:
-                # Only rewire the conditional-branch arm that currently
-                # targets the original.  The fallthrough arm (serial+1)
-                # is untouched by staged_atomic.
+                # Rewire the explicit conditional arm directly.  A physical
+                # fallthrough cannot remain on the original after a committed
+                # copy-and-swap, so route it through an adjacent helper.
                 if (
                     pred_blk.tail is not None
                     and getattr(pred_blk.tail, "d", None) is not None
@@ -6669,13 +6669,11 @@ class DeferredGraphModifier:
                         old_target=original_serial,
                     )
                 else:
-                    logger.debug(
-                        "staged_atomic commit: pred blk[%d] is 2-way with "
-                        "fallthrough pointing at original — leaving succset "
-                        "as-is (fallthrough implicit)",
-                        pred_serial,
+                    rewired_ok = self._apply_fallthrough_change(
+                        pred_blk,
+                        int(copy.serial),
+                        old_target=original_serial,
                     )
-                    continue
             else:
                 logger.debug(
                     "staged_atomic commit: pred blk[%d] has nsucc=%d; "
