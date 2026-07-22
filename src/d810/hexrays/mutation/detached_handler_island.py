@@ -4686,6 +4686,9 @@ def _preflight_boundary_port_batch(
                 else "inverted"
             )
         )
+        preserved_target_is_current_taken = (
+            relation == "matching" if proven else None
+        )
         predicate_shape: dict[str, object] = {}
         if source is not None and source.imported_key is not None:
             template_target_ea, template_serial = source.imported_key
@@ -4842,7 +4845,7 @@ def _preflight_boundary_port_batch(
                     "conditional predicate orientation observation failed",
                     exc_info=True,
                 )
-        return orientation if proven else None
+        return preserved_target_is_current_taken
 
     def bind_conditional_source(
         record: DetachedSnippetTemplateConditionalBoundaryPort,
