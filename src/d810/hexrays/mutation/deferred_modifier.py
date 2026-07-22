@@ -8459,7 +8459,12 @@ class DeferredGraphModifier:
             or int(blk.nsucc()) != 0
             or int(blk.tail.ea) != int(predicate_ea)
             or not (
-                int(blk.tail.opcode) == int(ida_hexrays.m_ijmp)
+                int(blk.tail.opcode)
+                in {
+                    int(ida_hexrays.m_ijmp),
+                    int(ida_hexrays.m_call),
+                    int(ida_hexrays.m_icall),
+                }
                 or (
                     ida_hexrays.is_mcode_jcond(int(blk.tail.opcode))
                     and getattr(blk.tail, "d", None) is not None
@@ -8489,6 +8494,12 @@ class DeferredGraphModifier:
         )
         blk.type = int(ida_hexrays.BLT_1WAY)
         blk.flags |= int(ida_hexrays.MBL_GOTO)
+        if not any(
+            int(instruction.opcode)
+            in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}
+            for instruction in self._block_instructions(blk)
+        ):
+            blk.flags &= ~int(ida_hexrays.MBL_CALL)
         for stale in tuple(int(value) for value in blk.succset):
             blk.succset._del(stale)
             stale_block = self.mba.get_mblock(stale)

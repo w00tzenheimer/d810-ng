@@ -483,11 +483,12 @@ def test_materialize_zero_way_goto_replaces_predicate_and_binds_edge(
     indirect_source = _FakeBlock(4, start=0x40B469)
     indirect_source.tail = SimpleNamespace(
         ea=0x40B49E,
-        opcode=ida_hexrays.m_ijmp,
+        opcode=ida_hexrays.m_call,
         d=SimpleNamespace(t=ida_hexrays.mop_z),
     )
     indirect_source.succset = _FakeEdgeSet()
     indirect_source.nsucc = lambda: 0  # type: ignore[assignment]
+    indirect_source.flags = ida_hexrays.MBL_CALL
     indirect_target = _FakeBlock(10, start=0x40C592)
     mba.blocks.update({4: indirect_source, 10: indirect_target})
 
@@ -498,6 +499,7 @@ def test_materialize_zero_way_goto_replaces_predicate_and_binds_edge(
     )
     assert inserted[-1] == (4, 10, True)
     assert indirect_source.tail.opcode == ida_hexrays.m_goto
+    assert not indirect_source.flags & ida_hexrays.MBL_CALL
     assert indirect_source.succset._items == [10]
     assert indirect_target.predset._items == [4]
 

@@ -14473,7 +14473,12 @@ def _classify_live_state_write_routes(
                 write_tail is not None
                 and len(write_successors) == 0
                 and (
-                    int(write_tail.opcode) == int(ida_hexrays.m_ijmp)
+                    int(write_tail.opcode)
+                    in {
+                        int(ida_hexrays.m_ijmp),
+                        int(ida_hexrays.m_call),
+                        int(ida_hexrays.m_icall),
+                    }
                     or (
                         ida_hexrays.is_mcode_jcond(int(write_tail.opcode))
                         and getattr(write_tail, "d", None) is not None
