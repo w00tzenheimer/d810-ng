@@ -228,6 +228,137 @@ class _NativeStateRouteDeliverySite(NamedTuple):
     delivery_region_end_ea: int
 
 
+class _DecodedNativeFlowInstruction(NamedTuple):
+    """IDA-free native facts consumed by the Rhad flow-route state machine."""
+
+    ea: int
+    end_ea: int
+    mnemonic: str
+    destination_mreg: int | None
+    writes_destination: bool
+    source_immediate: int | None
+    direct_target_ea: int | None = None
+
+
+class _ImmediateNativeFlowRoute(NamedTuple):
+    """One source-specific immediate state route recovered before mutation."""
+
+    source_write_ea: int
+    delivery_ea: int
+    delivery_end_ea: int
+    corridor_instruction_eas: tuple[int, ...]
+    state_constant: int
+    target_ea: int
+
+
+def _discover_reference_style_immediate_flow_routes(
+    decoded: Sequence[_DecodedNativeFlowInstruction],
+    *,
+    state_var_reg: int,
+    state_targets: Mapping[int, int],
+) -> tuple[_ImmediateNativeFlowRoute, ...]:
+    """Recover the reference algorithm's one-target flow-state transactions.
+
+    The scan intentionally models the reference implementation's staging
+    state.  A state assignment becomes authoritative only after the later
+    dispatcher comparison and branch identify a complete replacement cut.
+    Branch-staged, conditional-move, register, and memory assignments abstain
+    here; they require atomic two-arm evidence in a separate slice.
+    """
+    ordered = tuple(sorted(decoded, key=lambda instruction: int(instruction.ea)))
+    if not ordered:
+        return ()
+    branch_target_eas = frozenset(
+        int(instruction.direct_target_ea)
+        for instruction in ordered
+        if instruction.direct_target_ea is not None
+        and (
+            str(instruction.mnemonic).lower() == "jmp"
+            or str(instruction.mnemonic).lower() in _SV_JCC_MNEMS
+        )
+    )
+    current_assignment: _DecodedNativeFlowInstruction | None = None
+    saved_assignment: _DecodedNativeFlowInstruction | None = None
+    branch_assignment: _DecodedNativeFlowInstruction | None = None
+    target: int | None = None
+    state_constant: int | None = None
+    had_state_comparison = False
+    proof: list[_DecodedNativeFlowInstruction] = []
+    routes: set[_ImmediateNativeFlowRoute] = set()
+
+    for instruction in ordered:
+        mnemonic = str(instruction.mnemonic).lower()
+        is_jump = mnemonic == "jmp" or mnemonic in _SV_JCC_MNEMS
+        is_conditional_jump = mnemonic in _SV_JCC_MNEMS
+        is_state_operand = (
+            instruction.destination_mreg is not None
+            and int(instruction.destination_mreg) == int(state_var_reg)
+        )
+
+        if saved_assignment is not None and int(instruction.ea) in branch_target_eas:
+            branch_assignment = saved_assignment
+
+        if (
+            mnemonic == "mov" or mnemonic.startswith("cmov")
+        ) and is_state_operand and instruction.writes_destination:
+            current_assignment = instruction
+            target = None
+            state_constant = None
+            had_state_comparison = False
+            proof = []
+
+        if is_conditional_jump:
+            saved_assignment = current_assignment
+
+        validates_assignment = (
+            mnemonic == "cmp"
+            and is_state_operand
+            and instruction.source_immediate is not None
+        ) or is_jump
+        if validates_assignment and current_assignment is not None:
+            immediate = current_assignment.source_immediate
+            if (
+                str(current_assignment.mnemonic).lower() == "mov"
+                and immediate is not None
+            ):
+                state_constant = int(immediate) & _MASK32
+                target = state_targets.get(state_constant)
+            else:
+                state_constant = None
+                target = None
+            if target is not None:
+                proof.extend((current_assignment, instruction))
+            current_assignment = None
+
+        if target is None or state_constant is None:
+            continue
+        if mnemonic == "cmp" and is_state_operand:
+            had_state_comparison = True
+        if mnemonic != "jmp" and not (had_state_comparison and is_jump):
+            continue
+        proof.append(instruction)
+        if branch_assignment is None:
+            proof_eas = tuple(sorted({int(item.ea) for item in proof}))
+            routes.add(
+                _ImmediateNativeFlowRoute(
+                    int(proof[0].ea),
+                    int(instruction.ea),
+                    int(instruction.end_ea),
+                    proof_eas,
+                    int(state_constant),
+                    int(target),
+                )
+            )
+        target = None
+        state_constant = None
+        saved_assignment = None
+        branch_assignment = None
+        had_state_comparison = False
+        proof = []
+
+    return tuple(sorted(routes))
+
+
 def _select_static_state_write_delivery(
     decoded: Sequence[_DecodedStateRouteInstruction],
     *,

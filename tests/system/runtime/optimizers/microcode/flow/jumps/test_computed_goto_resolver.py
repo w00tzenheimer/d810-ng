@@ -1556,6 +1556,70 @@ def test_static_state_write_delivery_rejects_conditional_corridor() -> None:
     )
 
 
+def test_reference_style_immediate_flow_routes_preserve_each_source_site() -> None:
+    insn = computed_goto_resolver._DecodedNativeFlowInstruction
+    decoded = (
+        insn(0x401000, 0x401006, "mov", 16, True, 0x11111111),
+        insn(0x401006, 0x40100C, "cmp", 16, False, 0x22222222),
+        insn(0x40100C, 0x40100E, "jne", None, False, None, 0x401030),
+        insn(0x401020, 0x401026, "mov", 16, True, 0x11111111),
+        insn(0x401026, 0x40102C, "cmp", 16, False, 0x33333333),
+        insn(0x40102C, 0x40102E, "je", None, False, None, 0x401040),
+    )
+
+    routes = computed_goto_resolver._discover_reference_style_immediate_flow_routes(
+        decoded,
+        state_var_reg=16,
+        state_targets={0x11111111: 0x402000},
+    )
+
+    assert tuple(route.source_write_ea for route in routes) == (0x401000, 0x401020)
+    assert tuple(route.delivery_ea for route in routes) == (0x40100C, 0x40102C)
+    assert {route.target_ea for route in routes} == {0x402000}
+    assert routes[0].corridor_instruction_eas == (
+        0x401000,
+        0x401006,
+        0x40100C,
+    )
+
+
+def test_reference_style_immediate_flow_routes_accept_bootstrap_jump() -> None:
+    insn = computed_goto_resolver._DecodedNativeFlowInstruction
+    decoded = (
+        insn(0x401000, 0x401006, "mov", 16, True, 0x11111111),
+        insn(0x401006, 0x40100B, "jmp", None, False, None, 0x401100),
+    )
+
+    (route,) = computed_goto_resolver._discover_reference_style_immediate_flow_routes(
+        decoded,
+        state_var_reg=16,
+        state_targets={0x11111111: 0x402000},
+    )
+
+    assert route.source_write_ea == 0x401000
+    assert route.delivery_ea == 0x401006
+    assert route.corridor_instruction_eas == (0x401000, 0x401006)
+
+
+def test_reference_style_immediate_flow_routes_abstain_on_branch_staging() -> None:
+    insn = computed_goto_resolver._DecodedNativeFlowInstruction
+    decoded = (
+        insn(0x401000, 0x401006, "mov", 16, True, 0x11111111),
+        insn(0x401006, 0x401008, "jne", None, False, None, 0x401010),
+        insn(0x401008, 0x40100E, "mov", 16, True, 0x22222222),
+        insn(0x401010, 0x401016, "cmp", 16, False, 0x44444444),
+        insn(0x401016, 0x401018, "jne", None, False, None, 0x401040),
+    )
+
+    routes = computed_goto_resolver._discover_reference_style_immediate_flow_routes(
+        decoded,
+        state_var_reg=16,
+        state_targets={0x11111111: 0x402000, 0x22222222: 0x403000},
+    )
+
+    assert routes == ()
+
+
 def test_static_state_write_routes_publish_before_live_mba(monkeypatch) -> None:
     plan = _PatchPlan(
         jmp_ea=0x40A5C8,
