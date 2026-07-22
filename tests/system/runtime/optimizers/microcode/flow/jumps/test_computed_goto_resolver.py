@@ -473,7 +473,12 @@ def test_static_choice_routes_require_independent_entry_dispatch_replay() -> Non
         resolution,
         (choice,),
         entry_seed_resolver=lambda _function_ea, _selectors: (
-            (0x40D348, 28, 0x699BC698),
+            computed_goto_resolver.NativeEntryBootstrapSeed(
+                source_anchor_ea=0x40D348,
+                direct_target_ea=0x40D380,
+                state_mreg=28,
+                state_constant=0x699BC698,
+            ),
         ),
         route_resolver=lambda source_ea, **kwargs: replayed.append(
             (source_ea, dict(kwargs["initial_mregs"]))
@@ -1956,7 +1961,7 @@ def test_stkpnts_projects_native_spd_to_imported_and_call_eas(
 
     computed_goto_resolver._on_stkpnts(
         function_ea=function_ea,
-        mba=SimpleNamespace(entry_ea=function_ea),
+        mba=SimpleNamespace(entry_ea=function_ea, frsize=1168, frregs=0),
         stack_points=stack_points,
         decision=decision,
     )
@@ -1969,8 +1974,14 @@ def test_stkpnts_projects_native_spd_to_imported_and_call_eas(
     assert decision["stack_points_modified"] == 3
 
 
-def test_stkpnts_adds_detached_call_push_delta_to_native_frame_baseline(
+@pytest.mark.parametrize(
+    ("native_call_spd", "expected_call_spd"),
+    ((-1168, -1172), (-1172, -1172)),
+)
+def test_stkpnts_merges_detached_call_push_delta_exactly_once(
     monkeypatch,
+    native_call_spd: int,
+    expected_call_spd: int,
 ) -> None:
     import ida_frame
     import ida_funcs
@@ -1989,6 +2000,9 @@ def test_stkpnts_adds_detached_call_push_delta_to_native_frame_baseline(
         seeds_run=0,
     )
     session, _state = _resolver_session(resolution)
+    session.identity_key = "diag-session"
+    session.function_ea = function_ea
+    session.current_mba_generation = 7
     monkeypatch.setattr(
         computed_goto_resolver,
         "imported_detached_snippet_instruction_origins",
@@ -2022,7 +2036,11 @@ def test_stkpnts_adds_detached_call_push_delta_to_native_frame_baseline(
     monkeypatch.setattr(
         ida_frame,
         "get_spd",
-        lambda candidate, ea: -1168 if candidate is function else 0,
+        lambda candidate, ea: (
+            native_call_spd
+            if candidate is function and int(ea) == native_call_ea
+            else -1168 if candidate is function else 0
+        ),
     )
     applied: list[tuple[object, int, int]] = []
     monkeypatch.setattr(
@@ -2030,22 +2048,69 @@ def test_stkpnts_adds_detached_call_push_delta_to_native_frame_baseline(
         "_upsert_stkpnt",
         lambda points, ea, spd: not applied.append((points, ea, spd)),
     )
+    observed = []
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "emit_diagnostic",
+        observed.append,
+    )
     stack_points = object()
     decision: dict[str, object] = {"session": session}
 
     computed_goto_resolver._on_stkpnts(
         function_ea=function_ea,
-        mba=SimpleNamespace(entry_ea=function_ea),
+        mba=SimpleNamespace(entry_ea=function_ea, frsize=1168, frregs=0),
         stack_points=stack_points,
         decision=decision,
     )
 
     assert applied == [
-        (stack_points, native_call_ea, -1172),
-        (stack_points, imported_call_ea, -1172),
+        (stack_points, native_call_ea, expected_call_spd),
+        (stack_points, imported_call_ea, expected_call_spd),
         (stack_points, imported_body_ea, -1168),
     ]
     assert decision == {"session": session, "stack_points_modified": 3}
+    assert len(observed) == 1
+    event = observed[0]
+    assert event.event_kind == "stack_point_projection"
+    assert event.session_id == "diag-session"
+    assert event.evidence_generation == 0
+    assert event.mba_generation_before == 7
+    assert event.payload == {
+        "capture_active": False,
+        "points": [
+            {
+                "applied_spd": expected_call_spd,
+                "canonical_spd": -1168,
+                "live_ea": "0x2030",
+                "native_ea": "0x2030",
+                "native_spd": native_call_spd,
+                "outcome": "applied",
+                "reason": "merged",
+                "route_call_delta": -4,
+            },
+            {
+                "applied_spd": expected_call_spd,
+                "canonical_spd": -1168,
+                "live_ea": "0xf10020",
+                "native_ea": "0x2030",
+                "native_spd": native_call_spd,
+                "outcome": "applied",
+                "reason": "merged",
+                "route_call_delta": -4,
+            },
+            {
+                "applied_spd": -1168,
+                "canonical_spd": None,
+                "live_ea": "0xf10024",
+                "native_ea": "0x2034",
+                "native_spd": -1168,
+                "outcome": "applied",
+                "reason": "native_spd",
+                "route_call_delta": None,
+            },
+        ],
+    }
 
 
 def test_stkpnts_projects_native_spd_into_isolated_capture_ranges(

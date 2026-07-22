@@ -1,5 +1,6 @@
 from d810.analyses.control_flow.call_abi import (
     StackCallAbiEvidence,
+    project_detached_call_stack_point,
     prove_three_argument_callee_purged_call,
 )
 
@@ -71,3 +72,44 @@ def test_rejects_mismatched_call_stack_deficit() -> None:
     assert prove_three_argument_callee_purged_call(
         _evidence(call_stack_deficit=8)
     ) is None
+
+
+def test_detached_call_stack_point_adds_missing_route_delta_once() -> None:
+    assert (
+        project_detached_call_stack_point(
+            native_spd=-1168,
+            canonical_spd=-1168,
+            route_call_delta=-12,
+        )
+        == -1180
+    )
+
+
+def test_detached_call_stack_point_preserves_native_delta_already_present() -> None:
+    assert (
+        project_detached_call_stack_point(
+            native_spd=-1180,
+            canonical_spd=-1168,
+            route_call_delta=-12,
+        )
+        == -1180
+    )
+
+
+def test_detached_call_stack_point_rejects_conflicting_or_positive_delta() -> None:
+    assert (
+        project_detached_call_stack_point(
+            native_spd=-1176,
+            canonical_spd=-1168,
+            route_call_delta=-12,
+        )
+        is None
+    )
+    assert (
+        project_detached_call_stack_point(
+            native_spd=-1168,
+            canonical_spd=-1168,
+            route_call_delta=4,
+        )
+        is None
+    )

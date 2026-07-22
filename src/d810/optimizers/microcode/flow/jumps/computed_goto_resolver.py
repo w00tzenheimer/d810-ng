@@ -78,6 +78,7 @@ from d810.backends.hexrays.evidence.call_abi import (
 )
 from d810.analyses.control_flow.call_abi import (
     StackCallAbiProof,
+    project_detached_call_stack_point,
     prove_three_argument_callee_purged_call,
 )
 from d810.analyses.control_flow.detached_handler_island import (
@@ -143,6 +144,8 @@ from d810.analyses.control_flow.state_machine_analysis import (
 )
 from d810.analyses.value_flow.state_write_anchor import StateWriteAnchorFactCollector
 from d810.core.logging import getLogger
+from d810.core.observability import emit as emit_diagnostic
+from d810.core.observability_events import LifecycleEventObserved
 from d810.ir.flowgraph import (
     BlockKind,
     BlockSnapshot,
@@ -9762,9 +9765,7 @@ def _enrich_preopt_union_route_ranges(
         )
         + 0x100
     )
-    existing_ranges_by_target: dict[
-        int, set[tuple[tuple[int, int], ...]]
-    ] = {}
+    existing_ranges_by_target: dict[int, set[tuple[tuple[int, int], ...]]] = {}
     for transfer in transfers:
         if (
             transfer.resolver_kind != "static_handler_entry_route"
@@ -12513,6 +12514,7 @@ def _on_stkpnts(
             }
         )
     projected: list[tuple[int, int, int]] = []
+    diagnostic_points: list[dict[str, object]] = []
     detached_call_spd_by_ea = (
         {} if capture_active else dict(detached_preopt_call_stack_points(key))
     )
@@ -12520,13 +12522,33 @@ def _on_stkpnts(
         try:
             native_spd = int(ida_frame.get_spd(function, int(native_ea)))
             route_call_delta = detached_call_spd_by_ea.get(int(native_ea))
-            # Captured push depth is relative to the detached route entry;
-            # hxe_stkpnts consumes absolute function-frame coordinates.
-            spd = (
-                native_spd
-                if route_call_delta is None
-                else native_spd + int(route_call_delta)
-            )
+            canonical_spd: int | None = None
+            if route_call_delta is None:
+                spd = native_spd
+            else:
+                canonical_spd = -(
+                    int(getattr(mba, "frsize")) + int(getattr(mba, "frregs"))
+                )
+                resolved_spd = project_detached_call_stack_point(
+                    native_spd=native_spd,
+                    canonical_spd=canonical_spd,
+                    route_call_delta=int(route_call_delta),
+                )
+                if resolved_spd is None:
+                    diagnostic_points.append(
+                        {
+                            "live_ea": hex(int(live_ea)),
+                            "native_ea": hex(int(native_ea)),
+                            "native_spd": int(native_spd),
+                            "canonical_spd": int(canonical_spd),
+                            "route_call_delta": int(route_call_delta),
+                            "applied_spd": None,
+                            "outcome": "abstained",
+                            "reason": "conflicting_stack_evidence",
+                        }
+                    )
+                    continue
+                spd = int(resolved_spd)
             _upsert_stkpnt(stack_points, int(live_ea), spd)
         except Exception:
             logger.debug(
@@ -12539,9 +12561,57 @@ def _on_stkpnts(
             )
             continue
         projected.append((int(live_ea), int(native_ea), spd))
+        diagnostic_points.append(
+            {
+                "live_ea": hex(int(live_ea)),
+                "native_ea": hex(int(native_ea)),
+                "native_spd": int(native_spd),
+                "canonical_spd": (
+                    None if canonical_spd is None else int(canonical_spd)
+                ),
+                "route_call_delta": (
+                    None if route_call_delta is None else int(route_call_delta)
+                ),
+                "applied_spd": int(spd),
+                "outcome": "applied",
+                "reason": "native_spd" if route_call_delta is None else "merged",
+            }
+        )
+    if not diagnostic_points:
+        return
+    if projected:
+        decision["stack_points_modified"] = len(projected)
+    session = decision.get("session")
+    session_id = getattr(session, "identity_key", None)
+    if session_id is not None:
+        maturity = getattr(mba, "maturity", None)
+        emit_diagnostic(
+            LifecycleEventObserved(
+                session_id=str(session_id),
+                func_ea=key,
+                event_kind="stack_point_projection",
+                provider="hexrays",
+                maturity=(
+                    None if maturity is None else maturity_to_string(int(maturity))
+                ),
+                phase="hxe_stkpnts",
+                evidence_generation=int(state.evidence_generation),
+                mba_generation_before=int(
+                    getattr(session, "current_mba_generation", 0)
+                ),
+                mba_generation_after=int(getattr(session, "current_mba_generation", 0)),
+                summary=(
+                    f"projected {len(projected)} stack points; "
+                    f"abstained {len(diagnostic_points) - len(projected)}"
+                ),
+                payload={
+                    "capture_active": bool(capture_active),
+                    "points": diagnostic_points,
+                },
+            )
+        )
     if not projected:
         return
-    decision["stack_points_modified"] = len(projected)
     logger.info(
         "computed-goto stack provenance projected: func=0x%X points=%d "
         "capture=%s native_calls=%s route_call_spds=%s",
