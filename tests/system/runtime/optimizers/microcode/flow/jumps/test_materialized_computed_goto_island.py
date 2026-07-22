@@ -253,7 +253,25 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
             ((0xFFFFFFFFFFFFFF01, 0x2000),) if current_mba is mba else ()
         ),
     )
+    rebound_routes: list[tuple[int, object, object]] = []
+    monkeypatch.setattr(
+        island,
+        "rebind_live_preopt_routes",
+        lambda *, function_ea, mba, decision: rebound_routes.append(
+            (int(function_ea), mba, decision)
+        ),
+    )
     gateway = make_mutation_gateway(mba)
+    gateway.identity_index.evidence_generation = state.evidence_generation
+    state.bind_current_mba(gateway.identity_index)
+    refreshed_origins: list[dict[int, int]] = []
+    monkeypatch.setattr(
+        type(gateway.identity_index),
+        "refresh_from_mba",
+        lambda current_index, current_mba, *, imported_instruction_origins=None: (
+            refreshed_origins.append(dict(imported_instruction_origins or {}))
+        ),
+    )
     first_decision: dict[str, object] = {
         "session": session,
         "mutation_gateway": gateway,
@@ -288,6 +306,8 @@ def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
     }
     assert state.native_preanalysis.bound_preopt_generation == 1
     assert state.current_imported_instruction_origins == ((0xFFFFFFFFFFFFFF01, 0x2000),)
+    assert refreshed_origins == [{0xFFFFFFFFFFFFFF01: 0x2000}]
+    assert rebound_routes == [(0x1000, mba, first_decision)]
 
 
 def test_live_bootstrap_endpoint_does_not_suppress_prepared_union(monkeypatch) -> None:
@@ -360,6 +380,11 @@ def test_live_bootstrap_endpoint_does_not_suppress_prepared_union(monkeypatch) -
         island,
         "imported_detached_snippet_instruction_origins",
         lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        island,
+        "rebind_live_preopt_routes",
+        lambda **_kwargs: None,
     )
 
     decision: dict[str, object] = {

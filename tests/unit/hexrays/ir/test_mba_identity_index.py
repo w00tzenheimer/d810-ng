@@ -269,6 +269,49 @@ def test_live_mba_identity_scan_uses_imported_eas_without_reading_operands() -> 
     )
 
 
+def test_refresh_from_live_mba_accepts_newly_published_imported_origins() -> None:
+    class Insn:
+        def __init__(self, ea: int) -> None:
+            self.ea = ea
+            self.next = None
+
+    block = type(
+        "Block",
+        (),
+        {
+            "serial": 0,
+            "start": 0xFFFFFFFFFFFFFFFF,
+            "head": Insn(0xFFFFFFFFFFFFFF01),
+        },
+    )()
+    mba = type(
+        "Mba",
+        (),
+        {"qty": 1, "get_mblock": lambda self, serial: block},
+    )()
+    index = MbaBlockIdentityIndex.from_mba(
+        mba,
+        generation=3,
+        native_key=NATIVE_KEY,
+    )
+    native_identity = StableBlockIdentity.from_instruction_eas(
+        (0x40C498,),
+        native_key=NATIVE_KEY,
+    )
+
+    assert index.rebind_imported_identity(native_identity).status is RebindStatus.MISSING
+
+    index.refresh_from_mba(
+        mba,
+        imported_instruction_origins={0xFFFFFFFFFFFFFF01: 0x40C498},
+    )
+
+    rebound = index.rebind_imported_identity(native_identity)
+    assert rebound.status is RebindStatus.BOUND
+    assert rebound.block is not None
+    assert rebound.block.serial == 0
+
+
 def test_imported_native_origins_replace_synthetic_snapshot_identity() -> None:
     synthetic_block = BlockSnapshot(
         serial=40,
