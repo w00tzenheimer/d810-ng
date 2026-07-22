@@ -366,6 +366,7 @@ class NativePreanalysisSessionState:
     published_transfer_inventory_revision: int | None = None
     state_write_route_inventory_revision: int = 0
     published_state_write_route_inventory_revision: int | None = None
+    bound_state_write_route_generation: int | None = None
     redo_generation: int | None = None
     pending_generated_restart_generation: int | None = None
     event_observer: Callable[[EvidenceLifecycleTransition], None] | None = field(
@@ -1110,6 +1111,23 @@ class NativePreanalysisSessionState:
             self.published_state_write_route_inventory_revision = (
                 self.state_write_route_inventory_revision
             )
+
+    def needs_state_write_route_binding(self) -> bool:
+        """Return whether this evidence generation still needs live routing."""
+        current = self.resolver_evidence
+        return bool(
+            current is not None
+            and current.state_write_routes
+            and self.bound_state_write_route_generation != self.evidence_generation
+        )
+
+    def mark_state_write_routes_bound(self) -> None:
+        """Acknowledge complete live binding for the current evidence epoch."""
+        if (
+            self.resolver_evidence is not None
+            and self.resolver_evidence.state_write_routes
+        ):
+            self.bound_state_write_route_generation = self.evidence_generation
 
     def request_controlled_redo(self) -> bool:
         """Allow exactly one redo request for a changed evidence generation."""

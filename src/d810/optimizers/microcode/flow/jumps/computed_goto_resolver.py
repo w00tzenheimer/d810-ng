@@ -13893,6 +13893,167 @@ def _discover_static_native_bootstrap_routes(
     return discovered
 
 
+class _ReboundStateWriteRoute(NamedTuple):
+    """Current-MBA binding for one portable state-write delivery route."""
+
+    evidence: PortableStateWriteRouteEvidence
+    write: object
+    delivery: object
+    target: object
+    old_target_serial: int | None
+
+
+def _rebind_route_identity(index, identity, *, prefer_imported: bool):
+    """Rebind one route identity without accepting an ambiguous fallback."""
+    from d810.ir.block_identity import RebindStatus
+
+    primary = (
+        index.rebind_imported_identity(identity)
+        if prefer_imported
+        else index.rebind_identity(identity)
+    )
+    if primary.status is not RebindStatus.MISSING:
+        return primary
+    return (
+        index.rebind_identity(identity)
+        if prefer_imported
+        else index.rebind_imported_identity(identity)
+    )
+
+
+def _classify_live_state_write_routes(
+    mba: object,
+    index: object,
+    routes: Sequence[PortableStateWriteRouteEvidence],
+    *,
+    dispatcher_router_eas: frozenset[int],
+    prefer_imported: bool,
+) -> tuple[
+    tuple[_ReboundStateWriteRoute, ...],
+    tuple[_ReboundStateWriteRoute, ...],
+    int,
+]:
+    """Bind direct state deliveries that still point at a proven dispatcher."""
+    import ida_hexrays  # type: ignore[import-untyped]
+
+    router_serials: set[int] = set()
+    for router_ea in sorted(dispatcher_router_eas):
+        router_identity = StableBlockIdentity.from_intervals(
+            (NativeEaInterval(int(router_ea), int(router_ea) + 1),),
+            native_key=index.native_key,
+        )
+        rebound = _rebind_route_identity(
+            index,
+            router_identity,
+            prefer_imported=prefer_imported,
+        )
+        if rebound.block is not None:
+            router_serials.add(int(rebound.block.serial))
+
+    pending: list[_ReboundStateWriteRoute] = []
+    already: list[_ReboundStateWriteRoute] = []
+    unbound = 0
+    delivery_targets: dict[int, int] = {}
+    for evidence in routes:
+        write_result = _rebind_route_identity(
+            index,
+            evidence.write_identity,
+            prefer_imported=prefer_imported,
+        )
+        delivery_result = _rebind_route_identity(
+            index,
+            evidence.delivery_identity,
+            prefer_imported=prefer_imported,
+        )
+        target_result = _rebind_route_identity(
+            index,
+            evidence.target_identity,
+            prefer_imported=prefer_imported,
+        )
+        if (
+            write_result.block is None
+            or delivery_result.block is None
+            or target_result.block is None
+        ):
+            unbound += 1
+            logger.debug(
+                "PREOPT state-write rebind abstain: write=0x%X delivery=0x%X "
+                "target=0x%X write_status=%s delivery_status=%s target_status=%s",
+                int(evidence.source_write_ea),
+                int(evidence.delivery_ea),
+                int(evidence.target_ea),
+                write_result.status.value,
+                delivery_result.status.value,
+                target_result.status.value,
+            )
+            continue
+        write = mba.get_mblock(int(write_result.block.serial))
+        delivery = mba.get_mblock(int(delivery_result.block.serial))
+        target = mba.get_mblock(int(target_result.block.serial))
+        if write is None or delivery is None or target is None:
+            unbound += 1
+            continue
+        tail = delivery.tail
+        successors = tuple(
+            int(delivery.succ(successor_index))
+            for successor_index in range(int(delivery.nsucc()))
+        )
+        if (
+            tail is None
+            or int(tail.ea) != int(evidence.delivery_ea)
+            or int(tail.opcode) != int(ida_hexrays.m_goto)
+            or len(successors) not in (0, 1)
+        ):
+            unbound += 1
+            logger.debug(
+                "PREOPT state-write source-shape abstain: delivery=blk%d@0x%X "
+                "native_delivery=0x%X tail_ea=%s opcode=%s successors=%s",
+                int(delivery.serial),
+                int(delivery.start),
+                int(evidence.delivery_ea),
+                None if tail is None else f"0x{int(tail.ea):X}",
+                None if tail is None else int(tail.opcode),
+                successors,
+            )
+            continue
+        old_target_serial = int(successors[0]) if successors else None
+        rebound = _ReboundStateWriteRoute(
+            evidence,
+            write_result.block,
+            delivery_result.block,
+            target_result.block,
+            old_target_serial,
+        )
+        if old_target_serial == int(target_result.block.serial):
+            already.append(rebound)
+            continue
+        if old_target_serial is not None and old_target_serial not in router_serials:
+            unbound += 1
+            logger.debug(
+                "PREOPT state-write router abstain: delivery=blk%d@0x%X "
+                "old_target=%d router_serials=%s target=blk%d@0x%X",
+                int(delivery.serial),
+                int(delivery.start),
+                old_target_serial,
+                sorted(router_serials),
+                int(target.serial),
+                int(target.start),
+            )
+            continue
+        previous_target = delivery_targets.get(int(delivery.serial))
+        if previous_target is not None and previous_target != int(target.serial):
+            unbound += 1
+            pending = [
+                route
+                for route in pending
+                if int(route.delivery.serial) != int(delivery.serial)
+            ]
+            continue
+        delivery_targets[int(delivery.serial)] = int(target.serial)
+        pending.append(rebound)
+    return tuple(pending), tuple(already), int(unbound)
+
+
 def _on_preopt_bootstrap_route(
     *,
     function_ea: int,
@@ -13931,14 +14092,17 @@ def _on_preopt_bootstrap_route(
     if (
         not state.native_preanalysis.needs_preopt_binding()
         and not state.native_preanalysis.needs_bootstrap_route_binding()
+        and not state.native_preanalysis.needs_state_write_route_binding()
     ):
         logger.debug(
             "PREOPT bootstrap abstain: func=0x%X reason=no_pending_binding "
-            "evidence_generation=%d bound_generation=%s routes=%d",
+            "evidence_generation=%d bound_generation=%s bootstrap_routes=%d "
+            "state_write_routes=%d",
             int(function_ea),
             int(state.evidence_generation),
             state.native_preanalysis.bound_preopt_generation,
             len(state.native_preanalysis.bootstrap_routes),
+            len(state.portable_evidence.state_write_routes),
         )
         return
     index = state.identity_index
@@ -13946,11 +14110,12 @@ def _on_preopt_bootstrap_route(
     if index is None or gateway is None:
         logger.debug(
             "PREOPT bootstrap abstain: func=0x%X reason=missing_live_port "
-            "index=%s gateway=%s routes=%d",
+            "index=%s gateway=%s bootstrap_routes=%d state_write_routes=%d",
             int(function_ea),
             index is not None,
             gateway is not None,
             len(state.native_preanalysis.bootstrap_routes),
+            len(state.portable_evidence.state_write_routes),
         )
         return
 
@@ -14133,6 +14298,58 @@ def _on_preopt_bootstrap_route(
         else:
             redirect_routes.append(rebound)
 
+    dispatcher_router_eas = frozenset(
+        int(router_ea)
+        for transfer in state.materialized_transfers
+        for router_ea in transfer.dispatcher_router_eas
+    )
+    (
+        state_write_pending,
+        state_write_already,
+        state_write_unbound,
+    ) = _classify_live_state_write_routes(
+        mba,
+        index,
+        state.portable_evidence.state_write_routes,
+        dispatcher_router_eas=dispatcher_router_eas,
+        prefer_imported=union_imported,
+    )
+    state_write_pending_by_source = {
+        int(route.delivery.serial): int(route.target.serial)
+        for route in state_write_pending
+    }
+    coalesced_bootstrap_routes = []
+
+    def retain_non_coalesced_bootstrap_routes(routes):
+        retained = []
+        for route in routes:
+            state_write_target = state_write_pending_by_source.get(
+                int(route.source.serial)
+            )
+            if state_write_target is None:
+                retained.append(route)
+                continue
+            if state_write_target != int(route.handler.serial):
+                logger.warning(
+                    "PREOPT route authority conflict: source=blk%d@0x%X "
+                    "bootstrap_target=blk%d@0x%X state_write_target=%d",
+                    int(route.source.serial),
+                    int(route.evidence.source_anchor_ea),
+                    int(route.handler.serial),
+                    int(route.evidence.handler_anchor_ea),
+                    int(state_write_target),
+                )
+                return None
+            coalesced_bootstrap_routes.append(route)
+        return retained
+
+    retained_terminal_routes = retain_non_coalesced_bootstrap_routes(terminal_routes)
+    retained_redirect_routes = retain_non_coalesced_bootstrap_routes(redirect_routes)
+    if retained_terminal_routes is None or retained_redirect_routes is None:
+        return
+    terminal_routes = retained_terminal_routes
+    redirect_routes = retained_redirect_routes
+
     # The union importer owns its internal conditional boundary ports, but it
     # cannot own a bootstrap edge whose source remains in the caller's live
     # MBA.  Continue rebinding bootstrap routes through the session gateway;
@@ -14288,6 +14505,8 @@ def _on_preopt_bootstrap_route(
     if (
         not pending_routes
         and not already_routed
+        and not state_write_pending
+        and not state_write_already
         and not conditional_pending
         and not conditional_already
         and not conditional_materialize
@@ -14298,6 +14517,7 @@ def _on_preopt_bootstrap_route(
         return
     pending_source_serials = [
         *(int(route.source.serial) for route in pending_routes),
+        *(int(route.delivery.serial) for route in state_write_pending),
         *(int(route[2].serial) for route in conditional_pending),
         *(int(route[3].serial) for route in conditional_materialize),
     ]
@@ -14305,18 +14525,25 @@ def _on_preopt_bootstrap_route(
         return
 
     applied = 0
-    if pending_routes or conditional_pending or conditional_materialize:
+    if (
+        pending_routes
+        or state_write_pending
+        or conditional_pending
+        or conditional_materialize
+    ):
         modifier = DeferredGraphModifier(mba, mutation_gateway=gateway)
         for route in terminal_routes:
-            source = mba.get_mblock(int(route.source.serial))
-            handler = mba.get_mblock(int(route.handler.serial))
-            if (
-                source is None
-                or handler is None
-                or not modifier.restore_pruned_direct_now(source, handler)
-            ):
-                return
-            applied += 1
+            modifier.queue_terminal_goto_change(
+                block_serial=int(route.source.serial),
+                goto_target=int(route.handler.serial),
+                description=(
+                    "rebound terminal static bootstrap route "
+                    f"source@0x{route.evidence.source_anchor_ea:X} "
+                    f"state=0x{route.evidence.state:X} "
+                    f"handler@0x{route.evidence.handler_anchor_ea:X}"
+                ),
+                priority=100,
+            )
         for route in redirect_routes:
             modifier.queue_goto_change(
                 block_serial=int(route.source.serial),
@@ -14329,6 +14556,28 @@ def _on_preopt_bootstrap_route(
                 ),
                 rule_priority=100,
             )
+        for route in state_write_pending:
+            description = (
+                "rebound native state-write route "
+                f"write@0x{route.evidence.source_write_ea:X} "
+                f"delivery@0x{route.evidence.delivery_ea:X} "
+                f"state=0x{route.evidence.state_constant:X} "
+                f"handler@0x{route.evidence.target_ea:X}"
+            )
+            if route.old_target_serial is None:
+                modifier.queue_terminal_goto_change(
+                    block_serial=int(route.delivery.serial),
+                    goto_target=int(route.target.serial),
+                    description=description,
+                    priority=100,
+                )
+            else:
+                modifier.queue_goto_change(
+                    block_serial=int(route.delivery.serial),
+                    new_target=int(route.target.serial),
+                    description=description,
+                    rule_priority=100,
+                )
         for (
             source_ea,
             target_ea,
@@ -14368,11 +14617,18 @@ def _on_preopt_bootstrap_route(
             )
         deferred_applied = (
             modifier.apply(transactional=True, staged_atomic=True)
-            if (redirect_routes or conditional_pending or conditional_materialize)
+            if (
+                redirect_routes
+                or state_write_pending
+                or conditional_pending
+                or conditional_materialize
+            )
             else 0
         )
         expected_applied = (
-            len(redirect_routes)
+            len(terminal_routes)
+            + len(redirect_routes)
+            + len(state_write_pending)
             + len(conditional_pending)
             + len(conditional_materialize)
         )
@@ -14407,7 +14663,11 @@ def _on_preopt_bootstrap_route(
                 int(state.evidence_generation),
             )
 
-    rebound_all = (*already_routed, *pending_routes)
+    rebound_all = (
+        *already_routed,
+        *pending_routes,
+        *coalesced_bootstrap_routes,
+    )
     for route in rebound_all:
         newly_rebound = state.native_preanalysis.mark_bootstrap_route_rebound(
             route.evidence
@@ -14429,6 +14689,26 @@ def _on_preopt_bootstrap_route(
             int(route.evidence.handler_anchor_ea),
             int(state.evidence_generation),
             bool(route in pending_routes),
+        )
+    for route in (*state_write_already, *state_write_pending):
+        logger.info(
+            "PREOPT_STATE_WRITE_ROUTE func=0x%X write=0x%X delivery=0x%X "
+            "state=0x%X handler=0x%X write_block=blk%d@0x%X "
+            "delivery_block=blk%d@0x%X handler_block=blk%d@0x%X "
+            "evidence_generation=%d applied=%s",
+            int(function_ea),
+            int(route.evidence.source_write_ea),
+            int(route.evidence.delivery_ea),
+            int(route.evidence.state_constant),
+            int(route.evidence.target_ea),
+            int(route.write.serial),
+            int(route.evidence.source_write_ea),
+            int(route.delivery.serial),
+            int(route.evidence.delivery_ea),
+            int(route.target.serial),
+            int(route.evidence.target_ea),
+            int(state.evidence_generation),
+            bool(route in state_write_pending),
         )
     for (
         source_ea,
@@ -14477,11 +14757,15 @@ def _on_preopt_bootstrap_route(
         )
     if (
         rebound_all
+        or state_write_already
+        or state_write_pending
         or conditional_already
         or conditional_pending
         or conditional_materialize
         or entry_bridge_applied
     ):
+        if state_write_unbound == 0:
+            state.native_preanalysis.mark_state_write_routes_bound()
         state.native_preanalysis.mark_preopt_bound()
 
 
