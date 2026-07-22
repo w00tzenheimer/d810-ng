@@ -13243,12 +13243,26 @@ def _refresh_preopt_union_from_calls_evidence(
                 previous,
             )
         return False
-    refreshed = prepare_preopt_union_closure(
-        state,
-        live_mba=mba,
-        refresh_existing=True,
-        refresh_baseline_boundary_ports=state.boundary_ports,
-    )
+    try:
+        refreshed = prepare_preopt_union_closure(
+            state,
+            live_mba=mba,
+            refresh_existing=True,
+            refresh_baseline_boundary_ports=state.boundary_ports,
+        )
+    except Exception:
+        state.native_preanalysis.set_preopt_union_preparation(
+            state.native_key,
+            previous,
+        )
+        logger.warning(
+            "PREOPT union refresh failed; restored previous authority: "
+            "func=0x%X evidence_generation=%d",
+            key,
+            int(state.evidence_generation),
+            exc_info=True,
+        )
+        return False
     if not refreshed.prepared:
         state.native_preanalysis.set_preopt_union_preparation(
             state.native_key,

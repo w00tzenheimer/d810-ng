@@ -9469,6 +9469,40 @@ def test_calls_refresh_reimports_an_unchanged_port_set_for_new_evidence(
     assert state.pending_preopt_reimport
 
 
+def test_calls_refresh_restores_previous_authority_when_rebuild_raises(
+    monkeypatch,
+) -> None:
+    harness = _install_preopt_union_success_harness(monkeypatch)
+    state = harness["state"]
+    previous = computed_goto_resolver.PreoptUnionPreparationResult(
+        function_ea=harness["function_ea"],
+        prepared=True,
+        published=True,
+        primary_seed_ea=harness["seed_ea"],
+    )
+    state.native_preanalysis.set_preopt_union_preparation(
+        state.native_key,
+        previous,
+    )
+
+    def raise_refresh(*_args, **_kwargs):
+        assert state.portable_evidence.preopt_union_preparation is None
+        raise RuntimeError("refresh failed")
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_preopt_union_closure",
+        raise_refresh,
+    )
+
+    assert not computed_goto_resolver._refresh_preopt_union_from_calls_evidence(
+        state,
+        harness["live_mba"],
+    )
+    assert state.portable_evidence.preopt_union_preparation == previous
+    assert not state.pending_preopt_reimport
+
+
 def test_prepare_preopt_union_closure_uses_exact_ownership_and_atomic_cut_port(
     monkeypatch,
 ) -> None:
