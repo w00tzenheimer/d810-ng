@@ -5748,7 +5748,7 @@ def test_live_predicate_resolves_imported_source_by_native_origin(_seam) -> None
     assert build_materialized_conditional_handler_bridges(
         flow_graph,
         (transfer,),
-        dispatcher=_disp({true_state: 20, false_state: 30}, exit_block=99),
+        dispatcher=_disp({}, exit_block=99),
         handler_entry_eas_by_serial={
             20: true_target_ea,
             30: false_target_ea,
@@ -5771,6 +5771,213 @@ def test_live_predicate_resolves_imported_source_by_native_origin(_seam) -> None
             proof_id=(
                 "conditional_handler_bridge:"
                 "source_ea=0x40D200:"
+                f"predicate_ea=0x{imported_predicate_ea:X}:"
+                f"native_predicate_ea=0x{native_predicate_ea:X}"
+            ),
+            reason="resolver_proven_live_conditional_handler_bridge",
+        )
+    ]
+
+
+def test_live_predicate_resolves_duplicate_imports_by_native_handler_entry(
+    _seam,
+) -> None:
+    native_source_entry_ea = 0x40B199
+    native_predicate_ea = 0x40B1B0
+    imported_predicate_ea = 0xF1C00A74
+    shadow_predicate_ea = 0xF1C10A74
+    true_state = 0x65203D55
+    false_state = 0x4DFFC906
+    true_target_ea = 0x40A868
+    false_target_ea = 0x40A9AE
+
+    def predicate(ea: int, taken: int) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=55,
+            ea=ea,
+            operands=(),
+            d=MopSnapshot(t=0, size=0, block_ref=taken, kind=OperandKind.BLOCK),
+            kind=InsnKind.COND_JUMP,
+            is_conditional_jump=True,
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            10: BlockSnapshot(
+                serial=10,
+                block_type=0,
+                succs=(11, 12),
+                preds=(9,),
+                flags=0,
+                start_ea=0x40A560,
+                insn_snapshots=(predicate(imported_predicate_ea, 12),),
+            ),
+            11: _b(11, (), (10,)),
+            12: _b(12, (), (10,)),
+            13: BlockSnapshot(
+                serial=13,
+                block_type=0,
+                succs=(14, 15),
+                preds=(),
+                flags=0,
+                start_ea=0x40A560,
+                insn_snapshots=(predicate(shadow_predicate_ea, 15),),
+            ),
+            14: _b(14, (), (13,)),
+            15: _b(15, (), (13,)),
+            20: _b(20, (), ()),
+            30: _b(30, (), ()),
+        },
+        entry_serial=10,
+        func_ea=0x40A560,
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=native_predicate_ea,
+        source_block_ea=native_source_entry_ea,
+        materialized_anchor_eas=(native_predicate_ea,),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        resolver_kind="conditional_handler_bridge",
+        predicate_size=4,
+        predicate_compare_constant=0x40,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+    )
+
+    assert build_materialized_conditional_handler_bridges(
+        flow_graph,
+        (transfer,),
+        dispatcher=_disp({true_state: 20, false_state: 30}, exit_block=99),
+        handler_entry_eas_by_serial={
+            10: native_source_entry_ea,
+            20: true_target_ea,
+            30: false_target_ea,
+        },
+        imported_native_eas_by_serial={
+            10: frozenset({native_predicate_ea}),
+            13: frozenset({native_predicate_ea}),
+        },
+    ) == [
+        LowerConditionalStateTransition(
+            source_serial=10,
+            old_dispatcher_serial=12,
+            rewrite_from_ea=imported_predicate_ea,
+            condition_operand=PreserveLivePredicateCondition(
+                predicate_ea=imported_predicate_ea,
+                true_is_taken=True,
+            ),
+            false_target_serial=30,
+            true_target_serial=20,
+            proof_id=(
+                "conditional_handler_bridge:"
+                "source_ea=0x40A560:"
+                f"predicate_ea=0x{imported_predicate_ea:X}:"
+                f"native_predicate_ea=0x{native_predicate_ea:X}"
+            ),
+            reason="resolver_proven_live_conditional_handler_bridge",
+        )
+    ]
+
+
+def test_live_predicate_prefers_authoritative_imported_handler_over_native_clone(
+    _seam,
+) -> None:
+    native_source_entry_ea = 0x40B03E
+    native_predecessor_ea = 0x40B04A
+    native_predicate_ea = 0x40B053
+    imported_predicate_ea = 0xF1C008E4
+    true_state = 0x456A4274
+    false_state = 0xF32B2D3A
+    true_target_ea = 0x40B199
+    false_target_ea = 0x40BF1B
+
+    def predicate(ea: int, taken: int) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=55,
+            ea=ea,
+            operands=(),
+            d=MopSnapshot(t=0, size=0, block_ref=taken, kind=OperandKind.BLOCK),
+            kind=InsnKind.COND_JUMP,
+            is_conditional_jump=True,
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            9: BlockSnapshot(
+                serial=9,
+                block_type=0,
+                succs=(11, 12),
+                preds=(8,),
+                flags=0,
+                start_ea=0x40B032,
+                insn_snapshots=(predicate(native_predicate_ea, 12),),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=0,
+                succs=(13, 14),
+                preds=(7,),
+                flags=0,
+                start_ea=0x40A560,
+                insn_snapshots=(predicate(imported_predicate_ea, 14),),
+            ),
+            11: _b(11, (), (9,)),
+            12: _b(12, (), (9,)),
+            13: _b(13, (), (10,)),
+            14: _b(14, (), (10,)),
+            20: _b(20, (), ()),
+            30: _b(30, (), ()),
+        },
+        entry_serial=10,
+        func_ea=0x40A560,
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=native_predicate_ea,
+        source_block_ea=native_source_entry_ea,
+        materialized_anchor_eas=(native_predicate_ea,),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=13,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        resolver_kind="static_conditional_state_choice_bridge",
+        predicate_predecessor_ea=native_predecessor_ea,
+        predicate_size=4,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+    )
+
+    assert build_materialized_conditional_handler_bridges(
+        flow_graph,
+        (transfer,),
+        dispatcher=_disp({true_state: 20, false_state: 30}, exit_block=99),
+        handler_entry_eas_by_serial={
+            10: native_source_entry_ea,
+            20: true_target_ea,
+            30: false_target_ea,
+        },
+        imported_native_eas_by_serial={
+            10: frozenset({native_predecessor_ea, native_predicate_ea}),
+        },
+    ) == [
+        LowerConditionalStateTransition(
+            source_serial=10,
+            old_dispatcher_serial=14,
+            rewrite_from_ea=imported_predicate_ea,
+            condition_operand=PreserveLivePredicateCondition(
+                predicate_ea=imported_predicate_ea,
+                true_is_taken=True,
+            ),
+            false_target_serial=30,
+            true_target_serial=20,
+            proof_id=(
+                "conditional_handler_bridge:"
+                "source_ea=0x40A560:"
                 f"predicate_ea=0x{imported_predicate_ea:X}:"
                 f"native_predicate_ea=0x{native_predicate_ea:X}"
             ),
