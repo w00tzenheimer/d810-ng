@@ -4149,6 +4149,101 @@ def test_preflight_uses_proven_logical_source_when_predicate_is_absent(
     assert condition.size == 4
 
 
+def test_live_conditional_boundary_port_applies_one_atomic_lowering(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.detached_handler_island import (
+        DetachedSnippetBoundaryPortOwner,
+    )
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+    from d810.transforms.graph_modification import SyntheticStackValueEqualsCondition
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    predicate_ea = 0x9010
+    carrier_ea = 0x9020
+    taken_target_ea = 0xA000
+    fallthrough_target_ea = 0xA100
+    dispatcher_ea = 0xA200
+    carrier = _Block(
+        0,
+        carrier_ea,
+        (_Instruction(ida_hexrays.m_mov, carrier_ea),),
+        (3,),
+    )
+    destination = _MBA(
+        (
+            carrier,
+            _Block(
+                1,
+                taken_target_ea,
+                (_Instruction(ida_hexrays.m_nop, taken_target_ea),),
+            ),
+            _Block(
+                2,
+                fallthrough_target_ea,
+                (_Instruction(ida_hexrays.m_nop, fallthrough_target_ea),),
+            ),
+            _Block(
+                3,
+                dispatcher_ea,
+                (_Instruction(ida_hexrays.m_nop, dispatcher_ea),),
+            ),
+        )
+    )
+    port = _conditional_boundary_port(
+        source_block_ea=function_ea,
+        predicate_ea=predicate_ea,
+        old_taken_target_ea=None,
+        old_fallthrough_target_ea=None,
+        taken_target_ea=taken_target_ea,
+        fallthrough_target_ea=fallthrough_target_ea,
+        source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        taken_target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        fallthrough_target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        logical_source_anchor_ea=carrier_ea,
+        logical_source_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+        predicate_ida_stkoff=0x40,
+        predicate_stack_value=0xA0716E5B,
+        predicate_size=4,
+        condition_code=5,
+        resolver_kind="preopt_entry_bridge",
+    )
+    queued: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "queue_lower_conditional_state_transition",
+        lambda _modifier, **kwargs: queued.append(kwargs),
+    )
+    monkeypatch.setattr(
+        DeferredGraphModifier,
+        "apply",
+        lambda _modifier, **_kwargs: 1,
+    )
+
+    applied = detached_handler_island.apply_live_conditional_boundary_ports(
+        destination,
+        function_ea,
+        (port,),
+        mutation_gateway=make_mutation_gateway(destination),
+    )
+
+    assert applied is not None
+    assert len(applied) == 1
+    assert len(queued) == 1
+    lowering = queued[0]
+    assert lowering["source_serial"] == int(carrier.serial)
+    assert lowering["old_dispatcher_serial"] == 3
+    assert lowering["rewrite_from_ea"] == carrier_ea
+    assert lowering["true_target_serial"] == 1
+    assert lowering["false_target_serial"] == 2
+    condition = lowering["condition_operand"]
+    assert isinstance(condition, SyntheticStackValueEqualsCondition)
+    assert condition.stack_stkoff == 0x40
+    assert condition.stack_size == 4
+    assert condition.value == 0xA0716E5B
+
+
 def test_preflight_binds_proven_logical_source_from_imported_consumer(
     monkeypatch,
 ) -> None:
