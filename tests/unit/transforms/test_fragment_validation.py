@@ -460,6 +460,27 @@ def test_nonadjacent_conditional_fallthrough_is_rejected() -> None:
     )
 
 
+def test_nonadjacent_external_conditional_fallthrough_is_rejected() -> None:
+    projection = _projection()
+    projection = _replace_blocks(
+        projection,
+        replace(
+            projection.block("entry"),
+            kind=BlockKind.TWO_WAY,
+            successors=("true", "replacement"),
+        ),
+        replace(
+            projection.block("true"),
+            predecessors=("entry", "replacement"),
+        ),
+    )
+
+    assert FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY in _failed_codes(
+        _plan(),
+        projection,
+    )
+
+
 def test_fallthrough_helper_must_be_transparent_and_operation_owned() -> None:
     projection = _projection()
     projection = _replace_blocks(

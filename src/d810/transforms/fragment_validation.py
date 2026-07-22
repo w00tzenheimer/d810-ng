@@ -512,6 +512,31 @@ def _validate_graph(
         *sorted(asymmetric),
     )
 
+    blocks_by_position = {
+        block.physical_position: block
+        for block in projection.blocks
+    }
+    for block in projection.blocks:
+        if block.kind is not BlockKind.TWO_WAY:
+            continue
+        adjacent = blocks_by_position.get(block.physical_position + 1)
+        passed = bool(
+            len(block.successors) == 2
+            and adjacent is not None
+            and block.successors[0] == adjacent.block_id
+        )
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
+            block.block_id,
+            passed,
+            "two-way physical fallthrough is the adjacent first successor"
+            if passed
+            else "two-way physical fallthrough is missing, nonadjacent, or misordered",
+            block.block_id,
+            "" if adjacent is None else adjacent.block_id,
+        )
+
 
 def _validate_reachability(
     plan: FragmentPlan,
