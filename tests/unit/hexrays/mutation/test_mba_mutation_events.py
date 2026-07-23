@@ -571,6 +571,73 @@ def test_gateway_replacement_is_transaction_local_until_commit() -> None:
     assert transition.promoted_version is staged
 
 
+def test_gateway_can_mutate_untouched_proxies_after_unrelated_commits() -> None:
+    first_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    second_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x402000, 0x402010),), native_key=NATIVE_KEY
+    )
+    third_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x403000, 0x403010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=(
+            (first_identity, 4),
+            (second_identity, 5),
+            (third_identity, 6),
+        ),
+        native_key=NATIVE_KEY,
+    )
+    first_original = index.handle_for_serial(4)
+    second_original = index.handle_for_serial(5)
+    third_original = index.handle_for_serial(6)
+    assert first_original is not None
+    assert second_original is not None
+    assert third_original is not None
+    third_proxy = index.logical_proxy_for_handle(third_original)
+    assert third_proxy is not None
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+
+    gateway.begin_batch(StructuralMutationKind.BLOCK_REPLACE, serial_quantity=7)
+    gateway.stage_replacement(
+        original=first_original,
+        replacement=index.create_native_handle(first_identity),
+        returned_serial=4,
+    )
+    gateway.commit()
+
+    second_replacement = index.create_native_handle(second_identity)
+    gateway.begin_batch(StructuralMutationKind.BLOCK_REPLACE, serial_quantity=7)
+    second_staged = gateway.stage_replacement(
+        original=second_original,
+        replacement=second_replacement,
+        returned_serial=5,
+    )
+    second_receipt = gateway.commit()
+
+    assert second_staged.generation == 5
+    assert index.resolve(second_original).handle is second_replacement
+    assert second_receipt.version_transitions[0].promoted_version is second_staged
+
+    gateway.begin_batch(StructuralMutationKind.BLOCK_REMOVE, serial_quantity=7)
+    gateway.record_remove(third_original)
+    third_receipt = gateway.commit()
+
+    assert index.generation == 6
+    assert index.resolve(third_original) is None
+    assert third_proxy.generation == 6
+    assert third_receipt.version_transitions[0].retired_version is not None
+    assert third_receipt.version_transitions[0].promoted_version is None
+
+
 def test_gateway_stages_inserted_replacement_as_one_logical_operation() -> None:
     identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY

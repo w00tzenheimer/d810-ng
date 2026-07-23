@@ -119,6 +119,51 @@ def test_abort_discards_stage_without_changing_published_authority() -> None:
     assert proxy.state_of(staged.version_id) is LogicalBlockVersionState.ABORTED
 
 
+def test_stage_uses_global_generation_without_requiring_per_proxy_adjacency() -> None:
+    proxy = LogicalBlockProxy.with_published(
+        proxy_token="logical:bootstrap",
+        handle=_handle("physical:v0"),
+        generation=3,
+    )
+
+    staged = proxy.stage(
+        transaction_id="tx-later-replacement",
+        handle=_handle("physical:v1"),
+        generation=6,
+    )
+
+    assert staged.generation == 6
+    proxy.abort("tx-later-replacement")
+
+    proxy.stage_retirement(
+        transaction_id="tx-later-retirement",
+        generation=7,
+    )
+
+    assert proxy.resolve(transaction_id="tx-later-retirement") is None
+
+
+@pytest.mark.parametrize("generation", (2, 3))
+def test_stage_rejects_non_future_global_generation(generation) -> None:
+    proxy = LogicalBlockProxy.with_published(
+        proxy_token="logical:bootstrap",
+        handle=_handle("physical:v0"),
+        generation=3,
+    )
+
+    with pytest.raises(ValueError, match="newer than published generation"):
+        proxy.stage(
+            transaction_id="tx-stale-replacement",
+            handle=_handle("physical:v1"),
+            generation=generation,
+        )
+    with pytest.raises(ValueError, match="newer than published generation"):
+        proxy.stage_retirement(
+            transaction_id="tx-stale-retirement",
+            generation=generation,
+        )
+
+
 def test_aborted_version_number_is_not_reused() -> None:
     proxy = LogicalBlockProxy.with_published(
         proxy_token="logical:bootstrap",
