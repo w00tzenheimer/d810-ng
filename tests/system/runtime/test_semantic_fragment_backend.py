@@ -1328,6 +1328,87 @@ def _conditional_plan(
     )
 
 
+def _conditional_plan_with_staged_targets(
+    gateway,
+    *,
+    entry: int,
+    original: int,
+    taken: int,
+    fallthrough: int,
+    dispatcher: int,
+) -> FragmentPlan:
+    plan = _conditional_plan(
+        gateway,
+        entry=entry,
+        original=original,
+        taken=taken,
+        fallthrough=fallthrough,
+        dispatcher=dispatcher,
+    )
+    blocks = {block.block_id: block for block in plan.blocks}
+    taken_original = replace(
+        blocks["taken"],
+        block_id="taken-original",
+        role=FragmentBlockRole.ORIGINAL,
+    )
+    taken_replacement = FragmentBlock(
+        block_id="taken-replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=taken_original.semantic_anchor_ea,
+        stable_identity=taken_original.stable_identity,
+        replaces_block_id=taken_original.block_id,
+    )
+    fallthrough_original = replace(
+        blocks["fallthrough"],
+        block_id="fallthrough-original",
+        role=FragmentBlockRole.ORIGINAL,
+    )
+    fallthrough_replacement = FragmentBlock(
+        block_id="fallthrough-replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=fallthrough_original.semantic_anchor_ea,
+        stable_identity=fallthrough_original.stable_identity,
+        replaces_block_id=fallthrough_original.block_id,
+    )
+    operation = plan.operations[0]
+    return replace(
+        plan,
+        plan_id="runtime-conditional-staged-target-fragment",
+        blocks=(
+            blocks["entry"],
+            blocks["original"],
+            blocks["replacement"],
+            taken_original,
+            taken_replacement,
+            fallthrough_original,
+            fallthrough_replacement,
+            blocks["dispatcher"],
+        ),
+        owned_originals=(
+            "original",
+            taken_original.block_id,
+            fallthrough_original.block_id,
+        ),
+        operations=(
+            replace(
+                operation,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        target_block_id=taken_replacement.block_id,
+                    ),
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                        target_block_id=fallthrough_replacement.block_id,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
 def test_backend_stages_hidden_replacement_and_projects_root_publication() -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
@@ -3275,6 +3356,51 @@ def test_backend_stages_complete_conditional_with_owned_fallthrough_helper(
     assert tuple(original.succset) == ()
     assert tuple(taken.predset) == ()
     assert tuple(fallthrough.predset) == ()
+    assert gateway.active is False
+
+
+def test_backend_stages_conditional_with_transaction_local_targets(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_0WAY)
+    taken = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    fallthrough = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(5, start=0x401050, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    original.tail = _Instruction(ida_hexrays.m_jz, 0x401010)
+    original.head = original.tail
+    mba = _Mba((entry, original, taken, fallthrough, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    plan = _conditional_plan_with_staged_targets(
+        gateway,
+        entry=0,
+        original=1,
+        taken=2,
+        fallthrough=3,
+        dispatcher=4,
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    result = validate_fragment_projection(plan, projection)
+    assert result.passed, result.failures
+    assert projection.block("replacement").successors[1] == "taken-replacement"
+    helper = projection.fallthrough_helpers[0]
+    assert projection.block(helper.helper_block_id).successors == (
+        "fallthrough-replacement",
+    )
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime staged-target conditional cleanup")
+
+    assert mba.qty == 6
+    assert tuple(entry.succset) == (1,)
     assert gateway.active is False
 
 

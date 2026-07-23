@@ -3064,6 +3064,7 @@ class DeferredGraphModifier:
         helper_serial, helper_version = self._stage_semantic_fallthrough_helper(
             source,
             target,
+            target_handle=target_binding.handle,
         )
         source_binding, source = self._semantic_edge_live_binding(operation.source)
         target_binding, target = self._semantic_edge_live_binding(edge.target)
@@ -3163,6 +3164,7 @@ class DeferredGraphModifier:
         helper_serial, helper_version = self._stage_semantic_fallthrough_helper(
             source,
             target,
+            target_handle=target_binding.handle,
         )
 
         source_binding, source = self._semantic_edge_live_binding(operation.source)
@@ -3279,6 +3281,7 @@ class DeferredGraphModifier:
         helper_serial, helper_version = self._stage_semantic_fallthrough_helper(
             source,
             fallthrough,
+            target_handle=fallthrough_binding.handle,
         )
         source_binding, source = self._semantic_edge_live_binding(operation.source)
         taken_binding, taken = self._semantic_edge_live_binding(taken_edge.target)
@@ -3662,6 +3665,8 @@ class DeferredGraphModifier:
         self,
         source,
         target,
+        *,
+        target_handle: MbaBlockHandle,
     ) -> tuple[int, LogicalBlockVersion]:
         """Create one adjacent helper with a new transaction-local lineage."""
         gateway = self._mutation_gateway
@@ -3677,6 +3682,7 @@ class DeferredGraphModifier:
                 source,
                 target,
                 created_handle=created_handle,
+                target_handle=target_handle,
             )
         except Exception:
             if int(self.mba.qty) == old_qty + 1:
