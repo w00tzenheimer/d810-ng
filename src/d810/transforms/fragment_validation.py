@@ -593,6 +593,7 @@ def _validate_graph(
         successor_count = len(block.successors)
         valid = {
             BlockKind.ZERO_WAY: successor_count == 0,
+            BlockKind.STOP: successor_count == 0,
             BlockKind.ONE_WAY: successor_count == 1,
             BlockKind.TWO_WAY: successor_count == 2,
             BlockKind.N_WAY: successor_count >= 2,
@@ -972,7 +973,7 @@ def _validate_terminal_effects(
             len(observed) == 1
             and observed[0] == terminal_return
             and block is not None
-            and block.kind is BlockKind.ZERO_WAY
+            and block.kind in {BlockKind.ZERO_WAY, BlockKind.STOP}
             and not block.successors
             and bool(block.instruction_eas)
             and block.instruction_eas[-1] == terminal_return.instruction_ea

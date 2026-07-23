@@ -645,6 +645,22 @@ def test_terminal_projection_rejects_nonterminal_return_block() -> None:
     }.issubset({outcome.postcondition for outcome in failures})
 
 
+def test_terminal_projection_accepts_stop_block_derived_from_m_ret() -> None:
+    plan = _terminal_plan()
+    projection = _terminal_projection(plan)
+    projection = _replace_blocks(
+        projection,
+        replace(
+            projection.block("terminal-return.replacement"),
+            kind=BlockKind.STOP,
+        ),
+    )
+
+    result = validate_fragment_projection(plan, projection)
+
+    assert result.passed, result.failures
+
+
 def test_valid_projection_proves_every_required_postcondition() -> None:
     result = validate_fragment_projection(_plan(), _projection())
 
