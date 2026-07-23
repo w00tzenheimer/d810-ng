@@ -23,11 +23,13 @@ from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentComputedBranchNormalization,
     FragmentEdge,
     FragmentNativeBody,
     FragmentOperation,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind
 from tests.native_preanalysis import make_native_key
 from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
@@ -910,6 +912,150 @@ def test_preopt_native_body_rejects_unowned_topology_before_staging(
 
     assert context.staged_block_ids == []
     assert destination.qty == 1
+
+
+def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_staging(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    source_ea = 0x3600
+    condition_producer_ea = 0x3604
+    predicate_ea = 0x3608
+    unresolved_transfer_ea = 0x3610
+    predicate_register = 55
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_setz,
+                        condition_producer_ea,
+                        dest=_Operand(
+                            ida_hexrays.mop_r,
+                            register=predicate_register,
+                            size=1,
+                        ),
+                    ),
+                    _Instruction(
+                        ida_hexrays.m_xdu,
+                        predicate_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_r,
+                            register=predicate_register,
+                            size=1,
+                        ),
+                        dest=_Operand(
+                            ida_hexrays.mop_r,
+                            register=7,
+                            size=4,
+                        ),
+                    ),
+                    _Instruction(
+                        ida_hexrays.m_ijmp,
+                        unresolved_transfer_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_r,
+                            register=7,
+                            size=4,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        source_ea,
+        source,
+        ((source_ea, unresolved_transfer_ea + 1),),
+        owned_block_entry_eas=(source_ea,),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    body_id = "native-body:computed-branch"
+    imported = _imported_fragment_block(
+        "imported-computed-branch",
+        body_id,
+        source_ea,
+        unresolved_transfer_ea + 1,
+    )
+    operation_id = "proof:computed-branch"
+    native_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=(imported.block_id,),
+        entry_block_ids=(imported.block_id,),
+        terminal_block_ids=(),
+        native_ranges=(
+            NativeEaInterval(source_ea, unresolved_transfer_ea + 1),
+        ),
+        proof_ids=(operation_id,),
+    )
+    context = _NativeBodyStagingContext(
+        destination,
+        _NativeBodyPlan(
+            (imported,),
+            operations=(
+                FragmentOperation(
+                    operation_id=operation_id,
+                    source_block_id=imported.block_id,
+                    predicate_anchor_ea=predicate_ea,
+                    computed_branch_normalization=(
+                        FragmentComputedBranchNormalization(
+                            predicate_kind=PredicateKind.EQ,
+                            condition_producer_ea=condition_producer_ea,
+                            unresolved_transfer_ea=unresolved_transfer_ea,
+                        )
+                    ),
+                    edges=(
+                        FragmentEdge(
+                            role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                            target_block_id="taken",
+                        ),
+                        FragmentEdge(
+                            role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                            target_block_id="fallthrough",
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=function_ea,
+    ).stage_native_body(
+        context=context,
+        native_body=native_body,
+    )
+
+    staged = context.blocks[imported.block_id].instructions()
+    assert tuple(int(instruction.opcode) for instruction in staged) == (
+        int(ida_hexrays.m_setz),
+        int(ida_hexrays.m_jnz),
+    )
+    branch = staged[-1]
+    assert int(branch.l.t) == int(ida_hexrays.mop_r)
+    assert int(branch.l.r) == predicate_register
+    assert int(branch.l.size) == 1
+    assert int(branch.r.t) == int(ida_hexrays.mop_n)
+    assert int(branch.r.nnn.value) == 0
+    assert set(context.instruction_origins.values()) == {
+        condition_producer_ea,
+        predicate_ea,
+    }
 
 
 def test_recursively_rebases_all_stack_operand_shapes(monkeypatch) -> None:
