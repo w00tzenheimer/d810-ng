@@ -9,12 +9,33 @@ from d810.core.diag.event_handlers import install_diag_event_handlers, uninstall
 from d810.core.observability import emit, reset_diagnostic_bus
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
+    FragmentRootPublicationGroupObserved,
     FragmentValidationOutcomeObserved,
     LogicalBlockVersionTransitionObserved,
     MutationPlanItemObserved,
     MutationPlanObserved,
     MutationReceiptObserved,
 )
+
+
+def _root_group(
+    *,
+    published: bool = False,
+    rolled_back: bool = False,
+) -> FragmentRootPublicationGroupObserved:
+    return FragmentRootPublicationGroupObserved(
+        group_id="root-group:entry",
+        predecessor_block_id="entry",
+        predecessor_anchor_ea=0x40C800,
+        edge_ids=("replacement:entry:direct",),
+        edge_roles=("direct",),
+        original_block_ids=("original",),
+        replacement_block_ids=("replacement",),
+        publication_attempted=bool(published or rolled_back),
+        publication_succeeded=bool(published),
+        rollback_attempted=bool(rolled_back),
+        rollback_succeeded=True if rolled_back else None,
+    )
 
 
 @pytest.fixture
@@ -148,6 +169,7 @@ def test_terminal_effect_plan_and_aborted_receipt_preserve_applied_work(
                 '{"atomic_group_id":"terminal-atomic-group",'
                 '"plan_id":"terminal-fragment"}'
             ),
+            root_publication_groups=(_root_group(),),
         )
     )
     emit(
@@ -170,6 +192,9 @@ def test_terminal_effect_plan_and_aborted_receipt_preserve_applied_work(
             ),
             fragment_plan_id="terminal-fragment",
             fragment_atomic_group_id="terminal-atomic-group",
+            root_publication_groups=(
+                _root_group(published=True, rolled_back=True),
+            ),
             fragment_staged=True,
             root_publication_attempted=True,
             root_publication_succeeded=True,
@@ -229,6 +254,7 @@ def test_fragment_receipt_persists_complete_semantic_transaction(
             fragment_plan_id="fragment-1",
             fragment_atomic_group_id="atomic-route-1",
             fragment_plan_json=plan_json,
+            root_publication_groups=(_root_group(),),
         )
     )
     prevalidation = (
@@ -324,6 +350,7 @@ def test_fragment_receipt_persists_complete_semantic_transaction(
             reason="",
             fragment_plan_id="fragment-1",
             fragment_atomic_group_id="atomic-route-1",
+            root_publication_groups=(_root_group(published=True),),
             fragment_staged=True,
             root_publication_attempted=True,
             root_publication_succeeded=True,
@@ -398,6 +425,7 @@ def test_fragment_receipt_persists_complete_semantic_transaction(
         ("plan_recorded", "planned"),
         ("fragment_staged", "completed"),
         ("prepublication_validation", "passed"),
+        ("root_group_publication", "published"),
         ("root_publication", "published"),
         ("postpublication_validation", "passed"),
         ("receipt", "committed"),
@@ -424,6 +452,7 @@ def test_aborted_fragment_persists_failed_postcondition_and_rollback(
                 '{"atomic_group_id":"atomic-route-2","blocks":[],'
                 '"operations":[],"plan_id":"fragment-2"}'
             ),
+            root_publication_groups=(_root_group(),),
         )
     )
     emit(
@@ -443,6 +472,9 @@ def test_aborted_fragment_persists_failed_postcondition_and_rollback(
             reason="postpublication root authority failed",
             fragment_plan_id="fragment-2",
             fragment_atomic_group_id="atomic-route-2",
+            root_publication_groups=(
+                _root_group(published=True, rolled_back=True),
+            ),
             fragment_staged=True,
             root_publication_attempted=True,
             root_publication_succeeded=True,
@@ -508,8 +540,10 @@ def test_aborted_fragment_persists_failed_postcondition_and_rollback(
         ("plan_recorded", "planned"),
         ("fragment_staged", "completed"),
         ("prepublication_validation", "passed"),
+        ("root_group_publication", "published"),
         ("root_publication", "published"),
         ("postpublication_validation", "failed"),
+        ("root_group_rollback", "succeeded"),
         ("rollback", "succeeded"),
         ("receipt", "aborted"),
     ]
@@ -535,6 +569,7 @@ def test_fragment_receipt_scope_mismatch_leaves_no_partial_receipt(
                 '{"atomic_group_id":"expected-group",'
                 '"plan_id":"expected-plan"}'
             ),
+            root_publication_groups=(_root_group(),),
         )
     )
 
@@ -555,6 +590,7 @@ def test_fragment_receipt_scope_mismatch_leaves_no_partial_receipt(
             reason="scope drift",
             fragment_plan_id="wrong-plan",
             fragment_atomic_group_id="wrong-group",
+            root_publication_groups=(_root_group(),),
         )
     )
 

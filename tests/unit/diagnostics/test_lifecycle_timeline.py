@@ -17,6 +17,7 @@ from d810.core.diag.lifecycle import (
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
+    FragmentRootPublicationGroupObserved,
     FragmentValidationOutcomeObserved,
     IdentityDecisionObserved,
     LogicalBlockVersionTransitionObserved,
@@ -31,6 +32,20 @@ from d810.diagnostics.lifecycle_timeline import (
     mutation_batch,
     render_mutation_batch,
 )
+
+
+def _root_group(*, published: bool) -> FragmentRootPublicationGroupObserved:
+    return FragmentRootPublicationGroupObserved(
+        group_id="root-group:entry",
+        predecessor_block_id="entry",
+        predecessor_anchor_ea=0x40C800,
+        edge_ids=("replacement:entry:direct",),
+        edge_roles=("direct",),
+        original_block_ids=("original",),
+        replacement_block_ids=("replacement",),
+        publication_attempted=published,
+        publication_succeeded=published,
+    )
 
 
 @pytest.fixture()
@@ -170,6 +185,7 @@ def test_mutation_batch_renders_complete_semantic_fragment_evidence() -> None:
                 '{"atomic_group_id":"atomic-group","blocks":[],'
                 '"plan_id":"fragment-plan"}'
             ),
+            root_publication_groups=(_root_group(published=False),),
         ),
     )
     persist_mutation_receipt(
@@ -190,6 +206,7 @@ def test_mutation_batch_renders_complete_semantic_fragment_evidence() -> None:
             reason="",
             fragment_plan_id="fragment-plan",
             fragment_atomic_group_id="atomic-group",
+            root_publication_groups=(_root_group(published=True),),
             fragment_staged=True,
             root_publication_attempted=True,
             root_publication_succeeded=True,
@@ -239,17 +256,27 @@ def test_mutation_batch_renders_complete_semantic_fragment_evidence() -> None:
         for row in result["version_transitions"]
     ] == [("published", "retired"), ("staged", "published")]
     assert [
+        (
+            row["group_id"],
+            row["predecessor_anchor_ea_i64"],
+            row["publication_succeeded"],
+        )
+        for row in result["root_publication_groups"]
+    ] == [("root-group:entry", 0x40C800, 1)]
+    assert [
         row["event_kind"] for row in result["fragment_events"]
     ] == [
         "plan_recorded",
         "fragment_staged",
         "prepublication_validation",
+        "root_group_publication",
         "root_publication",
         "postpublication_validation",
         "receipt",
     ]
     rendered = render_mutation_batch(result)
     assert "fragment plan=fragment-plan atomic-group=atomic-group" in rendered
+    assert "root-group[root-group:entry] predecessor=ea@0x000000000040c800" in rendered
     assert "prepublication:dispatcher_absence:dispatcher passed" in rendered
     assert "logical-route@v1 staged->published" in rendered
     db.close()

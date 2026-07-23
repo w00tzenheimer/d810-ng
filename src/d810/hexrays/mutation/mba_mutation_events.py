@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import uuid
 
@@ -25,6 +25,7 @@ from d810.hexrays.ir.semantic_edge import (
 )
 from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventory,
+    semantic_fragment_root_group_id,
 )
 from d810.ir.block_identity import MbaBlockHandle, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -50,6 +51,94 @@ class StructuralMutationKind(Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class MbaMutationRootPublicationGroup:
+    """Serial-free status of one predecessor-atomic root publication group."""
+
+    group_id: str
+    predecessor_block_id: str
+    predecessor_anchor_ea: int
+    edge_ids: tuple[str, ...]
+    edge_roles: tuple[SemanticEdgeRole, ...]
+    original_block_ids: tuple[str, ...]
+    replacement_block_ids: tuple[str, ...]
+    publication_attempted: bool = False
+    publication_succeeded: bool = False
+    rollback_attempted: bool = False
+    rollback_succeeded: bool | None = None
+
+    def __post_init__(self) -> None:
+        group_id = str(self.group_id)
+        predecessor_block_id = str(self.predecessor_block_id)
+        predecessor_anchor_ea = int(self.predecessor_anchor_ea)
+        edge_ids = tuple(str(edge_id) for edge_id in self.edge_ids)
+        edge_roles = tuple(self.edge_roles)
+        original_block_ids = tuple(
+            str(block_id) for block_id in self.original_block_ids
+        )
+        replacement_block_ids = tuple(
+            str(block_id) for block_id in self.replacement_block_ids
+        )
+        if group_id != semantic_fragment_root_group_id(predecessor_block_id):
+            raise ValueError("root publication group identity drifted")
+        if predecessor_anchor_ea < 0:
+            raise ValueError("root publication group requires an EA anchor")
+        edge_count = len(edge_ids)
+        if (
+            edge_count == 0
+            or len(set(edge_ids)) != edge_count
+            or len(edge_roles) != edge_count
+            or len(original_block_ids) != edge_count
+            or len(replacement_block_ids) != edge_count
+            or any(not edge_id for edge_id in edge_ids)
+            or any(not block_id for block_id in original_block_ids)
+            or any(not block_id for block_id in replacement_block_ids)
+            or any(not isinstance(role, SemanticEdgeRole) for role in edge_roles)
+        ):
+            raise ValueError(
+                "root publication group requires aligned semantic edge ownership"
+            )
+        publication_attempted = bool(self.publication_attempted)
+        publication_succeeded = bool(self.publication_succeeded)
+        rollback_attempted = bool(self.rollback_attempted)
+        rollback_succeeded = (
+            None
+            if self.rollback_succeeded is None
+            else bool(self.rollback_succeeded)
+        )
+        if publication_succeeded and not publication_attempted:
+            raise ValueError("root publication cannot succeed before its attempt")
+        if rollback_attempted != (rollback_succeeded is not None):
+            raise ValueError(
+                "root-group rollback outcome is present exactly when attempted"
+            )
+        if rollback_attempted and not publication_attempted:
+            raise ValueError("root-group rollback requires a publication attempt")
+        object.__setattr__(self, "group_id", group_id)
+        object.__setattr__(self, "predecessor_block_id", predecessor_block_id)
+        object.__setattr__(
+            self,
+            "predecessor_anchor_ea",
+            predecessor_anchor_ea,
+        )
+        object.__setattr__(self, "edge_ids", edge_ids)
+        object.__setattr__(self, "edge_roles", edge_roles)
+        object.__setattr__(self, "original_block_ids", original_block_ids)
+        object.__setattr__(self, "replacement_block_ids", replacement_block_ids)
+        object.__setattr__(
+            self,
+            "publication_attempted",
+            publication_attempted,
+        )
+        object.__setattr__(
+            self,
+            "publication_succeeded",
+            publication_succeeded,
+        )
+        object.__setattr__(self, "rollback_attempted", rollback_attempted)
+        object.__setattr__(self, "rollback_succeeded", rollback_succeeded)
+
+
+@dataclass(frozen=True, slots=True)
 class MbaMutationReceipt:
     """Post-commit record for one atomic structural mutation batch."""
 
@@ -65,6 +154,7 @@ class MbaMutationReceipt:
     version_transitions: tuple[LogicalBlockVersionTransition, ...] = ()
     fragment_plan_id: str = ""
     fragment_atomic_group_id: str = ""
+    root_publication_groups: tuple[MbaMutationRootPublicationGroup, ...] = ()
     prepublication_validation: FragmentValidationResult | None = None
     postpublication_validation: FragmentValidationResult | None = None
     root_publication_confirmed: bool = False
@@ -99,6 +189,16 @@ class MbaMutationReceipt:
         )
         fragment_plan_id = str(self.fragment_plan_id)
         fragment_atomic_group_id = str(self.fragment_atomic_group_id)
+        root_publication_groups = tuple(self.root_publication_groups)
+        if (
+            any(
+                not isinstance(group, MbaMutationRootPublicationGroup)
+                for group in root_publication_groups
+            )
+            or len({group.group_id for group in root_publication_groups})
+            != len(root_publication_groups)
+        ):
+            raise TypeError("fragment receipt contains invalid root groups")
         has_fragment = bool(fragment_plan_id)
         if (self.kind is StructuralMutationKind.FRAGMENT_PUBLICATION) != has_fragment:
             raise ValueError(
@@ -107,6 +207,15 @@ class MbaMutationReceipt:
         if has_fragment != bool(fragment_atomic_group_id):
             raise ValueError("fragment receipt requires both plan and atomic-group ids")
         if has_fragment:
+            if not root_publication_groups or any(
+                not group.publication_attempted
+                or not group.publication_succeeded
+                or group.rollback_attempted
+                for group in root_publication_groups
+            ):
+                raise ValueError(
+                    "committed fragment requires every root group to be published"
+                )
             for phase, validation in (
                 ("prepublication", self.prepublication_validation),
                 ("postpublication", self.postpublication_validation),
@@ -126,6 +235,7 @@ class MbaMutationReceipt:
             self.prepublication_validation is not None
             or self.postpublication_validation is not None
             or self.root_publication_confirmed
+            or root_publication_groups
         ):
             raise ValueError("non-fragment receipt cannot carry fragment validation")
         object.__setattr__(self, "fragment_plan_id", fragment_plan_id)
@@ -133,6 +243,11 @@ class MbaMutationReceipt:
             self,
             "fragment_atomic_group_id",
             fragment_atomic_group_id,
+        )
+        object.__setattr__(
+            self,
+            "root_publication_groups",
+            root_publication_groups,
         )
         object.__setattr__(
             self,
@@ -183,6 +298,7 @@ class MbaMutationPlanned:
     fragment_plan_id: str = ""
     fragment_atomic_group_id: str = ""
     fragment_plan_json: str = ""
+    root_publication_groups: tuple[MbaMutationRootPublicationGroup, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +317,7 @@ class MbaMutationAborted:
     discarded_version_ids: tuple[LogicalBlockVersionId, ...] = ()
     fragment_plan_id: str = ""
     fragment_atomic_group_id: str = ""
+    root_publication_groups: tuple[MbaMutationRootPublicationGroup, ...] = ()
     fragment_staged: bool = False
     root_publication_attempted: bool = False
     root_publication_succeeded: bool = False
@@ -275,6 +392,9 @@ class MbaMutationGateway:
     _active_root_publication_succeeded: bool = field(default=False, init=False)
     _active_rollback_attempted: bool = field(default=False, init=False)
     _active_rollback_succeeded: bool | None = field(default=None, init=False)
+    _active_root_publication_groups: dict[
+        str, MbaMutationRootPublicationGroup
+    ] = field(default_factory=dict, init=False, repr=False)
     _active_fragment_effect_requirements: dict[
         tuple[str, str], MbaMutationPlanItem
     ] = field(default_factory=dict, init=False, repr=False)
@@ -339,6 +459,7 @@ class MbaMutationGateway:
         self._active_root_publication_succeeded = False
         self._active_rollback_attempted = False
         self._active_rollback_succeeded = None
+        self._active_root_publication_groups.clear()
         self._active_fragment_effect_requirements.clear()
         self._applied_fragment_effects.clear()
 
@@ -370,6 +491,9 @@ class MbaMutationGateway:
         planned_operation_count: int = 1,
         plan_items: Iterable[MbaMutationPlanItem] = (),
         fragment_plan: FragmentPlan | None = None,
+        fragment_root_publication_groups: Iterable[
+            MbaMutationRootPublicationGroup
+        ] = (),
     ) -> None:
         if self.active:
             raise RuntimeError("a structural mutation batch is already active")
@@ -379,11 +503,35 @@ class MbaMutationGateway:
         if planned_operation_count < 0:
             raise ValueError("planned operation count must be non-negative")
         plan_items = tuple(plan_items)
+        fragment_root_publication_groups = tuple(
+            fragment_root_publication_groups
+        )
         if (
             kind is StructuralMutationKind.FRAGMENT_PUBLICATION
         ) != isinstance(fragment_plan, FragmentPlan):
             raise ValueError(
                 "fragment-publication batch requires exactly one FragmentPlan"
+            )
+        if isinstance(fragment_plan, FragmentPlan):
+            group_ids = tuple(
+                group.group_id for group in fragment_root_publication_groups
+            )
+            if (
+                not fragment_root_publication_groups
+                or len(set(group_ids)) != len(group_ids)
+                or any(
+                    group.publication_attempted
+                    or group.publication_succeeded
+                    or group.rollback_attempted
+                    for group in fragment_root_publication_groups
+                )
+            ):
+                raise ValueError(
+                    "fragment publication requires pristine root-group inventory"
+                )
+        elif fragment_root_publication_groups:
+            raise ValueError(
+                "non-fragment mutation cannot carry root publication groups"
             )
         serial_quantity = (
             None if serial_quantity is None else int(serial_quantity)
@@ -397,6 +545,10 @@ class MbaMutationGateway:
         self._active_description = str(description)
         self._active_batch_id = batch_id
         self._planned_operation_count = planned_operation_count
+        self._active_root_publication_groups.update(
+            (group.group_id, group)
+            for group in fragment_root_publication_groups
+        )
         self._affected_identities.clear()
         self._operation_count = 0
         self._emit_observation(
@@ -424,6 +576,7 @@ class MbaMutationGateway:
                     if fragment_plan is None
                     else serialize_fragment_plan(fragment_plan)
                 ),
+                root_publication_groups=fragment_root_publication_groups,
             ),
             mutation_batch_id=batch_id,
         )
@@ -602,6 +755,42 @@ class MbaMutationGateway:
             )
         return tuple(items)
 
+    @staticmethod
+    def _fragment_root_publication_groups(
+        plan: FragmentPlan,
+        root_inventory: SemanticFragmentRootInventory,
+    ) -> tuple[MbaMutationRootPublicationGroup, ...]:
+        groups: list[MbaMutationRootPublicationGroup] = []
+        for inventory_group in root_inventory.groups:
+            predecessor = plan.block(inventory_group.predecessor_block_id)
+            for item in inventory_group.items:
+                replacement = plan.block(item.root_block_id)
+                if replacement.replaces_block_id != item.original_block_id:
+                    raise ValueError(
+                        "root inventory original ownership drifted from the plan"
+                    )
+            groups.append(
+                MbaMutationRootPublicationGroup(
+                    group_id=inventory_group.group_id,
+                    predecessor_block_id=inventory_group.predecessor_block_id,
+                    predecessor_anchor_ea=int(predecessor.semantic_anchor_ea),
+                    edge_ids=tuple(
+                        item.edge_id for item in inventory_group.items
+                    ),
+                    edge_roles=tuple(
+                        item.role for item in inventory_group.items
+                    ),
+                    original_block_ids=tuple(
+                        item.original_block_id
+                        for item in inventory_group.items
+                    ),
+                    replacement_block_ids=tuple(
+                        item.root_block_id for item in inventory_group.items
+                    ),
+                )
+            )
+        return tuple(groups)
+
     def _begin_semantic_fragment_batch(
         self,
         backend: object,
@@ -612,6 +801,10 @@ class MbaMutationGateway:
         if mba is None:
             raise TypeError("semantic-fragment backend requires a live MBA")
         items = self._fragment_plan_items(plan, root_inventory)
+        root_publication_groups = self._fragment_root_publication_groups(
+            plan,
+            root_inventory,
+        )
         self.begin_batch(
             StructuralMutationKind.FRAGMENT_PUBLICATION,
             serial_quantity=int(getattr(mba, "qty", 0) or 0),
@@ -622,6 +815,7 @@ class MbaMutationGateway:
             planned_operation_count=len(items),
             plan_items=items,
             fragment_plan=plan,
+            fragment_root_publication_groups=root_publication_groups,
         )
         effect_kinds = {
             "semantic_fragment_return_carrier_materialization",
@@ -681,6 +875,78 @@ class MbaMutationGateway:
         self._require_active_fragment(plan)
         self._active_root_publication_attempted = True
 
+    def _active_root_publication_group(
+        self,
+        plan: FragmentPlan,
+        group_id: str,
+    ) -> MbaMutationRootPublicationGroup:
+        self._require_active_fragment(plan)
+        try:
+            return self._active_root_publication_groups[str(group_id)]
+        except KeyError as exc:
+            raise ValueError(
+                f"semantic-fragment transaction has no root group {group_id!r}"
+            ) from exc
+
+    def _record_fragment_root_group_publication_attempted(
+        self,
+        plan: FragmentPlan,
+        group_id: str,
+    ) -> None:
+        group = self._active_root_publication_group(plan, group_id)
+        if not self._active_root_publication_attempted:
+            raise RuntimeError(
+                "root-group publication requires aggregate publication authority"
+            )
+        if group.publication_attempted:
+            raise RuntimeError("root publication group was attempted twice")
+        self._active_root_publication_groups[group.group_id] = replace(
+            group,
+            publication_attempted=True,
+        )
+
+    def _record_fragment_root_group_publication_succeeded(
+        self,
+        plan: FragmentPlan,
+        group_id: str,
+    ) -> None:
+        group = self._active_root_publication_group(plan, group_id)
+        if not group.publication_attempted or group.publication_succeeded:
+            raise RuntimeError("root publication group success is out of order")
+        self._active_root_publication_groups[group.group_id] = replace(
+            group,
+            publication_succeeded=True,
+        )
+
+    def _record_fragment_root_group_rollback_attempted(
+        self,
+        plan: FragmentPlan,
+        group_id: str,
+    ) -> None:
+        group = self._active_root_publication_group(plan, group_id)
+        if not group.publication_attempted or group.rollback_attempted:
+            raise RuntimeError("root publication group rollback is out of order")
+        self._active_root_publication_groups[group.group_id] = replace(
+            group,
+            rollback_attempted=True,
+            rollback_succeeded=False,
+        )
+
+    def _record_fragment_root_group_rollback_finished(
+        self,
+        plan: FragmentPlan,
+        group_id: str,
+        *,
+        succeeded: bool,
+    ) -> None:
+        group = self._active_root_publication_group(plan, group_id)
+        if not group.rollback_attempted:
+            raise RuntimeError("root publication group rollback was not attempted")
+        self._active_root_publication_groups[group.group_id] = replace(
+            group,
+            rollback_succeeded=bool(succeeded),
+        )
+
     def _record_fragment_root_publication_succeeded(
         self,
         plan: FragmentPlan,
@@ -688,6 +954,13 @@ class MbaMutationGateway:
         self._require_active_fragment(plan)
         if not self._active_root_publication_attempted:
             raise RuntimeError("root publication was not attempted")
+        if any(
+            not group.publication_attempted or not group.publication_succeeded
+            for group in self._active_root_publication_groups.values()
+        ):
+            raise RuntimeError(
+                "aggregate root publication requires every group to succeed"
+            )
         self._active_root_publication_succeeded = True
 
     def _record_fragment_rollback(
@@ -697,6 +970,18 @@ class MbaMutationGateway:
         succeeded: bool,
     ) -> None:
         self._require_active_fragment(plan)
+        attempted_groups = tuple(
+            group
+            for group in self._active_root_publication_groups.values()
+            if group.publication_attempted
+        )
+        if bool(succeeded) and self._active_root_publication_attempted and any(
+            not group.rollback_attempted or not group.rollback_succeeded
+            for group in attempted_groups
+        ):
+            raise RuntimeError(
+                "aggregate rollback outcome disagrees with root-group recovery"
+            )
         self._active_rollback_attempted = True
         self._active_rollback_succeeded = bool(succeeded)
 
@@ -1238,6 +1523,9 @@ class MbaMutationGateway:
             fragment_atomic_group_id=(
                 "" if fragment_plan is None else fragment_plan.atomic_group_id
             ),
+            root_publication_groups=tuple(
+                self._active_root_publication_groups.values()
+            ),
             prepublication_validation=self._active_prepublication_validation,
             postpublication_validation=self._active_postpublication_validation,
             root_publication_confirmed=self._active_root_publication_confirmed,
@@ -1304,6 +1592,9 @@ class MbaMutationGateway:
                         if self._active_fragment_plan is None
                         else self._active_fragment_plan.atomic_group_id
                     ),
+                    root_publication_groups=tuple(
+                        self._active_root_publication_groups.values()
+                    ),
                     fragment_staged=self._active_fragment_staged,
                     root_publication_attempted=(
                         self._active_root_publication_attempted
@@ -1356,5 +1647,6 @@ __all__ = [
     "MbaMutationPlanItem",
     "MbaMutationPlanned",
     "MbaMutationReceipt",
+    "MbaMutationRootPublicationGroup",
     "StructuralMutationKind",
 ]

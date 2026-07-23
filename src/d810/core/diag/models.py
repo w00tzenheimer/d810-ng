@@ -314,6 +314,53 @@ class SemanticFragmentTransaction(BaseModel):
         indexes = ((("plan_id", "atomic_group_id"), False),)
 
 
+class SemanticFragmentRootPublicationGroupRecord(BaseModel):
+    plan_event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="plan_event_id",
+        index=False,
+        null=False,
+    )
+    receipt_event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="receipt_event_id",
+        index=False,
+        null=True,
+    )
+    mutation_batch_id = TextField()
+    group_id = TextField()
+    predecessor_block_id = TextField()
+    predecessor_anchor_ea_hex = TextField()
+    predecessor_anchor_ea_i64 = IntegerField()
+    edge_ids_json = TextField()
+    edge_roles_json = TextField()
+    original_block_ids_json = TextField()
+    replacement_block_ids_json = TextField()
+    publication_attempted = IntegerField(
+        null=True,
+        constraints=[Check("publication_attempted IN (0,1)")],
+    )
+    publication_succeeded = IntegerField(
+        null=True,
+        constraints=[Check("publication_succeeded IN (0,1)")],
+    )
+    rollback_attempted = IntegerField(
+        null=True,
+        constraints=[Check("rollback_attempted IN (0,1)")],
+    )
+    rollback_succeeded = IntegerField(
+        null=True,
+        constraints=[Check("rollback_succeeded IN (0,1)")],
+    )
+
+    class Meta:
+        table_name = "semantic_fragment_root_publication_groups"
+        primary_key = CompositeKey("mutation_batch_id", "group_id")
+        indexes = ((("plan_event",), False),)
+
+
 class SemanticFragmentValidationOutcome(BaseModel):
     event = ForeignKeyField(
         LifecycleEvent,
@@ -1204,6 +1251,7 @@ MODELS = (
     MutationReceipt,
     MutationReceiptIdentity,
     SemanticFragmentTransaction,
+    SemanticFragmentRootPublicationGroupRecord,
     SemanticFragmentValidationOutcome,
     LogicalBlockVersionTransitionRecord,
     SemanticFragmentTransactionEvent,

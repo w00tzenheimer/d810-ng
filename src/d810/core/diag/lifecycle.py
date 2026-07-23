@@ -229,6 +229,23 @@ def _anchor_hex(anchor: int | None) -> str | None:
     return f"0x{int(anchor) & 0xFFFFFFFFFFFFFFFF:016x}"
 
 
+def _compact_json_strings(values: tuple[str, ...]) -> str:
+    return json.dumps(list(values), separators=(",", ":"))
+
+
+def _root_group_descriptor(group) -> tuple[object, ...]:
+    return (
+        group.group_id,
+        group.predecessor_block_id,
+        _anchor_hex(group.predecessor_anchor_ea),
+        int(group.predecessor_anchor_ea),
+        _compact_json_strings(group.edge_ids),
+        _compact_json_strings(group.edge_roles),
+        _compact_json_strings(group.original_block_ids),
+        _compact_json_strings(group.replacement_block_ids),
+    )
+
+
 def persist_mutation_plan(
     conn: sqlite3.Connection,
     event: MutationPlanObserved,
@@ -312,6 +329,22 @@ def persist_mutation_plan(
                 ),
             ),
         )
+        for group in event.root_publication_groups:
+            conn.execute(
+                "INSERT INTO semantic_fragment_root_publication_groups "
+                "(plan_event_id,receipt_event_id,mutation_batch_id,group_id,"
+                "predecessor_block_id,predecessor_anchor_ea_hex,"
+                "predecessor_anchor_ea_i64,edge_ids_json,edge_roles_json,"
+                "original_block_ids_json,replacement_block_ids_json,"
+                "publication_attempted,publication_succeeded,"
+                "rollback_attempted,rollback_succeeded) "
+                "VALUES (?,NULL,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL)",
+                (
+                    event_id,
+                    event.mutation_batch_id,
+                    *_root_group_descriptor(group),
+                ),
+            )
     return event_id
 
 
@@ -343,6 +376,23 @@ def persist_mutation_receipt(
         ):
             raise ValueError(
                 "semantic-fragment receipt does not match its persisted plan"
+            )
+        persisted_groups = conn.execute(
+            "SELECT group_id,predecessor_block_id,"
+            "predecessor_anchor_ea_hex,predecessor_anchor_ea_i64,"
+            "edge_ids_json,edge_roles_json,original_block_ids_json,"
+            "replacement_block_ids_json "
+            "FROM semantic_fragment_root_publication_groups "
+            "WHERE mutation_batch_id=? ORDER BY group_id",
+            (event.mutation_batch_id,),
+        ).fetchall()
+        expected_groups = sorted(
+            (_root_group_descriptor(group) for group in event.root_publication_groups),
+            key=lambda row: str(row[0]),
+        )
+        if persisted_groups != expected_groups:
+            raise ValueError(
+                "semantic-fragment receipt root groups do not match its plan"
             )
     event_id = persist_lifecycle_event(
         conn,
@@ -405,6 +455,31 @@ def persist_mutation_receipt(
                 event.mutation_batch_id,
             ),
         )
+        for group in event.root_publication_groups:
+            updated = conn.execute(
+                "UPDATE semantic_fragment_root_publication_groups SET "
+                "receipt_event_id=?,publication_attempted=?,"
+                "publication_succeeded=?,rollback_attempted=?,"
+                "rollback_succeeded=? "
+                "WHERE mutation_batch_id=? AND group_id=?",
+                (
+                    event_id,
+                    int(group.publication_attempted),
+                    int(group.publication_succeeded),
+                    int(group.rollback_attempted),
+                    (
+                        None
+                        if group.rollback_succeeded is None
+                        else int(group.rollback_succeeded)
+                    ),
+                    event.mutation_batch_id,
+                    group.group_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(
+                    "semantic-fragment receipt lost a root publication group"
+                )
         for outcome_index, outcome in enumerate(event.validation_outcomes):
             conn.execute(
                 "INSERT INTO semantic_fragment_validation_outcomes "
@@ -470,6 +545,19 @@ def persist_mutation_receipt(
                     )
                 )
             if phase == "prepublication" and event.root_publication_attempted:
+                transaction_events.extend(
+                    (
+                        "root_group_publication",
+                        (
+                            "published"
+                            if group.publication_succeeded
+                            else "failed"
+                        ),
+                        {"group_id": group.group_id},
+                    )
+                    for group in event.root_publication_groups
+                    if group.publication_attempted
+                )
                 transaction_events.append(
                     (
                         "root_publication",
@@ -482,6 +570,19 @@ def persist_mutation_receipt(
                     )
                 )
         if event.rollback_attempted:
+            transaction_events.extend(
+                (
+                    "root_group_rollback",
+                    (
+                        "succeeded"
+                        if group.rollback_succeeded
+                        else "failed"
+                    ),
+                    {"group_id": group.group_id},
+                )
+                for group in event.root_publication_groups
+                if group.rollback_attempted
+            )
             transaction_events.append(
                 (
                     "rollback",

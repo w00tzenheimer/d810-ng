@@ -17,8 +17,10 @@ from d810.hexrays.mutation.fragment_publication_lifecycle import (
 )
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationAborted,
+    MbaMutationRootPublicationGroup,
     StructuralMutationKind,
 )
+from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.manager.manager import (
     D810Manager,
     _build_current_mba_identity_index,
@@ -175,6 +177,21 @@ def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
             ),
             fragment_plan_id="terminal-fragment",
             fragment_atomic_group_id="terminal-group",
+            root_publication_groups=(
+                MbaMutationRootPublicationGroup(
+                    group_id="root-group:entry",
+                    predecessor_block_id="entry",
+                    predecessor_anchor_ea=0x40A560,
+                    edge_ids=("replacement:entry:direct",),
+                    edge_roles=(SemanticEdgeRole.DIRECT,),
+                    original_block_ids=("original",),
+                    replacement_block_ids=("replacement",),
+                    publication_attempted=True,
+                    publication_succeeded=True,
+                    rollback_attempted=True,
+                    rollback_succeeded=True,
+                ),
+            ),
             fragment_staged=True,
             root_publication_attempted=True,
             root_publication_succeeded=True,
@@ -194,6 +211,7 @@ def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
     assert observed[0].fragment_staged
     assert observed[0].root_publication_succeeded
     assert observed[0].rollback_succeeded
+    assert observed[0].root_publication_groups[0].rollback_succeeded
     assert [
         (
             transition.proxy_token,

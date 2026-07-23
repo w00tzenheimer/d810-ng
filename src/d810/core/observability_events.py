@@ -190,6 +190,102 @@ class LogicalBlockVersionTransitionObserved:
 
 
 @dataclass(frozen=True)
+class FragmentRootPublicationGroupObserved:
+    """Serial-free ownership and outcome for one root predecessor group."""
+
+    group_id: str
+    predecessor_block_id: str
+    predecessor_anchor_ea: int
+    edge_ids: tuple[str, ...]
+    edge_roles: tuple[str, ...]
+    original_block_ids: tuple[str, ...]
+    replacement_block_ids: tuple[str, ...]
+    publication_attempted: bool = False
+    publication_succeeded: bool = False
+    rollback_attempted: bool = False
+    rollback_succeeded: bool | None = None
+
+    def __post_init__(self) -> None:
+        group_id = str(self.group_id)
+        predecessor_block_id = str(self.predecessor_block_id)
+        if group_id != f"root-group:{predecessor_block_id}":
+            raise ValueError("root publication group identity drifted")
+        if int(self.predecessor_anchor_ea) < 0:
+            raise ValueError("root publication group requires an EA anchor")
+        edge_ids = tuple(str(edge_id) for edge_id in self.edge_ids)
+        edge_roles = tuple(str(role) for role in self.edge_roles)
+        original_block_ids = tuple(
+            str(block_id) for block_id in self.original_block_ids
+        )
+        replacement_block_ids = tuple(
+            str(block_id) for block_id in self.replacement_block_ids
+        )
+        edge_count = len(edge_ids)
+        if (
+            edge_count == 0
+            or len(set(edge_ids)) != edge_count
+            or len(edge_roles) != edge_count
+            or len(original_block_ids) != edge_count
+            or len(replacement_block_ids) != edge_count
+            or any(not edge_id for edge_id in edge_ids)
+            or any(not block_id for block_id in original_block_ids)
+            or any(not block_id for block_id in replacement_block_ids)
+            or any(
+                role
+                not in {
+                    "direct",
+                    "call_fallthrough",
+                    "conditional_taken",
+                    "conditional_fallthrough",
+                }
+                for role in edge_roles
+            )
+        ):
+            raise ValueError(
+                "root publication group requires aligned semantic edge ownership"
+            )
+        publication_attempted = bool(self.publication_attempted)
+        publication_succeeded = bool(self.publication_succeeded)
+        rollback_attempted = bool(self.rollback_attempted)
+        rollback_succeeded = (
+            None
+            if self.rollback_succeeded is None
+            else bool(self.rollback_succeeded)
+        )
+        if publication_succeeded and not publication_attempted:
+            raise ValueError("root publication cannot succeed before its attempt")
+        if rollback_attempted != (rollback_succeeded is not None):
+            raise ValueError(
+                "root-group rollback outcome is present exactly when attempted"
+            )
+        if rollback_attempted and not publication_attempted:
+            raise ValueError("root-group rollback requires publication attempt")
+        object.__setattr__(self, "group_id", group_id)
+        object.__setattr__(self, "predecessor_block_id", predecessor_block_id)
+        object.__setattr__(
+            self,
+            "predecessor_anchor_ea",
+            int(self.predecessor_anchor_ea),
+        )
+        object.__setattr__(self, "edge_ids", edge_ids)
+        object.__setattr__(self, "edge_roles", edge_roles)
+        object.__setattr__(self, "original_block_ids", original_block_ids)
+        object.__setattr__(self, "replacement_block_ids", replacement_block_ids)
+        object.__setattr__(
+            self,
+            "publication_attempted",
+            publication_attempted,
+        )
+        object.__setattr__(
+            self,
+            "publication_succeeded",
+            publication_succeeded,
+        )
+        object.__setattr__(self, "rollback_attempted", rollback_attempted)
+        object.__setattr__(self, "rollback_succeeded", rollback_succeeded)
+
+
+@dataclass(frozen=True)
 class MutationPlanObserved:
     session_id: str
     func_ea: int
@@ -204,6 +300,7 @@ class MutationPlanObserved:
     fragment_plan_id: str = ""
     fragment_atomic_group_id: str = ""
     fragment_plan_json: str = ""
+    root_publication_groups: tuple[FragmentRootPublicationGroupObserved, ...] = ()
     timestamp: float = 0.0
 
     def __post_init__(self) -> None:
@@ -219,6 +316,28 @@ class MutationPlanObserved:
         if (self.mutation_kind == "fragment_publication") != all(fragment_fields):
             raise ValueError(
                 "fragment publication must carry its complete portable plan"
+            )
+        if all(fragment_fields) != bool(self.root_publication_groups):
+            raise ValueError(
+                "fragment publication plan requires root-group inventory"
+            )
+        if (
+            any(
+                not isinstance(group, FragmentRootPublicationGroupObserved)
+                for group in self.root_publication_groups
+            )
+            or len({group.group_id for group in self.root_publication_groups})
+            != len(self.root_publication_groups)
+        ):
+            raise TypeError("fragment mutation plan contains invalid root groups")
+        if any(
+            group.publication_attempted
+            or group.publication_succeeded
+            or group.rollback_attempted
+            for group in self.root_publication_groups
+        ):
+            raise ValueError(
+                "fragment mutation plan requires pristine root-group inventory"
             )
         if all(fragment_fields):
             try:
@@ -254,6 +373,7 @@ class MutationReceiptObserved:
     affected_anchor_eas: tuple[int, ...] = ()
     fragment_plan_id: str = ""
     fragment_atomic_group_id: str = ""
+    root_publication_groups: tuple[FragmentRootPublicationGroupObserved, ...] = ()
     fragment_staged: bool = False
     root_publication_attempted: bool = False
     root_publication_succeeded: bool = False
@@ -291,6 +411,19 @@ class MutationReceiptObserved:
             raise ValueError(
                 "fragment publication receipt requires fragment identity"
             )
+        if has_fragment != bool(self.root_publication_groups):
+            raise ValueError(
+                "fragment publication receipt requires root-group outcomes"
+            )
+        if (
+            any(
+                not isinstance(group, FragmentRootPublicationGroupObserved)
+                for group in self.root_publication_groups
+            )
+            or len({group.group_id for group in self.root_publication_groups})
+            != len(self.root_publication_groups)
+        ):
+            raise TypeError("fragment receipt contains invalid root groups")
         if self.root_publication_succeeded and not self.root_publication_attempted:
             raise ValueError(
                 "root publication cannot succeed before it is attempted"
@@ -304,6 +437,12 @@ class MutationReceiptObserved:
                 not self.fragment_staged
                 or not self.root_publication_succeeded
                 or self.rollback_attempted
+                or any(
+                    not group.publication_attempted
+                    or not group.publication_succeeded
+                    or group.rollback_attempted
+                    for group in self.root_publication_groups
+                )
             ):
                 raise ValueError(
                     "committed fragment requires staged and published authority"
@@ -322,6 +461,7 @@ class MutationReceiptObserved:
             or self.rollback_attempted
             or self.rollback_succeeded is not None
             or self.validation_outcomes
+            or self.root_publication_groups
         ):
             raise ValueError(
                 "non-fragment receipt cannot carry fragment transaction state"
@@ -567,6 +707,7 @@ class BlockLineageDrainRequested:
 __all__ = [
     # Hex-Rays
     "CaptureMbaSnapshotRequested",
+    "FragmentRootPublicationGroupObserved",
     # Preanalysis
     "BranchOwnershipProofsObserved",
     "BranchWitnessDecisionsObserved",
