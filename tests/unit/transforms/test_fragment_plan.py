@@ -20,6 +20,7 @@ from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
     FragmentPlanRejected,
+    FragmentPublicationPurpose,
     FragmentRangeAssumption,
     FragmentRangeObservation,
     FragmentValueSite,
@@ -109,6 +110,7 @@ def _valid_plan() -> FragmentPlan:
     return FragmentPlan(
         plan_id="rhad-a560-consumer-route",
         atomic_group_id="consumer-route@0x40BECC",
+        publication_purpose=FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING,
         native_key=NATIVE_KEY,
         blocks=(
             original,
@@ -164,6 +166,26 @@ def _valid_plan() -> FragmentPlan:
             ),
         ),
     )
+
+
+def test_fragment_plan_requires_typed_publication_purpose() -> None:
+    plan = _valid_plan()
+
+    assert (
+        plan.publication_purpose
+        is FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+    )
+    with pytest.raises(TypeError, match="FragmentPublicationPurpose"):
+        FragmentPlan(
+            **{
+                field.name: (
+                    "frontend_normalization"
+                    if field.name == "publication_purpose"
+                    else getattr(plan, field.name)
+                )
+                for field in fields(FragmentPlan)
+            }
+        )
 
 
 def test_fragment_plan_is_serial_free_and_groups_complete_conditional() -> None:
@@ -273,6 +295,7 @@ def test_fragment_plan_rejects_multiple_operations_for_one_source() -> None:
         FragmentPlan(
             plan_id=plan.plan_id,
             atomic_group_id=plan.atomic_group_id,
+            publication_purpose=plan.publication_purpose,
             native_key=plan.native_key,
             blocks=plan.blocks,
             roots=plan.roots,
@@ -301,6 +324,7 @@ def test_fragment_plan_requires_replacement_identity_to_match_original() -> None
         FragmentPlan(
             plan_id=plan.plan_id,
             atomic_group_id=plan.atomic_group_id,
+            publication_purpose=plan.publication_purpose,
             native_key=plan.native_key,
             blocks=tuple(
                 mismatched_replacement
@@ -325,6 +349,7 @@ def test_fragment_plan_requires_owned_original_for_every_replacement() -> None:
         FragmentPlan(
             plan_id=plan.plan_id,
             atomic_group_id=plan.atomic_group_id,
+            publication_purpose=plan.publication_purpose,
             native_key=plan.native_key,
             blocks=plan.blocks,
             roots=plan.roots,
@@ -354,6 +379,7 @@ def test_fragment_plan_requires_all_references_to_belong_to_the_plan() -> None:
         FragmentPlan(
             plan_id=plan.plan_id,
             atomic_group_id=plan.atomic_group_id,
+            publication_purpose=plan.publication_purpose,
             native_key=plan.native_key,
             blocks=plan.blocks,
             roots=plan.roots,
@@ -384,6 +410,7 @@ def test_fragment_plan_rejects_cross_function_stable_identity() -> None:
         FragmentPlan(
             plan_id=plan.plan_id,
             atomic_group_id=plan.atomic_group_id,
+            publication_purpose=plan.publication_purpose,
             native_key=plan.native_key,
             blocks=plan.blocks + (foreign,),
             roots=plan.roots,
@@ -461,6 +488,7 @@ def test_fragment_plan_rejects_ambiguous_value_site_identity() -> None:
         FragmentPlan(
             plan_id=plan.plan_id,
             atomic_group_id=plan.atomic_group_id,
+            publication_purpose=plan.publication_purpose,
             native_key=plan.native_key,
             blocks=plan.blocks,
             roots=plan.roots,
@@ -594,6 +622,7 @@ def test_flag_corridor_sites_do_not_require_fake_storage_identity() -> None:
     rebuilt = FragmentPlan(
         plan_id=plan.plan_id,
         atomic_group_id=plan.atomic_group_id,
+        publication_purpose=plan.publication_purpose,
         native_key=plan.native_key,
         blocks=plan.blocks,
         roots=plan.roots,

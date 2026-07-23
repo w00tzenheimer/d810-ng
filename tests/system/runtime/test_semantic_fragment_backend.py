@@ -36,6 +36,7 @@ from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentFlagCorridor,
     FragmentOperation,
     FragmentPlan,
+    FragmentPublicationPurpose,
     FragmentRangeAssumption,
     FragmentRangeObservation,
     FragmentValueSite,
@@ -439,6 +440,7 @@ def _plan(gateway, *, entry: int, original: int, target: int, dispatcher: int):
     return FragmentPlan(
         plan_id="runtime-direct-fragment",
         atomic_group_id="route@0x401010",
+        publication_purpose=FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING,
         native_key=gateway.native_key,
         blocks=(
             _native("entry", FragmentBlockRole.EXTERNAL, entry),
@@ -671,6 +673,7 @@ def _conditional_plan(
     return FragmentPlan(
         plan_id="runtime-conditional-fragment",
         atomic_group_id="condition@0x401010",
+        publication_purpose=FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING,
         native_key=gateway.native_key,
         blocks=(
             _native("entry", FragmentBlockRole.EXTERNAL, entry),

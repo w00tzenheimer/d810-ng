@@ -42,6 +42,13 @@ class FragmentBlockMaterialization(str, Enum):
     CREATE_EMPTY = "create_empty"
 
 
+class FragmentPublicationPurpose(str, Enum):
+    """Authority track advanced by a validated fragment publication."""
+
+    FRONTEND_NORMALIZATION = "frontend_normalization"
+    CANONICAL_SEMANTIC_LOWERING = "canonical_semantic_lowering"
+
+
 class FragmentDataFlowRole(str, Enum):
     """Observable semantic responsibility protected by a data-flow proof."""
 
@@ -460,6 +467,7 @@ class FragmentPlan:
 
     plan_id: str
     atomic_group_id: str
+    publication_purpose: FragmentPublicationPurpose
     native_key: NativePreanalysisKey
     blocks: tuple[FragmentBlock, ...]
     roots: tuple[str, ...]
@@ -476,6 +484,10 @@ class FragmentPlan:
             self.atomic_group_id,
             "fragment atomic group id",
         )
+        if not isinstance(self.publication_purpose, FragmentPublicationPurpose):
+            raise TypeError(
+                "fragment plan requires a FragmentPublicationPurpose"
+            )
         if not isinstance(self.native_key, NativePreanalysisKey):
             raise TypeError("fragment plan requires a native preanalysis key")
 
@@ -750,6 +762,7 @@ __all__ = [
     "FragmentOperation",
     "FragmentPlan",
     "FragmentPlanRejected",
+    "FragmentPublicationPurpose",
     "FragmentRangeAssumption",
     "FragmentRangeObservation",
     "FragmentValueSite",
