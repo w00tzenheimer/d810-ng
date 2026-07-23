@@ -31,6 +31,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentComputedBranchNormalization,
     FragmentEdge,
     FragmentFlagCorridor,
     FragmentNativeBody,
@@ -827,6 +828,15 @@ def plan_frontend_computed_branch_normalization(
                 operation_id=proof.proof_id,
                 source_block_id=source_block_id,
                 predicate_anchor_ea=proof.predicate_anchor_ea,
+                computed_branch_normalization=(
+                    None
+                    if proof.shape is not NativeTransferShape.CONDITIONAL
+                    else FragmentComputedBranchNormalization(
+                        predicate_kind=proof.predicate_kind,
+                        condition_producer_ea=int(proof.condition_producer_ea),
+                        unresolved_transfer_ea=int(proof.source_transfer_ea),
+                    )
+                ),
                 edges=tuple(imported_edges),
             )
         )

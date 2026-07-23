@@ -118,6 +118,7 @@ def _evidence() -> FrontendNormalizationEvidence:
                 shape=NativeTransferShape.DIRECT,
                 source_identity=_identity(0x1100),
                 source_anchor_ea=0x1100,
+                source_transfer_ea=0x1100,
                 endpoints=(
                     NativeTransferEndpoint(
                         role=SemanticEdgeRole.DIRECT,

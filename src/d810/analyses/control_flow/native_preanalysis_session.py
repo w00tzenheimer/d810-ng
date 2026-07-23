@@ -28,6 +28,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     PortableMaterializedStateRoute,
     PortableStateWriteRouteEvidence,
     TerminalReturnCarrierRequest,
+    condition_code_predicate,
     is_conditional_handler_bridge_kind,
 )
 from d810.analyses.control_flow.native_semantic_closure import (
@@ -442,6 +443,7 @@ def _patch_plan_frontend_proof(
             shape=NativeTransferShape.DIRECT,
             source_identity=source_identity,
             source_anchor_ea=source_anchor_ea,
+            source_transfer_ea=int(plan.jmp_ea),
             endpoints=(
                 NativeTransferEndpoint(
                     role=SemanticEdgeRole.DIRECT,
@@ -471,10 +473,12 @@ def _patch_plan_frontend_proof(
     false_target_ea = int(plan.false_target_ea)
     predicate_ea = int(plan.new_block_eas[0])
     condition_producer_ea = int(plan.condition_producer_ea)
+    predicate_kind = condition_code_predicate(plan.condition_code)
     if (
         true_target_ea == false_target_ea
         or {true_target_ea, false_target_ea} != set(target_eas)
         or predicate_ea != int(plan.insn_heads[-2])
+        or predicate_kind is None
     ):
         raise FrontendNormalizationEvidenceRejected(
             "conditional patch plan topology is inconsistent"
@@ -513,7 +517,9 @@ def _patch_plan_frontend_proof(
         shape=NativeTransferShape.CONDITIONAL,
         source_identity=source_identity,
         source_anchor_ea=predicate_ea,
+        source_transfer_ea=int(plan.jmp_ea),
         endpoints=endpoints,
+        predicate_kind=predicate_kind,
         predicate_anchor_ea=predicate_ea,
         condition_producer_ea=condition_producer_ea,
         flag_corridor=corridor_identities,

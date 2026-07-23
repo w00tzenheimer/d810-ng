@@ -17,6 +17,7 @@ from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 
 
@@ -322,6 +323,43 @@ class FragmentEdge:
 
 
 @dataclass(frozen=True, slots=True)
+class FragmentComputedBranchNormalization:
+    """Typed proof for replacing one unresolved imported computed branch."""
+
+    predicate_kind: PredicateKind
+    condition_producer_ea: int
+    unresolved_transfer_ea: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.predicate_kind, PredicateKind):
+            raise TypeError(
+                "computed branch normalization requires a PredicateKind"
+            )
+        condition_producer_ea = _require_native_ea(
+            self.condition_producer_ea,
+            "computed branch condition producer",
+        )
+        unresolved_transfer_ea = _require_native_ea(
+            self.unresolved_transfer_ea,
+            "unresolved computed transfer",
+        )
+        if condition_producer_ea == unresolved_transfer_ea:
+            raise FragmentPlanRejected(
+                "computed branch producer and transfer require distinct anchors"
+            )
+        object.__setattr__(
+            self,
+            "condition_producer_ea",
+            condition_producer_ea,
+        )
+        object.__setattr__(
+            self,
+            "unresolved_transfer_ea",
+            unresolved_transfer_ea,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class FragmentOperation:
     """One complete semantic control-flow operation inside a fragment."""
 
@@ -329,6 +367,7 @@ class FragmentOperation:
     source_block_id: str
     edges: tuple[FragmentEdge, ...]
     predicate_anchor_ea: int | None = None
+    computed_branch_normalization: FragmentComputedBranchNormalization | None = None
 
     def __post_init__(self) -> None:
         operation_id = _require_identifier(
@@ -359,6 +398,14 @@ class FragmentOperation:
             }
         )
         predicate_anchor_ea = self.predicate_anchor_ea
+        computed_branch_normalization = self.computed_branch_normalization
+        if computed_branch_normalization is not None and not isinstance(
+            computed_branch_normalization,
+            FragmentComputedBranchNormalization,
+        ):
+            raise TypeError(
+                "fragment operation computed branch normalization is invalid"
+            )
         if len(edges) == 1:
             if edges[0].role not in {
                 SemanticEdgeRole.DIRECT,
@@ -370,6 +417,11 @@ class FragmentOperation:
             if predicate_anchor_ea is not None:
                 raise FragmentPlanRejected(
                     "fragment predicate belongs only to a complete conditional"
+                )
+            if computed_branch_normalization is not None:
+                raise FragmentPlanRejected(
+                    "computed branch normalization belongs only to a "
+                    "complete conditional"
                 )
         else:
             if frozenset(roles) != conditional_roles:
@@ -1051,6 +1103,43 @@ class FragmentPlan:
                         f"fragment operation {operation.operation_id!r} predicate "
                         "anchor does not belong to its source identity"
                     )
+            computed_normalization = (
+                operation.computed_branch_normalization
+            )
+            if computed_normalization is not None:
+                if (
+                    self.publication_purpose
+                    is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+                    or source.role is not FragmentBlockRole.IMPORTED
+                ):
+                    raise FragmentPlanRejected(
+                        f"fragment operation {operation.operation_id!r} "
+                        "computed branch normalization requires an imported "
+                        "frontend-normalization source"
+                    )
+                identity = source.stable_identity
+                if identity is None or any(
+                    not identity.native_ranges.contains(ea)
+                    for ea in (
+                        computed_normalization.condition_producer_ea,
+                        computed_normalization.unresolved_transfer_ea,
+                    )
+                ):
+                    raise FragmentPlanRejected(
+                        f"fragment operation {operation.operation_id!r} "
+                        "computed branch anchors do not belong to its source "
+                        "identity"
+                    )
+                native_body = native_body_by_id.get(str(source.native_body_id))
+                if (
+                    native_body is None
+                    or operation.operation_id not in native_body.proof_ids
+                ):
+                    raise FragmentPlanRejected(
+                        f"fragment operation {operation.operation_id!r} "
+                        "computed branch normalization lacks native-body proof "
+                        "ownership"
+                    )
             for edge in operation.edges:
                 if edge.target_block_id not in block_by_id:
                     raise FragmentPlanRejected(
@@ -1469,6 +1558,7 @@ __all__ = [
     "FragmentBlock",
     "FragmentBlockMaterialization",
     "FragmentBlockRole",
+    "FragmentComputedBranchNormalization",
     "FragmentDataFlowObligation",
     "FragmentDataFlowRole",
     "FragmentEdge",
