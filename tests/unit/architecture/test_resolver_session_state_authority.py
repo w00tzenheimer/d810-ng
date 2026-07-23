@@ -36,6 +36,14 @@ COMPUTED_GOTO_RESOLVER_PATH = (
     / "jumps"
     / "computed_goto_resolver.py"
 )
+NATIVE_PREANALYSIS_SESSION_PATH = (
+    REPO_ROOT
+    / "src"
+    / "d810"
+    / "analyses"
+    / "control_flow"
+    / "native_preanalysis_session.py"
+)
 MATERIALIZED_COMPUTED_GOTO_ISLAND_PATH = (
     REPO_ROOT
     / "src"
@@ -356,6 +364,12 @@ def test_computed_goto_resolver_has_no_provider_specific_route_authority() -> No
 
     assert "_discover_reference_style_immediate_flow_routes" not in resolver_source
     assert "reference_style_immediate_flow_route" not in resolver_source
+
+
+def test_portable_session_has_no_profile_specific_trace_switches() -> None:
+    session_source = NATIVE_PREANALYSIS_SESSION_PATH.read_text(encoding="utf-8")
+
+    assert "RHAD_" not in session_source
 
 
 def test_legacy_materialized_island_lowering_is_removed() -> None:
