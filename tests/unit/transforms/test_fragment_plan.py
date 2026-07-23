@@ -21,6 +21,7 @@ from d810.transforms.fragment_plan import (
     FragmentPlan,
     FragmentPlanRejected,
     FragmentRangeAssumption,
+    FragmentRangeObservation,
     FragmentValueSite,
 )
 from tests.native_preanalysis import make_native_key
@@ -157,6 +158,7 @@ def _valid_plan() -> FragmentPlan:
             FragmentRangeAssumption(
                 assumption_id="condition-domain",
                 site=condition_definition,
+                observation=FragmentRangeObservation.AFTER_INSTRUCTION,
                 lo=0,
                 hi=1,
             ),
@@ -412,8 +414,27 @@ def test_fragment_plan_rejects_invalid_flag_corridor_and_range() -> None:
         FragmentRangeAssumption(
             assumption_id="broken-range",
             site=definition,
+            observation=FragmentRangeObservation.AFTER_INSTRUCTION,
             lo=2,
             hi=1,
+        )
+
+    with pytest.raises(FragmentPlanRejected, match="unsigned site width"):
+        FragmentRangeAssumption(
+            assumption_id="negative-range",
+            site=definition,
+            observation=FragmentRangeObservation.AFTER_INSTRUCTION,
+            lo=-1,
+            hi=1,
+        )
+
+    with pytest.raises(FragmentPlanRejected, match="unsigned site width"):
+        FragmentRangeAssumption(
+            assumption_id="oversized-range",
+            site=definition,
+            observation=FragmentRangeObservation.AFTER_INSTRUCTION,
+            lo=0,
+            hi=1 << (definition.width * 8),
         )
 
 
@@ -485,6 +506,7 @@ def test_data_flow_and_ranges_require_portable_storage_identity() -> None:
         FragmentRangeAssumption(
             assumption_id="unbound-range",
             site=definition,
+            observation=FragmentRangeObservation.AFTER_INSTRUCTION,
             lo=0,
             hi=1,
         )
