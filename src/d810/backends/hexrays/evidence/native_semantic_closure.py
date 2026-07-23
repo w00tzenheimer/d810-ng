@@ -383,6 +383,26 @@ def build_native_semantic_cfg(
     abstentions = []
     pending = list(seeds)
     visited = set()
+
+    def register_semantic_entries(entry_eas: Collection[int]) -> None:
+        newly_discovered = {
+            int(entry_ea)
+            for entry_ea in entry_eas
+            if int(entry_ea) not in semantic_entry_eas
+        }
+        if not newly_discovered:
+            return
+        semantic_entry_eas.update(newly_discovered)
+        for visited_entry_ea in tuple(visited):
+            visited_fact = facts_by_start_ea.get(int(visited_entry_ea))
+            if visited_fact is None or not any(
+                int(visited_fact.start_ea) < entry_ea < int(visited_fact.end_ea)
+                for entry_ea in newly_discovered
+            ):
+                continue
+            visited.remove(int(visited_entry_ea))
+            pending.append(int(visited_entry_ea))
+
     while pending:
         entry_ea = int(pending.pop())
         if entry_ea in visited:
@@ -416,12 +436,14 @@ def build_native_semantic_cfg(
                 for edge in fact.cut_edges
                 if edge.resolver_proven and edge.target_ea is not None
             )
+            register_semantic_entries(proven_cut_targets)
             proven_unmarked_entries.update(proven_cut_targets)
             pending.extend(proven_cut_targets)
             continue
         if fact.is_return_tail:
             continue
         successors = traversable_native_successor_eas(fact)
+        register_semantic_entries(successors)
         proven_unmarked_entries.update(successors)
         pending.extend(successors)
 
