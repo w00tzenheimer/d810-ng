@@ -195,6 +195,9 @@ from d810.families.state_machine_cff.pipeline import (
     standard_state_machine_passes,
     state_machine_pass_registry,
 )
+from d810.passes.state_machine_spine import (
+    semantic_evidence_state_machine_passes,
+)
 from d810.transforms.minimal_unflatten_emit import (
     TERMINAL_CARRIER_CONVERGENCE_METADATA,
 )
@@ -1012,7 +1015,7 @@ class _MaterializedComputedGotoContinuationFamily:
         return self
 
     def pipeline_for(self, match, context):
-        return standard_state_machine_passes()
+        return semantic_evidence_state_machine_passes()
 
 
 class StateMachineCffUnflattener(ComposedUnflatteningRule):

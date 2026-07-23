@@ -61,6 +61,17 @@ class SessionFragmentPublicationLifecycleAuthority:
         self._pending_purpose = None
         self._prepublication_validation = None
 
+    def record_fragment_plan_ready(self, plan: FragmentPlan) -> None:
+        """Record canonical plan authority before detached staging begins."""
+        self._require_typed_plan(plan)
+        if self._pending_plan_id is not None:
+            raise RuntimeError("fragment lifecycle authority already has a staged plan")
+        if (
+            plan.publication_purpose
+            is FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+        ):
+            self.state.mark_canonical_semantic_plan_ready()
+
     def record_fragment_staged(self, plan: FragmentPlan) -> None:
         self._require_typed_plan(plan)
         if self._pending_plan_id is not None:

@@ -13,6 +13,8 @@ class FragmentPublicationLifecycleAuthority(Protocol):
 
     evidence_generation: int
 
+    def record_fragment_plan_ready(self, plan: FragmentPlan) -> None: ...
+
     def record_fragment_staged(self, plan: FragmentPlan) -> None: ...
 
     def record_fragment_validated(

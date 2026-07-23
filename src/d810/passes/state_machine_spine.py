@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from d810.passes.pass_pipeline import (
     AnalysisContract,
+    BackendRoute,
     FactRequirement,
     MaturityRange,
     PassContract,
@@ -29,6 +30,7 @@ from d810.passes.unflatten.state_machine import (
     BOUND_CANONICAL_SEMANTIC_EVIDENCE,
     CANONICAL_SEMANTIC_EVIDENCE,
     CleanupResidualDispatcher,
+    LowerCanonicalSemanticFragment,
     LowerStateMachine,
     PlanSemanticRegions,
     RecoverDispatcher,
@@ -39,10 +41,12 @@ __all__ = [
     "CLEANUP_ANALYSES",
     "DISPATCHER_ANALYSES",
     "LOWER_ANALYSES",
+    "SEMANTIC_LOWER_ANALYSES",
     "REGION_ANALYSES",
     "TRANSITION_ANALYSES",
     "register_state_machine_passes",
     "state_machine_pass_spec",
+    "semantic_evidence_state_machine_passes",
     "standard_state_machine_passes",
     "state_machine_pass_registry",
 ]
@@ -81,6 +85,11 @@ LOWER_ANALYSES = AnalysisContract(
         }
     ),
     provided=frozenset({"lower_state_machine_plan_metadata"}),
+)
+SEMANTIC_LOWER_ANALYSES = AnalysisContract(
+    required=LOWER_ANALYSES.required
+    | frozenset({BOUND_CANONICAL_SEMANTIC_EVIDENCE}),
+    provided=LOWER_ANALYSES.provided,
 )
 CLEANUP_ANALYSES = AnalysisContract()
 
@@ -202,6 +211,7 @@ def state_machine_pass_spec(
     safety_policy,
     *,
     analyses: AnalysisContract,
+    backend_route: BackendRoute = BackendRoute.MUTATION_BACKEND,
 ) -> PassSpec:
     """Build a canonical state-machine pass spec with native contract metadata."""
     return PassSpec(
@@ -210,6 +220,7 @@ def state_machine_pass_spec(
         requirements,
         safety_policy,
         analyses=analyses,
+        backend_route=backend_route,
         contract=_CONTRACTS_BY_PASS_ID[pass_id],
     )
 
@@ -266,5 +277,23 @@ def standard_state_machine_passes() -> tuple[PassSpec, ...]:
             no_caps,
             default,
             analyses=CLEANUP_ANALYSES,
+        ),
+    )
+
+
+def semantic_evidence_state_machine_passes() -> tuple[PassSpec, ...]:
+    """Return the canonical evidence spine with one atomic publication owner."""
+    standard = standard_state_machine_passes()
+    return (
+        standard[0],
+        standard[1],
+        standard[2],
+        state_machine_pass_spec(
+            "lower_state_machine",
+            LowerCanonicalSemanticFragment,
+            no_caps,
+            default,
+            analyses=SEMANTIC_LOWER_ANALYSES,
+            backend_route=BackendRoute.FRAGMENT_PUBLICATION,
         ),
     )

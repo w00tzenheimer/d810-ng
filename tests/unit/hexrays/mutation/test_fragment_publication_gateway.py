@@ -237,6 +237,9 @@ class _ReceiptLifecycleAuthority:
         self.evidence_generation = 1
         self.events: list[tuple[str, object]] = []
 
+    def record_fragment_plan_ready(self, plan: FragmentPlan) -> None:
+        del plan
+
     def record_fragment_staged(self, plan: FragmentPlan) -> None:
         self.events.append(("staged", plan))
 
@@ -662,6 +665,34 @@ def test_gateway_advances_semantic_lifecycle_only_after_receipt_commit() -> None
     assert lifecycle.semantic_fragment_published_postvalidated_generation == 1
     assert lifecycle.receipt_committed_generation == 1
     assert lifecycle.normalization_published_postvalidated_generation == 1
+
+
+def test_gateway_records_canonical_plan_ready_before_semantic_staging() -> None:
+    plan = _plan()
+    timeline: list[str] = []
+    lifecycle = NativePreanalysisSessionState(
+        evidence_generation=1,
+        portable_evidence_ready_generation=1,
+        normalization_staged_generation=1,
+        normalization_validated_generation=1,
+        normalization_published_postvalidated_generation=1,
+    )
+    lifecycle.event_observer = lambda transition: timeline.append(
+        transition.operation
+    )
+    gateway, _committed, _aborted = _gateway(
+        plan,
+        lifecycle_authority=lifecycle,
+    )
+
+    gateway.publish_semantic_fragment(_FragmentBackend(gateway), plan)
+
+    assert lifecycle.canonical_semantic_plan_generation == 1
+    assert timeline[:3] == [
+        "canonical_semantic_plan_ready",
+        "semantic_fragment_staged",
+        "semantic_fragment_validated",
+    ]
 
 
 def test_lifecycle_authority_rejects_receipt_from_older_evidence_generation() -> None:
