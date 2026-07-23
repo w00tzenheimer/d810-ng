@@ -232,6 +232,7 @@ class ComputedGotoPatchPlan(NamedTuple):
     selector_compare_constant: int | None = None
     selector_state_on_left: bool | None = None
     source_register_values: tuple[tuple[str, int], ...] = ()
+    condition_producer_ea: int | None = None
 
 
 @dataclass(frozen=True)

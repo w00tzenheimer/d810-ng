@@ -4708,6 +4708,7 @@ def test_two_way_replay_setcc_updates_parent_of_separate_low_byte_register(
     assert info == {
         "ea": 0x100B,
         "cc": 5,
+        "condition_producer_ea": 0x1005,
         "selector_register_name": "ebx",
         "selector_compare_constant": 0x64B9DC19,
         "selector_state_on_left": True,

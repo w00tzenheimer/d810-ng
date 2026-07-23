@@ -3004,6 +3004,7 @@ def _replay_two_way(block_entry: int, entry_state0: dict, jmp_ea: int) -> dict |
     state_t = dict(entry_state0)
     info: dict | None = None
     selector: dict | None = None
+    condition_producer_ea: int | None = None
     insn = ida_ua.insn_t()
     ea = int(block_entry)
     while ea <= int(jmp_ea):
@@ -3015,15 +3016,24 @@ def _replay_two_way(block_entry: int, entry_state0: dict, jmp_ea: int) -> dict |
             return None
         if ea == int(jmp_ea):
             break
-        if mnem == "cmp":
+        if mnem in {"cmp", "test"}:
+            condition_producer_ea = int(ea)
             left, right = insn.ops[0], insn.ops[1]
-            if left.type == idaapi.o_reg and right.type == idaapi.o_imm:
+            if (
+                mnem == "cmp"
+                and left.type == idaapi.o_reg
+                and right.type == idaapi.o_imm
+            ):
                 selector = {
                     "selector_register_name": _sv_reg_name(left),
                     "selector_compare_constant": int(right.value) & _MASK32,
                     "selector_state_on_left": True,
                 }
-            elif left.type == idaapi.o_imm and right.type == idaapi.o_reg:
+            elif (
+                mnem == "cmp"
+                and left.type == idaapi.o_imm
+                and right.type == idaapi.o_reg
+            ):
                 selector = {
                     "selector_register_name": _sv_reg_name(right),
                     "selector_compare_constant": int(left.value) & _MASK32,
@@ -3036,6 +3046,7 @@ def _replay_two_way(block_entry: int, entry_state0: dict, jmp_ea: int) -> dict |
                 state_f[c] = None
                 state_t[c] = None
             selector = None
+            condition_producer_ea = None
         elif mnem in _SV_CMOV_MNEMS and insn.ops[0].type == idaapi.o_reg:
             dst = _sv_reg_name(insn.ops[0])
             state_t[dst] = _sv_resolve_source(
@@ -3043,6 +3054,7 @@ def _replay_two_way(block_entry: int, entry_state0: dict, jmp_ea: int) -> dict |
             )  # taken: dst=src
             # not-taken: dst unchanged
             info = {"ea": ea, "cc": _select_cc_nibble(ea, length)}
+            info["condition_producer_ea"] = condition_producer_ea
             if selector is not None:
                 info.update(selector)
         elif (
@@ -3064,6 +3076,7 @@ def _replay_two_way(block_entry: int, entry_state0: dict, jmp_ea: int) -> dict |
             state_t[dst] = _sv_singleton(base_t | 1)  # taken: al = 1
             state_f[dst] = _sv_singleton(base_f | 0)  # not-taken: al = 0
             info = {"ea": ea, "cc": _select_cc_nibble(ea, length)}
+            info["condition_producer_ea"] = condition_producer_ea
             if selector is not None:
                 info.update(selector)
         else:
@@ -3071,6 +3084,7 @@ def _replay_two_way(block_entry: int, entry_state0: dict, jmp_ea: int) -> dict |
             _sv_process_writer(mnem, insn, state_t)
             if mnem not in _SV_FLAG_SAFE_RELOC:
                 selector = None
+                condition_producer_ea = None
         ea += length
     if info is None or info.get("cc") is None:
         return None
@@ -3314,6 +3328,9 @@ def _bake_patch_plans(
                             selector_state_on_left=info.get("selector_state_on_left"),
                             source_register_values=_sv_concrete_register_values(
                                 entry_state0
+                            ),
+                            condition_producer_ea=info.get(
+                                "condition_producer_ea"
                             ),
                         )
                     )
