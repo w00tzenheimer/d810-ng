@@ -9,6 +9,7 @@ only when both the source anchor and the target block are unambiguous.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from d810.analyses.control_flow.conditional_jump_eval import predicate_jump_taken
 from d810.analyses.control_flow.route_predicate import DecisionDag
@@ -35,6 +36,19 @@ CONDITIONAL_HANDLER_BRIDGE_KINDS = frozenset(
 def is_conditional_handler_bridge_kind(resolver_kind: str) -> bool:
     """Return whether one evidence kind carries an exact live predicate bridge."""
     return str(resolver_kind) in CONDITIONAL_HANDLER_BRIDGE_KINDS
+
+
+class StateWriteRouteProofKind(str, Enum):
+    """Provider-independent reason a native state-write route is authoritative."""
+
+    STATE_ASSIGNMENT = "state_assignment"
+
+
+class StateWriteRouteDeliveryKind(str, Enum):
+    """Native topology between a proved state write and its semantic target."""
+
+    DISPATCHER = "dispatcher"
+    DIRECT_TARGET = "direct_target"
 
 
 @dataclass(frozen=True, slots=True)
@@ -464,9 +478,16 @@ class PortableStateWriteRouteEvidence:
     state_constant: int
     target_identity: StableBlockIdentity
     target_ea: int
-    proof_kind: str = "static_native_state_delivery"
+    proof_kind: StateWriteRouteProofKind = StateWriteRouteProofKind.STATE_ASSIGNMENT
+    delivery_kind: StateWriteRouteDeliveryKind = (
+        StateWriteRouteDeliveryKind.DISPATCHER
+    )
 
     def __post_init__(self) -> None:
+        if not isinstance(self.proof_kind, StateWriteRouteProofKind):
+            raise TypeError("state-route evidence requires a typed proof kind")
+        if not isinstance(self.delivery_kind, StateWriteRouteDeliveryKind):
+            raise TypeError("state-route evidence requires a typed delivery kind")
         source_write_ea = int(self.source_write_ea)
         delivery_ea = int(self.delivery_ea)
         delivery_region_start_ea = int(self.delivery_region_start_ea)
@@ -517,7 +538,8 @@ class PortableStateWriteRouteEvidence:
         """Return the portable route in DB-queryable native coordinates."""
         return {
             "generation": int(generation),
-            "proof_kind": str(self.proof_kind),
+            "proof_kind": self.proof_kind.value,
+            "delivery_kind": self.delivery_kind.value,
             "source_write_ea": f"0x{self.source_write_ea:X}",
             "delivery_ea": f"0x{self.delivery_ea:X}",
             "delivery_region_start_ea": f"0x{self.delivery_region_start_ea:X}",
@@ -1792,7 +1814,10 @@ def route_transfer_target_through_condition_chain(
 __all__ = [
     "MaterializedIndirectTransfer",
     "MaterializedStateRoute",
+    "PortableStateWriteRouteEvidence",
     "ResidualIndirectCallNeutralizationPlan",
+    "StateWriteRouteDeliveryKind",
+    "StateWriteRouteProofKind",
     "TerminalReturnCarrierRequest",
     "condition_code_predicate",
     "find_unique_target_block",

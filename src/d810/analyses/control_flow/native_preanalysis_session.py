@@ -1327,7 +1327,8 @@ class NativePreanalysisSessionState:
                     ),
                     terminal_return_carrier=terminal_carrier,
                     diagnostic_provenance=(
-                        ("provider_proof_kind", str(route.proof_kind)),
+                        ("provider_proof_kind", route.proof_kind.value),
+                        ("delivery_kind", route.delivery_kind.value),
                     ),
                 )
             )

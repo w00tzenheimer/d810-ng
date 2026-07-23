@@ -669,7 +669,10 @@ class DecompilationLifecycleCoordinator:
                         confidence=1.0,
                         source_ea=int(route.source_write_ea),
                         payload=payload_row,
-                        evidence=(str(route.proof_kind),),
+                        evidence=(
+                            route.proof_kind.value,
+                            route.delivery_kind.value,
+                        ),
                     )
                 )
             emit(

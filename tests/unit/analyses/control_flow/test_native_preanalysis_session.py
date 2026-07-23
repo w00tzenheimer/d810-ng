@@ -15,6 +15,8 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     PortableMaterializedStateRoute,
     PortableStateWriteRouteEvidence,
+    StateWriteRouteDeliveryKind,
+    StateWriteRouteProofKind,
     TerminalReturnCarrierRequest,
 )
 from d810.analyses.control_flow.frontend_normalization import (
@@ -494,7 +496,8 @@ def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() 
         state_constant=0xABB95547,
         target_identity=target_identity,
         target_ea=0x40BECC,
-        proof_kind="reference_style_immediate_flow_route",
+        proof_kind=StateWriteRouteProofKind.STATE_ASSIGNMENT,
+        delivery_kind=StateWriteRouteDeliveryKind.DIRECT_TARGET,
     )
     state = NativePreanalysisSessionState()
     assert state.merge_state_write_routes(NATIVE_KEY, (route,))
@@ -531,7 +534,8 @@ def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() 
         0x40A5C8,
     )
     assert dict(proof.diagnostic_provenance) == {
-        "provider_proof_kind": "reference_style_immediate_flow_route"
+        "provider_proof_kind": "state_assignment",
+        "delivery_kind": "direct_target",
     }
 
 

@@ -94,6 +94,8 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
     PortableStateWriteRouteEvidence,
+    StateWriteRouteDeliveryKind,
+    StateWriteRouteProofKind,
     TerminalReturnCarrierRequest,
 )
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
@@ -1881,7 +1883,7 @@ def test_static_state_write_delivery_rejects_conditional_corridor() -> None:
     )
 
 
-def test_reference_style_immediate_flow_routes_preserve_each_source_site() -> None:
+def test_immediate_native_state_routes_preserve_each_source_site() -> None:
     insn = computed_goto_resolver._DecodedNativeFlowInstruction
     decoded = (
         insn(0x401000, 0x401006, "mov", 16, True, 0x11111111),
@@ -1892,7 +1894,7 @@ def test_reference_style_immediate_flow_routes_preserve_each_source_site() -> No
         insn(0x40102C, 0x40102E, "je", None, False, None, 0x401040),
     )
 
-    routes = computed_goto_resolver._discover_reference_style_immediate_flow_routes(
+    routes = computed_goto_resolver._discover_immediate_native_state_routes(
         decoded,
         state_var_reg=16,
         state_targets={0x11111111: 0x402000},
@@ -1908,14 +1910,14 @@ def test_reference_style_immediate_flow_routes_preserve_each_source_site() -> No
     )
 
 
-def test_reference_style_immediate_flow_routes_accept_bootstrap_jump() -> None:
+def test_immediate_native_state_routes_accept_bootstrap_jump() -> None:
     insn = computed_goto_resolver._DecodedNativeFlowInstruction
     decoded = (
         insn(0x401000, 0x401006, "mov", 16, True, 0x11111111),
         insn(0x401006, 0x40100B, "jmp", None, False, None, 0x401100),
     )
 
-    (route,) = computed_goto_resolver._discover_reference_style_immediate_flow_routes(
+    (route,) = computed_goto_resolver._discover_immediate_native_state_routes(
         decoded,
         state_var_reg=16,
         state_targets={0x11111111: 0x402000},
@@ -1926,7 +1928,7 @@ def test_reference_style_immediate_flow_routes_accept_bootstrap_jump() -> None:
     assert route.corridor_instruction_eas == (0x401000, 0x401006)
 
 
-def test_reference_style_immediate_flow_routes_abstain_on_branch_staging() -> None:
+def test_immediate_native_state_routes_abstain_on_branch_staging() -> None:
     insn = computed_goto_resolver._DecodedNativeFlowInstruction
     decoded = (
         insn(0x401000, 0x401006, "mov", 16, True, 0x11111111),
@@ -1936,7 +1938,7 @@ def test_reference_style_immediate_flow_routes_abstain_on_branch_staging() -> No
         insn(0x401016, 0x401018, "jne", None, False, None, 0x401040),
     )
 
-    routes = computed_goto_resolver._discover_reference_style_immediate_flow_routes(
+    routes = computed_goto_resolver._discover_immediate_native_state_routes(
         decoded,
         state_var_reg=16,
         state_targets={0x11111111: 0x402000, 0x22222222: 0x403000},
@@ -2076,7 +2078,7 @@ def test_static_state_write_routes_include_direct_dispatcher_delivery(
     assert evidence.target_ea == 0x40BECC
 
 
-def test_static_state_write_routes_publish_reference_style_inventory(
+def test_static_state_write_routes_publish_immediate_native_inventory(
     monkeypatch,
 ) -> None:
     resolution = ComputedGotoResolution(
@@ -2124,7 +2126,8 @@ def test_static_state_write_routes_publish_reference_style_inventory(
     assert evidence.delivery_ea == 0x40A5BE
     assert evidence.delivery_region_end_ea == 0x40A5C0
     assert evidence.target_ea == 0x40BECC
-    assert evidence.proof_kind == "reference_style_immediate_flow_route"
+    assert evidence.proof_kind is StateWriteRouteProofKind.STATE_ASSIGNMENT
+    assert evidence.delivery_kind is StateWriteRouteDeliveryKind.DIRECT_TARGET
 
 
 def test_static_conditional_state_choice_maps_both_unique_handler_arms() -> None:
@@ -9607,7 +9610,7 @@ def test_preopt_union_internal_successor_proof_requires_one_imported_target() ->
     assert computed_goto_resolver._preopt_union_internal_successor_eas(closure) == {}
 
 
-def test_preopt_union_internal_successor_includes_reference_state_routes() -> None:
+def test_preopt_union_internal_successor_includes_direct_state_routes() -> None:
     delivery_ea = 0x40A70E
     target_ea = 0x40ADF2
     identity = lambda ea: StableBlockIdentity.from_intervals(
@@ -9625,7 +9628,8 @@ def test_preopt_union_internal_successor_includes_reference_state_routes() -> No
         state_constant=0x12345678,
         target_identity=identity(target_ea),
         target_ea=target_ea,
-        proof_kind="reference_style_immediate_flow_route",
+        proof_kind=StateWriteRouteProofKind.STATE_ASSIGNMENT,
+        delivery_kind=StateWriteRouteDeliveryKind.DIRECT_TARGET,
     )
     closure = SimpleNamespace(
         included_block_eas=(delivery_ea, target_ea),
