@@ -477,9 +477,31 @@ def plan_detached_semantic_closure_import(
             "detached closure planning requires frontend normalization evidence"
         )
 
-    missing_entries: set[int] = set()
+    missing_anchors: set[int] = set()
     proof_ids: set[str] = set()
     for proof in evidence.transfer_proofs:
+        source_matches = native_anchor_matches(
+            graph,
+            proof.source_identity,
+            proof.source_anchor_ea,
+        )
+        if len(source_matches) > 1 and proof.shape is NativeTransferShape.CONDITIONAL:
+            conditional_owners = tuple(
+                block
+                for block in source_matches
+                if block.tail is not None
+                and block.tail.is_conditional_jump
+                and int(block.tail.ea) == int(proof.predicate_anchor_ea)
+            )
+            if len(conditional_owners) == 1:
+                source_matches = conditional_owners
+        if len(source_matches) > 1:
+            raise FrontendNormalizationEvidenceRejected(
+                f"native source 0x{proof.source_anchor_ea:X} is ambiguous"
+            )
+        if not source_matches:
+            missing_anchors.add(int(proof.source_anchor_ea))
+            proof_ids.add(proof.proof_id)
         for endpoint in proof.endpoints:
             matches = native_anchor_matches(
                 graph,
@@ -492,10 +514,10 @@ def plan_detached_semantic_closure_import(
                 )
             if matches:
                 continue
-            missing_entries.add(int(endpoint.anchor_ea))
+            missing_anchors.add(int(endpoint.anchor_ea))
             proof_ids.add(proof.proof_id)
 
-    if not missing_entries:
+    if not missing_anchors:
         return None
     closure = evidence.semantic_closure
     native_cfg = evidence.native_cfg
@@ -503,6 +525,21 @@ def plan_detached_semantic_closure_import(
         raise FrontendNormalizationEvidenceRejected(
             "missing native targets require a proven semantic closure and native CFG"
         )
+    missing_entries: set[int] = set()
+    for anchor_ea in missing_anchors:
+        owners = tuple(
+            native_block
+            for entry_ea in closure.included_block_eas
+            for native_block in (native_cfg.blocks_by_ea.get(int(entry_ea)),)
+            if native_block is not None
+            and int(native_block.start_ea) <= anchor_ea < int(native_block.end_ea)
+        )
+        if len(owners) != 1:
+            raise FrontendNormalizationEvidenceRejected(
+                f"missing native anchor 0x{anchor_ea:X} is not owned by one "
+                "semantic closure block"
+            )
+        missing_entries.add(int(owners[0].start_ea))
     return DetachedSemanticClosureImportRequest(
         native_key=evidence.native_key,
         generation=evidence.generation,

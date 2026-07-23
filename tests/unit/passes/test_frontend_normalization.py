@@ -324,6 +324,77 @@ def test_import_request_names_only_missing_proven_closure_entries() -> None:
     )
 
 
+def test_import_request_names_missing_source_and_destination_roots() -> None:
+    graph = FlowGraph(
+        blocks={
+            0: _block(
+                0,
+                0x1000,
+                (2,),
+                (),
+                (_insn(0x1000, InsnKind.GOTO, target=2),),
+            ),
+            2: _block(
+                2,
+                0x1200,
+                (),
+                (0,),
+                (_insn(0x1200, InsnKind.RET),),
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    closure = NativeSemanticClosure(
+        included_block_eas=(0x1100, 0x1300),
+        native_ranges=(
+            NativeRange(0x1100, 0x1110),
+            NativeRange(0x1300, 0x1310),
+        ),
+        proven_internal_edges=(
+            ProvenInternalEdge(
+                source_ea=0x1100,
+                target_ea=0x1300,
+                kind=NativeEdgeKind.CONDITIONAL_FALSE,
+            ),
+        ),
+        abstentions=(),
+        seed_provenance=(),
+    )
+    native_cfg = NativeCfg(
+        {
+            0x1100: NativeBlock(
+                start_ea=0x1100,
+                end_ea=0x1110,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.CONDITIONAL_TRUE,
+                        target_ea=0x1200,
+                    ),
+                    NativeEdge(
+                        kind=NativeEdgeKind.CONDITIONAL_FALSE,
+                        target_ea=0x1300,
+                    ),
+                ),
+            ),
+            0x1300: NativeBlock(
+                start_ea=0x1300,
+                end_ea=0x1310,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+        }
+    )
+
+    request = plan_detached_semantic_closure_import(
+        graph,
+        _evidence(closure=closure, native_cfg=native_cfg),
+    )
+
+    assert request is not None
+    assert request.required_entry_eas == (0x1100, 0x1300)
+    assert request.proof_ids == ("conditional@0x1101",)
+
+
 def test_missing_target_is_staged_inside_the_same_normalization_fragment() -> None:
     plan = plan_frontend_computed_branch_normalization(
         _graph(faithful=False, include_false_target=False),
