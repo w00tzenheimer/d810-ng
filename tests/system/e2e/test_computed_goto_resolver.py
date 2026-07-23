@@ -1,4 +1,4 @@
-"""End-to-end regression for the computed-goto resolver + CFF unflatten.
+"""End-to-end regression for portable computed-transfer normalization.
 
 Codifies the win from spec §11.6: the ``rhad_indirect_dispatch`` fixture
 (a cmov-pointer-select computed-goto CFF dispatcher, the Rhadamanthys
@@ -6,8 +6,8 @@ Codifies the win from spec §11.6: the ``rhad_indirect_dispatch`` fixture
 fully-unflattened original sequence, using only d810's own machinery:
 
   concolic resolve (EmulationOracle.trace_corridor)
-  -> condition-preserving byte-patch delivery
-  -> mark_indirect_dispatcher (route recovery to MMAT_CALLS)
+  -> detached PREOPT source capture
+  -> atomic condition-preserving frontend normalization
   -> CFF unflattener.
 
 Runs via idalib (``idapro``) like the other headless e2e checks; skipped when
@@ -82,7 +82,7 @@ def test_computed_goto_dispatcher_unflattens(monkeypatch) -> None:
             cg.install()
             try:
                 ida_hexrays.clear_cached_cfuncs()
-                recovered = str(ida_hexrays.decompile(func_ea) or "None")
+                recovered = str(headless.decompile(func_ea) or "None")
             finally:
                 cg.uninstall()
         finally:

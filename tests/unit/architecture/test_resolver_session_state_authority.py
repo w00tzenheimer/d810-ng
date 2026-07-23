@@ -73,6 +73,31 @@ LEGACY_PREOPT_PROBE_PATH = (
     / "rhad_investigation"
     / "probe_preopt_snippet_import.py"
 )
+TOOLS_PATH = REPO_ROOT / "tools"
+
+RESOLVER_NATIVE_MUTATION_FUNCTIONS = frozenset(
+    {
+        "_materialize_static_equality_fragments",
+        "_materialize_static",
+        "deliver_by_byte_patch",
+        "materialize_computed_gotos",
+        "resolve_and_materialize",
+    }
+)
+RESOLVER_NATIVE_MUTATION_CALLS = frozenset(
+    {
+        "patch_bytes",
+        "del_items",
+        "create_insn",
+    }
+)
+REMOVED_RESOLVER_MUTATION_APIS = frozenset(
+    {
+        "deliver_by_byte_patch",
+        "materialize_computed_gotos",
+        "resolve_and_materialize",
+    }
+)
 
 
 def _referenced_identifiers(tree: ast.AST) -> set[str]:
@@ -442,6 +467,38 @@ def test_static_frontend_capture_has_no_pending_native_delivery_authority() -> N
             "decompile",
         }
     )
+
+
+def test_computed_goto_resolver_has_no_native_cfg_mutation_authority() -> None:
+    resolver_tree = ast.parse(
+        COMPUTED_GOTO_RESOLVER_PATH.read_text(encoding="utf-8"),
+        filename=str(COMPUTED_GOTO_RESOLVER_PATH),
+    )
+    resolver_functions = {
+        node.name for node in resolver_tree.body if isinstance(node, ast.FunctionDef)
+    }
+    assert resolver_functions.isdisjoint(RESOLVER_NATIVE_MUTATION_FUNCTIONS)
+
+    mutation_calls = tuple(
+        (node.func.attr, node.lineno)
+        for node in ast.walk(resolver_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in RESOLVER_NATIVE_MUTATION_CALLS
+    )
+    assert mutation_calls == ()
+
+
+def test_tools_have_no_removed_resolver_mutation_api_references() -> None:
+    violations = tuple(
+        (str(path.relative_to(REPO_ROOT)), api_name)
+        for path in sorted(TOOLS_PATH.rglob("*"))
+        if path.is_file() and path.suffix in {".md", ".py", ".sh"}
+        for source in (path.read_text(encoding="utf-8"),)
+        for api_name in sorted(REMOVED_RESOLVER_MUTATION_APIS)
+        if api_name in source
+    )
+    assert violations == ()
 
 
 def test_computed_goto_resolver_has_no_provider_specific_route_authority() -> None:

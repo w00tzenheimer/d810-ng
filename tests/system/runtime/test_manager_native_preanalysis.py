@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
@@ -280,13 +278,6 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
         "stage_computed_goto_preanalysis",
         lambda function_ea, *, state: calls.append(("stage", state)) or resolution,
         raising=False,
-    )
-    monkeypatch.setattr(
-        computed_goto_resolver,
-        "resolve_and_materialize",
-        lambda *_args, **_kwargs: pytest.fail(
-            "manager preflight must preserve the prepatch PREOPT source"
-        ),
     )
     monkeypatch.setattr(
         computed_goto_resolver,

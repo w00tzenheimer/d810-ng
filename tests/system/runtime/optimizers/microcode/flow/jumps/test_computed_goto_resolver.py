@@ -5116,15 +5116,17 @@ def test_materialized_profile_is_published_during_staged_preanalysis():
     assert is_computed_goto_materialized(state)
 
 
-def test_flowchart_publishes_static_resolution_without_pending_byte_delivery(
+@pytest.mark.parametrize("arch", ("x86", "x86_64"))
+def test_flowchart_publishes_resolution_without_pending_native_delivery(
     monkeypatch,
+    arch: str,
 ) -> None:
     function_ea = 0x401000
     plan = _PatchPlan(
         jmp_ea=0x401020,
         block_entry=0x401010,
         patch_start=0x401018,
-        patch_bytes=b"\x90",
+        patch_bytes=b"\x90" if arch == "x86" else b"",
         region_end=0x401022,
         insn_heads=(0x401018,),
         new_block_eas=(),
@@ -5134,7 +5136,7 @@ def test_flowchart_publishes_static_resolution_without_pending_byte_delivery(
         function_ea=function_ea,
         jmp_targets={plan.jmp_ea: plan.target_eas},
         reachable_eas=(function_ea,),
-        arch="x86",
+        arch=arch,
         executed_insns=1,
         seeds_run=0,
         patch_plans=(plan,),
@@ -5165,15 +5167,17 @@ def test_flowchart_publishes_static_resolution_without_pending_byte_delivery(
     assert decision == {"session": session}
 
 
-def test_manager_preanalysis_publishes_static_resolution_without_byte_delivery(
+@pytest.mark.parametrize("arch", ("x86", "x86_64"))
+def test_manager_preanalysis_publishes_resolution_without_native_delivery(
     monkeypatch,
+    arch: str,
 ) -> None:
     function_ea = 0x401000
     plan = _PatchPlan(
         jmp_ea=0x401020,
         block_entry=0x401010,
         patch_start=0x401018,
-        patch_bytes=b"\x90",
+        patch_bytes=b"\x90" if arch == "x86" else b"",
         region_end=0x401022,
         insn_heads=(0x401018,),
         new_block_eas=(),
@@ -5183,7 +5187,7 @@ def test_manager_preanalysis_publishes_static_resolution_without_byte_delivery(
         function_ea=function_ea,
         jmp_targets={plan.jmp_ea: plan.target_eas},
         reachable_eas=(function_ea,),
-        arch="x86",
+        arch=arch,
         executed_insns=1,
         seeds_run=0,
         patch_plans=(plan,),
@@ -5194,14 +5198,6 @@ def test_manager_preanalysis_publishes_static_resolution_without_byte_delivery(
         "_resolve_computed_goto_resolution",
         lambda _function_ea: resolution,
     )
-    monkeypatch.setattr(
-        computed_goto_resolver,
-        "materialize_computed_gotos",
-        lambda *_args, **_kwargs: pytest.fail(
-            "static delivery must wait until the prepatch source is captured"
-        ),
-    )
-
     assert (
         computed_goto_resolver.stage_computed_goto_preanalysis(
             function_ea,
@@ -5284,6 +5280,124 @@ def test_concolic_resolution_builds_complete_frontend_normalization_plans() -> N
         true_target_ea=true_target_ea,
         false_target_ea=false_target_ea,
         condition_producer_ea=0x401040,
+    )
+
+
+def test_concolic_source_discovery_cannot_cross_the_function_entry(
+    monkeypatch,
+) -> None:
+    function_ea = 0x401000
+    jmp_ea = 0x401020
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={jmp_ea: (0x402000,)},
+        reachable_eas=(function_ea, jmp_ea, 0x402000),
+        arch="x86_64",
+        executed_insns=17,
+        seeds_run=1,
+    )
+    lower_bounds: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_block_start_of",
+        lambda ea, lower_bound_ea: (
+            lower_bounds.append((int(ea), int(lower_bound_ea))) or function_ea
+        ),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_text_segment",
+        lambda _ea: (0x400000, 0x500000),
+    )
+
+    plans = computed_goto_resolver._concolic_frontend_normalization_plans(
+        resolution,
+        instruction_end=lambda ea: int(ea) + 2,
+    )
+
+    assert len(plans) == 1
+    assert lower_bounds == [(jmp_ea, function_ea)]
+
+
+def test_concolic_source_discovery_starts_after_int3_filler(monkeypatch) -> None:
+    import ida_bytes
+    import idaapi
+
+    jmp_ea = 0x18000213B
+    previous_heads = {
+        0x18000213B: 0x180002135,
+        0x180002135: 0x180002132,
+        0x180002132: 0x18000212E,
+        0x18000212E: 0x180002128,
+        0x180002128: 0x180002121,
+        0x180002121: 0x18000211A,
+        0x18000211A: 0x180002119,
+        0x180002119: 0x180002117,
+    }
+    monkeypatch.setattr(
+        ida_bytes,
+        "prev_head",
+        lambda ea, _lower_bound: previous_heads[int(ea)],
+    )
+    monkeypatch.setattr(
+        idaapi,
+        "print_insn_mnem",
+        lambda ea: (
+            "int3"
+            if int(ea) == 0x180002119
+            else ("jmp" if int(ea) == 0x180002117 else "mov")
+        ),
+    )
+
+    assert (
+        computed_goto_resolver._block_start_of(
+            jmp_ea,
+            0x1800020F0,
+        )
+        == 0x18000211A
+    )
+
+
+def test_concolic_source_discovery_starts_after_undefined_int3_byte(
+    monkeypatch,
+) -> None:
+    import ida_bytes
+    import idaapi
+
+    jmp_ea = 0x18000213B
+    filler_ea = 0x180002119
+    previous_heads = {
+        0x18000213B: 0x180002135,
+        0x180002135: 0x180002132,
+        0x180002132: 0x18000212E,
+        0x18000212E: 0x180002128,
+        0x180002128: 0x180002121,
+        0x180002121: 0x18000211A,
+        0x18000211A: filler_ea,
+        filler_ea: 0x180002117,
+    }
+    monkeypatch.setattr(
+        ida_bytes,
+        "prev_head",
+        lambda ea, _lower_bound: previous_heads[int(ea)],
+    )
+    monkeypatch.setattr(
+        ida_bytes,
+        "get_byte",
+        lambda ea: 0xCC if int(ea) == filler_ea else 0x90,
+    )
+    monkeypatch.setattr(
+        idaapi,
+        "print_insn_mnem",
+        lambda ea: "jmp" if int(ea) == 0x180002117 else "",
+    )
+
+    assert (
+        computed_goto_resolver._block_start_of(
+            jmp_ea,
+            0x1800020F0,
+        )
+        == 0x18000211A
     )
 
 
@@ -10522,8 +10636,10 @@ def test_prepare_detached_snippets_consumes_pending_preopt_reimport(
     assert not state.pending_preopt_reimport
 
 
-def test_static_prepatch_capture_defers_all_publication_to_frontend_fragment(
+@pytest.mark.parametrize("arch", ("x86", "x86_64"))
+def test_portable_source_capture_defers_all_publication_to_frontend_fragment(
     monkeypatch,
+    arch: str,
 ) -> None:
     function_ea = 0x1000
     live_mba = object()
@@ -10541,7 +10657,7 @@ def test_static_prepatch_capture_defers_all_publication_to_frontend_fragment(
         function_ea=function_ea,
         jmp_targets={plan.jmp_ea: plan.target_eas},
         reachable_eas=(function_ea,),
-        arch="x86",
+        arch=arch,
         executed_insns=1,
         seeds_run=0,
         patch_plans=(plan,),
@@ -10549,23 +10665,19 @@ def test_static_prepatch_capture_defers_all_publication_to_frontend_fragment(
     _session, state = _resolver_session(resolution)
     state.begin_materialization(resolution)
     captured: list[tuple[object, object, object]] = []
+    static_transfer_requests: list[object] = []
     monkeypatch.setattr(
         computed_goto_resolver,
         "_static_prepatch_union_source_transfers",
-        lambda _resolution: (),
+        lambda _resolution: (
+            static_transfer_requests.append(_resolution) or ()
+        ),
     )
     monkeypatch.setattr(
         computed_goto_resolver,
         "_capture_prepatch_preopt_union_source",
         lambda _state, _resolution, _transfers: (
             captured.append((_state, _resolution, _transfers)) or True
-        ),
-    )
-    monkeypatch.setattr(
-        computed_goto_resolver,
-        "materialize_computed_gotos",
-        lambda *_args, **_kwargs: pytest.fail(
-            "static discovery must not patch native bytes"
         ),
     )
     monkeypatch.setattr(
@@ -10589,6 +10701,9 @@ def test_static_prepatch_capture_defers_all_publication_to_frontend_fragment(
         == 1
     )
     assert captured == [(state, resolution, ())]
+    assert static_transfer_requests == (
+        [resolution] if arch == "x86" else []
+    )
 
 
 @pytest.mark.parametrize("union_behavior", ("abstain", "raise"))

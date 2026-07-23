@@ -1,57 +1,11 @@
-"""Resolve register-computed goto dispatchers that IDA's switch recogniser cannot
-crack, by EXECUTING them with d810's concolic engine and materialising the
-discovered handler targets on the flowchart-preanalysis seam so Hex-Rays forms
-the real CFG.
+"""Publish portable evidence for register-computed goto dispatchers.
 
-Motivating shape: a control-flow-flattened
-state machine whose dispatcher nodes select the next block with a *cmov/setcc
-pointer-select plus additive key* --
-
-    lea rcx, cell_a ; lea rdx, cell_b ; cmp ebx, K ; cmovne rcx, rdx
-    mov rax, [rcx] ; add rax, KEY ; jmp rax
-
-There is no indexed jump table, so IDA leaves ``jmp reg`` unresolved and the
-handler blocks fall out of the function graph -- Hex-Rays then returns a
-truncated/None decompile. This generalises the Tigress indirect-label path
-(:mod:`d810.hexrays.preanalysis.indirect_jump_discovery` /
-:mod:`~d810.hexrays.preanalysis.indirect_jump_labels`) from an indexed qword
-pointer-table to arbitrary computed gotos.
-
-Resolution has two strategies, tried in order:
-
-*Concolic execution* (the fixture's x64 cmov-pointer-select shape).
-:meth:`EmulationOracle.trace_corridor` runs the dispatcher from the function
-entry and records every executed instruction; the instruction that runs
-immediately after a ``jmp reg`` is one of its targets. A flattened state machine
-re-enters its dispatcher once per state, so a single trace enumerates every
-reachable handler *and* both arms of each 2-way select. Input-dependent branches
-that one concrete run cannot reach are covered by supplying extra register/stack
-seeds (``initial_seeds``); the discovered target sets are merged across seeds.
-
-*Static const-prop fixpoint* (:func:`resolve_computed_gotos_static`, x86 only;
-the setcc+shl+indexed-table+KEY binary-search shape).
-A from-entry corridor trace can **fault at instruction 0** when the
-prologue writes an unmapped stack and reads unseeded arguments, so the
-binary-search dispatcher state is never established -- measured 0/190). A
-monotone forward-dataflow fixpoint that JOINs register value-sets at merges
-resolves every reachable ``jmp reg`` *without* executing (an unknown read is
-Top, not a fault). It is the fallback when concolic finds nothing.
-
-Delivery is a BYTE-PATCH: each ``cmp state,K; cmov; jmp reg`` is rewritten to an
-explicit ``cmp state,K; j<cc> true; jmp false``. This is load-bearing: an earlier
-cref-based delivery gave a topologically-complete CFG but a *semantically broken*
-MBA -- crefs make ``jmp reg`` a multi-target goto yet decouple the condition from
-its target, so ``mba-simplify`` strips the now-dead ``cmp``/``cmov`` and collapses
-the chain to a single comparison (verified via a full MMAT_CALLS microcode dump).
-The explicit ``j<cc>`` preserves the condition, so the block lifts to the
-``cmp state,K; jz handler`` equality/range chain the CFF unflattener recovers.
-
-The materialised function is also marked via
-:func:`~d810.hexrays.preanalysis.indirect_jump_labels.mark_indirect_dispatcher`
-so the unflattener routes recovery to ``MMAT_CALLS`` -- the maturity at which the
-equality chain is still intact (GLBOPT1 constant-folds it away). Runs on the
-flowchart-preanalysis seam (before Hex-Rays builds ``qflow_chart``) and requests
-a Hex-Rays rebuild so the rewritten CFG is picked up.
+The resolver uses concolic execution or a static constant-propagation fixpoint
+to recover native transfer targets, predicate anchors, proof corridors, and
+owned native ranges.  It never changes native bytes or IDA's CFG.  PREOPT
+frontend normalization consumes the portable plans to preserve only the
+minimum faithful computed-branch IR, and canonical D810 passes own subsequent
+state-machine recovery and semantic-fragment publication.
 """
 
 from __future__ import annotations
@@ -190,9 +144,6 @@ from d810.hexrays.mutation.detached_handler_island import (
     native_stack_frame_offsets_for_ranges,
     prepare_detached_callinfo_template,
 )
-from d810.hexrays.preanalysis.indirect_jump_labels import (
-    create_dispatcher_target_instructions,
-)
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     ResolverSessionState,
     resolver_session_state,
@@ -243,6 +194,14 @@ class _ImmediateNativeFlowRoute(NamedTuple):
     corridor_instruction_eas: tuple[int, ...]
     state_constant: int
     target_ea: int
+
+
+class _FrontendNormalizationUnionSource(NamedTuple):
+    """Portable native closure backing one frontend normalization generation."""
+
+    region: PreoptUnionRegionPlan
+    cfg: NativeCfg
+    closure: NativeSemanticClosure
 
 
 def _discover_immediate_native_state_routes(
@@ -2189,7 +2148,6 @@ def _static_resolver_fixpoint(
         exit_state = state
         while steps < _MAX_FIXPOINT_STEPS:
             steps += 1
-            ida_ua.create_insn(ea)
             length = ida_ua.decode_insn(insn, ea)
             if length <= 0:
                 break
@@ -6037,294 +5995,6 @@ def _exact_equality_fragment_transfers(
     )
 
 
-def _materialize_static_equality_fragments(
-    resolution: ComputedGotoResolution,
-    *,
-    native_rows: tuple[_NativeEqualityRow, ...] | None = None,
-    native_setcc_routes: tuple[tuple[_NativeEqualityRow, int, int], ...] = (),
-    native_setcc_match_register_values: (
-        Mapping[
-            _NativeEqualityRow,
-            tuple[tuple[str, int], ...],
-        ]
-        | None
-    ) = None,
-) -> tuple[int, tuple[MaterializedIndirectTransfer, ...]]:
-    """Resolve and byte-materialize detached equality-leaf computed gotos.
-
-    Each candidate is a bounded ``selector-init; cmp state,K; jcc; ...; jmp
-    reg`` fragment.  Concrete replay is run twice with matching/non-matching
-    selector values and stops at the first indirect target.  The delivery keeps
-    the original condition as ``jcc true; jmp false`` so the next MBA sees the
-    complete logical CFG.
-    """
-    import ida_auto  # type: ignore[import-untyped]
-    import ida_bytes  # type: ignore[import-untyped]
-    import ida_funcs  # type: ignore[import-untyped]
-    import ida_segment  # type: ignore[import-untyped]
-    import idaapi  # type: ignore[import-untyped]
-
-    envelope_end = (
-        max(
-            (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
-            default=int(resolution.function_ea),
-        )
-        + 0x100
-    )
-    context_mregs = _dispatcher_replay_context_mregs(resolution)
-    if context_mregs is None:
-        context_mregs = {}
-    facts_by_branch: dict[
-        int,
-        set[
-            tuple[
-                _NativeEqualityRow,
-                int,
-                int,
-                tuple[tuple[str, int], ...],
-            ]
-        ],
-    ] = {}
-    route_candidates: list[MaterializedIndirectTransfer] = []
-    setcc_replay_facts: dict[_NativeEqualityRow, set[tuple[int, int]]] = {}
-    for replay_row, match_target, nonmatch_target in native_setcc_routes:
-        setcc_replay_facts.setdefault(replay_row, set()).add(
-            (int(match_target), int(nonmatch_target))
-        )
-    rows = native_rows
-    if rows is None:
-        rows = _native_equality_state_rows(
-            int(resolution.function_ea),
-            envelope_end_ea=envelope_end,
-        )
-    for row in rows:
-        state_var_reg = _native_register_mreg(row.register_name)
-        if state_var_reg is None:
-            continue
-        if row.selector_kind == "setcc":
-            matching_plans = tuple(
-                plan
-                for plan in resolution.patch_plans
-                if int(plan.jmp_ea) == int(row.terminal_jmp_ea)
-            )
-            if len(matching_plans) <= 1:
-                replay_facts = setcc_replay_facts.get(row, set())
-                replay_match_target_ea = None
-                replay_nonmatch_target_ea = None
-                if len(replay_facts) == 1:
-                    replay_match_target_ea, replay_nonmatch_target_ea = next(
-                        iter(replay_facts)
-                    )
-                route_candidate = _static_equality_route_candidate(
-                    row,
-                    matching_plans[0] if matching_plans else None,
-                    state_var_reg=int(state_var_reg),
-                    context_mregs=context_mregs,
-                    replay_match_target_ea=replay_match_target_ea,
-                    replay_nonmatch_target_ea=replay_nonmatch_target_ea,
-                    match_target_register_values=(
-                        native_setcc_match_register_values.get(row, ())
-                        if native_setcc_match_register_values is not None
-                        else ()
-                    ),
-                )
-                if route_candidate is not None:
-                    route_candidates.append(route_candidate)
-            continue
-        entry_mregs = _corridor_entry_mregs(resolution, int(row.block_entry_ea))
-        if entry_mregs is None:
-            continue
-        match_mregs = dict(entry_mregs)
-        match_mregs[int(state_var_reg)] = int(row.state_constant)
-        nonmatch_mregs = dict(entry_mregs)
-        nonmatch_mregs[int(state_var_reg)] = int(row.state_constant) ^ 1
-        match_result = _resolve_concrete_dispatch_corridor(
-            int(row.block_entry_ea),
-            initial_mregs=match_mregs,
-            handler_eas=frozenset(),
-            return_first_indirect_target=True,
-            return_first_indirect_result=True,
-        )
-        nonmatch_result = _resolve_concrete_dispatch_corridor(
-            int(row.block_entry_ea),
-            initial_mregs=nonmatch_mregs,
-            handler_eas=frozenset(),
-            return_first_indirect_target=True,
-            return_first_indirect_result=True,
-        )
-        if not isinstance(match_result, _ConcreteDispatchResult) or not isinstance(
-            nonmatch_result,
-            _ConcreteDispatchResult,
-        ):
-            continue
-        match_target = int(match_result.target_ea)
-        nonmatch_target = int(nonmatch_result.target_ea)
-        common_target_register_values = _common_concrete_register_values(
-            match_result.register_values,
-            nonmatch_result.register_values,
-        )
-        if not _native_equality_selector_is_materializable(row.selector_kind):
-            continue
-        if row.condition_code == 4:
-            true_target, false_target = int(match_target), int(nonmatch_target)
-        elif row.condition_code == 5:
-            true_target, false_target = int(nonmatch_target), int(match_target)
-        else:
-            continue
-        facts_by_branch.setdefault(int(row.branch_ea), set()).add(
-            (
-                row,
-                true_target,
-                false_target,
-                common_target_register_values,
-            )
-        )
-
-    transfers: list[MaterializedIndirectTransfer] = []
-    target_eas: set[int] = set()
-    for branch_ea, facts in sorted(facts_by_branch.items()):
-        if len(facts) != 1:
-            continue
-        row, true_target, false_target, target_register_values = next(iter(facts))
-        body = _encode_two_way_branch(
-            branch_ea=int(branch_ea),
-            condition_code=int(row.condition_code),
-            true_target_ea=int(true_target),
-            false_target_ea=int(false_target),
-        )
-        region_size = int(row.terminal_end_ea) - int(branch_ea)
-        if region_size < len(body):
-            continue
-        ida_bytes.patch_bytes(
-            int(branch_ea),
-            body + b"\x90" * (region_size - len(body)),
-        )
-        ida_bytes.del_items(
-            int(branch_ea),
-            ida_bytes.DELIT_EXPAND,
-            region_size,
-        )
-        for head_ea in (int(branch_ea), int(branch_ea) + 6):
-            idaapi.create_insn(head_ea)
-        targets = tuple(dict.fromkeys((int(true_target), int(false_target))))
-        target_eas.update(targets)
-        transfers.append(
-            MaterializedIndirectTransfer(
-                source_jmp_ea=int(row.terminal_jmp_ea),
-                source_block_ea=int(row.block_entry_ea),
-                materialized_anchor_eas=(int(branch_ea), int(branch_ea) + 6),
-                target_eas=targets,
-                condition_code=int(row.condition_code),
-                true_target_ea=int(true_target),
-                false_target_ea=int(false_target),
-                selector_state_var_reg=_native_register_mreg(row.register_name),
-                selector_compare_constant=int(row.state_constant),
-                selector_state_on_left=True,
-                context_register_values=tuple(sorted(context_mregs.items())),
-                target_register_values=tuple(
-                    sorted(_residual_context_mregs(target_register_values).items())
-                ),
-                resolver_kind="static_equality_fixpoint",
-                materialized_region_end_ea=int(row.terminal_end_ea),
-            )
-        )
-    dispatcher_fallback_eas = _static_equality_dispatcher_fallback_eas(tuple(transfers))
-    for row, match_target, nonmatch_target in native_setcc_routes:
-        proven_match_targets = {
-            int(candidate.target_eas[0])
-            for candidate in route_candidates
-            if candidate.selector_state_constant == int(row.state_constant)
-            and int(candidate.source_jmp_ea) == int(row.terminal_jmp_ea)
-            and len(candidate.target_eas) == 1
-        }
-        if len(proven_match_targets) != 1:
-            continue
-        delivery_targets = _setcc_equality_delivery_targets(
-            row,
-            match_target_ea=int(match_target),
-            nonmatch_target_ea=int(nonmatch_target),
-            proven_match_target_ea=next(iter(proven_match_targets)),
-            dispatcher_fallback_eas=dispatcher_fallback_eas,
-        )
-        if delivery_targets is None:
-            continue
-        true_target, false_target = delivery_targets
-        body = _encode_two_way_branch(
-            branch_ea=int(row.branch_ea),
-            condition_code=int(row.condition_code),
-            true_target_ea=int(true_target),
-            false_target_ea=int(false_target),
-        )
-        region_size = int(row.terminal_end_ea) - int(row.branch_ea)
-        if region_size < len(body):
-            continue
-        ida_bytes.patch_bytes(
-            int(row.branch_ea),
-            body + b"\x90" * (region_size - len(body)),
-        )
-        ida_bytes.del_items(
-            int(row.branch_ea),
-            ida_bytes.DELIT_EXPAND,
-            region_size,
-        )
-        for head_ea in (int(row.branch_ea), int(row.branch_ea) + 6):
-            idaapi.create_insn(head_ea)
-        targets = tuple(dict.fromkeys((int(true_target), int(false_target))))
-        target_eas.update(targets)
-        transfers.append(
-            MaterializedIndirectTransfer(
-                source_jmp_ea=int(row.terminal_jmp_ea),
-                source_block_ea=int(row.block_entry_ea),
-                materialized_anchor_eas=(
-                    int(row.branch_ea),
-                    int(row.branch_ea) + 6,
-                ),
-                target_eas=targets,
-                condition_code=int(row.condition_code),
-                true_target_ea=int(true_target),
-                false_target_ea=int(false_target),
-                selector_state_var_reg=_native_register_mreg(row.register_name),
-                selector_compare_constant=int(row.state_constant),
-                selector_state_on_left=True,
-                context_register_values=tuple(sorted(context_mregs.items())),
-                resolver_kind="static_equality_fixpoint",
-                materialized_region_end_ea=int(row.terminal_end_ea),
-            )
-        )
-    all_transfers = tuple((*transfers, *route_candidates))
-    if not all_transfers:
-        return (0, ())
-
-    function = ida_funcs.get_func(int(resolution.function_ea))
-    if function is not None:
-        for start_ea, end_ea in _equality_fragment_owned_ranges(
-            all_transfers,
-            block_end=_block_end,
-        ):
-            _claim_exact_function_tail_range(
-                function,
-                int(start_ea),
-                int(end_ea),
-                get_function=ida_funcs.get_func,
-                append_function_tail=ida_funcs.append_func_tail,
-                delete_function=ida_funcs.del_func,
-            )
-    segment = ida_segment.getseg(int(resolution.function_ea))
-    if segment is not None:
-        ida_auto.plan_and_wait(segment.start_ea, segment.end_ea)
-    function = ida_funcs.get_func(int(resolution.function_ea))
-    if function is not None:
-        ida_funcs.reanalyze_function(function)
-    logger.info(
-        "computed-goto equality materialization: candidates=%d materialized=%d route_candidates=%d targets=%d",
-        len(facts_by_branch),
-        len(transfers),
-        len(route_candidates),
-        len(target_eas),
-    )
-    return len(transfers), all_transfers
-
-
 def _decode_static_state_route_corridor(
     start_ea: int,
     delivery_ea: int,
@@ -8041,172 +7711,6 @@ def _static_absorb_eas(
     )
 
 
-def _materialize_static(
-    resolution: ComputedGotoResolution,
-    state: ResolverSessionState,
-) -> int:
-    """Apply pre-baked patch plans, then re-derive the function and absorb the
-    now-reachable orphan blocks. Mirrors the proven spike sequence:
-    patch -> del_items -> plan_and_wait -> reanalyze -> absorb -> plan_and_wait.
-    Returns the number of sites patched."""
-    import ida_auto  # type: ignore[import-untyped]
-    import ida_bytes  # type: ignore[import-untyped]
-    import ida_funcs  # type: ignore[import-untyped]
-    import ida_segment  # type: ignore[import-untyped]
-    import idaapi  # type: ignore[import-untyped]
-
-    func = ida_funcs.get_func(int(resolution.function_ea))
-    if func is None or not resolution.patch_plans:
-        return 0
-
-    # Snapshot native equality selectors before patch decoding invalidates
-    # detached instruction heads.  The rows remain provenance only; setcc
-    # targets still require unique live-microcode validation at CALLS.
-    equality_envelope_end = (
-        max(
-            (int(ea) for ea in (*resolution.reachable_eas, *resolution.block_entries)),
-            default=int(resolution.function_ea),
-        )
-        + 0x100
-    )
-    native_equality_rows = _native_equality_state_rows(
-        int(resolution.function_ea),
-        envelope_end_ea=equality_envelope_end,
-    )
-    native_setcc_match_register_values: dict[
-        _NativeEqualityRow,
-        tuple[tuple[str, int], ...],
-    ] = {}
-    native_setcc_routes = _resolve_native_setcc_route_facts(
-        resolution,
-        native_equality_rows,
-        match_register_values_by_row=native_setcc_match_register_values,
-    )
-    logger.info(
-        "computed-goto native setcc replay: rows=%d facts=%s",
-        sum(row.selector_kind == "setcc" for row in native_equality_rows),
-        [
-            (
-                hex(int(row.branch_ea)),
-                hex(int(row.terminal_jmp_ea)),
-                hex(int(row.state_constant) & _MASK32),
-                hex(int(match_target)),
-                hex(int(nonmatch_target)),
-            )
-            for row, match_target, nonmatch_target in native_setcc_routes
-        ],
-    )
-    native_handler_entry_routes = _recover_prepatch_handler_entry_routes(
-        resolution,
-        native_equality_rows,
-    )
-    static_transfers = _static_materialized_transfers(resolution)
-    static_choice_handler_entry_routes = _recover_static_choice_handler_entry_routes(
-        resolution,
-        static_transfers
-        + native_handler_entry_routes
-        + resolution.conditional_state_choices,
-    )
-    static_handler_entry_routes = _recover_static_fixpoint_handler_entry_routes(
-        resolution,
-        static_transfers,
-    )
-    handler_entry_routes = (
-        *static_handler_entry_routes,
-        *native_handler_entry_routes,
-        *static_choice_handler_entry_routes,
-    )
-    static_handler_exit_routes = _recover_prepatch_handler_exit_routes(
-        resolution,
-        static_transfers,
-        handler_entry_routes,
-    )
-    # 1) apply every byte patch, then re-decode each rewritten region in place.
-    new_block_eas: list[int] = []
-    for plan in resolution.patch_plans:
-        ida_bytes.patch_bytes(plan.patch_start, plan.patch_bytes)
-        new_block_eas.extend(plan.new_block_eas)
-    for plan in resolution.patch_plans:
-        ida_bytes.del_items(
-            plan.block_entry, ida_bytes.DELIT_EXPAND, plan.region_end - plan.block_entry
-        )
-    for plan in resolution.patch_plans:
-        for head in plan.insn_heads:
-            idaapi.create_insn(int(head))
-
-    # Claim detached equality fragments and handlers before the first global
-    # analysis pass. Otherwise IDA may promote a proven handler to a standalone
-    # function, excluding it from the flattened parent's CALLS MBA.
-    state.indirect_dispatcher_materialized = True
-    equality_count, equality_transfers = _materialize_static_equality_fragments(
-        resolution,
-        native_rows=native_equality_rows,
-        native_setcc_routes=native_setcc_routes,
-        native_setcc_match_register_values=(native_setcc_match_register_values),
-    )
-
-    seg = ida_segment.getseg(int(resolution.function_ea))
-    if seg is not None:
-        ida_auto.plan_and_wait(seg.start_ea, seg.end_ea)
-
-    # 2) reanalyze with the dispatcher profile already active so the CFF
-    #    unflattener routes recovery to MMAT_CALLS.
-    func = ida_funcs.get_func(int(resolution.function_ea))
-    if func is not None:
-        ida_funcs.reanalyze_function(func)
-    if seg is not None:
-        ida_auto.plan_and_wait(seg.start_ea, seg.end_ea)
-
-    # 3) absorb every discovered block (and each new jcc/jmp leader) that IDA did
-    #    not fold into the function on its own.
-    func = ida_funcs.get_func(int(resolution.function_ea))
-    absorb = _static_absorb_eas(
-        resolution,
-        new_block_eas=new_block_eas,
-    )
-    for ea in absorb:
-        if func is None:
-            break
-        end_ea = _block_end(int(ea))
-        if end_ea <= int(ea):
-            continue
-        _claim_exact_function_tail_range(
-            func,
-            int(ea),
-            int(end_ea),
-            get_function=ida_funcs.get_func,
-            append_function_tail=ida_funcs.append_func_tail,
-            delete_function=ida_funcs.del_func,
-        )
-
-    func = ida_funcs.get_func(int(resolution.function_ea))
-    if func is not None:
-        ida_funcs.reanalyze_function(func)
-    if seg is not None:
-        ida_auto.plan_and_wait(seg.start_ea, seg.end_ea)
-    _merge_materialized_transfers(
-        state,
-        (
-            *resolution.conditional_state_choices,
-            *_static_materialized_transfer_batch(
-                resolution,
-                static_transfers=static_transfers,
-                equality_transfers=equality_transfers,
-                static_handler_entry_routes=(
-                    *static_handler_entry_routes,
-                    *static_choice_handler_entry_routes,
-                ),
-                native_handler_entry_routes=native_handler_entry_routes,
-                static_handler_exit_routes=static_handler_exit_routes,
-            ),
-        ),
-    )
-    return len(resolution.patch_plans) + int(equality_count)
-
-
-# --------------------------------------------------------------------------- #
-# delivery (Tigress cref recipe -- effective only on the preanalysis seam)    #
-# --------------------------------------------------------------------------- #
 def _block_end(start: int) -> int:
     import ida_ua  # type: ignore[import-untyped]
     import idaapi  # type: ignore[import-untyped]
@@ -8315,7 +7819,11 @@ def _block_start_of(jmp_ea: int, text_start: int) -> int:
         if prev == int(getattr(idaapi, "BADADDR", -1)) or prev < int(text_start):
             return ea
         mnem = idaapi.print_insn_mnem(prev) or ""
-        if mnem in ("jmp", "retn", "ret", "retf", "int") or mnem.startswith("j"):
+        if (
+            mnem in ("retn", "ret", "retf")
+            or mnem.startswith(("j", "int"))
+            or int(ida_bytes.get_byte(prev)) == 0xCC
+        ):
             return ea
         ea = prev
 
@@ -8346,13 +7854,10 @@ def _concolic_frontend_normalization_plans(
             return int(ea) + length if length > 0 else int(ea)
 
     if block_start is None:
-        text = _text_segment(int(resolution.function_ea))
-        if text is None:
-            return ()
-        text_start = int(text[0])
+        function_start = int(resolution.function_ea)
 
         def block_start(ea: int) -> int:
-            return _block_start_of(int(ea), text_start)
+            return _block_start_of(int(ea), function_start)
 
     analyzer = _analyze_select_block if select_analyzer is None else select_analyzer
     plans: list[_PatchPlan] = []
@@ -8419,143 +7924,6 @@ def _concolic_frontend_normalization_plans(
     return tuple(plans)
 
 
-def deliver_by_byte_patch(resolution: ComputedGotoResolution) -> int:
-    """Rewrite each cmov/setcc computed goto into an explicit ``j<cc> true; jmp
-    false``. Unlike crefs, this PRESERVES the branch condition, so the block
-    lifts to the ``cmp state,K; jz handler`` equality/range chain that
-    ``recover_dispatcher`` needs (crefs decouple condition from target, and
-    mba-simplify then strips the dead cmp/cmov, collapsing the chain). Returns
-    the list of newly-created unconditional-jmp EAs (so the caller can pull them
-    into the function)."""
-    import ida_bytes  # type: ignore[import-untyped]
-    import ida_ua  # type: ignore[import-untyped]
-    import idaapi  # type: ignore[import-untyped]
-
-    text = _text_segment(resolution.function_ea)
-    if text is None:
-        return []
-    text_start = text[0]
-    new_jmp_eas: list[int] = []
-    insn = ida_ua.insn_t()
-
-    def _apply(
-        patch_start: int, region_end: int, body: bytes, insn_heads: tuple[int, ...]
-    ) -> None:
-        ida_bytes.patch_bytes(
-            patch_start, body + b"\x90" * (region_end - patch_start - len(body))
-        )
-        # re-decode the rewritten region so IDA sees the new jcc/jmp instructions
-        ida_bytes.del_items(
-            patch_start, ida_bytes.DELIT_EXPAND, region_end - patch_start
-        )
-        for head in insn_heads:
-            idaapi.create_insn(int(head))
-
-    for jmp_ea, targets in resolution.jmp_targets.items():
-        jlen = ida_ua.decode_insn(insn, int(jmp_ea))
-        if jlen <= 0:
-            continue
-        region_end = int(jmp_ea) + jlen
-        if len(targets) == 1:
-            body = b"\xe9" + _pack_i32(int(targets[0]) - (int(jmp_ea) + 5))
-            if region_end - int(jmp_ea) >= len(body):
-                _apply(int(jmp_ea), region_end, body, (int(jmp_ea),))
-                new_jmp_eas.append(int(jmp_ea))
-            continue
-        if len(targets) != 2:
-            continue
-        info = _analyze_select_block(
-            int(jmp_ea), _block_start_of(int(jmp_ea), text_start), resolution.arch
-        )
-        if info is None:
-            continue
-        cmp_end = info["cmp_end"]
-        jcc_end = cmp_end + 6
-        jmp_end = jcc_end + 5
-        body = (
-            bytes([0x0F, 0x80 + (info["cc"] & 0x0F)])
-            + _pack_i32(info["target_true"] - jcc_end)
-            + b"\xe9"
-            + _pack_i32(info["target_false"] - jmp_end)
-        )
-        if region_end - cmp_end < len(body):
-            continue
-        _apply(cmp_end, region_end, body, (cmp_end, jcc_end))
-        # the E9 jmp at jcc_end is a NEW instruction (not in the concolic trace's
-        # original EAs); return it so the caller pulls it into the function.
-        new_jmp_eas.append(int(jcc_end))
-    return new_jmp_eas
-
-
-def _pack_i32(v: int) -> bytes:
-    import struct
-
-    return struct.pack("<i", ((int(v) + 0x80000000) & 0xFFFFFFFF) - 0x80000000)
-
-
-def materialize_computed_gotos(
-    resolution: ComputedGotoResolution,
-    *,
-    state: ResolverSessionState,
-) -> int:
-    """Create the handler blocks + jump edges for a resolution. Returns the
-    number of ``jmp reg`` sites materialised. MUST run on the flowchart seam.
-
-    Delivery is BYTE-PATCH (``deliver_by_byte_patch``): each cmov/setcc computed
-    goto is rewritten to an explicit ``j<cc> true; jmp false``. This preserves
-    the branch condition, so the block lifts to the ``cmp state,K; jz handler``
-    equality/range chain the CFF unflattener recovers. (Crefs were tried and
-    REJECTED: they make the jump a multi-target goto but decouple condition from
-    target, so mba-simplify strips the dead cmp/cmov and collapses the chain --
-    verified via a full CALLS microcode dump.)
-    """
-    import ida_auto  # type: ignore[import-untyped]
-    import ida_funcs  # type: ignore[import-untyped]
-    import ida_segment  # type: ignore[import-untyped]
-
-    # Static x86 fixpoint path carries pre-baked patch plans + the full block set.
-    if resolution.arch == "x86" and resolution.patch_plans:
-        return _materialize_static(resolution, state)
-
-    func = ida_funcs.get_func(int(resolution.function_ea))
-    if func is None:
-        return 0
-
-    # 1) rewrite the computed gotos to explicit conditional/unconditional jumps
-    #    (deliver_by_byte_patch re-decodes each rewritten region in place).
-    new_jmp_eas = deliver_by_byte_patch(resolution)
-    if not new_jmp_eas:
-        return 0
-    patched = len(new_jmp_eas)
-
-    # 2) ensure every discovered handler is a code head, re-analyze the region so
-    #    IDA follows the new explicit jumps, then pull orphaned blocks -- including
-    #    the newly-created jmp instructions -- into the function.
-    reachable = tuple(resolution.reachable_eas) + tuple(new_jmp_eas)
-    create_dispatcher_target_instructions(resolution.reachable_eas)
-    seg = ida_segment.getseg(int(resolution.function_ea))
-    if seg is not None:
-        ida_auto.plan_and_wait(seg.start_ea, seg.end_ea)
-    func = ida_funcs.get_func(int(resolution.function_ea))
-    for ea in reachable:
-        if func is not None and ida_funcs.get_func(ea) is None:
-            ida_funcs.append_func_tail(func, ea, _block_end(ea))
-
-    # Mark this as a materialized register-indirect dispatcher so the CFF
-    # unflattener routes recovery to MMAT_CALLS -- the maturity at which the
-    # `cmp state, const; jz handler` equality chain is still intact. GLBOPT1
-    # constant-folds the chain away, so a GLBOPT1-only recovery reads map_rows=0.
-    state.indirect_dispatcher_materialized = True
-
-    if seg is not None:
-        ida_funcs.reanalyze_function(ida_funcs.get_func(int(resolution.function_ea)))
-        ida_auto.plan_and_wait(seg.start_ea, seg.end_ea)
-    return patched
-
-
-# --------------------------------------------------------------------------- #
-# preanalysis handler + registration                                          #
-# --------------------------------------------------------------------------- #
 def _has_unresolved_computed_goto(function_ea: int) -> bool:
     """Cheap gate: the function contains a ``jmp reg`` whose target IDA has not
     resolved (no outgoing code cref)."""
@@ -8637,71 +8005,28 @@ def _resolve_computed_goto_resolution(
     return resolution
 
 
-def resolve_and_materialize(
-    function_ea: int,
-    *,
-    state: ResolverSessionState,
-    **kwargs: object,
-) -> ComputedGotoResolution | None:
-    """Resolve one computed goto and immediately apply its byte delivery.
-
-    The flowchart hook stages static x86 plans through the between-decompile
-    preparer so their PREOPT source can be captured first.  This public helper
-    retains immediate delivery for explicit callers and non-static profiles.
-    """
-    resolution = _resolve_computed_goto_resolution(function_ea, **kwargs)
-    if resolution is None:
-        return None
-    materialised = materialize_computed_gotos(resolution, state=state)
-    logger.info(
-        "computed-goto: func=0x%x sites=%d targets=%d materialised=%d reachable=%d arch=%s",
-        int(function_ea),
-        resolution.site_count,
-        resolution.target_count,
-        materialised,
-        len(resolution.reachable_eas),
-        resolution.arch,
-    )
-    return resolution
-
-
 def stage_computed_goto_preanalysis(
     function_ea: int,
     *,
     state: ResolverSessionState,
     **kwargs: object,
 ) -> ComputedGotoResolution | None:
-    """Publish computed-goto evidence while preserving static PREOPT input.
-
-    Static x86 plans retain the original native bytes permanently.  The
-    between-decompile preparer captures their portable closure and PREOPT body
-    template; the generic frontend-normalization fragment later owns all live
-    publication.  Other resolver profiles are migrated separately.
-    """
+    """Publish portable computed-goto evidence without native CFG mutation."""
     resolution = _resolve_computed_goto_resolution(function_ea, **kwargs)
-    if resolution is None or not resolution.jmp_targets:
+    if (
+        resolution is None
+        or not resolution.jmp_targets
+        or not resolution.patch_plans
+    ):
         return None
 
     state.begin_materialization(resolution)
-    if resolution.arch == "x86" and resolution.patch_plans:
-        logger.info(
-            "computed-goto portable evidence staged: "
-            "func=0x%x sites=%d targets=%d reachable=%d arch=%s",
-            int(function_ea),
-            resolution.site_count,
-            resolution.target_count,
-            len(resolution.reachable_eas),
-            resolution.arch,
-        )
-        return resolution
-
-    materialised = materialize_computed_gotos(resolution, state=state)
     logger.info(
-        "computed-goto: func=0x%x sites=%d targets=%d materialised=%d reachable=%d arch=%s",
+        "computed-goto portable evidence staged: "
+        "func=0x%x sites=%d targets=%d reachable=%d arch=%s",
         int(function_ea),
         resolution.site_count,
         resolution.target_count,
-        materialised,
         len(resolution.reachable_eas),
         resolution.arch,
     )
@@ -9328,17 +8653,160 @@ def _enrich_preopt_union_route_ranges(
     )
 
 
+def _plan_frontend_normalization_union_source(
+    resolution: ComputedGotoResolution,
+) -> _FrontendNormalizationUnionSource | None:
+    """Build the detached closure directly from the portable transfer ledger."""
+    key = int(resolution.function_ea)
+    resolver_targets_by_source = {
+        int(source_ea): tuple(
+            sorted({int(target_ea) for target_ea in target_eas})
+        )
+        for source_ea, target_eas in resolution.jmp_targets.items()
+        if target_eas
+    }
+    plan_targets_by_source = {
+        int(plan.jmp_ea): tuple(
+            sorted({int(target_ea) for target_ea in plan.target_eas})
+        )
+        for plan in resolution.patch_plans
+        if plan.target_eas
+    }
+    if (
+        not resolver_targets_by_source
+        or plan_targets_by_source != resolver_targets_by_source
+    ):
+        logger.info(
+            "frontend normalization source abstained: func=0x%X "
+            "reason=incomplete_transfer_ledger resolver_sites=%s proof_sites=%s",
+            key,
+            tuple(hex(ea) for ea in sorted(resolver_targets_by_source)),
+            tuple(hex(ea) for ea in sorted(plan_targets_by_source)),
+        )
+        return None
+    function = ida_funcs.get_func(key)
+    if function is None:
+        logger.info(
+            "frontend normalization source abstained: func=0x%X "
+            "reason=function_not_found",
+            key,
+        )
+        return None
+
+    source_entry_eas = tuple(
+        sorted({int(plan.block_entry) for plan in resolution.patch_plans})
+    )
+    target_eas = tuple(
+        sorted(
+            {
+                int(target_ea)
+                for targets in resolver_targets_by_source.values()
+                for target_ea in targets
+            }
+        )
+    )
+    cfg_result = build_native_semantic_cfg(
+        function,
+        live_native_eas=frozenset(),
+        seed_eas=tuple(
+            dict.fromkeys((key, *source_entry_eas, *target_eas))
+        ),
+        resolver_cut_eas=tuple(sorted(resolver_targets_by_source)),
+        resolver_proven_unmarked_entry_eas=(
+            *source_entry_eas,
+            *target_eas,
+        ),
+        resolver_target_eas_by_source=resolver_targets_by_source,
+    )
+    if cfg_result.abstentions:
+        logger.info(
+            "frontend normalization source abstained: func=0x%X "
+            "reason=native_cfg_abstention rows=%s",
+            key,
+            tuple(
+                (
+                    abstention.reason.value,
+                    hex(int(abstention.entry_ea)),
+                    hex(int(abstention.cursor_ea)),
+                )
+                for abstention in cfg_result.abstentions
+            ),
+        )
+        return None
+
+    provenance_by_entry = {
+        int(entry_ea): "computed_transfer_source"
+        for entry_ea in source_entry_eas
+    }
+    provenance_by_entry.update(
+        {
+            int(entry_ea): "computed_transfer_target"
+            for entry_ea in target_eas
+        }
+    )
+    closure = plan_native_semantic_closure(
+        cfg_result.cfg,
+        tuple(
+            ResolverProvenHandlerEntry(
+                entry_ea=int(entry_ea),
+                provenance=provenance,
+            )
+            for entry_ea, provenance in sorted(provenance_by_entry.items())
+        ),
+    )
+    required_entries = frozenset((*source_entry_eas, *target_eas))
+    missing_entries = required_entries - set(closure.included_block_eas)
+    if closure.abstentions or missing_entries or not closure.native_ranges:
+        logger.info(
+            "frontend normalization source abstained: func=0x%X "
+            "reason=semantic_closure_abstention rows=%s missing=%s",
+            key,
+            tuple(
+                (
+                    abstention.reason.value,
+                    (
+                        None
+                        if abstention.source_block_ea is None
+                        else hex(int(abstention.source_block_ea))
+                    ),
+                    (
+                        None
+                        if abstention.target_ea is None
+                        else hex(int(abstention.target_ea))
+                    ),
+                )
+                for abstention in closure.abstentions
+            ),
+            tuple(hex(ea) for ea in sorted(missing_entries)),
+        )
+        return None
+
+    normalized_ranges = tuple(
+        (int(native_range.start_ea), int(native_range.end_ea))
+        for native_range in closure.native_ranges
+    )
+    region = PreoptUnionRegionPlan(
+        seed_eas=target_eas,
+        seed_native_ranges=tuple(
+            (int(target_ea), normalized_ranges) for target_ea in target_eas
+        ),
+        primary_seed_ea=int(target_eas[0]),
+        native_ranges=normalized_ranges,
+        abstentions=(),
+    )
+    return _FrontendNormalizationUnionSource(
+        region=region,
+        cfg=cfg_result.cfg,
+        closure=closure,
+    )
+
+
 def _capture_prepatch_preopt_union_source(
     state: ResolverSessionState,
     resolution: ComputedGotoResolution,
     transfers: tuple[MaterializedIndirectTransfer, ...],
 ) -> bool:
-    """Capture one source union before byte delivery can detach its handlers.
-
-    Boundary ownership is intentionally not bound here.  The first live
-    top-level MBA supplies that evidence later through
-    :func:`prepare_preopt_union_closure`.
-    """
+    """Capture one detached source union from portable computed-transfer proof."""
     key = int(resolution.function_ea)
     prepatch_source = state.portable_evidence.prepatch_preopt_union_source
     if prepatch_source is not None or state.snippet_capture_active:
@@ -9355,104 +8823,13 @@ def _capture_prepatch_preopt_union_source(
 
     enriched = _enrich_preopt_union_route_ranges(resolution, transfers)
     _discover_static_state_write_routes(state, resolution, enriched)
-    region = plan_preopt_union_region(enriched)
-    if region.abstentions or region.primary_seed_ea is None or not region.native_ranges:
-        return abstain(
-            "no_complete_union_region",
-            tuple(
-                (hex(int(row.target_ea)), row.reason.value)
-                for row in region.abstentions
-            ),
-        )
-    function = ida_funcs.get_func(key)
-    if function is None:
-        return abstain("function_not_found")
-
-    resolver_targets_by_source = _resolver_targets_by_source(enriched)
-    cfg_result = build_native_semantic_cfg(
-        function,
-        live_native_eas=frozenset(),
-        seed_eas=tuple(dict.fromkeys((key, *region.seed_eas))),
-        resolver_cut_eas=tuple(
-            sorted(
-                {
-                    *(int(source_ea) for source_ea in resolution.jmp_targets),
-                    *(
-                        int(transfer.source_jmp_ea)
-                        for transfer in enriched
-                        if transfer.resolver_kind == "static_handler_exit_route"
-                    ),
-                }
-            )
-        ),
-        resolver_proven_unmarked_entry_eas=region.seed_eas,
-        resolver_target_eas_by_source={
-            source_ea: tuple(sorted(target_eas))
-            for source_ea, target_eas in resolver_targets_by_source.items()
-        },
-    )
-    if cfg_result.abstentions:
-        return abstain(
-            "native_cfg_abstention",
-            tuple(
-                (
-                    row.reason.value,
-                    hex(int(row.entry_ea)),
-                    hex(int(row.cursor_ea)),
-                )
-                for row in cfg_result.abstentions
-            ),
-        )
-    closure_seed_eas = tuple(
-        sorted(
-            set(int(seed_ea) for seed_ea in region.seed_eas)
-            | {
-                int(target_ea)
-                for target_eas in resolver_targets_by_source.values()
-                for target_ea in target_eas
-                if int(target_ea) in cfg_result.cfg.blocks_by_ea
-            }
-        )
-    )
-    closure = plan_native_semantic_closure(
-        cfg_result.cfg,
-        tuple(
-            ResolverProvenHandlerEntry(
-                entry_ea=int(seed_ea),
-                provenance=(
-                    "static_handler_entry_route"
-                    if int(seed_ea) in region.seed_eas
-                    else "resolver_proven_dispatch_target"
-                ),
-            )
-            for seed_ea in closure_seed_eas
-        ),
-    )
-    if closure.abstentions or not closure.native_ranges:
-        return abstain(
-            "semantic_closure_abstention",
-            tuple(
-                (
-                    row.reason.value,
-                    (
-                        None
-                        if row.source_block_ea is None
-                        else hex(int(row.source_block_ea))
-                    ),
-                    None if row.target_ea is None else hex(int(row.target_ea)),
-                )
-                for row in closure.abstentions
-            ),
-        )
-
-    capture_boundary_ports = _preopt_union_boundary_ports(
-        closure,
-        live_native_eas=frozenset(),
-        transfers=enriched,
-        native_cfg=cfg_result.cfg,
-    )
-    if capture_boundary_ports is None:
-        return abstain("prepatch_boundary_topology")
+    source_plan = _plan_frontend_normalization_union_source(resolution)
+    if source_plan is None:
+        return abstain("portable_union_source")
+    region = source_plan.region
+    native_cfg = source_plan.cfg
+    closure = source_plan.closure
+    capture_boundary_ports = DetachedSnippetBoundaryPorts((), ())
 
     normalized_ranges = tuple(
         (int(native_range.start_ea), int(native_range.end_ea))
@@ -9461,8 +8838,11 @@ def _capture_prepatch_preopt_union_source(
     terminal_return_entry_eas = tuple(
         int(entry_ea)
         for entry_ea in closure.included_block_eas
-        if cfg_result.cfg.blocks_by_ea[int(entry_ea)].terminal
+        if native_cfg.blocks_by_ea[int(entry_ea)].terminal
         is NativeTerminalKind.RETURN
+    )
+    required_generation_entry_eas = tuple(
+        dict.fromkeys((*region.seed_eas, *terminal_return_entry_eas))
     )
     generation_ranges = _preopt_generation_ranges_with_entry_prefix(
         key,
@@ -9470,8 +8850,27 @@ def _capture_prepatch_preopt_union_source(
             (int(native_range.start_ea), int(native_range.end_ea))
             for native_range in plan_native_generation_ranges(
                 closure,
-                required_entry_eas=terminal_return_entry_eas,
+                required_entry_eas=required_generation_entry_eas,
             )
+        ),
+    )
+    source_entry_eas = tuple(
+        dict.fromkeys(int(plan.block_entry) for plan in resolution.patch_plans)
+    )
+    logger.info(
+        "frontend normalization source ranges: func=0x%X sources=%s seeds=%s "
+        "blocks=%s owned=%s generated=%s",
+        key,
+        tuple(hex(int(source_ea)) for source_ea in source_entry_eas),
+        tuple(hex(int(seed_ea)) for seed_ea in region.seed_eas),
+        tuple(hex(int(entry_ea)) for entry_ea in closure.included_block_eas),
+        tuple(
+            (hex(int(start_ea)), hex(int(end_ea)))
+            for start_ea, end_ea in normalized_ranges
+        ),
+        tuple(
+            (hex(int(start_ea)), hex(int(end_ea)))
+            for start_ea, end_ea in generation_ranges
         ),
     )
     ranges = ida_hexrays.mba_ranges_t()
@@ -9542,7 +8941,7 @@ def _capture_prepatch_preopt_union_source(
         seed_native_ranges=tuple(region.seed_native_ranges),
         native_ranges=normalized_ranges,
         imported_block_entry_eas=tuple(closure.included_block_eas),
-        cfg=cfg_result.cfg,
+        cfg=native_cfg,
         closure=closure,
     )
     _merge_native_facts(
@@ -11258,14 +10657,18 @@ def prepare_detached_handler_snippets(
         return 1
     prepatch_source = state.portable_evidence.prepatch_preopt_union_source
     if (
-        resolution.arch == "x86"
-        and resolution.patch_plans
+        resolution.patch_plans
         and prepatch_source is None
     ):
+        source_transfers = (
+            _static_prepatch_union_source_transfers(resolution)
+            if resolution.arch == "x86"
+            else ()
+        )
         source_captured = _capture_prepatch_preopt_union_source(
             state,
             resolution,
-            _static_prepatch_union_source_transfers(resolution),
+            source_transfers,
         )
         if not source_captured:
             logger.info(
@@ -12239,38 +11642,20 @@ def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) 
         resolution = _resolve_computed_goto_resolution(key)
         if resolution is None or not resolution.jmp_targets:
             return
-        state.begin_materialization(resolution)
-        if resolution.arch == "x86" and resolution.patch_plans:
-            logger.info(
-                "computed-goto static evidence staged: func=0x%X "
-                "sites=%d targets=%d authority=frontend_fragment",
-                key,
-                resolution.site_count,
-                resolution.target_count,
-            )
+        if not resolution.patch_plans:
             return
-        materialised = materialize_computed_gotos(resolution, state=state)
+        state.begin_materialization(resolution)
         logger.info(
-            "computed-goto: func=0x%x sites=%d targets=%d materialised=%d "
-            "reachable=%d arch=%s",
+            "computed-goto portable evidence staged: func=0x%X "
+            "sites=%d targets=%d reachable=%d arch=%s "
+            "authority=frontend_fragment",
             key,
             resolution.site_count,
             resolution.target_count,
-            materialised,
             len(resolution.reachable_eas),
             resolution.arch,
         )
-        discover_static_native_bootstrap_routes(key, state)
-        if not state.native_preanalysis.request_controlled_redo():
-            return
-        request_hexrays_redo(
-            decision,
-            "computed_goto_materialized",
-            function_ea=key,
-            site_count=resolution.site_count,
-            target_count=resolution.target_count,
-            round=0,
-        )
+        return
     except Exception:
         logger.debug("computed-goto handler failed for 0x%X", key, exc_info=True)
 
@@ -12452,8 +11837,6 @@ __all__ = [
     "is_computed_goto_materialized",
     "resolve_computed_gotos",
     "resolve_computed_gotos_static",
-    "materialize_computed_gotos",
-    "resolve_and_materialize",
     "stage_computed_goto_preanalysis",
     "prepare_detached_handler_snippets",
     "prepare_preopt_union_closure",
