@@ -63,6 +63,7 @@ from d810.transforms.fragment_validation import (
     ProjectedIdentityBinding,
     ProjectedRangeFact,
     ProjectedRootFallthroughHelper,
+    ProjectedTerminalEffectDiagnostic,
     validate_fragment_projection,
 )
 
@@ -106,6 +107,7 @@ class SemanticFragmentRootEdgeBinding:
     original: SemanticFragmentRuntimeBinding
     replacement: SemanticFragmentRuntimeBinding
     role: SemanticEdgeRole
+    requires_helper: bool
     publication_helper: SemanticFragmentRuntimeBinding | None = None
 
 
@@ -856,64 +858,112 @@ def _observed_return_source(mba, operand) -> FragmentReturnSource | None:
         return None
 
 
+def _diagnose_return_carrier(
+    modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
+    planned: FragmentReturnCarrier,
+    block,
+) -> tuple[FragmentReturnCarrier | None, str]:
+    rows = _native_instruction_rows(state, planned.block_id, block)
+    carrier_matches = tuple(
+        index
+        for index, (native_ea, _instruction) in enumerate(rows)
+        if native_ea == planned.carrier_ea
+    )
+    if len(carrier_matches) == 1:
+        carrier_index = carrier_matches[0]
+        state_matches = tuple(
+            index
+            for index, (native_ea, _instruction) in enumerate(rows)
+            if native_ea == planned.state_write_ea and index < carrier_index
+        )
+    else:
+        carrier_index = -1
+        state_matches = ()
+    if len(state_matches) != 1 or len(carrier_matches) != 1:
+        row_coordinates = tuple(
+            (
+                hex(native_ea),
+                hex(int(getattr(instruction, "ea", -1) or -1)),
+                int(getattr(instruction, "opcode", -1)),
+            )
+            for native_ea, instruction in rows
+        )
+        return (
+            None,
+            f"anchor_cardinality state_before_carrier={len(state_matches)} "
+            f"carrier={len(carrier_matches)} rows={row_coordinates!r}",
+        )
+    state_index = state_matches[0]
+    instruction = rows[carrier_index][1]
+    operation = value_op_from_opcode(int(getattr(instruction, "opcode", -1)))
+    destination = getattr(instruction, "d", None)
+    right = getattr(instruction, "r", None)
+    if operation not in _RETURN_CARRIER_OPCODES:
+        return (
+            None,
+            f"unsupported_opcode={int(getattr(instruction, 'opcode', -1))}",
+        )
+    if destination is None:
+        return None, "destination_missing"
+    destination_type = int(getattr(destination, "t", -1))
+    if destination_type != int(ida_hexrays.mop_r):
+        return None, f"destination_type={destination_type}"
+    destination_register = int(getattr(destination, "r", -1))
+    expected_register = _return_mreg()
+    if destination_register != expected_register:
+        return (
+            None,
+            f"destination_register={destination_register} expected={expected_register}",
+        )
+    destination_width = int(getattr(destination, "size", 0))
+    if destination_width <= 0:
+        return None, f"destination_width={destination_width}"
+    right_type = int(getattr(right, "t", -1)) if right is not None else -1
+    if right_type != int(ida_hexrays.mop_z):
+        return None, f"right_operand_type={right_type}"
+    source = _observed_return_source(modifier.mba, getattr(instruction, "l", None))
+    if source is None:
+        left = getattr(instruction, "l", None)
+        return (
+            None,
+            f"source_unavailable type={int(getattr(left, 't', -1))} "
+            f"width={int(getattr(left, 'size', 0))}",
+        )
+    try:
+        return (
+            FragmentReturnCarrier(
+                carrier_id=planned.carrier_id,
+                block_id=planned.block_id,
+                state_write_ea=rows[state_index][0],
+                carrier_ea=rows[carrier_index][0],
+                operation=operation,
+                source=source,
+                return_width=int(destination.size),
+                corridor_instruction_eas=tuple(
+                    native_ea
+                    for native_ea, _instruction in rows[state_index : carrier_index + 1]
+                ),
+            ),
+            "matched",
+        )
+    except (TypeError, ValueError) as exc:
+        return None, f"portable_carrier_rejected={type(exc).__name__}"
+
+
 def _observe_return_carrier(
     modifier: DeferredGraphModifier,
     state: SemanticFragmentBackendState,
     planned: FragmentReturnCarrier,
     block,
 ) -> FragmentReturnCarrier | None:
-    rows = _native_instruction_rows(state, planned.block_id, block)
-    state_matches = tuple(
-        index
-        for index, (native_ea, _instruction) in enumerate(rows)
-        if native_ea == planned.state_write_ea
+    observed, _reason = _diagnose_return_carrier(
+        modifier,
+        state,
+        planned,
+        block,
     )
-    carrier_matches = tuple(
-        index
-        for index, (native_ea, _instruction) in enumerate(rows)
-        if native_ea == planned.carrier_ea
-    )
-    if len(state_matches) != 1 or len(carrier_matches) != 1:
-        return None
-    state_index = state_matches[0]
-    carrier_index = carrier_matches[0]
-    if carrier_index <= state_index:
-        return None
-    instruction = rows[carrier_index][1]
-    operation = value_op_from_opcode(int(getattr(instruction, "opcode", -1)))
-    destination = getattr(instruction, "d", None)
-    right = getattr(instruction, "r", None)
-    if (
-        operation not in _RETURN_CARRIER_OPCODES
-        or destination is None
-        or int(getattr(destination, "t", -1)) != int(ida_hexrays.mop_r)
-        or int(getattr(destination, "r", -1)) != _return_mreg()
-        or int(getattr(destination, "size", 0)) <= 0
-        or right is None
-        or int(getattr(right, "t", -1)) != int(ida_hexrays.mop_z)
-    ):
-        return None
-    source = _observed_return_source(modifier.mba, getattr(instruction, "l", None))
-    if source is None:
-        return None
-    try:
-        return FragmentReturnCarrier(
-            carrier_id=planned.carrier_id,
-            block_id=planned.block_id,
-            state_write_ea=rows[state_index][0],
-            carrier_ea=rows[carrier_index][0],
-            operation=operation,
-            source=source,
-            return_width=int(destination.size),
-            corridor_instruction_eas=tuple(
-                native_ea
-                for native_ea, _instruction in rows[
-                    state_index : carrier_index + 1
-                ]
-            ),
-        )
-    except (TypeError, ValueError):
-        return None
+    return observed
 
 
 def _project_return_carriers(
@@ -931,6 +981,39 @@ def _project_return_carriers(
         if carrier is not None:
             observed.append(carrier)
     return tuple(observed)
+
+
+def _project_terminal_effect_diagnostics(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    live_by_id: dict[str, object],
+) -> tuple[ProjectedTerminalEffectDiagnostic, ...]:
+    diagnostics: list[ProjectedTerminalEffectDiagnostic] = []
+    for planned in plan.return_carriers:
+        block = live_by_id.get(planned.block_id)
+        if block is None:
+            diagnostics.append(
+                ProjectedTerminalEffectDiagnostic(
+                    effect_id=planned.carrier_id,
+                    reason="live_block_missing",
+                )
+            )
+            continue
+        carrier, reason = _diagnose_return_carrier(
+            modifier,
+            state,
+            planned,
+            block,
+        )
+        if carrier is None:
+            diagnostics.append(
+                ProjectedTerminalEffectDiagnostic(
+                    effect_id=planned.carrier_id,
+                    reason=reason,
+                )
+            )
+    return tuple(diagnostics)
 
 
 def _observe_terminal_return(
@@ -956,11 +1039,7 @@ def _observe_terminal_return(
             != int(ida_hexrays.mop_z)
             for slot in ("l", "r", "d")
         )
-        or int(block.type)
-        not in {
-            int(ida_hexrays.BLT_0WAY),
-            int(ida_hexrays.BLT_STOP),
-        }
+        or int(block.type) != int(ida_hexrays.BLT_0WAY)
         or tuple(int(value) for value in block.succset)
     ):
         return None
@@ -1155,7 +1234,7 @@ def _materialize_terminal_return(
     instruction.d.erase()
     modifier.configure_block_now(
         block,
-        block_type=int(ida_hexrays.BLT_STOP),
+        block_type=int(ida_hexrays.BLT_0WAY),
         flags=(
             int(block.flags)
             & ~int(ida_hexrays.MBL_GOTO)
@@ -1692,12 +1771,14 @@ def _project_fragment(
                     live_by_id[predecessor_id],
                     live_by_id[original_id],
                 )
+                requires_helper = _root_edge_requires_helper(
+                    live_by_id[predecessor_id],
+                    live_by_id[original_id],
+                    role,
+                )
                 predecessors[original_id].remove(predecessor_id)
                 projected_target_id = root_id
-                if role in {
-                    SemanticEdgeRole.CALL_FALLTHROUGH,
-                    SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
-                }:
+                if requires_helper:
                     matching_helpers = tuple(
                         helper
                         for helper in state.root_fallthrough_helpers
@@ -1778,6 +1859,12 @@ def _project_fragment(
         state,
         live_by_id,
     )
+    terminal_effect_diagnostics = _project_terminal_effect_diagnostics(
+        modifier,
+        plan,
+        state,
+        live_by_id,
+    )
     terminal_returns = _project_terminal_returns(
         plan,
         state,
@@ -1792,6 +1879,7 @@ def _project_fragment(
         root_fallthrough_helpers=tuple(state.root_fallthrough_helpers),
         return_carriers=return_carriers,
         terminal_returns=terminal_returns,
+        terminal_effect_diagnostics=terminal_effect_diagnostics,
         data_flow_relations=data_flow_relations,
         value_ranges=value_ranges,
     )
@@ -1886,6 +1974,52 @@ def _incoming_root_edge_role(predecessor, original) -> SemanticEdgeRole:
     return SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
 
 
+def _root_edge_requires_helper(
+    predecessor,
+    original,
+    role: SemanticEdgeRole,
+) -> bool:
+    if role in {
+        SemanticEdgeRole.CALL_FALLTHROUGH,
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+    }:
+        return True
+    if role is not SemanticEdgeRole.DIRECT:
+        return False
+
+    tail = predecessor.tail
+    if tail is not None and int(tail.opcode) == int(ida_hexrays.m_goto):
+        left = getattr(tail, "l", None)
+        if (
+            left is None
+            or int(left.t) != int(ida_hexrays.mop_b)
+            or int(left.b) != int(original.serial)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "direct root predecessor goto does not target its original"
+            )
+        return False
+    if tail is not None and (
+        ida_hexrays.is_mcode_jcond(int(tail.opcode))
+        or int(tail.opcode)
+        in {
+            int(ida_hexrays.m_ijmp),
+            int(ida_hexrays.m_jtbl),
+            int(ida_hexrays.m_ret),
+        }
+    ):
+        raise SemanticFragmentBackendRejected(
+            "direct root predecessor has an unsupported closing transfer"
+        )
+    if predecessor.nextb is None or int(predecessor.nextb.serial) != int(
+        original.serial
+    ):
+        raise SemanticFragmentBackendRejected(
+            "implicit direct root fallthrough is not physically adjacent"
+        )
+    return True
+
+
 def plan_semantic_fragment_root_inventory(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
@@ -1941,6 +2075,11 @@ def plan_semantic_fragment_root_inventory(
                     "root inventory predecessor is outside the closed fragment plan"
                 )
             role = _incoming_root_edge_role(predecessor, original)
+            requires_helper = _root_edge_requires_helper(
+                predecessor,
+                original,
+                role,
+            )
             items.append(
                 SemanticFragmentRootInventoryItem(
                     edge_id=(f"{root_block_id}:{predecessor_block_id}:{role.value}"),
@@ -1948,6 +2087,7 @@ def plan_semantic_fragment_root_inventory(
                     original_block_id=original_block_id,
                     predecessor_block_id=predecessor_block_id,
                     role=role,
+                    requires_helper=requires_helper,
                 )
             )
     return SemanticFragmentRootInventory(
@@ -1974,10 +2114,12 @@ def _reserve_root_fallthrough_helpers(
                 predecessor_serial,
             )
             predecessor_live = _live_block_for_binding(modifier, predecessor)
-            if _incoming_root_edge_role(predecessor_live, original_live) in {
-                SemanticEdgeRole.CALL_FALLTHROUGH,
-                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
-            }:
+            role = _incoming_root_edge_role(predecessor_live, original_live)
+            if _root_edge_requires_helper(
+                predecessor_live,
+                original_live,
+                role,
+            ):
                 candidates.append((predecessor.block_id, root_block_id))
 
     gateway = _gateway(modifier)
@@ -2030,6 +2172,13 @@ def _group_semantic_fragment_root_edges(
         ):
             raise SemanticFragmentBackendRejected(
                 "root publication group has inconsistent predecessor authority"
+            )
+        if any(
+            edge.requires_helper != (edge.publication_helper is not None)
+            for edge in grouped_edges
+        ):
+            raise SemanticFragmentBackendRejected(
+                "root publication helper authority differs from its inventory"
             )
         predecessor = _live_block_for_binding(modifier, predecessor_binding)
         roles = frozenset(edge.role for edge in grouped_edges)
@@ -2236,11 +2385,13 @@ def prepare_semantic_fragment_root_publication(
                 )
             predecessor_live = _live_block_for_binding(modifier, predecessor)
             role = _incoming_root_edge_role(predecessor_live, original_live)
+            requires_helper = _root_edge_requires_helper(
+                predecessor_live,
+                original_live,
+                role,
+            )
             publication_helper = None
-            if role in {
-                SemanticEdgeRole.CALL_FALLTHROUGH,
-                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
-            }:
+            if requires_helper:
                 matching_helpers = tuple(
                     helper
                     for helper in state.root_fallthrough_helpers
@@ -2261,6 +2412,7 @@ def prepare_semantic_fragment_root_publication(
                     original=original,
                     replacement=replacement,
                     role=role,
+                    requires_helper=requires_helper,
                     publication_helper=publication_helper,
                 )
             )
@@ -2270,11 +2422,23 @@ def prepare_semantic_fragment_root_publication(
             "semantic fragment root publication contains duplicate edges"
         )
     actual_inventory = tuple(
-        (edge.edge_id, edge.root_block_id, edge.predecessor.block_id, edge.role)
+        (
+            edge.edge_id,
+            edge.root_block_id,
+            edge.predecessor.block_id,
+            edge.role,
+            edge.requires_helper,
+        )
         for edge in edges
     )
     planned_inventory = tuple(
-        (item.edge_id, item.root_block_id, item.predecessor_block_id, item.role)
+        (
+            item.edge_id,
+            item.root_block_id,
+            item.predecessor_block_id,
+            item.role,
+            item.requires_helper,
+        )
         for item in inventory.items
     )
     if actual_inventory != planned_inventory:

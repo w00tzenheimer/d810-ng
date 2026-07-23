@@ -242,6 +242,27 @@ class ProjectedRangeFact:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectedTerminalEffectDiagnostic:
+    """Portable explanation for one failed live terminal-effect observation."""
+
+    effect_id: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        effect_id = _identifier(
+            self.effect_id,
+            "projected terminal-effect diagnostic id",
+        )
+        reason = str(self.reason).strip()
+        if not reason:
+            raise ValueError(
+                "projected terminal-effect diagnostic reason must not be empty"
+            )
+        object.__setattr__(self, "effect_id", effect_id)
+        object.__setattr__(self, "reason", reason)
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectedFallthroughHelper:
     """Backend-owned adjacent helper for one semantic fallthrough arm."""
 
@@ -296,6 +317,7 @@ class ProjectedFragment:
     root_fallthrough_helpers: tuple[ProjectedRootFallthroughHelper, ...] = ()
     return_carriers: tuple[FragmentReturnCarrier, ...] = ()
     terminal_returns: tuple[FragmentTerminalReturn, ...] = ()
+    terminal_effect_diagnostics: tuple[ProjectedTerminalEffectDiagnostic, ...] = ()
     data_flow_relations: tuple[ProjectedDataFlowRelation, ...] = ()
     value_ranges: tuple[ProjectedRangeFact, ...] = ()
 
@@ -310,6 +332,7 @@ class ProjectedFragment:
         root_fallthrough_helpers = tuple(self.root_fallthrough_helpers)
         return_carriers = tuple(self.return_carriers)
         terminal_returns = tuple(self.terminal_returns)
+        terminal_effect_diagnostics = tuple(self.terminal_effect_diagnostics)
         data_flow_relations = tuple(self.data_flow_relations)
         value_ranges = tuple(self.value_ranges)
         if any(not isinstance(block, ProjectedFragmentBlock) for block in blocks):
@@ -340,6 +363,11 @@ class ProjectedFragment:
         ):
             raise TypeError("projection contains an invalid terminal return")
         if any(
+            not isinstance(diagnostic, ProjectedTerminalEffectDiagnostic)
+            for diagnostic in terminal_effect_diagnostics
+        ):
+            raise TypeError("projection contains an invalid terminal-effect diagnostic")
+        if any(
             not isinstance(relation, ProjectedDataFlowRelation)
             for relation in data_flow_relations
         ):
@@ -357,6 +385,11 @@ class ProjectedFragment:
         )
         object.__setattr__(self, "return_carriers", return_carriers)
         object.__setattr__(self, "terminal_returns", terminal_returns)
+        object.__setattr__(
+            self,
+            "terminal_effect_diagnostics",
+            terminal_effect_diagnostics,
+        )
         object.__setattr__(self, "data_flow_relations", data_flow_relations)
         object.__setattr__(self, "value_ranges", value_ranges)
 
@@ -935,6 +968,18 @@ def _validate_terminal_effects(
     blocks: dict[str, ProjectedFragmentBlock],
     outcomes: list[FragmentValidationOutcome],
 ) -> None:
+    diagnostic_lists: dict[str, list[ProjectedTerminalEffectDiagnostic]] = {}
+    for diagnostic in projection.terminal_effect_diagnostics:
+        diagnostic_lists.setdefault(diagnostic.effect_id, []).append(diagnostic)
+
+    def diagnostic_suffix(effect_id: str) -> str:
+        diagnostics = tuple(diagnostic_lists.get(effect_id, ()))
+        if not diagnostics:
+            return ""
+        if len(diagnostics) != 1:
+            return f"; live_observation=ambiguous({len(diagnostics)})"
+        return f"; live_observation={diagnostics[0].reason}"
+
     observed_carriers_by_id: dict[str, list[FragmentReturnCarrier]] = {}
     for carrier in projection.return_carriers:
         observed_carriers_by_id.setdefault(carrier.carrier_id, []).append(carrier)
@@ -970,7 +1015,13 @@ def _validate_terminal_effects(
         scope_valid,
         "projected terminal effects exactly match the planned identity set"
         if scope_valid
-        else "projected terminal effects are missing, extra, or duplicated",
+        else (
+            "projected terminal effect identity set differs: "
+            f"planned_carriers={sorted(planned_carrier_ids)!r}; "
+            f"observed_carriers={sorted(observed_carrier_ids)!r}; "
+            f"planned_returns={sorted(planned_return_ids)!r}; "
+            f"observed_returns={sorted(observed_return_ids)!r}"
+        ),
         *sorted(
             {
                 carrier.block_id for carrier in plan.return_carriers
@@ -1012,8 +1063,15 @@ def _validate_terminal_effects(
             passed,
             "return carrier and its state-write corridor match the plan"
             if passed
-            else "return carrier is missing, changed, duplicated, or separated "
-            "from its state write",
+            else (
+                "return carrier integrity failed: "
+                f"observed_count={len(observed)}; "
+                f"exact_match={int(len(observed) == 1 and observed[0] == carrier)}; "
+                f"corridor_present={int(corridor_present)}; "
+                "instruction_eas="
+                f"{[] if block is None else [hex(ea) for ea in block.instruction_eas]!r}"
+                f"{diagnostic_suffix(carrier.carrier_id)}"
+            ),
             carrier.block_id,
         )
 
@@ -1027,12 +1085,19 @@ def _validate_terminal_effects(
             len(observed) == 1
             and observed[0] == terminal_return
             and block is not None
-            and block.kind in {BlockKind.ZERO_WAY, BlockKind.STOP}
+            and block.kind is BlockKind.ZERO_WAY
             and not block.successors
             and bool(block.instruction_eas)
             and block.instruction_eas[-1] == terminal_return.instruction_ea
         )
         return_integrity[terminal_return.return_id] = passed
+        block_kind = "missing" if block is None else block.kind.name.lower()
+        successors = () if block is None else block.successors
+        tail_ea = (
+            None
+            if block is None or not block.instruction_eas
+            else block.instruction_eas[-1]
+        )
         _outcome(
             outcomes,
             FragmentValidationPostcondition.TERMINAL_RETURN_INTEGRITY,
@@ -1040,8 +1105,14 @@ def _validate_terminal_effects(
             passed,
             "terminal return is the zero-way block tail required by the plan"
             if passed
-            else "terminal return is missing, changed, duplicated, or has "
-            "outgoing control flow",
+            else (
+                "terminal return integrity failed: "
+                f"observed_count={len(observed)}; "
+                "exact_match="
+                f"{int(len(observed) == 1 and observed[0] == terminal_return)}; "
+                f"kind={block_kind}; successor_count={len(successors)}; "
+                f"tail_ea={None if tail_ea is None else hex(tail_ea)}"
+            ),
             terminal_return.block_id,
         )
 
@@ -1842,6 +1913,7 @@ __all__ = [
     "ProjectedIdentityBinding",
     "ProjectedRangeFact",
     "ProjectedRootFallthroughHelper",
+    "ProjectedTerminalEffectDiagnostic",
     "validate_fragment_projection",
     "validate_published_fragment_observation",
 ]

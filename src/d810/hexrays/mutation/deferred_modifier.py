@@ -3874,6 +3874,132 @@ class DeferredGraphModifier:
                 "Hex-Rays rejected direct semantic fragment root publication"
             )
 
+    def _publish_semantic_fragment_direct_fallthrough_root(
+        self,
+        edge: SemanticFragmentRootEdgeBinding,
+    ) -> None:
+        """Publish one implicit direct fallthrough through an adjacent helper."""
+        helper_binding = edge.publication_helper
+        gateway = self._mutation_gateway
+        if (
+            edge.role is not SemanticEdgeRole.DIRECT
+            or not edge.requires_helper
+            or helper_binding is None
+            or gateway is None
+        ):
+            raise SemanticFragmentBackendRejected(
+                "direct fallthrough root lacks reserved helper authority"
+            )
+        predecessor = self._resolve_semantic_fragment_version(edge.predecessor.version)
+        original = self._resolve_semantic_fragment_version(edge.original.version)
+        replacement = self._resolve_semantic_fragment_version(edge.replacement.version)
+        if (
+            tuple(int(value) for value in predecessor.succset)
+            != (int(original.serial),)
+            or predecessor.nextb is None
+            or int(predecessor.nextb.serial) != int(original.serial)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "direct fallthrough root authority changed after preflight"
+            )
+        if (
+            gateway.identity_index.resolve_logical_version(
+                helper_binding.version,
+                transaction_id=self._semantic_fragment_transaction_id(),
+            )
+            is not None
+        ):
+            raise SemanticFragmentBackendRejected(
+                "direct fallthrough root helper is already materialized"
+            )
+
+        helper_serial = self._build_fallthrough_goto_helper(
+            predecessor,
+            replacement,
+            created_handle=helper_binding.version.handle,
+            target_handle=edge.replacement.version.handle,
+        )
+        if helper_serial is None:
+            raise SemanticFragmentBackendRejected(
+                "Hex-Rays could not materialize the direct root helper"
+            )
+
+        predecessor = self._resolve_semantic_fragment_version(edge.predecessor.version)
+        original = self._resolve_semantic_fragment_version(edge.original.version)
+        replacement = self._resolve_semantic_fragment_version(edge.replacement.version)
+        helper = self._resolve_semantic_fragment_version(helper_binding.version)
+        successors = tuple(int(value) for value in predecessor.succset)
+        if (
+            len(successors) != 1
+            or successors[0] not in {int(original.serial), int(helper.serial)}
+            or predecessor.nextb is None
+            or int(predecessor.nextb.serial) != int(helper.serial)
+            or int(helper.serial) != int(predecessor.serial) + 1
+            or tuple(int(value) for value in helper.succset)
+            != (int(replacement.serial),)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "direct root topology changed during helper insertion"
+            )
+        original.predset._del(int(predecessor.serial))
+        predecessor.succset.clear()
+        predecessor.succset.push_back(int(helper.serial))
+        if int(predecessor.serial) not in {int(value) for value in helper.predset}:
+            helper.predset.push_back(int(predecessor.serial))
+        self._semantic_edge_mark(
+            predecessor,
+            helper,
+            original,
+            replacement,
+        )
+
+    def _rollback_semantic_fragment_direct_fallthrough_root(
+        self,
+        edge: SemanticFragmentRootEdgeBinding,
+    ) -> None:
+        """Restore one implicit direct fallthrough and discard its helper."""
+        helper_binding = edge.publication_helper
+        gateway = self._mutation_gateway
+        if helper_binding is None or gateway is None:
+            raise SemanticFragmentBackendRejected(
+                "direct fallthrough rollback lacks helper authority"
+            )
+        helper_bound = gateway.identity_index.resolve_logical_version(
+            helper_binding.version,
+            transaction_id=self._semantic_fragment_transaction_id(),
+        )
+        if helper_bound is None:
+            return
+        predecessor = self._resolve_semantic_fragment_version(edge.predecessor.version)
+        original = self._resolve_semantic_fragment_version(edge.original.version)
+        replacement = self._resolve_semantic_fragment_version(edge.replacement.version)
+        helper = self._resolve_semantic_fragment_version(helper_binding.version)
+        successors = tuple(int(value) for value in predecessor.succset)
+        if int(helper.serial) in successors:
+            if successors != (int(helper.serial),):
+                raise SemanticFragmentBackendRejected(
+                    "direct fallthrough rollback found ambiguous live successors"
+                )
+            predecessor.succset.clear()
+            predecessor.succset.push_back(int(original.serial))
+            helper.predset._del(int(predecessor.serial))
+            if int(predecessor.serial) not in {
+                int(value) for value in original.predset
+            }:
+                original.predset.push_back(int(predecessor.serial))
+            self._semantic_edge_mark(
+                predecessor,
+                helper,
+                original,
+                replacement,
+            )
+        elif int(original.serial) not in successors:
+            raise SemanticFragmentBackendRejected(
+                "direct fallthrough rollback cannot locate prior authority"
+            )
+        self._discard_semantic_fragment_blocks((helper,))
+        gateway.discard_reserved_insert(helper_binding.version.handle)
+
     def _rewrite_semantic_fragment_taken_root(
         self,
         edge: SemanticFragmentRootEdgeBinding,
@@ -4521,10 +4647,13 @@ class DeferredGraphModifier:
             else:
                 edge = group.edges[0]
                 if edge.role is SemanticEdgeRole.DIRECT:
-                    self._rewrite_semantic_fragment_direct_root(
-                        edge,
-                        restore=False,
-                    )
+                    if edge.requires_helper:
+                        self._publish_semantic_fragment_direct_fallthrough_root(edge)
+                    else:
+                        self._rewrite_semantic_fragment_direct_root(
+                            edge,
+                            restore=False,
+                        )
                 else:
                     raise SemanticFragmentBackendRejected(
                         "unsupported root edge role"
@@ -4577,10 +4706,15 @@ class DeferredGraphModifier:
                 else:
                     edge = group.edges[0]
                     if edge.role is SemanticEdgeRole.DIRECT:
-                        self._rewrite_semantic_fragment_direct_root(
-                            edge,
-                            restore=True,
-                        )
+                        if edge.requires_helper:
+                            self._rollback_semantic_fragment_direct_fallthrough_root(
+                                edge
+                            )
+                        else:
+                            self._rewrite_semantic_fragment_direct_root(
+                                edge,
+                                restore=True,
+                            )
                     else:
                         raise SemanticFragmentBackendRejected(
                             "unsupported root edge role"
@@ -10935,6 +11069,19 @@ class DeferredGraphModifier:
         nop_block = copy_block_keep(mba, blk, blk.serial + 1)
         if nop_block is None:
             return None
+        # The helper is transaction-owned synthetic structure, not another
+        # native instance of the copied source.  Give it verifier-safe metadata
+        # before it becomes instruction-bearing: entry roots can have an empty
+        # [start, end) range, which otherwise trips verify.cpp 50870 after the
+        # helper receives its explicit goto.
+        self.configure_block_now(
+            nop_block,
+            flags=(int(nop_block.flags) & int(ida_hexrays.MBL_PUSH))
+            | int(ida_hexrays.MBL_KEEP)
+            | int(ida_hexrays.MBL_FAKE),
+            start_ea=int(mba.entry_ea),
+            end_ea=int(mba.entry_ea) + 1,
+        )
         logger.info(
             "fallthrough helper copy diagnostic: source=blk%d@0x%x "
             "returned=blk%d@0x%x instructions=%s",

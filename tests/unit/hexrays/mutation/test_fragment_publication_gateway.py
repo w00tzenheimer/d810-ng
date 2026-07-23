@@ -363,6 +363,7 @@ class _FragmentBackend:
                     original_block_id="original",
                     predecessor_block_id="entry",
                     role=SemanticEdgeRole.DIRECT,
+                    requires_helper=False,
                 ),
             ),
         )
@@ -641,6 +642,7 @@ def test_gateway_inventories_terminal_effects_as_first_class_fragment_items() ->
                 original_block_id="original",
                 predecessor_block_id="entry",
                 role=SemanticEdgeRole.DIRECT,
+                requires_helper=True,
             ),
         ),
     )
@@ -652,13 +654,14 @@ def test_gateway_inventories_terminal_effects_as_first_class_fragment_items() ->
     )
 
     assert len(planned) == 1
-    assert planned[0].planned_operation_count == 6
+    assert planned[0].planned_operation_count == 7
     assert tuple(item.mutation_kind for item in planned[0].items) == (
         "semantic_fragment_replacement_materialization",
         "semantic_fragment_native_body_materialization",
         "semantic_fragment_return_carrier_materialization",
         "semantic_fragment_terminal_return_materialization",
         "semantic_fragment_direct",
+        "semantic_fragment_root_fallthrough_helper",
         "semantic_fragment_root_direct",
     )
     carrier_item = planned[0].items[2]

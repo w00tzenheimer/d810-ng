@@ -196,6 +196,12 @@ def _run_worker(
             LifecycleEventObserved,
         )
         from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+        from d810.hexrays.contracts.invariants import (
+            block_address_range,
+            block_closing_opcode_at_tail,
+            successor_set_matches_tail_semantics,
+        )
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
         from d810.hexrays.mutation.mba_mutation_events import (
             MbaMutationAborted,
             MbaMutationCommitted,
@@ -488,7 +494,148 @@ def _run_worker(
         emitter.on(MbaMutationCommitted, D810Manager._on_mutation_committed)
         emitter.on(MbaMutationAborted, D810Manager._on_mutation_aborted)
         gateway.event_emitter = emitter
-        backend = HexRaysMutationBackend(mutation_gateway=gateway)
+
+        class VerifyingFragmentModifier(DeferredGraphModifier):
+            def _verify_phase(self, phase: str) -> None:
+                special_block_violations = tuple(
+                    violation
+                    for violation in block_closing_opcode_at_tail(
+                        self.mba,
+                        phase=phase,
+                    )
+                    if violation.code == "CFG_51814_SPECIAL_BLOCK_NOT_EMPTY"
+                )
+                if special_block_violations:
+                    anchored = []
+                    for violation in special_block_violations:
+                        serial = int(violation.block_serial)
+                        block = self.mba.get_mblock(serial)
+                        anchor_ea = int(
+                            getattr(block, "start", 0)
+                            or getattr(getattr(block, "head", None), "ea", 0)
+                            or 0
+                        )
+                        anchored.append(f"blk{serial}@0x{anchor_ea:X}")
+                    raise RuntimeError(
+                        "live MBA special block is non-empty after "
+                        f"{phase}: {tuple(anchored)!r}"
+                    )
+                successor_violations = tuple(
+                    violation
+                    for violation in successor_set_matches_tail_semantics(
+                        self.mba,
+                        phase=phase,
+                    )
+                    if violation.code == "CFG_50860_SUCC_MISMATCH"
+                )
+                if successor_violations:
+                    anchored = []
+                    for violation in successor_violations:
+                        serial = int(violation.block_serial)
+                        block = self.mba.get_mblock(serial)
+                        anchor_ea = int(
+                            getattr(block, "start", 0)
+                            or getattr(getattr(block, "head", None), "ea", 0)
+                            or 0
+                        )
+                        anchored.append(
+                            (
+                                f"blk{serial}@0x{anchor_ea:X}",
+                                dict(violation.details or {}),
+                            )
+                        )
+                    raise RuntimeError(
+                        "live MBA successor semantics failed after "
+                        f"{phase}: {tuple(anchored)!r}"
+                    )
+                address_violations = tuple(
+                    violation
+                    for violation in block_address_range(
+                        self.mba,
+                        phase=phase,
+                    )
+                    if violation.code
+                    in {
+                        "CFG_50869_START_GE_END",
+                        "CFG_50870_BLOCK_OUTSIDE_FUNC",
+                    }
+                )
+                if address_violations:
+                    anchored = []
+                    for violation in address_violations:
+                        serial = int(violation.block_serial)
+                        block = self.mba.get_mblock(serial)
+                        anchored.append(
+                            (
+                                f"blk{serial}@0x{int(block.start):X}",
+                                f"[0x{int(block.start):X},0x{int(block.end):X})",
+                                violation.code,
+                            )
+                        )
+                    raise RuntimeError(
+                        "live MBA block range failed after "
+                        f"{phase}: {tuple(anchored)!r}"
+                    )
+                try:
+                    self.mba.verify(True)
+                except RuntimeError as exc:
+                    range_rows = ()
+                    if "50870" in str(exc):
+                        range_rows = tuple(
+                            (
+                                (
+                                    f"blk{serial}@0x"
+                                    f"{int(self.mba.map_fict_ea(int(block.start))):X}"
+                                ),
+                                hex(int(block.start)),
+                                hex(int(block.end)),
+                                hex(
+                                    int(
+                                        self.mba.map_fict_ea(
+                                            int(block.end),
+                                        )
+                                    )
+                                ),
+                                hex(int(block.flags)),
+                            )
+                            for serial in range(int(self.mba.qty))
+                            for block in (self.mba.get_mblock(serial),)
+                            if block is not None
+                        )
+                    raise RuntimeError(
+                        f"live MBA verification failed after {phase}: {exc}; "
+                        f"ranges={range_rows!r}"
+                    ) from exc
+
+            def _stage_semantic_fragment(self, fragment_plan):
+                projection = super()._stage_semantic_fragment(fragment_plan)
+                self._verify_phase("fragment staging")
+                return projection
+
+            def _publish_semantic_fragment_roots(
+                self,
+                fragment_plan,
+                rollback_token,
+            ) -> None:
+                super()._publish_semantic_fragment_roots(
+                    fragment_plan,
+                    rollback_token,
+                )
+                self._verify_phase("root publication")
+
+            def _rebuild_semantic_fragment_chains(self, fragment_plan) -> None:
+                super()._rebuild_semantic_fragment_chains(fragment_plan)
+                self._verify_phase("chain rebuild")
+
+        backend = HexRaysMutationBackend(
+            mutation_gateway=gateway,
+            fragment_backend_factory=lambda live, transaction: (
+                VerifyingFragmentModifier(
+                    live,
+                    mutation_gateway=transaction,
+                )
+            ),
+        )
 
         post_graph = backend.publish_fragment(plan, mba)
         mba.verify(True)
@@ -643,9 +790,7 @@ def test_real_a560_terminal_fragment_reaches_c5_with_db_evidence(
         lifecycle_operations = {
             row[0]
             for row in connection.execute(
-                "SELECT json_extract(payload_json, '$.operation') "
-                "FROM lifecycle_events "
-                "WHERE event_kind='evidence_generation'"
+                "SELECT operation FROM evidence_generation_events"
             ).fetchall()
             if row[0] is not None
         }
