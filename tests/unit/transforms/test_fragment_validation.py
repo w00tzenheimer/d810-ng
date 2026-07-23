@@ -599,6 +599,22 @@ def test_intervening_flag_clobber_is_rejected() -> None:
     )
 
 
+def test_missing_flag_producer_write_is_rejected() -> None:
+    projection = _projection()
+    projection = _replace_blocks(
+        projection,
+        replace(
+            projection.block("replacement"),
+            flag_write_eas=frozenset(),
+        ),
+    )
+
+    assert FragmentValidationPostcondition.FLAG_CORRIDOR_INTEGRITY in _failed_codes(
+        _plan(),
+        projection,
+    )
+
+
 def test_flag_consumer_before_producer_is_rejected() -> None:
     projection = _projection()
     projection = _replace_blocks(

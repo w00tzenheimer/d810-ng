@@ -13,6 +13,10 @@ from d810.hexrays.ir.exact_data_flow import (
     find_uses_reached_by_reg_definition,
     find_uses_reached_by_stkvar_definition,
 )
+from d810.hexrays.ir.flag_queries import (
+    ConditionCodeQueryUnavailable,
+    condition_code_write_eas,
+)
 from d810.hexrays.ir.logical_block_proxy import (
     LogicalBlockProxy,
     LogicalBlockVersion,
@@ -327,6 +331,71 @@ def _instruction_eas(block) -> tuple[int, ...]:
     return tuple(result)
 
 
+def _instruction_ea_observations(block) -> tuple[int, ...]:
+    result: list[int] = []
+    instruction = block.head
+    while instruction is not None:
+        ea = int(getattr(instruction, "ea", -1) or -1)
+        if 0 <= ea < _BADADDR:
+            result.append(ea)
+        if instruction is block.tail:
+            break
+        instruction = instruction.next
+    return tuple(result)
+
+
+def _require_unambiguous_flag_corridor_sites(
+    plan: FragmentPlan,
+    live_by_id: dict[str, object],
+) -> None:
+    for corridor in plan.flag_corridors:
+        for role, site in (
+            ("producer", corridor.producer),
+            ("consumer", corridor.consumer),
+        ):
+            block = live_by_id.get(site.block_id)
+            if block is None:
+                raise SemanticFragmentBackendRejected(
+                    f"flag-corridor {role} {site.site_id!r} has no live block"
+                )
+            matches = sum(
+                ea == int(site.instruction_ea)
+                for ea in _instruction_ea_observations(block)
+            )
+            if matches != 1:
+                raise SemanticFragmentBackendRejected(
+                    f"flag-corridor {role} {site.site_id!r} is ambiguous at "
+                    f"{site.block_id}@0x{int(site.instruction_ea):X}: "
+                    f"observed {matches} top-level instructions"
+                )
+
+
+def _project_flag_writes(
+    plan: FragmentPlan,
+    live_by_id: dict[str, object],
+) -> dict[str, frozenset[int]]:
+    result = {block_id: frozenset() for block_id in live_by_id}
+    if not plan.flag_corridors:
+        return result
+    _require_unambiguous_flag_corridor_sites(plan, live_by_id)
+    for block_id, block in live_by_id.items():
+        try:
+            observations = condition_code_write_eas(block)
+        except ConditionCodeQueryUnavailable as exc:
+            raise SemanticFragmentBackendRejected(
+                f"condition-code writes cannot be observed for {block_id}"
+            ) from exc
+        seen: set[int] = set()
+        for ea in observations:
+            if ea in seen:
+                raise SemanticFragmentBackendRejected(
+                    f"condition-code writer is ambiguous at {block_id}@0x{ea:X}"
+                )
+            seen.add(ea)
+        result[block_id] = frozenset(observations)
+    return result
+
+
 def _unowned_endpoint(modifier: DeferredGraphModifier, serial: int) -> str:
     block = modifier.mba.get_mblock(int(serial))
     if block is not None:
@@ -612,6 +681,7 @@ def _project_fragment(
         kinds[block_id] = _block_kind(int(block.type))
         physical_positions[block_id] = int(block.serial)
         instruction_eas[block_id] = _instruction_eas(block)
+    flag_write_eas = _project_flag_writes(plan, live_by_id)
 
     if simulate_root_publication:
         for root_id in plan.roots:
@@ -648,6 +718,7 @@ def _project_fragment(
                     kinds[helper_id] = BlockKind.ONE_WAY
                     physical_positions[helper_id] = insertion_position
                     instruction_eas[helper_id] = ()
+                    flag_write_eas[helper_id] = frozenset()
                     successors[helper_id] = [root_id]
                     predecessors[helper_id] = [predecessor_id]
                     predecessors[root_id].append(helper_id)
@@ -677,7 +748,7 @@ def _project_fragment(
             predecessors=tuple(predecessors[block_id]),
             physical_position=physical_positions[block_id],
             instruction_eas=instruction_eas[block_id],
-            flag_write_eas=frozenset(),
+            flag_write_eas=flag_write_eas[block_id],
         )
         for block_id in successors
     )
@@ -1098,9 +1169,9 @@ def stage_semantic_fragment(
         raise TypeError("semantic fragment backend requires a FragmentPlan")
     if modifier._semantic_fragment_state is not None:
         raise RuntimeError("a semantic fragment is already staged")
-    if plan.flag_corridors or plan.value_range_assumptions:
+    if plan.value_range_assumptions:
         raise SemanticFragmentBackendRejected(
-            "live flag-corridor and range projection is not implemented"
+            "live portable value-range projection is not implemented"
         )
 
     state = SemanticFragmentBackendState(
