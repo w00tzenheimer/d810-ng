@@ -591,13 +591,20 @@ def _validate_graph(
     malformed: list[str] = []
     for block in projection.blocks:
         successor_count = len(block.successors)
-        valid = {
-            BlockKind.ZERO_WAY: successor_count == 0,
-            BlockKind.STOP: successor_count == 0,
-            BlockKind.ONE_WAY: successor_count == 1,
-            BlockKind.TWO_WAY: successor_count == 2,
-            BlockKind.N_WAY: successor_count >= 2,
-        }[block.kind]
+        expected_successor_count = {
+            BlockKind.NONE: 0,
+            BlockKind.STOP: 0,
+            BlockKind.EXTERNAL: 0,
+            BlockKind.ZERO_WAY: 0,
+            BlockKind.ONE_WAY: 1,
+            BlockKind.TWO_WAY: 2,
+        }.get(block.kind)
+        valid = (
+            successor_count >= 2
+            if block.kind is BlockKind.N_WAY
+            else expected_successor_count is not None
+            and successor_count == expected_successor_count
+        )
         valid = valid and len(set(block.successors)) == successor_count
         valid = valid and len(set(block.predecessors)) == len(block.predecessors)
         if not valid:
