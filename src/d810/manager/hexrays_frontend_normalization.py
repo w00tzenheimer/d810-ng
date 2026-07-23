@@ -16,6 +16,13 @@ logger = getLogger("D810.manager.frontend_normalization")
 _HANDLER_NAME = "manager.frontend_normalization"
 
 
+def _prepare_live_graph(mba: object) -> None:
+    build_graph = getattr(mba, "build_graph", None)
+    if not callable(build_graph):
+        raise TypeError("frontend normalization requires a live MBA graph")
+    build_graph()
+
+
 def _lift_live_function(mba: object) -> object:
     from d810.backends.hexrays.lifter import lift_function
 
@@ -72,6 +79,7 @@ def run_live_frontend_normalization(
     if int(session.native_preanalysis_depth) > 0:
         return
 
+    _prepare_live_graph(mba)
     source = _lift_live_function(mba)
     backend = _new_live_backend(
         mba=mba,
