@@ -88,6 +88,22 @@ def _find_function_with_call() -> tuple[ida_funcs.func_t, int]:
     raise AssertionError("fixture database has no native call instruction")
 
 
+def _find_function_with_interior_call() -> tuple[ida_funcs.func_t, int]:
+    for function_ea in idautils.Functions():
+        function = ida_funcs.get_func(int(function_ea))
+        if function is None:
+            continue
+        for flow_block in ida_gdl.FlowChart(function):
+            start_ea = int(flow_block.start_ea)
+            end_ea = int(flow_block.end_ea)
+            tail_ea = int(ida_bytes.prev_head(end_ea, start_ea))
+            for ea in idautils.Heads(start_ea, end_ea):
+                instruction = _decoded_instruction(int(ea))
+                if int(ea) != tail_ea and ida_idp.is_call_insn(instruction):
+                    return function, int(ea)
+    raise AssertionError("fixture database has no interior native call instruction")
+
+
 def _find_non_code_ea() -> int:
     for segment_ea in idautils.Segments():
         segment = ida_segment.getseg(int(segment_ea))
@@ -212,6 +228,37 @@ class TestNativeSemanticCfgAdapter:
             edge.kind is not NativeEdgeKind.CALL
             for block in result.cfg.blocks_by_ea.values()
             for edge in block.outgoing_edges
+        )
+
+    def test_native_redecode_splits_interior_call_at_its_continuation(
+        self,
+        ida_database,
+    ) -> None:
+        function, call_ea = _find_function_with_interior_call()
+        instruction = _decoded_instruction(call_ea)
+        continuation_ea = call_ea + int(instruction.size)
+
+        result = build_native_semantic_cfg(
+            function,
+            live_native_eas=(),
+            seed_eas=(int(function.start_ea),),
+            resolver_target_eas_by_source={},
+        )
+
+        owners = tuple(
+            block
+            for block in result.cfg.blocks_by_ea.values()
+            if block.start_ea <= call_ea < block.end_ea
+        )
+        assert len(owners) == 1
+        call_block = owners[0]
+        assert call_block.end_ea == continuation_ea
+        assert call_block.outgoing_edges == (
+            NativeEdge(
+                NativeEdgeKind.CALL_FALLTHROUGH,
+                continuation_ea,
+                source_instruction_ea=call_ea,
+            ),
         )
 
     def test_lifts_resolver_proven_indirect_boundary(self, ida_database) -> None:
@@ -408,6 +455,11 @@ class TestNativeSemanticCfgAdapter:
             "_flowchart_facts",
             lambda *_args, **_kwargs: facts,
         )
+        monkeypatch.setattr(
+            native_backend,
+            "_decode_missing_flow_block",
+            lambda *_args, start_ea, **_kwargs: facts[int(start_ea)],
+        )
 
         result = build_native_semantic_cfg(
             SimpleNamespace(start_ea=source_ea),
@@ -463,7 +515,11 @@ class TestNativeSemanticCfgAdapter:
         monkeypatch.setattr(
             native_backend,
             "_decode_missing_flow_block",
-            lambda *_args, start_ea, **_kwargs: decoded[int(start_ea)],
+            lambda *_args, start_ea, **_kwargs: (
+                decoded[int(start_ea)]
+                if int(start_ea) in decoded
+                else facts[int(start_ea)]
+            ),
         )
 
         result = build_native_semantic_cfg(

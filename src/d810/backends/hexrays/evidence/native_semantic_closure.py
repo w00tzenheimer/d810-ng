@@ -18,7 +18,6 @@ from d810.analyses.control_flow.native_cfg_adapter import (
     can_decode_proven_native_successor,
     has_native_semantic_boundary,
     is_native_direct_control_operand,
-    needs_native_flow_decode,
     select_visited_native_flow_facts,
     traversable_native_successor_eas,
 )
@@ -189,6 +188,31 @@ def _decode_missing_flow_block(
                     normalized_resolver_cut_eas,
                     resolver_target_eas_by_source,
                 ),
+            )
+
+        if is_call:
+            has_continuation = bool(
+                ida_funcs.func_contains(function, next_ea)
+                and ida_bytes.is_flow(ida_bytes.get_full_flags(next_ea))
+            )
+            if not has_continuation:
+                return NativeFlowBlockFact(
+                    start_ea=start_ea,
+                    end_ea=next_ea,
+                    terminal_instruction_ea=current_ea,
+                    force_stop=True,
+                )
+            successors = (
+                (() if direct_target_ea is None else (direct_target_ea,))
+                + (next_ea,)
+            )
+            return NativeFlowBlockFact(
+                start_ea=start_ea,
+                end_ea=next_ea,
+                successor_eas=successors,
+                direct_branch_target_ea=direct_target_ea,
+                is_call_tail=True,
+                terminal_instruction_ea=current_ea,
             )
 
         if has_native_semantic_boundary(
@@ -411,26 +435,22 @@ def build_native_semantic_cfg(
         visited.add(entry_ea)
         if entry_ea in live_eas and entry_ea not in seeds:
             continue
-        fact = facts_by_start_ea.get(entry_ea)
-        crosses_semantic_entry = fact is not None and any(
-            int(fact.start_ea) < semantic_entry_ea < int(fact.end_ea)
-            for semantic_entry_ea in semantic_entry_eas
+        # FlowChart rows provide a conservative reachability inventory, not
+        # portable block topology.  Re-decode every visited entry so semantic
+        # boundaries such as calls are represented consistently even when IDA
+        # leaves them inside a larger physical basic block.
+        fact = _decode_missing_flow_block(
+            function,
+            start_ea=entry_ea,
+            resolver_cut_eas=normalized_resolver_cut_eas,
+            resolver_target_eas_by_source=normalized_target_eas_by_source,
+            resolver_proven_unmarked=entry_ea in proven_unmarked_entries,
+            semantic_entry_eas=semantic_entry_eas,
+            abstentions=abstentions,
         )
-        if needs_native_flow_decode(fact) or crosses_semantic_entry:
-            fact = _decode_missing_flow_block(
-                function,
-                start_ea=entry_ea,
-                resolver_cut_eas=normalized_resolver_cut_eas,
-                resolver_target_eas_by_source=normalized_target_eas_by_source,
-                resolver_proven_unmarked=entry_ea in proven_unmarked_entries,
-                semantic_entry_eas=semantic_entry_eas,
-                abstentions=abstentions,
-            )
-            if fact is None:
-                continue
-            facts_by_start_ea[entry_ea] = fact
         if fact is None:
             continue
+        facts_by_start_ea[entry_ea] = fact
         if fact.force_stop or fact.is_indirect_jump_tail:
             proven_cut_targets = tuple(
                 int(edge.target_ea)

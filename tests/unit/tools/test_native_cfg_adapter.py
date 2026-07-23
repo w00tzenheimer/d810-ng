@@ -242,8 +242,8 @@ def test_semantic_boundary_ignores_partition_only_block_end() -> None:
     )
 
 
-def test_semantic_boundary_keeps_direct_calls_on_the_fallthrough_corridor() -> None:
-    assert not has_native_semantic_boundary(
+def test_semantic_boundary_splits_calls_into_explicit_fallthrough_blocks() -> None:
+    assert has_native_semantic_boundary(
         resolver_cut=False,
         is_return=False,
         is_indirect_jump=False,

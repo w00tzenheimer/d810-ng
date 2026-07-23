@@ -97,8 +97,9 @@ def has_native_semantic_boundary(
         resolver_cut
         or is_return
         or is_indirect_jump
+        or is_call
         or has_stop_feature
-        or (direct_branch_target_ea is not None and not is_call)
+        or direct_branch_target_ea is not None
     )
 
 
