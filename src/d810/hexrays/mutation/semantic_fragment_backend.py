@@ -20,6 +20,7 @@ from d810.hexrays.ir.exact_value_ranges import (
 from d810.hexrays.ir.flag_queries import (
     ConditionCodeQueryUnavailable,
     condition_code_write_eas,
+    instruction_writes_condition_codes,
 )
 from d810.hexrays.opcode_lift import value_op_from_opcode
 from d810.hexrays.ir.logical_block_proxy import (
@@ -1181,7 +1182,7 @@ def _materialize_terminal_effects(
         )
 
 
-def _exact_site_instruction(
+def _site_instruction_matches(
     live_by_id: dict[str, object],
     site,
     *,
@@ -1200,6 +1201,20 @@ def _exact_site_instruction(
         if instruction is block.tail:
             break
         instruction = instruction.next
+    return block, tuple(matches)
+
+
+def _exact_site_instruction(
+    live_by_id: dict[str, object],
+    site,
+    *,
+    context: str,
+):
+    block, matches = _site_instruction_matches(
+        live_by_id,
+        site,
+        context=context,
+    )
     if len(matches) != 1:
         raise SemanticFragmentBackendRejected(
             f"{context} {site.site_id!r} is ambiguous at "
@@ -1209,20 +1224,48 @@ def _exact_site_instruction(
     return block, matches[0]
 
 
-def _require_unambiguous_flag_corridor_sites(
+def _require_logical_flag_producer(
+    live_by_id: dict[str, object],
+    site,
+) -> None:
+    _block, matches = _site_instruction_matches(
+        live_by_id,
+        site,
+        context="flag-corridor producer",
+    )
+    if not matches:
+        raise SemanticFragmentBackendRejected(
+            f"flag-corridor producer {site.site_id!r} is missing at "
+            f"{site.block_id}@0x{int(site.instruction_ea):X}"
+        )
+    try:
+        writer_count = sum(
+            instruction_writes_condition_codes(instruction)
+            for instruction in matches
+        )
+    except ConditionCodeQueryUnavailable as exc:
+        raise SemanticFragmentBackendRejected(
+            f"flag-corridor producer {site.site_id!r} cannot be classified at "
+            f"{site.block_id}@0x{int(site.instruction_ea):X}"
+        ) from exc
+    if writer_count == 0:
+        raise SemanticFragmentBackendRejected(
+            f"flag-corridor producer {site.site_id!r} is not a condition-code "
+            f"writer at {site.block_id}@0x{int(site.instruction_ea):X}"
+        )
+
+
+def _require_flag_corridor_sites(
     plan: FragmentPlan,
     live_by_id: dict[str, object],
 ) -> None:
     for corridor in plan.flag_corridors:
-        for role, site in (
-            ("producer", corridor.producer),
-            ("consumer", corridor.consumer),
-        ):
-            _exact_site_instruction(
-                live_by_id,
-                site,
-                context=f"flag-corridor {role}",
-            )
+        _require_logical_flag_producer(live_by_id, corridor.producer)
+        _exact_site_instruction(
+            live_by_id,
+            corridor.consumer,
+            context="flag-corridor consumer",
+        )
 
 
 def _project_flag_writes(
@@ -1232,7 +1275,7 @@ def _project_flag_writes(
     result = {block_id: frozenset() for block_id in live_by_id}
     if not plan.flag_corridors:
         return result
-    _require_unambiguous_flag_corridor_sites(plan, live_by_id)
+    _require_flag_corridor_sites(plan, live_by_id)
     for block_id, block in live_by_id.items():
         try:
             observations = condition_code_write_eas(block)
@@ -1240,13 +1283,6 @@ def _project_flag_writes(
             raise SemanticFragmentBackendRejected(
                 f"condition-code writes cannot be observed for {block_id}"
             ) from exc
-        seen: set[int] = set()
-        for ea in observations:
-            if ea in seen:
-                raise SemanticFragmentBackendRejected(
-                    f"condition-code writer is ambiguous at {block_id}@0x{ea:X}"
-                )
-            seen.add(ea)
         result[block_id] = frozenset(observations)
     return result
 
