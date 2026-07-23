@@ -49,6 +49,7 @@ from d810.transforms.fragment_plan import (
     FragmentReturnSourceKind,
     FragmentTerminalReturn,
     FragmentTerminalRoute,
+    FragmentWorkItemScope,
 )
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
@@ -771,6 +772,11 @@ def test_gateway_advances_only_normalization_for_normalization_plan() -> None:
     plan = replace(
         _plan(),
         publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id="gateway-fragment:complete",
+            selected_obligation_ids=("route",),
+            remaining_obligation_ids=(),
+        ),
     )
     lifecycle = NativePreanalysisSessionState(evidence_generation=1)
     gateway, _committed, _aborted = _gateway(
@@ -813,6 +819,11 @@ def test_postpublication_failure_restores_prior_normalization_authority() -> Non
     plan = replace(
         _plan(),
         publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id="gateway-fragment:complete",
+            selected_obligation_ids=("route",),
+            remaining_obligation_ids=(),
+        ),
     )
     lifecycle = NativePreanalysisSessionState(
         evidence_generation=2,

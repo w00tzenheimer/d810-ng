@@ -53,6 +53,46 @@ class FragmentPublicationPurpose(str, Enum):
     CANONICAL_SEMANTIC_LOWERING = "canonical_semantic_lowering"
 
 
+@dataclass(frozen=True, slots=True)
+class FragmentWorkItemScope:
+    """Generation-local obligations owned by one fragment transaction."""
+
+    work_item_id: str
+    selected_obligation_ids: tuple[str, ...]
+    remaining_obligation_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        work_item_id = _require_identifier(
+            self.work_item_id,
+            "fragment work item id",
+        )
+        selected = tuple(
+            _require_identifier(value, "selected fragment obligation")
+            for value in self.selected_obligation_ids
+        )
+        remaining = tuple(
+            _require_identifier(value, "remaining fragment obligation")
+            for value in self.remaining_obligation_ids
+        )
+        if not selected:
+            raise FragmentPlanRejected(
+                "fragment work item requires selected obligations"
+            )
+        if len(set(selected)) != len(selected) or len(set(remaining)) != len(
+            remaining
+        ):
+            raise FragmentPlanRejected(
+                "fragment work item contains duplicate obligations"
+            )
+        if set(selected) & set(remaining):
+            raise FragmentPlanRejected(
+                "selected and remaining fragment obligations must be disjoint"
+            )
+        object.__setattr__(self, "work_item_id", work_item_id)
+        object.__setattr__(self, "selected_obligation_ids", selected)
+        object.__setattr__(self, "remaining_obligation_ids", remaining)
+
+
 class FragmentDataFlowRole(str, Enum):
     """Observable semantic responsibility protected by a data-flow proof."""
 
@@ -808,6 +848,7 @@ class FragmentPlan:
     owned_originals: tuple[str, ...]
     prohibited_dispatcher_blocks: tuple[str, ...]
     operations: tuple[FragmentOperation, ...]
+    work_item_scope: FragmentWorkItemScope | None = None
     return_carriers: tuple[FragmentReturnCarrier, ...] = ()
     terminal_returns: tuple[FragmentTerminalReturn, ...] = ()
     terminal_routes: tuple[FragmentTerminalRoute, ...] = ()
@@ -828,6 +869,19 @@ class FragmentPlan:
             )
         if not isinstance(self.native_key, NativePreanalysisKey):
             raise TypeError("fragment plan requires a native preanalysis key")
+        work_item_scope = self.work_item_scope
+        if (
+            self.publication_purpose
+            is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+        ):
+            if not isinstance(work_item_scope, FragmentWorkItemScope):
+                raise FragmentPlanRejected(
+                    "frontend-normalization plan requires one work-item scope"
+                )
+        elif work_item_scope is not None:
+            raise FragmentPlanRejected(
+                "canonical semantic plan cannot claim frontend work-item scope"
+            )
 
         blocks = tuple(self.blocks)
         if not blocks or any(not isinstance(block, FragmentBlock) for block in blocks):
@@ -1281,6 +1335,7 @@ class FragmentPlan:
             prohibited_dispatcher_blocks,
         )
         object.__setattr__(self, "operations", operations)
+        object.__setattr__(self, "work_item_scope", work_item_scope)
         object.__setattr__(self, "return_carriers", return_carriers)
         object.__setattr__(self, "terminal_returns", terminal_returns)
         object.__setattr__(self, "terminal_routes", terminal_routes)
@@ -1431,6 +1486,7 @@ __all__ = [
     "FragmentTerminalReturn",
     "FragmentTerminalRoute",
     "FragmentValueSite",
+    "FragmentWorkItemScope",
     "fragment_plan_to_dict",
     "serialize_fragment_plan",
 ]
