@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 import uuid
 
+from d810.analyses.control_flow.native_preanalysis_session import (
+    FragmentPublicationLifecycleAuthority,
+)
 from d810.core.events import EventEmitter
 from d810.core.logging import getLogger
 from d810.core.native_preanalysis_key import NativePreanalysisKey
@@ -216,6 +219,7 @@ class MbaMutationGateway:
     maturity: int = 0
     identity_index: MbaBlockIdentityIndex | None = None
     event_emitter: EventEmitter | None = None
+    lifecycle_authority: FragmentPublicationLifecycleAuthority | None = None
     _receipts: list[MbaMutationReceipt] = field(default_factory=list, repr=False)
     _observation_failures: list[MbaMutationObservationFailure] = field(
         default_factory=list,
@@ -263,6 +267,19 @@ class MbaMutationGateway:
             raise ValueError("mutation gateway and identity index generations differ")
         elif self.identity_index.native_key != self.native_key:
             raise ValueError("mutation gateway and identity index native keys differ")
+        authority = self.lifecycle_authority
+        if authority is not None:
+            if not isinstance(authority, FragmentPublicationLifecycleAuthority):
+                raise TypeError(
+                    "mutation gateway lifecycle authority has an invalid port"
+                )
+            if (
+                int(authority.evidence_generation)
+                != int(self.identity_index.evidence_generation)
+            ):
+                raise ValueError(
+                    "mutation gateway and lifecycle evidence generations differ"
+                )
 
     @property
     def receipts(self) -> tuple[MbaMutationReceipt, ...]:
@@ -302,6 +319,7 @@ class MbaMutationGateway:
             maturity=self.maturity,
             identity_index=self.identity_index,
             event_emitter=self.event_emitter,
+            lifecycle_authority=self.lifecycle_authority,
         )
 
     def begin_batch(

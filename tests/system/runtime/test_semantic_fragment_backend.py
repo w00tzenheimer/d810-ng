@@ -48,7 +48,16 @@ from d810.transforms.fragment_validation import (  # noqa: E402
     ProjectedRangeFact,
     validate_fragment_projection,
 )
-from tests.system.runtime.mutation_gateway import make_mutation_gateway  # noqa: E402
+from tests.system.runtime.mutation_gateway import (  # noqa: E402
+    make_fragment_publication_gateway,
+)
+
+
+def _fragment_gateway(mba):
+    return make_fragment_publication_gateway(
+        mba,
+        publication_purpose=FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING,
+    )
 
 
 def _get_default_binary() -> str:
@@ -715,7 +724,7 @@ def test_backend_stages_hidden_replacement_and_projects_root_publication() -> No
     _connect(entry, original)
     _connect(original, dispatcher)
     mba = _Mba((entry, original, target, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
     original_handle = gateway.identity_index.handle_for_serial(1)
@@ -784,7 +793,7 @@ def test_backend_projects_exact_data_flow_without_hiding_extra_uses(
     _connect(entry, original)
     _connect(original, dispatcher)
     mba = _Mba((entry, original, target, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     plan = _with_data_flow(
         _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
@@ -886,7 +895,7 @@ def test_backend_rejects_duplicate_physical_data_flow_anchors(
     _connect(entry, original)
     _connect(original, dispatcher)
     mba = _Mba((entry, original, target, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     plan = _with_data_flow(
         _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
@@ -932,7 +941,7 @@ def test_backend_rejects_unsupported_data_flow_storage_namespace() -> None:
     _connect(entry, original)
     _connect(original, dispatcher)
     mba = _Mba((entry, original, target, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     plan = _with_data_flow(
         _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
@@ -972,7 +981,7 @@ def _flag_corridor_runtime_case(*, intervening_clobber: bool):
     else:
         _set_block_instructions(target, consumer)
     mba = _Mba((entry, original, target, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     plan = _with_flag_corridor(
         _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
@@ -1151,7 +1160,7 @@ def _range_runtime_case(
     _set_block_instructions(target, _Instruction(ida_hexrays.m_nop, 0x401020))
     target.valrange_bounds.extend(bounds)
     mba = _Mba((entry, original, target, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     plan = _with_value_range(
         _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
@@ -1441,7 +1450,7 @@ def test_gateway_revalidates_data_flow_after_root_publication(
     _connect(entry, original)
     _connect(original, dispatcher)
     mba = _Mba((entry, original, target, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     plan = _with_data_flow(
         _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
@@ -1520,7 +1529,7 @@ def test_gateway_publishes_direct_fragment_root_from_entry() -> None:
     _connect(entry, original)
     _connect(original, dispatcher)
     mba = _Mba((entry, original, target, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
     original_handle = gateway.identity_index.handle_for_serial(1)
@@ -1547,6 +1556,12 @@ def test_gateway_publishes_direct_fragment_root_from_entry() -> None:
     assert receipt.postpublication_validation.passed
     assert receipt.operation_count == 3
     assert receipt.planned_operation_count == 3
+    lifecycle = gateway.lifecycle_authority
+    assert lifecycle is not None
+    assert lifecycle.semantic_fragment_staged_generation == 1
+    assert lifecycle.semantic_fragment_validated_generation == 1
+    assert lifecycle.semantic_fragment_published_postvalidated_generation == 1
+    assert lifecycle.receipt_committed_generation == 1
     assert gateway.active is False
     assert modifier._semantic_fragment_state is None
 
@@ -1560,7 +1575,7 @@ def test_direct_root_partial_write_restores_previous_authority(monkeypatch) -> N
     _connect(entry, original)
     _connect(original, dispatcher)
     mba = _Mba((entry, original, target, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
     original_handle = gateway.identity_index.handle_for_serial(1)
@@ -1611,7 +1626,7 @@ def test_gateway_publishes_conditional_taken_fragment_root(
     _connect_conditional(predecessor, taken=original, fallthrough=sibling)
     _connect(original, dispatcher)
     mba = _Mba((entry, predecessor, sibling, original, target, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     root_write_failed = False
 
@@ -1698,7 +1713,7 @@ def test_gateway_publishes_conditional_fallthrough_fragment_root(
     _connect_conditional(predecessor, taken=sibling, fallthrough=original)
     _connect(original, dispatcher)
     mba = _Mba((entry, predecessor, original, sibling, target, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
     mark = modifier._semantic_edge_mark
@@ -1788,7 +1803,7 @@ def test_backend_stages_plan_owned_empty_synthetic_block(monkeypatch) -> None:
     _connect(entry, original)
     _connect(original, dispatcher)
     mba = _Mba((entry, original, target, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
     monkeypatch.setattr(
@@ -1866,7 +1881,7 @@ def test_backend_stages_complete_conditional_with_owned_fallthrough_helper(
     original.tail = _Instruction(ida_hexrays.m_jz, 0x401010)
     original.head = original.tail
     mba = _Mba((entry, original, taken, fallthrough, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
     plan = _conditional_plan(
@@ -1926,7 +1941,7 @@ def test_conditional_staging_failure_discards_helper_and_replacement(
     original.tail = _Instruction(ida_hexrays.m_jz, 0x401010)
     original.head = original.tail
     mba = _Mba((entry, original, taken, fallthrough, dispatcher, stop))
-    gateway = make_mutation_gateway(mba)
+    gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
     plan = _conditional_plan(

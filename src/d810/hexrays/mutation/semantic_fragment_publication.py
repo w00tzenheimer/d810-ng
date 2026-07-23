@@ -8,7 +8,13 @@ portable validation phases succeed.
 
 from __future__ import annotations
 
-from d810.transforms.fragment_plan import FragmentPlan
+from d810.analyses.control_flow.native_preanalysis_session import (
+    FragmentPublicationLifecycleAuthority,
+)
+from d810.transforms.fragment_plan import (
+    FragmentPlan,
+    FragmentPublicationPurpose,
+)
 from d810.transforms.fragment_validation import (
     FragmentValidationResult,
     ProjectedFragment,
@@ -68,6 +74,60 @@ def _require_backend_port(backend: object) -> None:
         )
 
 
+def _require_lifecycle_authority(
+    gateway: object,
+) -> FragmentPublicationLifecycleAuthority:
+    authority = getattr(gateway, "lifecycle_authority", None)
+    if not isinstance(authority, FragmentPublicationLifecycleAuthority):
+        raise TypeError(
+            "fragment publication requires a lifecycle authority"
+        )
+    return authority
+
+
+def _mark_lifecycle_staged(
+    authority: FragmentPublicationLifecycleAuthority,
+    purpose: FragmentPublicationPurpose,
+) -> None:
+    if purpose is FragmentPublicationPurpose.FRONTEND_NORMALIZATION:
+        authority.mark_normalization_staged()
+    else:
+        authority.mark_semantic_fragment_staged()
+
+
+def _mark_lifecycle_validated(
+    authority: FragmentPublicationLifecycleAuthority,
+    purpose: FragmentPublicationPurpose,
+) -> None:
+    if purpose is FragmentPublicationPurpose.FRONTEND_NORMALIZATION:
+        authority.mark_normalization_validated()
+    else:
+        authority.mark_semantic_fragment_validated()
+
+
+def _abort_lifecycle(
+    authority: FragmentPublicationLifecycleAuthority,
+    purpose: FragmentPublicationPurpose,
+    *,
+    reason: str,
+) -> None:
+    if purpose is FragmentPublicationPurpose.FRONTEND_NORMALIZATION:
+        authority.abort_normalization(reason=reason)
+    else:
+        authority.abort_semantic_fragment(reason=reason)
+
+
+def _commit_lifecycle(
+    authority: FragmentPublicationLifecycleAuthority,
+    purpose: FragmentPublicationPurpose,
+) -> None:
+    if purpose is FragmentPublicationPurpose.FRONTEND_NORMALIZATION:
+        authority.mark_normalization_published_and_postvalidated()
+        return
+    authority.mark_semantic_fragment_published_and_postvalidated()
+    authority.mark_receipt_committed()
+
+
 def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPlan):
     """Publish one plan through a rollback-capable two-phase transaction."""
     if not isinstance(plan, FragmentPlan):
@@ -77,12 +137,14 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             "semantic fragment publication requires an independent batch"
         )
     _require_backend_port(backend)
+    lifecycle_authority = _require_lifecycle_authority(gateway)
 
     root_inventory = backend._plan_semantic_fragment_root_publication_inventory(plan)
     if not isinstance(root_inventory, SemanticFragmentRootInventory):
         raise TypeError("semantic-fragment backend returned an invalid root inventory")
     gateway._begin_semantic_fragment_batch(backend, plan, root_inventory)
     stage_attempted = False
+    lifecycle_staged = False
     root_attempted = False
     rollback_token = None
     receipt = None
@@ -91,12 +153,21 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
         projection = backend._stage_semantic_fragment(plan)
         if not isinstance(projection, ProjectedFragment):
             raise TypeError("semantic-fragment backend returned an invalid projection")
+        _mark_lifecycle_staged(
+            lifecycle_authority,
+            plan.publication_purpose,
+        )
+        lifecycle_staged = True
         prepublication = validate_fragment_projection(plan, projection)
         if not prepublication.passed:
             raise SemanticFragmentPublicationRejected(
                 "prepublication",
                 prepublication,
             )
+        _mark_lifecycle_validated(
+            lifecycle_authority,
+            plan.publication_purpose,
+        )
 
         rollback_token = backend._prepare_semantic_fragment_root_publication(
             plan,
@@ -153,12 +224,26 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
         except Exception as exc:
             if recovery_error is None:
                 recovery_error = exc
+        if lifecycle_staged:
+            try:
+                _abort_lifecycle(
+                    lifecycle_authority,
+                    plan.publication_purpose,
+                    reason=reason,
+                )
+            except Exception as exc:
+                if recovery_error is None:
+                    recovery_error = exc
         if recovery_error is not None:
             raise SemanticFragmentRollbackFailed(
                 original_error,
                 recovery_error,
             ) from recovery_error
         raise
+    _commit_lifecycle(
+        lifecycle_authority,
+        plan.publication_purpose,
+    )
     backend._complete_semantic_fragment_publication(plan)
     return receipt
 
