@@ -262,6 +262,39 @@ def _live_block_at_native_ea(
     return matches[0] if len(matches) == 1 else None
 
 
+def _entry_root_corridor_serials(
+    graph: FlowGraph,
+    root_serials: tuple[int, ...],
+) -> set[int]:
+    """Return every live block on an entry-to-publication-root path."""
+    entry_serial = int(graph.entry_serial)
+    forward_reachable = {entry_serial}
+    pending = [entry_serial]
+    while pending:
+        serial = pending.pop()
+        block = graph.blocks.get(serial)
+        if block is None:
+            continue
+        for successor in block.succs:
+            successor = int(successor)
+            if successor in forward_reachable:
+                continue
+            forward_reachable.add(successor)
+            pending.append(successor)
+
+    root_ancestors = {int(serial) for serial in root_serials}
+    pending = list(root_ancestors)
+    while pending:
+        serial = pending.pop()
+        for predecessor in graph.predecessors(serial):
+            predecessor = int(predecessor)
+            if predecessor in root_ancestors:
+                continue
+            root_ancestors.add(predecessor)
+            pending.append(predecessor)
+    return forward_reachable & root_ancestors
+
+
 def plan_frontend_computed_branch_normalization(
     graph: FlowGraph,
     evidence: FrontendNormalizationEvidence,
@@ -301,6 +334,12 @@ def plan_frontend_computed_branch_normalization(
         )
     )
     if not root_source_serials:
+        return None
+    entry_root_corridor_serials = _entry_root_corridor_serials(
+        graph,
+        root_source_serials,
+    )
+    if not set(root_source_serials) <= entry_root_corridor_serials:
         return None
 
     body_id = f"native-body:{evidence.atomic_group_id}"
@@ -349,8 +388,7 @@ def plan_frontend_computed_branch_normalization(
             if target is not None
         )
         relevant_serials.update(int(block.serial) for block in binding.corridor)
-    for root_serial in root_source_serials:
-        relevant_serials.update(graph.predecessors(root_serial))
+    relevant_serials.update(entry_root_corridor_serials)
     for native_block in imported_native_blocks.values():
         for edge in native_block.outgoing_edges:
             if edge.kind is NativeEdgeKind.CALL or edge.target_ea is None:
