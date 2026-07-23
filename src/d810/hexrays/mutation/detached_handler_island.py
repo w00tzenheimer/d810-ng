@@ -1011,11 +1011,6 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         ):
             if int(owner_ea) != int(self.function_ea):
                 continue
-            if int(target_ea) not in entry_anchors:
-                candidate_diagnostics.append(
-                    (int(target_ea), int(template.maturity), "target_not_entry")
-                )
-                continue
             if int(template.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED):
                 candidate_diagnostics.append(
                     (int(target_ea), int(template.maturity), "maturity_mismatch")
