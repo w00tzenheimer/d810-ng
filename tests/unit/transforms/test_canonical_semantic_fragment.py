@@ -310,7 +310,10 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
         native_key=NATIVE_KEY,
         exact_instruction_eas=(0x1100, 0x1105),
     )
-    terminal_identity = _identity(0x1200)
+    terminal_identity = StableBlockIdentity.from_instruction_eas(
+        (0x1200, 0x1208),
+        native_key=NATIVE_KEY,
+    )
     state_constant = 0x19A7218A
     graph = FlowGraph(
         blocks={
@@ -323,7 +326,13 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
                 insn_eas=(0x1100, 0x1105),
             ),
             30: _block(30, 0x1400, succs=(20, 40), preds=(20,)),
-            40: _block(40, 0x1200, succs=(), preds=(30,)),
+            40: _block(
+                40,
+                0x1200,
+                succs=(),
+                preds=(30,),
+                insn_eas=(0x1200, 0x1208),
+            ),
         },
         entry_serial=10,
         func_ea=0x1000,
@@ -339,6 +348,7 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
         terminal_identity=terminal_identity,
         state_write_ea=0x1100,
         carrier_ea=0x1105,
+        terminal_return_ea=0x1208,
         operation=ValueOpKind.MOVE,
         source=TerminalReturnCarrierSource(
             kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
@@ -403,7 +413,7 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
     )
     assert len(plan.terminal_returns) == 1
     terminal_return = plan.terminal_returns[0]
-    assert terminal_return.instruction_ea == 0x1200
+    assert terminal_return.instruction_ea == 0x1208
     assert plan.block(terminal_return.block_id).role is FragmentBlockRole.REPLACEMENT
     assert len(plan.terminal_routes) == 1
     assert plan.terminal_routes[0].operation_id == plan.operations[0].operation_id
@@ -457,6 +467,7 @@ def test_terminal_routes_share_one_owned_return_block_atomically() -> None:
             terminal_identity=terminal_identity,
             state_write_ea=source_ea,
             carrier_ea=carrier_ea,
+            terminal_return_ea=0x1200,
             operation=ValueOpKind.MOVE,
             source=TerminalReturnCarrierSource(
                 kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,

@@ -20,6 +20,7 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     _canonical_low_byte_parent,
     _native_equality_selector_is_materializable,
     _native_final_state_write_before_live_tail,
+    _native_return_epilogue_instruction_ea,
     _native_target_is_return_epilogue,
     _NativeEqualityRow,
     _PatchPlan,
@@ -480,6 +481,7 @@ def test_preopt_union_captures_terminal_carrier_into_session(
 ) -> None:
     state_constant = 0x19A7218A
     terminal_ea = 0x40C898
+    terminal_return_ea = 0x40C89F
     source_ea = 0x40C7E5
     carrier_ea = 0x40C7EA
     delivery_ea = 0x40C7F0
@@ -531,8 +533,10 @@ def test_preopt_union_captures_terminal_carrier_into_session(
     captured_evidence = []
     monkeypatch.setattr(
         computed_goto_resolver,
-        "_native_target_is_return_epilogue",
-        lambda target_ea: int(target_ea) == terminal_ea,
+        "_native_return_epilogue_instruction_ea",
+        lambda target_ea: (
+            terminal_return_ea if int(target_ea) == terminal_ea else None
+        ),
     )
     from d810.analyses.control_flow.terminal_return_carrier_evidence import (
         TerminalReturnCarrierEvidence,
@@ -550,6 +554,7 @@ def test_preopt_union_captures_terminal_carrier_into_session(
         *,
         capture_identity,
         terminal_identity,
+        terminal_return_ea,
     ):
         evidence = TerminalReturnCarrierEvidence(
             request=request,
@@ -557,6 +562,7 @@ def test_preopt_union_captures_terminal_carrier_into_session(
             terminal_identity=terminal_identity,
             state_write_ea=source_ea,
             carrier_ea=carrier_ea,
+            terminal_return_ea=terminal_return_ea,
             operation=ValueOpKind.MOVE,
             source=TerminalReturnCarrierSource(
                 kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
@@ -575,6 +581,7 @@ def test_preopt_union_captures_terminal_carrier_into_session(
                 request,
                 capture_identity,
                 terminal_identity,
+                terminal_return_ea,
             )
         )
         captured_evidence.append(evidence)
@@ -603,7 +610,13 @@ def test_preopt_union_captures_terminal_carrier_into_session(
         == 1
     )
     assert len(captured) == 1
-    function_ea, request, capture_identity, terminal_identity = captured[0]
+    (
+        function_ea,
+        request,
+        capture_identity,
+        terminal_identity,
+        captured_terminal_return_ea,
+    ) = captured[0]
     assert function_ea == 0x40A560
     assert request == TerminalReturnCarrierRequest(
         source_handler_ea=source_ea,
@@ -614,7 +627,10 @@ def test_preopt_union_captures_terminal_carrier_into_session(
     assert capture_identity.exact_instruction_eas == frozenset(
         {source_ea, carrier_ea, delivery_ea}
     )
-    assert terminal_identity.exact_instruction_eas == frozenset({terminal_ea})
+    assert terminal_identity.exact_instruction_eas == frozenset(
+        {terminal_ea, terminal_return_ea}
+    )
+    assert captured_terminal_return_ea == terminal_return_ea
     assert state.portable_evidence.terminal_return_carrier_requests == (request,)
     assert state.portable_evidence.terminal_return_carriers == tuple(
         captured_evidence
@@ -3596,8 +3612,10 @@ def test_native_return_epilogue_accepts_stack_loaded_return_value(
     ida_ua.decode_insn = decode_insn
     monkeypatch.setitem(sys.modules, "ida_ua", ida_ua)
 
+    assert _native_return_epilogue_instruction_ea(0x40F821) == 0x40F82C
     assert _native_target_is_return_epilogue(0x40F821)
     return_destination_reg[0] = 1
+    assert _native_return_epilogue_instruction_ea(0x40F821) is None
     assert not _native_target_is_return_epilogue(0x40F821)
 
 

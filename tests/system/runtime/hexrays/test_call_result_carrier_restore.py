@@ -650,6 +650,7 @@ def test_captures_terminal_return_carrier_as_portable_evidence() -> None:
         _terminal_return_carrier_snippet(),
         capture_identity=capture_identity,
         terminal_identity=terminal_identity,
+        terminal_return_ea=0x40C898,
     )
 
     assert evidence is not None
@@ -699,6 +700,7 @@ def test_terminal_carrier_capture_owns_exact_corridor_missing_from_route() -> No
             native_key=NATIVE_KEY,
             exact_instruction_eas=(terminal_ea,),
         ),
+        terminal_return_ea=terminal_ea,
     )
 
     assert evidence is not None
@@ -738,6 +740,7 @@ def test_portable_terminal_carrier_capture_abstains_on_invalid_source() -> None:
                 native_key=NATIVE_KEY,
                 exact_instruction_eas=(0x40C898,),
             ),
+            terminal_return_ea=0x40C898,
         )
         is None
     )
@@ -811,6 +814,7 @@ def test_captures_stack_terminal_carrier_through_stable_frame_identity(
             native_key=NATIVE_KEY,
             exact_instruction_eas=(terminal_ea,),
         ),
+        terminal_return_ea=terminal_ea,
     )
 
     assert evidence is not None

@@ -9433,6 +9433,7 @@ def capture_terminal_return_carrier_evidence(
     *,
     capture_identity: StableBlockIdentity,
     terminal_identity: StableBlockIdentity,
+    terminal_return_ea: int,
 ) -> TerminalReturnCarrierEvidence | None:
     """Capture one early terminal carrier without retaining live SDK objects."""
     candidate = _unique_terminal_return_carrier_candidate(request, mba)
@@ -9462,6 +9463,7 @@ def capture_terminal_return_carrier_evidence(
             terminal_identity=terminal_identity,
             state_write_ea=int(state_write.ea),
             carrier_ea=int(carrier.ea),
+            terminal_return_ea=int(terminal_return_ea),
             operation=operation,
             source=source,
             return_width=int(carrier.d.size),
