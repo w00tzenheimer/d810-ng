@@ -349,9 +349,11 @@ class _Mba:
         clone.flags = int(source.flags)
         clone.succset = _EdgeSet(source.succset)
         clone.predset = _EdgeSet(source.predset)
-        if source.tail is not None:
-            clone.tail = deepcopy(source.tail)
-            clone.head = clone.tail
+        if source.head is not None:
+            clone.head = deepcopy(source.head)
+            clone.tail = clone.head
+            while clone.tail.next is not None:
+                clone.tail = clone.tail.next
         clone.mba = self
         self.blocks[destination] = clone
         self.qty += 1
@@ -2607,30 +2609,35 @@ def test_backend_rejects_ambiguous_flag_corridor_endpoint() -> None:
     gateway.abort(reason="runtime ambiguous flag endpoint cleanup")
 
 
-def test_backend_rejects_duplicate_physical_flag_writers() -> None:
+def test_backend_groups_native_flag_producer_microinstructions() -> None:
     mba, gateway, modifier, plan, entry, original = _flag_corridor_runtime_case(
         intervening_clobber=False,
     )
-    dispatcher = mba.get_mblock(3)
-    assert dispatcher is not None
-    first_writer = _Instruction(ida_hexrays.m_mov, 0x401030)
-    first_writer.d.writes_ccflags = True
-    second_writer = _Instruction(ida_hexrays.m_mov, 0x401030)
-    second_writer.d.writes_cc = True
-    _set_block_instructions(dispatcher, first_writer, second_writer)
+    producer_microinstructions = tuple(
+        _Instruction(ida_hexrays.m_mov, 0x401010) for _index in range(5)
+    )
+    for instruction in producer_microinstructions:
+        instruction.d.writes_ccflags = True
+    assert original.tail is not None
+    original.tail.ea = 0x401014
+    original.tail.d.writes_ccflags = False
+    _set_block_instructions(
+        original,
+        *producer_microinstructions,
+        original.tail,
+    )
     root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
     gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
 
-    with pytest.raises(
-        sfb.SemanticFragmentBackendRejected,
-        match="condition-code writer is ambiguous at dispatcher@0x401030",
-    ):
-        modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan)
 
-    assert modifier._semantic_fragment_state is None
+    replacement = projection.block("replacement")
+    assert replacement.flag_write_eas == frozenset({0x401010})
+    assert validate_fragment_projection(plan, projection).passed
+    modifier._discard_staged_semantic_fragment(plan)
     assert mba.qty == 5
     assert tuple(entry.succset) == (original.serial,)
-    gateway.abort(reason="runtime duplicate flag writer cleanup")
+    gateway.abort(reason="runtime grouped flag producer cleanup")
 
 
 def test_gateway_rolls_back_postpublication_flag_clobber(monkeypatch) -> None:
