@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 from dataclasses import replace
 from types import ModuleType, SimpleNamespace
@@ -9610,36 +9611,13 @@ def test_preopt_union_internal_successor_proof_requires_one_imported_target() ->
     assert computed_goto_resolver._preopt_union_internal_successor_eas(closure) == {}
 
 
-def test_preopt_union_internal_successor_includes_direct_state_routes() -> None:
-    delivery_ea = 0x40A70E
-    target_ea = 0x40ADF2
-    identity = lambda ea: StableBlockIdentity.from_intervals(
-        (NativeEaInterval(ea, ea + 1),), native_key=NATIVE_KEY
-    )
-    route = PortableStateWriteRouteEvidence(
-        write_identity=identity(0x40A6F0),
-        delivery_identity=identity(delivery_ea),
-        source_write_ea=0x40A6F0,
-        delivery_ea=delivery_ea,
-        delivery_region_start_ea=delivery_ea,
-        delivery_region_end_ea=delivery_ea + 2,
-        corridor_instruction_eas=(0x40A6F0, delivery_ea),
-        state_var_reg=20,
-        state_constant=0x12345678,
-        target_identity=identity(target_ea),
-        target_ea=target_ea,
-        proof_kind=StateWriteRouteProofKind.STATE_ASSIGNMENT,
-        delivery_kind=StateWriteRouteDeliveryKind.DIRECT_TARGET,
-    )
-    closure = SimpleNamespace(
-        included_block_eas=(delivery_ea, target_ea),
-        proven_import_boundary_edges=(),
-    )
+def test_preopt_union_internal_successor_excludes_semantic_state_routes() -> None:
+    """Frontend capture cannot consume final state-machine route authority."""
+    parameters = inspect.signature(
+        computed_goto_resolver._preopt_union_internal_successor_eas
+    ).parameters
 
-    assert computed_goto_resolver._preopt_union_internal_successor_eas(
-        closure,
-        state_write_routes=(route,),
-    ) == {delivery_ea: target_ea}
+    assert tuple(parameters) == ("closure",)
 
 
 def test_preopt_union_groups_two_resolver_cut_targets_into_one_conditional_port() -> (
