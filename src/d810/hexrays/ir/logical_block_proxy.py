@@ -280,9 +280,9 @@ class LogicalBlockProxy:
             raise LogicalBlockStageConflict(
                 f"transaction {transaction_id!r} already retired this logical block"
             )
-        if generation != self.generation + 1:
+        if generation <= self.generation:
             raise ValueError(
-                "staged logical block generation must follow published generation"
+                "staged logical block generation must be newer than published generation"
             )
         if handle.session_id != self._session_id:
             raise ValueError("logical block session cannot drift between versions")
@@ -317,9 +317,9 @@ class LogicalBlockProxy:
             raise LogicalBlockStageConflict(
                 f"transaction {transaction_id!r} already staged this logical block"
             )
-        if generation != self.generation + 1:
+        if generation <= self.generation:
             raise ValueError(
-                "staged logical block generation must follow published generation"
+                "staged logical block generation must be newer than published generation"
             )
         self._retirements[transaction_id] = generation
 
