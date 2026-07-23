@@ -4,10 +4,18 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+from d810.analyses.control_flow.frontend_normalization import (
+    FrontendNormalizationEvidenceRejected,
+)
+from d810.core.observability import subscribe, unsubscribe
+from d810.core.observability_events import LifecycleEventObserved
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.manager.decompilation_lifecycle import DecompilationSessionContext
 from d810.manager.frontend_normalization import FrontendNormalizationRunResult
 from d810.manager import hexrays_frontend_normalization as live_normalization
+from d810.transforms.fragment_plan import FragmentPlanRejected
 from tests.native_preanalysis import make_native_key
 
 
@@ -168,3 +176,66 @@ def test_live_adapter_does_not_claim_a_pipeline_noop(monkeypatch) -> None:
 
     assert "microcode_modified" not in decision
     assert "details" not in decision
+
+
+@pytest.mark.parametrize(
+    "rejection_type",
+    (FrontendNormalizationEvidenceRejected, FragmentPlanRejected),
+)
+def test_live_adapter_records_planning_rejection_before_failing_open(
+    monkeypatch,
+    rejection_type,
+) -> None:
+    session = _session()
+    session.native_preanalysis.evidence_generation = 3
+    source = SimpleNamespace(
+        flow_graph=GRAPH,
+        func_ea=0x1000,
+        live_source=object(),
+    )
+    monkeypatch.setattr(
+        live_normalization,
+        "_lift_live_function",
+        lambda _mba: source,
+    )
+    monkeypatch.setattr(
+        live_normalization,
+        "_new_live_backend",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        live_normalization,
+        "run_frontend_normalization_pipeline",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            rejection_type("original route corridor is not closed")
+        ),
+    )
+    observed: list[LifecycleEventObserved] = []
+    subscribe(LifecycleEventObserved, observed.append)
+    try:
+        with pytest.raises(
+            rejection_type,
+            match="original route corridor is not closed",
+        ):
+            live_normalization.run_live_frontend_normalization(
+                function_ea=0x1000,
+                mba=source.live_source,
+                decision={
+                    "session": session,
+                    "mutation_gateway": object(),
+                },
+            )
+    finally:
+        unsubscribe(LifecycleEventObserved, observed.append)
+
+    assert len(observed) == 1
+    event = observed[0]
+    assert event.session_id == session.identity_key
+    assert event.func_ea == 0x1000
+    assert event.event_kind == "frontend_normalization_rejected"
+    assert event.phase == "frontend_normalization"
+    assert event.evidence_generation == 3
+    assert event.payload == {
+        "outcome": "rejected",
+        "reason": "original route corridor is not closed",
+    }

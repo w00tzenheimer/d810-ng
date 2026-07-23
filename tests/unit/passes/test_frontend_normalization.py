@@ -10,6 +10,7 @@ import pytest
 from d810.analyses.control_flow.frontend_normalization import (
     DetachedSemanticClosureImportRequest,
     FrontendNormalizationEvidence,
+    FrontendNormalizationEvidenceRejected,
     NativeIndirectTransferProof,
     NativeTransferEndpoint,
     NativeTransferShape,
@@ -266,7 +267,9 @@ def _context(
     )
 
 
-def test_conditional_native_transfer_proof_requires_both_arms_and_flag_corridor() -> None:
+def test_conditional_native_transfer_proof_requires_both_arms_and_flag_corridor() -> (
+    None
+):
     proof = _conditional_proof()
 
     assert proof.shape is NativeTransferShape.CONDITIONAL
@@ -332,10 +335,7 @@ def test_missing_target_is_staged_inside_the_same_normalization_fragment() -> No
         block for block in plan.blocks if block.role is FragmentBlockRole.IMPORTED
     )
     assert len(imported) == 1
-    assert (
-        imported[0].materialization
-        is FragmentBlockMaterialization.IMPORT_NATIVE
-    )
+    assert imported[0].materialization is FragmentBlockMaterialization.IMPORT_NATIVE
     assert imported[0].semantic_anchor_ea == 0x1300
     assert len(plan.native_bodies) == 1
     assert plan.native_bodies[0].entry_block_ids == (imported[0].block_id,)
@@ -346,6 +346,197 @@ def test_missing_target_is_staged_inside_the_same_normalization_fragment() -> No
         if edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
     )
     assert fallthrough.target_block_id == imported[0].block_id
+
+
+def test_detached_publication_excludes_an_unreachable_closure_seed_prefix() -> None:
+    closure = NativeSemanticClosure(
+        included_block_eas=(0x1050, 0x1300),
+        native_ranges=(
+            NativeRange(0x1050, 0x1060),
+            NativeRange(0x1300, 0x1310),
+        ),
+        proven_internal_edges=(),
+        abstentions=(),
+        seed_provenance=(),
+    )
+    native_cfg = NativeCfg(
+        {
+            0x1050: NativeBlock(
+                start_ea=0x1050,
+                end_ea=0x1060,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.DIRECT_JUMP,
+                        target_ea=0x1100,
+                    ),
+                ),
+            ),
+            0x1300: NativeBlock(
+                start_ea=0x1300,
+                end_ea=0x1310,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+        }
+    )
+
+    plan = plan_frontend_computed_branch_normalization(
+        _graph(faithful=False, include_false_target=False),
+        _evidence(closure=closure, native_cfg=native_cfg),
+    )
+
+    assert plan is not None
+    assert tuple(
+        block.semantic_anchor_ea
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+    ) == (0x1300,)
+    assert plan.native_bodies[0].block_ids == (
+        next(
+            block.block_id
+            for block in plan.blocks
+            if block.role is FragmentBlockRole.IMPORTED
+        ),
+    )
+
+
+def test_missing_downstream_transfer_source_is_normalized_inside_the_same_fragment() -> (
+    None
+):
+    imported_source_ea = 0x1400
+    imported_predicate_ea = 0x1401
+    imported_taken_ea = 0x1500
+    imported_fallthrough_ea = 0x1600
+    live_proof = replace(
+        _conditional_proof(),
+        endpoints=(
+            _conditional_proof().endpoints[0],
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                identity=_identity(imported_source_ea, 0x1420),
+                anchor_ea=imported_source_ea,
+            ),
+        ),
+    )
+    imported_source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(imported_predicate_ea, 0x1420),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(imported_predicate_ea,),
+    )
+    imported_condition_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(imported_source_ea, imported_predicate_ea),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(imported_source_ea,),
+    )
+    imported_proof = NativeIndirectTransferProof(
+        proof_id="conditional@0x1401",
+        atomic_group_id="frontend-normalization:g7",
+        shape=NativeTransferShape.CONDITIONAL,
+        source_identity=imported_source_identity,
+        source_anchor_ea=imported_predicate_ea,
+        endpoints=(
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                identity=_identity(imported_taken_ea),
+                anchor_ea=imported_taken_ea,
+            ),
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                identity=_identity(imported_fallthrough_ea),
+                anchor_ea=imported_fallthrough_ea,
+            ),
+        ),
+        predicate_anchor_ea=imported_predicate_ea,
+        condition_producer_ea=imported_source_ea,
+        flag_corridor=(
+            imported_condition_identity,
+            imported_source_identity,
+        ),
+        permitted_flag_write_eas=frozenset({imported_source_ea}),
+    )
+    closure = NativeSemanticClosure(
+        included_block_eas=(
+            imported_source_ea,
+            imported_taken_ea,
+            imported_fallthrough_ea,
+        ),
+        native_ranges=(NativeRange(imported_source_ea, 0x1610),),
+        proven_internal_edges=(),
+        abstentions=(),
+        seed_provenance=(),
+    )
+    native_cfg = NativeCfg(
+        {
+            imported_source_ea: NativeBlock(
+                start_ea=imported_source_ea,
+                end_ea=0x1420,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.INDIRECT,
+                        target_ea=imported_taken_ea,
+                        resolver_proven=True,
+                        source_instruction_ea=0x141F,
+                    ),
+                    NativeEdge(
+                        kind=NativeEdgeKind.INDIRECT,
+                        target_ea=imported_fallthrough_ea,
+                        resolver_proven=True,
+                        source_instruction_ea=0x141F,
+                    ),
+                ),
+            ),
+            imported_taken_ea: NativeBlock(
+                start_ea=imported_taken_ea,
+                end_ea=0x1510,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+            imported_fallthrough_ea: NativeBlock(
+                start_ea=imported_fallthrough_ea,
+                end_ea=0x1610,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+        }
+    )
+    evidence = replace(
+        _evidence(closure=closure, native_cfg=native_cfg),
+        transfer_proofs=(live_proof, imported_proof),
+    )
+
+    plan = plan_frontend_computed_branch_normalization(
+        _graph(faithful=False, include_false_target=False),
+        evidence,
+    )
+
+    assert plan is not None
+    imported_source = next(
+        block
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+        and block.semantic_anchor_ea == imported_source_ea
+    )
+    assert imported_source.stable_identity is not None
+    assert imported_source.stable_identity.native_ranges.intervals == (
+        NativeEaInterval(imported_source_ea, 0x1420),
+    )
+    assert imported_source.stable_identity.exact_instruction_eas == frozenset(
+        {imported_source_ea, imported_predicate_ea}
+    )
+    imported_operation = tuple(
+        operation
+        for operation in plan.operations
+        if operation.source_block_id == imported_source.block_id
+    )
+    assert len(imported_operation) == 1
+    assert imported_operation[0].predicate_anchor_ea == imported_predicate_ea
+    assert {edge.role for edge in imported_operation[0].edges} == {
+        SemanticEdgeRole.CONDITIONAL_TAKEN,
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+    }
+    imported_corridor = next(
+        corridor
+        for corridor in plan.flag_corridors
+        if corridor.consumer.instruction_ea == imported_predicate_ea
+    )
+    assert imported_corridor.block_path == (imported_source.block_id,)
 
 
 def test_imported_call_continuation_keeps_its_portable_fallthrough_role() -> None:
@@ -416,17 +607,16 @@ def test_imported_call_continuation_keeps_its_portable_fallthrough_role() -> Non
     )
 
 
-def test_normalization_plan_replaces_lost_branch_with_one_atomic_two_arm_operation() -> None:
+def test_normalization_plan_replaces_lost_branch_with_one_atomic_two_arm_operation() -> (
+    None
+):
     plan = plan_frontend_computed_branch_normalization(
         _graph(faithful=False),
         _evidence(),
     )
 
     assert plan is not None
-    assert (
-        plan.publication_purpose
-        is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
-    )
+    assert plan.publication_purpose is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
     assert plan.atomic_group_id == "frontend-normalization:g7"
     assert len(plan.roots) == 1
     assert len(plan.owned_originals) == 1
@@ -441,9 +631,7 @@ def test_normalization_plan_replaces_lost_branch_with_one_atomic_two_arm_operati
     assert plan.flag_corridors[0].consumer.instruction_ea == 0x1101
 
 
-def test_normalization_coalesces_adjacent_corridor_segments_in_one_live_block() -> (
-    None
-):
+def test_normalization_coalesces_adjacent_corridor_segments_in_one_live_block() -> None:
     producer_identity = _identity(0x1100, 0x1101)
     predicate_identity = _identity(0x1101, 0x1110)
     proof = replace(
@@ -485,9 +673,7 @@ def test_normalization_ignores_unreferenced_synthetic_blocks() -> None:
     )
 
     assert plan is not None
-    assert all(
-        block.semantic_anchor_ea != 0xFFFFFFFFFFFFFFFF for block in plan.blocks
-    )
+    assert all(block.semantic_anchor_ea != 0xFFFFFFFFFFFFFFFF for block in plan.blocks)
 
 
 def test_normalization_prefers_conditional_owner_over_same_ea_trampoline() -> None:
@@ -646,9 +832,9 @@ def test_normalization_publishes_only_owned_boundary_roots() -> None:
 
     assert plan is not None
     assert len(plan.owned_originals) == 2
-    assert {
-        plan.block(block_id).semantic_anchor_ea for block_id in plan.roots
-    } == {0x1100}
+    assert {plan.block(block_id).semantic_anchor_ea for block_id in plan.roots} == {
+        0x1100
+    }
     external_anchors = {
         block.semantic_anchor_ea
         for block in plan.blocks
@@ -665,7 +851,7 @@ def test_normalization_publishes_only_owned_boundary_roots() -> None:
     } <= external_anchors
 
 
-def test_normalization_abstains_when_original_route_corridor_is_not_closed() -> None:
+def test_normalization_rejects_when_original_route_corridor_is_not_closed() -> None:
     graph = FlowGraph(
         blocks={
             0: _block(
@@ -718,7 +904,11 @@ def test_normalization_abstains_when_original_route_corridor_is_not_closed() -> 
         ),
     )
 
-    assert plan_frontend_computed_branch_normalization(graph, evidence) is None
+    with pytest.raises(
+        FrontendNormalizationEvidenceRejected,
+        match="original route corridor is not closed",
+    ):
+        plan_frontend_computed_branch_normalization(graph, evidence)
 
 
 def test_normalization_abstains_when_live_graph_already_preserves_both_arms() -> None:
@@ -790,9 +980,7 @@ def test_import_and_normalize_passes_consume_the_resolved_analysis() -> None:
     facts = AnalysisManager(graph)
     evidence = _evidence(closure=_closure(), native_cfg=_native_cfg())
     facts.put_analysis(FRONTEND_NORMALIZATION_EVIDENCE, evidence)
-    import_result = ImportDetachedSemanticClosure().run(
-        _context(graph, facts=facts)
-    )
+    import_result = ImportDetachedSemanticClosure().run(_context(graph, facts=facts))
 
     assert import_result.analysis_outputs == {
         DETACHED_SEMANTIC_CLOSURE_IMPORT: plan_detached_semantic_closure_import(
