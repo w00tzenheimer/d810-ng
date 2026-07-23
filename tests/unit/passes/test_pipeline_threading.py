@@ -10,10 +10,23 @@ from types import SimpleNamespace
 import pytest
 
 from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
+from d810.analyses.control_flow.semantic_route_evidence import (
+    CanonicalSemanticEvidence,
+    SemanticRouteDestination,
+    SemanticRouteProof,
+    SemanticRouteProofKind,
+    SemanticRouteShape,
+    SemanticStateWriteProof,
+)
+from d810.capabilities.resolver import CapabilitySet
+from d810.capabilities.semantic_routes import CanonicalSemanticEvidenceCapability
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import (
     BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind,
 )
 from d810.ir.semantics import PredicateKind
+from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.pass_pipeline import FunctionPipelineContext
 from d810.passes.driver import PassContractError, run_pipeline
@@ -30,6 +43,7 @@ from d810.passes.unflatten.state_machine import (
 )
 from d810.analyses.control_flow.dispatcher_recovery import DispatcherRecovery
 from d810.passes.unflatten import state_machine as state_machine_module
+from tests.native_preanalysis import make_native_key
 
 C1 = 0x10000001
 STATE_OFF = 0x3C
@@ -116,9 +130,15 @@ def _input_facts():
     return SimpleNamespace(active_observations=(_obs(), _state_write_obs()))
 
 
-def _ctx(graph, facts):
+def _ctx(graph, facts, capabilities=None):
     return FunctionPipelineContext(
-        source=None, graph=graph, maturity=None, project_config=None, facts=facts)
+        source=None,
+        graph=graph,
+        maturity=None,
+        project_config=None,
+        facts=facts,
+        capabilities=capabilities or CapabilitySet(),
+    )
 
 
 class _Src:
@@ -376,3 +396,75 @@ def test_without_manager_edge_pass2_is_unresolved():
     assert len(resolutions) == 1
     assert resolutions[0].resolved_next_block_serial is None
     assert resolutions[0].resolution_reason == "no_dispatcher_rows_available"
+
+
+def test_recover_state_transitions_binds_portable_semantic_route_group() -> None:
+    native_key = make_native_key(function_rva=0x1000)
+
+    def identity(ea: int) -> StableBlockIdentity:
+        return StableBlockIdentity.from_intervals(
+            (NativeEaInterval(ea, ea + 1),),
+            native_key=native_key,
+            exact_instruction_eas=(ea,),
+        )
+
+    source_identity = identity(0x1001)
+    evidence = CanonicalSemanticEvidence(
+        native_key=native_key,
+        generation=2,
+        atomic_group_id="canonical-semantic:g2",
+        route_proofs=(
+            SemanticRouteProof(
+                proof_id="state-assignment@0x1001",
+                atomic_group_id="canonical-semantic:g2",
+                proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+                shape=SemanticRouteShape.DIRECT,
+                source_identity=source_identity,
+                source_anchor_ea=0x1001,
+                destinations=(
+                    SemanticRouteDestination(
+                        role=SemanticEdgeRole.DIRECT,
+                        state_constant=C1,
+                        target_identity=identity(0x1002),
+                        target_anchor_ea=0x1002,
+                    ),
+                ),
+                state_write=SemanticStateWriteProof(
+                    identity=source_identity,
+                    instruction_ea=0x1001,
+                    state_variable=StorageIdentity(
+                        StorageIdentityKind.REGISTER,
+                        20,
+                    ),
+                    width=4,
+                    state_constant=C1,
+                    corridor_instruction_eas=(0x1001,),
+                ),
+            ),
+        ),
+    )
+
+    class _Provider:
+        def evidence_for(self, function_ea: int):
+            return evidence if int(function_ea) == 0x1000 else None
+
+    am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
+    ctx = _ctx(
+        am.graph,
+        am.view(),
+        CapabilitySet().with_capability(
+            CanonicalSemanticEvidenceCapability,
+            _Provider(),
+        ),
+    )
+    RecoverDispatcher().run(ctx)
+
+    result = RecoverStateTransitions().run(ctx)
+
+    assert result.analysis_outputs["canonical_semantic_evidence"] == evidence
+    bound = result.analysis_outputs["bound_canonical_semantic_evidence"]
+    assert bound.atomic_group_id == "canonical-semantic:g2"
+    assert bound.routes[0].source.serial == 1
+    assert bound.routes[0].source.anchor_ea == 0x1001
+    assert bound.routes[0].destinations[0].block.serial == 2
+    assert bound.routes[0].destinations[0].block.anchor_ea == 0x1002
