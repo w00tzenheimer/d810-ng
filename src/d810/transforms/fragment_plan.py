@@ -14,8 +14,9 @@ from enum import Enum
 
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.expressions import ValueOpKind
 from d810.ir.semantic_edge import SemanticEdgeRole
-from d810.ir.storage_identity import StorageIdentity
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
@@ -67,6 +68,14 @@ class FragmentRangeObservation(str, Enum):
 
     BEFORE_INSTRUCTION = "before_instruction"
     AFTER_INSTRUCTION = "after_instruction"
+
+
+class FragmentReturnSourceKind(str, Enum):
+    """Portable shape assigned to the ABI return result."""
+
+    CONSTANT = "constant"
+    STORAGE_VALUE = "storage_value"
+    ADDRESS_OF_STORAGE = "address_of_storage"
 
 
 def _require_identifier(value: str, description: str) -> str:
@@ -350,6 +359,229 @@ class FragmentOperation:
 
 
 @dataclass(frozen=True, slots=True)
+class FragmentReturnSource:
+    """Portable value materialized into the ABI return result."""
+
+    kind: FragmentReturnSourceKind
+    width: int
+    storage_identity: StorageIdentity | None = None
+    constant: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, FragmentReturnSourceKind):
+            raise TypeError("fragment return source requires a typed source kind")
+        width = int(self.width)
+        if not 1 <= width <= 8:
+            raise FragmentPlanRejected(
+                "fragment return source width must be 1..8 bytes"
+            )
+        storage_identity = self.storage_identity
+        constant = self.constant
+        if self.kind is FragmentReturnSourceKind.CONSTANT:
+            if storage_identity is not None:
+                raise FragmentPlanRejected(
+                    "constant fragment return source cannot name storage"
+                )
+            if constant is None or not 0 <= int(constant) < (1 << (width * 8)):
+                raise FragmentPlanRejected(
+                    "fragment return constant must fit its source width"
+                )
+            constant = int(constant)
+        else:
+            if not isinstance(storage_identity, StorageIdentity):
+                raise FragmentPlanRejected(
+                    "storage fragment return source requires stable storage identity"
+                )
+            if storage_identity.kind not in {
+                StorageIdentityKind.STACK,
+                StorageIdentityKind.GLOBAL,
+            }:
+                raise FragmentPlanRejected(
+                    "fragment return source supports only stable stack or global storage"
+                )
+            if int(storage_identity.offset) < 0:
+                raise FragmentPlanRejected(
+                    "fragment return storage offset must be non-negative"
+                )
+            if constant is not None:
+                raise FragmentPlanRejected(
+                    "storage fragment return source cannot carry a constant"
+                )
+        object.__setattr__(self, "width", width)
+        object.__setattr__(self, "constant", constant)
+
+
+@dataclass(frozen=True, slots=True)
+class FragmentReturnCarrier:
+    """One staged assignment to the ABI return result."""
+
+    carrier_id: str
+    block_id: str
+    state_write_ea: int
+    carrier_ea: int
+    operation: ValueOpKind
+    source: FragmentReturnSource
+    return_width: int
+    corridor_instruction_eas: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        carrier_id = _require_identifier(
+            self.carrier_id,
+            "fragment return carrier id",
+        )
+        block_id = _require_identifier(
+            self.block_id,
+            "fragment return carrier block",
+        )
+        state_write_ea = _require_native_ea(
+            self.state_write_ea,
+            "fragment return carrier state-write anchor",
+        )
+        carrier_ea = _require_native_ea(
+            self.carrier_ea,
+            "fragment return carrier anchor",
+        )
+        if state_write_ea == carrier_ea:
+            raise FragmentPlanRejected(
+                "fragment return state write and carrier require distinct anchors"
+            )
+        if self.operation not in {
+            ValueOpKind.MOVE,
+            ValueOpKind.ZEXT,
+            ValueOpKind.SEXT,
+        }:
+            raise FragmentPlanRejected(
+                "fragment return carrier operation must be move, "
+                "zero-extension, or sign-extension"
+            )
+        if not isinstance(self.source, FragmentReturnSource):
+            raise TypeError("fragment return carrier requires a portable source")
+        return_width = int(self.return_width)
+        if not 1 <= return_width <= 8:
+            raise FragmentPlanRejected(
+                "fragment return width must be 1..8 bytes"
+            )
+        if (
+            self.operation is ValueOpKind.MOVE
+            and self.source.width != return_width
+        ):
+            raise FragmentPlanRejected(
+                "fragment return move source and result widths must match"
+            )
+        if self.operation in {ValueOpKind.ZEXT, ValueOpKind.SEXT} and not (
+            self.source.width < return_width
+        ):
+            raise FragmentPlanRejected(
+                "fragment return extension must widen its source"
+            )
+        corridor_instruction_eas = tuple(
+            _require_native_ea(ea, "fragment return carrier corridor anchor")
+            for ea in self.corridor_instruction_eas
+        )
+        if (
+            len(corridor_instruction_eas) < 2
+            or corridor_instruction_eas[0] != state_write_ea
+            or corridor_instruction_eas[-1] != carrier_ea
+            or len(set(corridor_instruction_eas))
+            != len(corridor_instruction_eas)
+        ):
+            raise FragmentPlanRejected(
+                "fragment return carrier corridor must run uniquely "
+                "from state write to carrier"
+            )
+        object.__setattr__(self, "carrier_id", carrier_id)
+        object.__setattr__(self, "block_id", block_id)
+        object.__setattr__(self, "state_write_ea", state_write_ea)
+        object.__setattr__(self, "carrier_ea", carrier_ea)
+        object.__setattr__(self, "return_width", return_width)
+        object.__setattr__(
+            self,
+            "corridor_instruction_eas",
+            corridor_instruction_eas,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FragmentTerminalReturn:
+    """One staged terminal return instruction."""
+
+    return_id: str
+    block_id: str
+    instruction_ea: int
+    return_width: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "return_id",
+            _require_identifier(self.return_id, "fragment terminal return id"),
+        )
+        object.__setattr__(
+            self,
+            "block_id",
+            _require_identifier(self.block_id, "fragment terminal return block"),
+        )
+        object.__setattr__(
+            self,
+            "instruction_ea",
+            _require_native_ea(
+                self.instruction_ea,
+                "fragment terminal return anchor",
+            ),
+        )
+        return_width = int(self.return_width)
+        if not 1 <= return_width <= 8:
+            raise FragmentPlanRejected(
+                "fragment terminal return width must be 1..8 bytes"
+            )
+        object.__setattr__(self, "return_width", return_width)
+
+
+@dataclass(frozen=True, slots=True)
+class FragmentTerminalRoute:
+    """Atomic link between one route, return carrier, and terminal return."""
+
+    terminal_route_id: str
+    operation_id: str
+    carrier_id: str
+    return_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "terminal_route_id",
+            _require_identifier(
+                self.terminal_route_id,
+                "fragment terminal route id",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "operation_id",
+            _require_identifier(
+                self.operation_id,
+                "fragment terminal route operation",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "carrier_id",
+            _require_identifier(
+                self.carrier_id,
+                "fragment terminal route carrier",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "return_id",
+            _require_identifier(
+                self.return_id,
+                "fragment terminal route return",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class FragmentValueSite:
     """Plan-local value definition or use at one stable semantic anchor."""
 
@@ -575,6 +807,9 @@ class FragmentPlan:
     owned_originals: tuple[str, ...]
     prohibited_dispatcher_blocks: tuple[str, ...]
     operations: tuple[FragmentOperation, ...]
+    return_carriers: tuple[FragmentReturnCarrier, ...] = ()
+    terminal_returns: tuple[FragmentTerminalReturn, ...] = ()
+    terminal_routes: tuple[FragmentTerminalRoute, ...] = ()
     native_bodies: tuple[FragmentNativeBody, ...] = ()
     data_flow_obligations: tuple[FragmentDataFlowObligation, ...] = ()
     flag_corridors: tuple[FragmentFlagCorridor, ...] = ()
@@ -788,6 +1023,184 @@ class FragmentPlan:
                     f"{sorted(missing_topology)}"
                 )
 
+        return_carriers = tuple(self.return_carriers)
+        if any(
+            not isinstance(carrier, FragmentReturnCarrier)
+            for carrier in return_carriers
+        ):
+            raise TypeError("fragment plan contains an invalid return carrier")
+        self._require_unique_ids(
+            (carrier.carrier_id for carrier in return_carriers),
+            "fragment return carrier",
+        )
+        carrier_by_id = {
+            carrier.carrier_id: carrier for carrier in return_carriers
+        }
+        for carrier in return_carriers:
+            block = block_by_id.get(carrier.block_id)
+            if block is None:
+                raise FragmentPlanRejected(
+                    f"fragment return carrier {carrier.carrier_id!r} has "
+                    "unknown block"
+                )
+            if block.role not in {
+                FragmentBlockRole.REPLACEMENT,
+                FragmentBlockRole.IMPORTED,
+            }:
+                raise FragmentPlanRejected(
+                    f"fragment return carrier {carrier.carrier_id!r} must "
+                    "execute on a staged replacement or imported block"
+                )
+            identity = block.stable_identity
+            if identity is None or any(
+                not identity.native_ranges.contains(ea)
+                or ea not in identity.exact_instruction_eas
+                for ea in carrier.corridor_instruction_eas
+            ):
+                raise FragmentPlanRejected(
+                    f"fragment return carrier {carrier.carrier_id!r} requires "
+                    "exact anchors owned by its block identity"
+                )
+
+        terminal_returns = tuple(self.terminal_returns)
+        if any(
+            not isinstance(terminal_return, FragmentTerminalReturn)
+            for terminal_return in terminal_returns
+        ):
+            raise TypeError("fragment plan contains an invalid terminal return")
+        self._require_unique_ids(
+            (terminal_return.return_id for terminal_return in terminal_returns),
+            "fragment terminal return",
+        )
+        self._require_unique_ids(
+            (terminal_return.block_id for terminal_return in terminal_returns),
+            "fragment terminal return block",
+        )
+        terminal_return_by_id = {
+            terminal_return.return_id: terminal_return
+            for terminal_return in terminal_returns
+        }
+        terminal_return_by_block = {
+            terminal_return.block_id: terminal_return
+            for terminal_return in terminal_returns
+        }
+        for terminal_return in terminal_returns:
+            block = block_by_id.get(terminal_return.block_id)
+            if block is None:
+                raise FragmentPlanRejected(
+                    f"fragment terminal return {terminal_return.return_id!r} "
+                    "has unknown block"
+                )
+            if block.role not in {
+                FragmentBlockRole.REPLACEMENT,
+                FragmentBlockRole.IMPORTED,
+            }:
+                raise FragmentPlanRejected(
+                    f"fragment terminal return {terminal_return.return_id!r} "
+                    "must execute on a staged replacement or imported block"
+                )
+            identity = block.stable_identity
+            if (
+                identity is None
+                or not identity.native_ranges.contains(
+                    terminal_return.instruction_ea
+                )
+                or terminal_return.instruction_ea
+                not in identity.exact_instruction_eas
+            ):
+                raise FragmentPlanRejected(
+                    f"fragment terminal return {terminal_return.return_id!r} "
+                    "requires an exact anchor owned by its block identity"
+                )
+            if terminal_return.block_id in operation_source_ids:
+                raise FragmentPlanRejected(
+                    f"fragment terminal return {terminal_return.return_id!r} "
+                    "cannot also own an outgoing operation"
+                )
+
+        terminal_routes = tuple(self.terminal_routes)
+        if any(
+            not isinstance(terminal_route, FragmentTerminalRoute)
+            for terminal_route in terminal_routes
+        ):
+            raise TypeError("fragment plan contains an invalid terminal route")
+        self._require_unique_ids(
+            (terminal_route.terminal_route_id for terminal_route in terminal_routes),
+            "fragment terminal route",
+        )
+        self._require_unique_ids(
+            (terminal_route.operation_id for terminal_route in terminal_routes),
+            "fragment terminal route operation",
+        )
+        self._require_unique_ids(
+            (terminal_route.carrier_id for terminal_route in terminal_routes),
+            "fragment terminal route carrier",
+        )
+        operation_by_id = {
+            operation.operation_id: operation for operation in operations
+        }
+        used_carrier_ids: set[str] = set()
+        used_return_ids: set[str] = set()
+        linked_terminal_edges: set[tuple[str, str]] = set()
+        for terminal_route in terminal_routes:
+            operation = operation_by_id.get(terminal_route.operation_id)
+            carrier = carrier_by_id.get(terminal_route.carrier_id)
+            terminal_return = terminal_return_by_id.get(terminal_route.return_id)
+            if operation is None:
+                raise FragmentPlanRejected(
+                    f"fragment terminal route {terminal_route.terminal_route_id!r} "
+                    "has unknown operation"
+                )
+            if carrier is None:
+                raise FragmentPlanRejected(
+                    f"fragment terminal route {terminal_route.terminal_route_id!r} "
+                    "has unknown return carrier"
+                )
+            if terminal_return is None:
+                raise FragmentPlanRejected(
+                    f"fragment terminal route {terminal_route.terminal_route_id!r} "
+                    "has unknown terminal return"
+                )
+            if (
+                len(operation.edges) != 1
+                or operation.edges[0].role is not SemanticEdgeRole.DIRECT
+                or operation.edges[0].target_block_id
+                != terminal_return.block_id
+            ):
+                raise FragmentPlanRejected(
+                    f"fragment terminal route {terminal_route.terminal_route_id!r} "
+                    "requires one direct edge to its terminal return block"
+                )
+            if carrier.return_width != terminal_return.return_width:
+                raise FragmentPlanRejected(
+                    f"fragment terminal route {terminal_route.terminal_route_id!r} "
+                    "carrier and return widths must match"
+                )
+            used_carrier_ids.add(carrier.carrier_id)
+            used_return_ids.add(terminal_return.return_id)
+            linked_terminal_edges.add(
+                (operation.operation_id, terminal_return.block_id)
+            )
+        if used_carrier_ids != set(carrier_by_id):
+            raise FragmentPlanRejected(
+                "every fragment return carrier must belong to one terminal route"
+            )
+        if used_return_ids != set(terminal_return_by_id):
+            raise FragmentPlanRejected(
+                "every fragment terminal return must belong to a terminal route"
+            )
+        planned_terminal_edges = {
+            (operation.operation_id, edge.target_block_id)
+            for operation in operations
+            for edge in operation.edges
+            if edge.target_block_id in terminal_return_by_block
+        }
+        if linked_terminal_edges != planned_terminal_edges:
+            raise FragmentPlanRejected(
+                "every edge to a fragment terminal return requires its atomic "
+                "carrier and route"
+            )
+
         data_flow_obligations = tuple(self.data_flow_obligations)
         if any(
             not isinstance(obligation, FragmentDataFlowObligation)
@@ -867,6 +1280,9 @@ class FragmentPlan:
             prohibited_dispatcher_blocks,
         )
         object.__setattr__(self, "operations", operations)
+        object.__setattr__(self, "return_carriers", return_carriers)
+        object.__setattr__(self, "terminal_returns", terminal_returns)
+        object.__setattr__(self, "terminal_routes", terminal_routes)
         object.__setattr__(self, "native_bodies", native_bodies)
         object.__setattr__(
             self,
@@ -951,5 +1367,10 @@ __all__ = [
     "FragmentPublicationPurpose",
     "FragmentRangeAssumption",
     "FragmentRangeObservation",
+    "FragmentReturnCarrier",
+    "FragmentReturnSource",
+    "FragmentReturnSourceKind",
+    "FragmentTerminalReturn",
+    "FragmentTerminalRoute",
     "FragmentValueSite",
 ]

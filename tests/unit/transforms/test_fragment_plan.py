@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 
 import pytest
 
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.expressions import ValueOpKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+import d810.transforms.fragment_plan as fragment_plan
 from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
@@ -211,6 +213,10 @@ def test_fragment_plan_is_serial_free_and_groups_complete_conditional() -> None:
         FragmentBlock,
         FragmentEdge,
         FragmentOperation,
+        fragment_plan.FragmentReturnSource,
+        fragment_plan.FragmentReturnCarrier,
+        fragment_plan.FragmentTerminalReturn,
+        fragment_plan.FragmentTerminalRoute,
         FragmentValueSite,
         FragmentDataFlowObligation,
         FragmentFlagCorridor,
@@ -659,3 +665,208 @@ def test_flag_corridor_sites_do_not_require_fake_storage_identity() -> None:
     )
 
     assert rebuilt.flag_corridors[0].producer.storage_identity is None
+
+
+def _terminal_plan() -> FragmentPlan:
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C7E5, 0x40C7F4),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C7E5, 0x40C7EA),
+    )
+    terminal_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C898, 0x40C8A0),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C898,),
+    )
+    source_original = FragmentBlock(
+        block_id="terminal.source.original",
+        role=FragmentBlockRole.ORIGINAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x40C7E5,
+        stable_identity=source_identity,
+    )
+    source_replacement = FragmentBlock(
+        block_id="terminal.source.replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=0x40C7E5,
+        stable_identity=source_identity,
+        replaces_block_id=source_original.block_id,
+    )
+    return_original = FragmentBlock(
+        block_id="terminal.return.original",
+        role=FragmentBlockRole.ORIGINAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x40C898,
+        stable_identity=terminal_identity,
+    )
+    return_replacement = FragmentBlock(
+        block_id="terminal.return.replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=0x40C898,
+        stable_identity=terminal_identity,
+        replaces_block_id=return_original.block_id,
+    )
+    return FragmentPlan(
+        plan_id="terminal-route",
+        atomic_group_id="terminal-route@0x40C7E5",
+        publication_purpose=FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING,
+        native_key=NATIVE_KEY,
+        blocks=(
+            source_original,
+            source_replacement,
+            return_original,
+            return_replacement,
+        ),
+        roots=(source_replacement.block_id,),
+        owned_originals=(source_original.block_id, return_original.block_id),
+        prohibited_dispatcher_blocks=(),
+        operations=(
+            FragmentOperation(
+                operation_id="route-to-return",
+                source_block_id=source_replacement.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=return_replacement.block_id,
+                    ),
+                ),
+            ),
+        ),
+        return_carriers=(
+            fragment_plan.FragmentReturnCarrier(
+                carrier_id="return-value",
+                block_id=source_replacement.block_id,
+                state_write_ea=0x40C7E5,
+                carrier_ea=0x40C7EA,
+                operation=ValueOpKind.MOVE,
+                source=fragment_plan.FragmentReturnSource(
+                    kind=fragment_plan.FragmentReturnSourceKind.STORAGE_VALUE,
+                    width=4,
+                    storage_identity=StorageIdentity(
+                        StorageIdentityKind.GLOBAL,
+                        0x48B8A4,
+                    ),
+                ),
+                return_width=4,
+                corridor_instruction_eas=(0x40C7E5, 0x40C7EA),
+            ),
+        ),
+        terminal_returns=(
+            fragment_plan.FragmentTerminalReturn(
+                return_id="function-return",
+                block_id=return_replacement.block_id,
+                instruction_ea=0x40C898,
+                return_width=4,
+            ),
+        ),
+        terminal_routes=(
+            fragment_plan.FragmentTerminalRoute(
+                terminal_route_id="route-return-value",
+                operation_id="route-to-return",
+                carrier_id="return-value",
+                return_id="function-return",
+            ),
+        ),
+    )
+
+
+def test_fragment_plan_groups_terminal_carrier_return_and_route_atomically() -> None:
+    plan = _terminal_plan()
+
+    assert plan.return_carriers[0].carrier_ea == 0x40C7EA
+    assert plan.terminal_returns[0].instruction_ea == 0x40C898
+    assert plan.terminal_routes == (
+        fragment_plan.FragmentTerminalRoute(
+            terminal_route_id="route-return-value",
+            operation_id="route-to-return",
+            carrier_id="return-value",
+            return_id="function-return",
+        ),
+    )
+
+
+def test_fragment_plan_rejects_orphaned_terminal_effects() -> None:
+    plan = _terminal_plan()
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="every fragment return carrier must belong",
+    ):
+        replace(plan, terminal_routes=())
+
+
+def test_fragment_plan_requires_terminal_route_to_name_its_direct_edge() -> None:
+    plan = _terminal_plan()
+    source_block_id = plan.operations[0].source_block_id
+    unrelated_operation = FragmentOperation(
+        operation_id=plan.operations[0].operation_id,
+        source_block_id=source_block_id,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=source_block_id,
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="one direct edge to its terminal return block",
+    ):
+        replace(plan, operations=(unrelated_operation,))
+
+
+def test_fragment_plan_requires_terminal_carrier_and_return_width_parity() -> None:
+    plan = _terminal_plan()
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="carrier and return widths must match",
+    ):
+        replace(
+            plan,
+            terminal_returns=(
+                replace(plan.terminal_returns[0], return_width=8),
+            ),
+        )
+
+
+def test_fragment_plan_requires_exact_terminal_effect_anchors() -> None:
+    plan = _terminal_plan()
+    carrier = plan.return_carriers[0]
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="exact anchors owned by its block identity",
+    ):
+        replace(
+            plan,
+            return_carriers=(
+                replace(
+                    carrier,
+                    carrier_ea=0x40C7EB,
+                    corridor_instruction_eas=(0x40C7E5, 0x40C7EB),
+                ),
+            ),
+        )
+
+
+def test_fragment_return_source_rejects_nonportable_storage_and_constants() -> None:
+    with pytest.raises(FragmentPlanRejected, match="constant.*fit"):
+        fragment_plan.FragmentReturnSource(
+            kind=fragment_plan.FragmentReturnSourceKind.CONSTANT,
+            width=1,
+            constant=0x100,
+        )
+
+    with pytest.raises(FragmentPlanRejected, match="stack or global"):
+        fragment_plan.FragmentReturnSource(
+            kind=fragment_plan.FragmentReturnSourceKind.STORAGE_VALUE,
+            width=4,
+            storage_identity=StorageIdentity(
+                StorageIdentityKind.REGISTER,
+                0,
+            ),
+        )
