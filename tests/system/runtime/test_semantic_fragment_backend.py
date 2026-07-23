@@ -10,17 +10,31 @@ import pytest
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.hexrays.mutation import deferred_modifier as dm  # noqa: E402
+from d810.hexrays.mutation import semantic_fragment_backend as sfb  # noqa: E402
+from d810.hexrays.ir.exact_data_flow import DefSite, UseSite  # noqa: E402
+from d810.hexrays.mutation.semantic_fragment_publication import (  # noqa: E402
+    SemanticFragmentPublicationRejected,
+)
 from d810.ir.semantic_edge import SemanticEdgeRole  # noqa: E402
+from d810.ir.storage_identity import (  # noqa: E402
+    StorageIdentity,
+    StorageIdentityKind,
+)
 from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentDataFlowObligation,
+    FragmentDataFlowRole,
     FragmentEdge,
     FragmentOperation,
     FragmentPlan,
+    FragmentValueSite,
 )
 from d810.transforms.fragment_validation import (  # noqa: E402
     FragmentBindingState,
+    FragmentValidationPostcondition,
+    ProjectedDataFlowRelation,
     validate_fragment_projection,
 )
 from tests.system.runtime.mutation_gateway import make_mutation_gateway  # noqa: E402
@@ -403,6 +417,39 @@ def _plan(gateway, *, entry: int, original: int, target: int, dispatcher: int):
     )
 
 
+def _with_data_flow(
+    plan: FragmentPlan,
+    storage: StorageIdentity,
+) -> FragmentPlan:
+    definition = FragmentValueSite(
+        site_id="state.def",
+        block_id="replacement",
+        value_id="state",
+        instruction_ea=0x401010,
+        storage_identity=storage,
+        width=4,
+    )
+    use = FragmentValueSite(
+        site_id="state.use",
+        block_id="replacement",
+        value_id="state",
+        instruction_ea=0x401010,
+        storage_identity=storage,
+        width=4,
+    )
+    return replace(
+        plan,
+        data_flow_obligations=(
+            FragmentDataFlowObligation(
+                obligation_id="state-flow",
+                role=FragmentDataFlowRole.STATE_VALUE,
+                definition=definition,
+                uses=(use,),
+            ),
+        ),
+    )
+
+
 def _plan_with_conditional_predecessor(
     gateway,
     *,
@@ -516,6 +563,8 @@ def _conditional_plan(
             ),
         ),
     )
+
+
 def test_backend_stages_hidden_replacement_and_projects_root_publication() -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
@@ -570,6 +619,280 @@ def test_backend_stages_hidden_replacement_and_projects_root_publication() -> No
     assert tuple(target.predset) == ()
     assert proxy.resolve() is published
     assert gateway.active is False
+
+
+@pytest.mark.parametrize(
+    ("storage_kind", "storage_offset"),
+    (
+        (StorageIdentityKind.REGISTER, 10),
+        (StorageIdentityKind.STACK, 0x20),
+    ),
+)
+@pytest.mark.parametrize("extra_use", (False, True))
+def test_backend_projects_exact_data_flow_without_hiding_extra_uses(
+    monkeypatch,
+    storage_kind: StorageIdentityKind,
+    storage_offset: int,
+    extra_use: bool,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _with_data_flow(
+        _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
+        StorageIdentity(storage_kind, offset=storage_offset),
+    )
+
+    def _reaching_definitions(
+        _mba,
+        block_serial: int,
+        use_ea: int,
+        identifier: int,
+        size: int,
+    ) -> list[DefSite]:
+        assert use_ea == 0x401010
+        assert identifier == storage_offset
+        assert size == 4
+        return [DefSite(block_serial, 0x401010, ida_hexrays.m_mov)]
+
+    def _reached_uses(
+        _mba,
+        block_serial: int,
+        definition_ea: int,
+        identifier: int,
+        size: int,
+    ) -> list[UseSite]:
+        assert definition_ea == 0x401010
+        assert identifier == storage_offset
+        assert size == 4
+        result = [UseSite(block_serial, 0x401010, ida_hexrays.m_mov)]
+        if extra_use:
+            result.append(UseSite(entry.serial, 0x401000, ida_hexrays.m_mov))
+        return result
+
+    reaching_query_name = (
+        "find_reaching_defs_for_reg_use"
+        if storage_kind is StorageIdentityKind.REGISTER
+        else "find_reaching_defs_for_stkvar_use"
+    )
+    reached_uses_query_name = (
+        "find_uses_reached_by_reg_definition"
+        if storage_kind is StorageIdentityKind.REGISTER
+        else "find_uses_reached_by_stkvar_definition"
+    )
+    monkeypatch.setattr(sfb, reaching_query_name, _reaching_definitions)
+    monkeypatch.setattr(sfb, reached_uses_query_name, _reached_uses)
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    planned_relation = ProjectedDataFlowRelation(
+        value_id="state",
+        definition_site_id="state.def",
+        use_site_id="state.use",
+        use_def_observed=True,
+        def_use_observed=False,
+    )
+    reverse_relation = ProjectedDataFlowRelation(
+        value_id="state",
+        definition_site_id="state.def",
+        use_site_id="state.use",
+        use_def_observed=False,
+        def_use_observed=True,
+    )
+    assert planned_relation in projection.data_flow_relations
+    assert reverse_relation in projection.data_flow_relations
+    validation = validate_fragment_projection(plan, projection)
+    if extra_use:
+        assert len(projection.data_flow_relations) == 3
+        assert any(
+            relation.use_site_id.startswith("unplanned-use:")
+            for relation in projection.data_flow_relations
+        )
+        assert any(
+            not outcome.passed
+            and outcome.postcondition
+            is FragmentValidationPostcondition.DEF_USE_INTEGRITY
+            for outcome in validation.outcomes
+        )
+    else:
+        assert set(projection.data_flow_relations) == {
+            planned_relation,
+            reverse_relation,
+        }
+        assert validation.passed, validation.failures
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime data-flow projection cleanup")
+
+
+def test_backend_rejects_duplicate_physical_data_flow_anchors(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _with_data_flow(
+        _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
+        StorageIdentity(StorageIdentityKind.REGISTER, offset=10),
+    )
+
+    monkeypatch.setattr(
+        sfb,
+        "find_reaching_defs_for_reg_use",
+        lambda _mba, block_serial, *_args: [
+            DefSite(block_serial, 0x401010, ida_hexrays.m_mov)
+        ],
+    )
+    monkeypatch.setattr(
+        sfb,
+        "find_uses_reached_by_reg_definition",
+        lambda _mba, block_serial, *_args: [
+            UseSite(block_serial, 0x401010, ida_hexrays.m_mov),
+            UseSite(block_serial, 0x401010, ida_hexrays.m_mov),
+        ],
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="use observation is ambiguous.*replacement@0x401010",
+    ):
+        modifier._stage_semantic_fragment(plan)
+
+    assert modifier._semantic_fragment_state is None
+    assert mba.qty == 5
+    assert tuple(entry.succset) == (original.serial,)
+    gateway.abort(reason="runtime ambiguous data-flow cleanup")
+
+
+def test_backend_rejects_unsupported_data_flow_storage_namespace() -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _with_data_flow(
+        _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
+        StorageIdentity(StorageIdentityKind.GLOBAL, offset=0x404000),
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="unsupported storage namespace global",
+    ):
+        modifier._stage_semantic_fragment(plan)
+
+    assert modifier._semantic_fragment_state is None
+    assert mba.qty == 5
+    assert tuple(entry.succset) == (original.serial,)
+    gateway.abort(reason="runtime unsupported data-flow cleanup")
+
+
+@pytest.mark.parametrize("postpublication_extra_use", (False, True))
+def test_gateway_revalidates_data_flow_after_root_publication(
+    monkeypatch,
+    postpublication_extra_use: bool,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _with_data_flow(
+        _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
+        StorageIdentity(StorageIdentityKind.REGISTER, offset=10),
+    )
+    original_handle = gateway.identity_index.handle_for_serial(original.serial)
+    assert original_handle is not None
+    proxy = gateway.identity_index.logical_proxy_for_handle(original_handle)
+    assert proxy is not None
+    published = proxy.resolve()
+    assert published is not None
+    reached_use_calls = 0
+
+    monkeypatch.setattr(
+        sfb,
+        "find_reaching_defs_for_reg_use",
+        lambda _mba, block_serial, *_args: [
+            DefSite(block_serial, 0x401010, ida_hexrays.m_mov)
+        ],
+    )
+
+    def _reached_uses(_mba, block_serial: int, *_args) -> list[UseSite]:
+        nonlocal reached_use_calls
+        reached_use_calls += 1
+        result = [UseSite(block_serial, 0x401010, ida_hexrays.m_mov)]
+        if postpublication_extra_use and reached_use_calls == 2:
+            result.append(UseSite(entry.serial, 0x401000, ida_hexrays.m_mov))
+        return result
+
+    monkeypatch.setattr(
+        sfb,
+        "find_uses_reached_by_reg_definition",
+        _reached_uses,
+    )
+
+    if postpublication_extra_use:
+        with pytest.raises(
+            SemanticFragmentPublicationRejected,
+            match="postpublication",
+        ):
+            gateway.publish_semantic_fragment(modifier, plan)
+        assert reached_use_calls == 2
+        assert proxy.resolve() is published
+        assert tuple(entry.succset) == (original.serial,)
+        assert tuple(original.predset) == (entry.serial,)
+        assert mba.qty == 5
+        assert gateway.active is False
+        assert modifier._semantic_fragment_state is None
+        return
+
+    receipt = gateway.publish_semantic_fragment(modifier, plan)
+
+    assert reached_use_calls == 2
+    assert receipt.prepublication_validation.passed
+    assert receipt.postpublication_validation.passed
+    assert any(
+        outcome.passed
+        and outcome.postcondition is FragmentValidationPostcondition.USE_DEF_INTEGRITY
+        for outcome in receipt.postpublication_validation.outcomes
+    )
+    assert any(
+        outcome.passed
+        and outcome.postcondition is FragmentValidationPostcondition.DEF_USE_INTEGRITY
+        for outcome in receipt.postpublication_validation.outcomes
+    )
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
 
 
 def test_gateway_publishes_direct_fragment_root_from_entry() -> None:
@@ -956,7 +1279,9 @@ def test_backend_stages_complete_conditional_with_owned_fallthrough_helper(
         "taken",
     )
     assert projection.block(helper.helper_block_id).successors == ("fallthrough",)
-    assert projection.binding(helper.helper_block_id).state is FragmentBindingState.STAGED
+    assert (
+        projection.binding(helper.helper_block_id).state is FragmentBindingState.STAGED
+    )
     assert projection.binding(helper.helper_block_id).stable_identity is None
     assert mba.qty == 8
 

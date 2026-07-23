@@ -170,6 +170,8 @@ class ProjectedDataFlowRelation:
     value_id: str
     definition_site_id: str
     use_site_id: str
+    use_def_observed: bool
+    def_use_observed: bool
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -190,6 +192,15 @@ class ProjectedDataFlowRelation:
             "use_site_id",
             _identifier(self.use_site_id, "projected use site id"),
         )
+        if not isinstance(self.use_def_observed, bool) or not isinstance(
+            self.def_use_observed,
+            bool,
+        ):
+            raise TypeError("projected data-flow direction flags must be booleans")
+        if not self.use_def_observed and not self.def_use_observed:
+            raise ValueError(
+                "projected data-flow relation requires an observed direction"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -821,6 +832,7 @@ def _validate_data_flow(
             for relation in relations
             if relation.value_id == definition.value_id
             and relation.use_site_id == use.site_id
+            and relation.use_def_observed
         )
         actual_definitions = {
             relation.definition_site_id for relation in actual_relations
@@ -844,6 +856,7 @@ def _validate_data_flow(
         for relation in relations
         if relation.value_id == definition.value_id
         and relation.definition_site_id == definition.site_id
+        and relation.def_use_observed
     )
     actual_use_ids = {relation.use_site_id for relation in actual_relations}
     def_use_valid = (
