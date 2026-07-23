@@ -226,9 +226,15 @@ def render_mutation_batch(result: dict[str, Any]) -> str:
                 f"reason={validation['reason']}"
             )
         for transition in result["version_transitions"]:
+            predecessor = transition["predecessor_version"]
             lines.append(
                 f"version[{transition['transition_index']}] "
-                f"{transition['proxy_token']}@v{transition['from_version']} "
+                f"{transition['proxy_token']}@v{transition['version']} "
+                f"physical={transition['physical_handle_token']} "
+                f"generation={transition['generation']} "
+                f"provenance={transition['provenance']} "
+                f"anchor=ea@{transition['anchor_ea_hex'] or '?'} "
+                f"predecessor={'none' if predecessor is None else f'v{predecessor}'} "
                 f"{transition['from_state']}->{transition['to_state']}"
             )
     return "\n".join(lines)

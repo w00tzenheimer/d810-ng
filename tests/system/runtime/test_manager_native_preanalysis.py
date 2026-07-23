@@ -11,7 +11,10 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 )
 from d810.core.observability_events import MutationReceiptObserved
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
-from d810.hexrays.ir.logical_block_proxy import LogicalBlockVersionId
+from d810.hexrays.ir.logical_block_proxy import (
+    LogicalBlockVersion,
+    LogicalBlockVersionId,
+)
 from d810.hexrays.mutation.fragment_publication_lifecycle import (
     FragmentPublicationLifecycleAuthority,
 )
@@ -21,6 +24,7 @@ from d810.hexrays.mutation.mba_mutation_events import (
     StructuralMutationKind,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.block_identity import MbaBlockHandle
 from d810.manager.manager import (
     D810Manager,
     _build_current_mba_identity_index,
@@ -172,8 +176,19 @@ def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
                 "postpublication semantic validation failed: "
                 "observable_return_carrier:return-value"
             ),
-            discarded_version_ids=(
-                LogicalBlockVersionId("logical-terminal", 1),
+            discarded_versions=(
+                LogicalBlockVersion(
+                    version_id=LogicalBlockVersionId("logical-terminal", 1),
+                    handle=MbaBlockHandle.synthetic(
+                        session_id="terminal-fragment-session",
+                        token="physical-terminal-v1",
+                    ),
+                    generation=8,
+                    predecessor_version_id=LogicalBlockVersionId(
+                        "logical-terminal",
+                        0,
+                    ),
+                ),
             ),
             fragment_plan_id="terminal-fragment",
             fragment_atomic_group_id="terminal-group",
@@ -212,14 +227,17 @@ def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
     assert observed[0].root_publication_succeeded
     assert observed[0].rollback_succeeded
     assert observed[0].root_publication_groups[0].rollback_succeeded
-    assert [
-        (
-            transition.proxy_token,
-            transition.from_state,
-            transition.to_state,
-        )
-        for transition in observed[0].version_transitions
-    ] == [("logical-terminal", "staged", "aborted")]
+    assert len(observed[0].version_transitions) == 1
+    transition = observed[0].version_transitions[0]
+    assert transition.proxy_token == "logical-terminal"
+    assert transition.version == 1
+    assert transition.physical_handle_token == "physical-terminal-v1"
+    assert transition.generation == 8
+    assert transition.provenance == "synthetic"
+    assert transition.stable_identity_json is None
+    assert transition.anchor_ea is None
+    assert transition.predecessor_version == 0
+    assert (transition.from_state, transition.to_state) == ("staged", "aborted")
 
 
 def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(

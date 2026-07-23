@@ -229,16 +229,26 @@ def test_mutation_batch_renders_complete_semantic_fragment_evidence() -> None:
             version_transitions=(
                 LogicalBlockVersionTransitionObserved(
                     proxy_token="logical-route",
-                    from_version=0,
+                    version=0,
+                    physical_handle_token="physical-route-v0",
+                    generation=8,
+                    provenance="native",
+                    stable_identity_json="{}",
+                    anchor_ea=0x40C800,
+                    predecessor_version=None,
                     from_state="published",
-                    to_version=0,
                     to_state="retired",
                 ),
                 LogicalBlockVersionTransitionObserved(
                     proxy_token="logical-route",
-                    from_version=1,
+                    version=1,
+                    physical_handle_token="physical-route-v1",
+                    generation=9,
+                    provenance="native",
+                    stable_identity_json="{}",
+                    anchor_ea=0x40C800,
+                    predecessor_version=0,
                     from_state="staged",
-                    to_version=1,
                     to_state="published",
                 ),
             ),
@@ -278,5 +288,9 @@ def test_mutation_batch_renders_complete_semantic_fragment_evidence() -> None:
     assert "fragment plan=fragment-plan atomic-group=atomic-group" in rendered
     assert "root-group[root-group:entry] predecessor=ea@0x000000000040c800" in rendered
     assert "prepublication:dispatcher_absence:dispatcher passed" in rendered
-    assert "logical-route@v1 staged->published" in rendered
+    assert (
+        "logical-route@v1 physical=physical-route-v1 generation=9 "
+        "provenance=native anchor=ea@0x000000000040c800 "
+        "predecessor=v0 staged->published"
+    ) in rendered
     db.close()

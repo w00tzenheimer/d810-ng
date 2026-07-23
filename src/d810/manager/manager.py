@@ -1025,51 +1025,73 @@ class D810Manager:
 
     @staticmethod
     def _committed_version_transition_observations(transitions):
-        from d810.core.observability_events import (
-            LogicalBlockVersionTransitionObserved,
-        )
-
         observations = []
         for transition in transitions:
-            retired = transition.retired_version_id
+            retired = transition.retired_version
             if retired is not None:
                 observations.append(
-                    LogicalBlockVersionTransitionObserved(
-                        proxy_token=retired.proxy_token,
-                        from_version=retired.version,
+                    D810Manager._logical_version_transition_observation(
+                        retired,
                         from_state="published",
-                        to_version=retired.version,
                         to_state="retired",
                     )
                 )
-            promoted = transition.promoted_version_id
+            promoted = transition.promoted_version
             if promoted is not None:
                 observations.append(
-                    LogicalBlockVersionTransitionObserved(
-                        proxy_token=promoted.proxy_token,
-                        from_version=promoted.version,
+                    D810Manager._logical_version_transition_observation(
+                        promoted,
                         from_state="staged",
-                        to_version=promoted.version,
                         to_state="published",
                     )
                 )
         return tuple(observations)
 
     @staticmethod
-    def _aborted_version_transition_observations(version_ids):
+    def _aborted_version_transition_observations(versions):
+        return tuple(
+            D810Manager._logical_version_transition_observation(
+                version,
+                from_state="staged",
+                to_state="aborted",
+            )
+            for version in versions
+        )
+
+    @staticmethod
+    def _logical_version_transition_observation(
+        version,
+        *,
+        from_state: str,
+        to_state: str,
+    ):
         from d810.core.observability_events import (
             LogicalBlockVersionTransitionObserved,
         )
 
-        return tuple(
-            LogicalBlockVersionTransitionObserved(
-                proxy_token=version_id.proxy_token,
-                from_version=version_id.version,
-                from_state="staged",
-                to_version=version_id.version,
-                to_state="aborted",
-            )
-            for version_id in version_ids
+        identity = version.handle.stable_identity
+        predecessor = version.predecessor_version_id
+        return LogicalBlockVersionTransitionObserved(
+            proxy_token=version.version_id.proxy_token,
+            version=version.version_id.version,
+            physical_handle_token=version.handle.token,
+            generation=version.generation,
+            provenance=version.handle.provenance.value,
+            stable_identity_json=(
+                None
+                if identity is None
+                else json.dumps(identity.to_dict(), sort_keys=True)
+            ),
+            anchor_ea=(
+                None
+                if identity is None
+                else D810Manager._stable_identity_anchor(identity)
+            ),
+            predecessor_version=(
+                None if predecessor is None else predecessor.version
+            ),
+            from_state=from_state,
+            to_state=to_state,
         )
 
     @staticmethod
@@ -1182,7 +1204,7 @@ class D810Manager:
                 ),
                 version_transitions=(
                     D810Manager._aborted_version_transition_observations(
-                        event.discarded_version_ids
+                        event.discarded_versions
                     )
                 ),
             )

@@ -72,6 +72,33 @@ def test_root_publication_group_schema_is_serial_free_and_ea_anchored():
     assert all("serial" not in column for column in columns)
 
 
+def test_logical_version_transition_schema_is_serial_free_and_reconstructible():
+    conn = create_diag_database(":memory:").connection()
+    columns = [
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info(logical_block_version_transitions)"
+        )
+    ]
+    assert columns == [
+        "event_id",
+        "mutation_batch_id",
+        "transition_index",
+        "proxy_token",
+        "version",
+        "physical_handle_token",
+        "generation",
+        "provenance",
+        "stable_identity_json",
+        "anchor_ea_hex",
+        "anchor_ea_i64",
+        "predecessor_version",
+        "from_state",
+        "to_state",
+    ]
+    assert all("serial" not in column for column in columns)
+
+
 def test_json_extract_on_meta_columns():
     """Verify SQLite JSON extension works for meta column queries."""
     conn = create_diag_database(":memory:").connection()

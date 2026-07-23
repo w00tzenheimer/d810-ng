@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -15,6 +16,19 @@ from d810.core.observability_events import (
     MutationPlanItemObserved,
     MutationPlanObserved,
     MutationReceiptObserved,
+)
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from tests.native_preanalysis import make_native_key
+
+
+_VERSION_IDENTITY = StableBlockIdentity.from_intervals(
+    (NativeEaInterval(0x40C800, 0x40C810),),
+    native_key=make_native_key(function_rva=0xC8B0),
+    exact_instruction_eas=(0x40C800,),
+)
+_VERSION_IDENTITY_JSON = json.dumps(
+    _VERSION_IDENTITY.to_dict(),
+    sort_keys=True,
 )
 
 
@@ -360,16 +374,26 @@ def test_fragment_receipt_persists_complete_semantic_transaction(
             version_transitions=(
                 LogicalBlockVersionTransitionObserved(
                     proxy_token="logical-original",
-                    from_version=0,
+                    version=0,
+                    physical_handle_token="physical-original-v0",
+                    generation=8,
+                    provenance="native",
+                    stable_identity_json=_VERSION_IDENTITY_JSON,
+                    anchor_ea=0x40C800,
+                    predecessor_version=None,
                     from_state="published",
-                    to_version=0,
                     to_state="retired",
                 ),
                 LogicalBlockVersionTransitionObserved(
                     proxy_token="logical-original",
-                    from_version=1,
+                    version=1,
+                    physical_handle_token="physical-original-v1",
+                    generation=9,
+                    provenance="native",
+                    stable_identity_json=_VERSION_IDENTITY_JSON,
+                    anchor_ea=0x40C800,
+                    predecessor_version=0,
                     from_state="staged",
-                    to_version=1,
                     to_state="published",
                 ),
             ),
@@ -411,12 +435,38 @@ def test_fragment_receipt_persists_complete_semantic_transaction(
         for outcome in prevalidation + postvalidation
     ]
     assert diag_conn.execute(
-        "SELECT proxy_token,from_version,from_state,to_version,to_state "
+        "SELECT proxy_token,version,physical_handle_token,generation,"
+        "provenance,stable_identity_json,anchor_ea_hex,anchor_ea_i64,"
+        "predecessor_version,from_state,to_state "
         "FROM logical_block_version_transitions "
         "WHERE mutation_batch_id='fragment-batch' ORDER BY transition_index"
     ).fetchall() == [
-        ("logical-original", 0, "published", 0, "retired"),
-        ("logical-original", 1, "staged", 1, "published"),
+        (
+            "logical-original",
+            0,
+            "physical-original-v0",
+            8,
+            "native",
+            _VERSION_IDENTITY_JSON,
+            "0x000000000040c800",
+            0x40C800,
+            None,
+            "published",
+            "retired",
+        ),
+        (
+            "logical-original",
+            1,
+            "physical-original-v1",
+            9,
+            "native",
+            _VERSION_IDENTITY_JSON,
+            "0x000000000040c800",
+            0x40C800,
+            0,
+            "staged",
+            "published",
+        ),
     ]
     assert diag_conn.execute(
         "SELECT event_kind,outcome FROM semantic_fragment_transaction_events "
@@ -501,9 +551,14 @@ def test_aborted_fragment_persists_failed_postcondition_and_rollback(
             version_transitions=(
                 LogicalBlockVersionTransitionObserved(
                     proxy_token="logical-original",
-                    from_version=1,
+                    version=1,
+                    physical_handle_token="physical-original-v1",
+                    generation=9,
+                    provenance="native",
+                    stable_identity_json=_VERSION_IDENTITY_JSON,
+                    anchor_ea=0x40C800,
+                    predecessor_version=0,
                     from_state="staged",
-                    to_version=1,
                     to_state="aborted",
                 ),
             ),

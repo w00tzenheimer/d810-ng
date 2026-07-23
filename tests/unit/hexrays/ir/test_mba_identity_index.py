@@ -811,7 +811,7 @@ def test_reserved_synthetic_proxy_binds_only_when_insertion_is_realized() -> Non
 
     discarded = index.abort_proxy_transaction(transaction_id)
 
-    assert discarded == (staged.version_id,)
+    assert discarded == (staged,)
     assert index.logical_proxy_for_handle(helper) is None
     assert index.logical_proxy_count == proxy_count
     assert index.resolve(later).serial == 1
@@ -847,7 +847,7 @@ def test_inserted_replacement_abort_preserves_published_coordinates() -> None:
 
     discarded = index.abort_proxy_transaction("abort-inserted-replacement")
 
-    assert discarded == (staged.version_id,)
+    assert discarded == (staged,)
     assert index.resolve(original).handle is original
     assert index.resolve(original).serial == 2
     assert index.resolve(replacement) is None
