@@ -108,21 +108,44 @@ class SemanticFragmentRootEdgeBinding:
     publication_helper: SemanticFragmentRuntimeBinding | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SemanticFragmentRootPublicationGroup:
+    """One predecessor-atomic root authority change."""
+
+    group_id: str
+    predecessor: SemanticFragmentRuntimeBinding
+    edges: tuple[SemanticFragmentRootEdgeBinding, ...]
+    original_predecessor_type: int
+    original_predecessor_flags: int
+    original_conditional_opcode: int | None = None
+    original_call_opcode: int | None = None
+    original_taken: SemanticFragmentRuntimeBinding | None = None
+    original_fallthrough: SemanticFragmentRuntimeBinding | None = None
+
+    @property
+    def conditional(self) -> bool:
+        return self.original_conditional_opcode is not None
+
+    @property
+    def call_fallthrough(self) -> bool:
+        return self.original_call_opcode is not None
+
+
 @dataclass(slots=True)
 class SemanticFragmentRootPublicationToken:
     """Complete rollback authority captured before the first root write."""
 
     plan_id: str
     atomic_group_id: str
-    edges: tuple[SemanticFragmentRootEdgeBinding, ...]
-    attempted_edge_ids: list[str] = field(default_factory=list)
+    groups: tuple[SemanticFragmentRootPublicationGroup, ...]
+    attempted_group_ids: list[str] = field(default_factory=list)
 
-    def edge(self, edge_id: str) -> SemanticFragmentRootEdgeBinding:
-        for edge in self.edges:
-            if edge.edge_id == edge_id:
-                return edge
+    def group(self, group_id: str) -> SemanticFragmentRootPublicationGroup:
+        for group in self.groups:
+            if group.group_id == group_id:
+                return group
         raise SemanticFragmentBackendRejected(
-            f"root publication token has no edge {edge_id!r}"
+            f"root publication token has no group {group_id!r}"
         )
 
 
@@ -1639,7 +1662,10 @@ def _project_fragment(
                 )
                 predecessors[original_id].remove(predecessor_id)
                 projected_target_id = root_id
-                if role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH:
+                if role in {
+                    SemanticEdgeRole.CALL_FALLTHROUGH,
+                    SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                }:
                     matching_helpers = tuple(
                         helper
                         for helper in state.root_fallthrough_helpers
@@ -1648,7 +1674,7 @@ def _project_fragment(
                     )
                     if len(matching_helpers) != 1:
                         raise SemanticFragmentBackendRejected(
-                            "conditional root fallthrough lacks one reserved helper"
+                            "physical root fallthrough lacks one reserved helper"
                         )
                     helper = matching_helpers[0]
                     helper_id = helper.helper_block_id
@@ -1782,6 +1808,19 @@ def _incoming_root_edge_role(predecessor, original) -> SemanticEdgeRole:
     successors = tuple(int(value) for value in predecessor.succset)
     original_serial = int(original.serial)
     if successors == (original_serial,):
+        tail = predecessor.tail
+        if tail is not None and int(tail.opcode) in {
+            int(ida_hexrays.m_call),
+            int(ida_hexrays.m_icall),
+        }:
+            if (
+                predecessor.nextb is None
+                or int(predecessor.nextb.serial) != original_serial
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "call root predecessor physical fallthrough is not adjacent"
+                )
+            return SemanticEdgeRole.CALL_FALLTHROUGH
         return SemanticEdgeRole.DIRECT
     tail = predecessor.tail
     if (
@@ -1902,10 +1941,10 @@ def _reserve_root_fallthrough_helpers(
                 predecessor_serial,
             )
             predecessor_live = _live_block_for_binding(modifier, predecessor)
-            if (
-                _incoming_root_edge_role(predecessor_live, original_live)
-                is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
-            ):
+            if _incoming_root_edge_role(predecessor_live, original_live) in {
+                SemanticEdgeRole.CALL_FALLTHROUGH,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }:
                 candidates.append((predecessor.block_id, root_block_id))
 
     gateway = _gateway(modifier)
@@ -1937,6 +1976,164 @@ def _reserve_root_fallthrough_helpers(
                 root_block_id=root_block_id,
             )
         )
+
+
+def _group_semantic_fragment_root_edges(
+    modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
+    edges: tuple[SemanticFragmentRootEdgeBinding, ...],
+) -> tuple[SemanticFragmentRootPublicationGroup, ...]:
+    """Capture complete predecessor authority before any root is published."""
+    edges_by_predecessor: dict[str, list[SemanticFragmentRootEdgeBinding]] = {}
+    for edge in edges:
+        edges_by_predecessor.setdefault(edge.predecessor.block_id, []).append(edge)
+
+    groups: list[SemanticFragmentRootPublicationGroup] = []
+    for predecessor_block_id, grouped_edges in edges_by_predecessor.items():
+        predecessor_binding = grouped_edges[0].predecessor
+        if any(
+            edge.predecessor.version is not predecessor_binding.version
+            for edge in grouped_edges
+        ):
+            raise SemanticFragmentBackendRejected(
+                "root publication group has inconsistent predecessor authority"
+            )
+        predecessor = _live_block_for_binding(modifier, predecessor_binding)
+        roles = frozenset(edge.role for edge in grouped_edges)
+        conditional_roles = {
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        }
+        if roles == {SemanticEdgeRole.CALL_FALLTHROUGH}:
+            if len(grouped_edges) != 1:
+                raise SemanticFragmentBackendRejected(
+                    "call root publication group contains multiple edges"
+                )
+            tail = predecessor.tail
+            successors = tuple(int(value) for value in predecessor.succset)
+            if (
+                int(predecessor.nsucc()) != 1
+                or tail is None
+                or int(tail.opcode)
+                not in {
+                    int(ida_hexrays.m_call),
+                    int(ida_hexrays.m_icall),
+                }
+                or predecessor.nextb is None
+                or tuple(successors) != (int(predecessor.nextb.serial),)
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "call root publication group lost its physical fallthrough"
+                )
+            original_fallthrough = _binding_for_live_serial(
+                modifier,
+                state,
+                successors[0],
+            )
+            if (
+                grouped_edges[0].original.version
+                is not original_fallthrough.version
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "call root edge does not match its captured fallthrough"
+                )
+            groups.append(
+                SemanticFragmentRootPublicationGroup(
+                    group_id=f"root-group:{predecessor_block_id}",
+                    predecessor=predecessor_binding,
+                    edges=tuple(grouped_edges),
+                    original_predecessor_type=int(predecessor.type),
+                    original_predecessor_flags=int(predecessor.flags),
+                    original_call_opcode=int(tail.opcode),
+                    original_fallthrough=original_fallthrough,
+                )
+            )
+            continue
+        if roles == {SemanticEdgeRole.DIRECT}:
+            if len(grouped_edges) != 1:
+                raise SemanticFragmentBackendRejected(
+                    "direct root publication group contains multiple edges"
+                )
+            groups.append(
+                SemanticFragmentRootPublicationGroup(
+                    group_id=f"root-group:{predecessor_block_id}",
+                    predecessor=predecessor_binding,
+                    edges=tuple(grouped_edges),
+                    original_predecessor_type=int(predecessor.type),
+                    original_predecessor_flags=int(predecessor.flags),
+                )
+            )
+            continue
+        if (
+            not roles.issubset(conditional_roles)
+            or len(grouped_edges) > 2
+            or len(roles) != len(grouped_edges)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "conditional root publication group must contain at most one "
+                "taken edge and one fallthrough edge"
+            )
+        tail = predecessor.tail
+        successors = tuple(int(value) for value in predecessor.succset)
+        if (
+            int(predecessor.nsucc()) != 2
+            or tail is None
+            or not ida_hexrays.is_mcode_jcond(int(tail.opcode))
+            or getattr(tail, "d", None) is None
+            or int(tail.d.t) != int(ida_hexrays.mop_b)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "conditional root publication group lost its original predicate"
+            )
+        taken_serial = int(tail.d.b)
+        fallthrough_serials = tuple(
+            successor for successor in successors if successor != taken_serial
+        )
+        if taken_serial not in successors or len(fallthrough_serials) != 1:
+            raise SemanticFragmentBackendRejected(
+                "conditional root publication group has inconsistent arms"
+            )
+        fallthrough_serial = int(fallthrough_serials[0])
+        if (
+            predecessor.nextb is None
+            or int(predecessor.nextb.serial) != fallthrough_serial
+        ):
+            raise SemanticFragmentBackendRejected(
+                "conditional root publication group lacks physical fallthrough"
+            )
+        original_taken = _binding_for_live_serial(
+            modifier,
+            state,
+            taken_serial,
+        )
+        original_fallthrough = _binding_for_live_serial(
+            modifier,
+            state,
+            fallthrough_serial,
+        )
+        for edge in grouped_edges:
+            expected_original = (
+                original_taken
+                if edge.role is SemanticEdgeRole.CONDITIONAL_TAKEN
+                else original_fallthrough
+            )
+            if edge.original.version is not expected_original.version:
+                raise SemanticFragmentBackendRejected(
+                    "conditional root edge does not match its captured arm"
+                )
+        groups.append(
+            SemanticFragmentRootPublicationGroup(
+                group_id=f"root-group:{predecessor_block_id}",
+                predecessor=predecessor_binding,
+                edges=tuple(grouped_edges),
+                original_predecessor_type=int(predecessor.type),
+                original_predecessor_flags=int(predecessor.flags),
+                original_conditional_opcode=int(tail.opcode),
+                original_taken=original_taken,
+                original_fallthrough=original_fallthrough,
+            )
+        )
+    return tuple(groups)
 
 
 def prepare_semantic_fragment_root_publication(
@@ -2001,7 +2198,10 @@ def prepare_semantic_fragment_root_publication(
             predecessor_live = _live_block_for_binding(modifier, predecessor)
             role = _incoming_root_edge_role(predecessor_live, original_live)
             publication_helper = None
-            if role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH:
+            if role in {
+                SemanticEdgeRole.CALL_FALLTHROUGH,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }:
                 matching_helpers = tuple(
                     helper
                     for helper in state.root_fallthrough_helpers
@@ -2010,7 +2210,7 @@ def prepare_semantic_fragment_root_publication(
                 )
                 if len(matching_helpers) != 1:
                     raise SemanticFragmentBackendRejected(
-                        "conditional root fallthrough lacks one reserved helper"
+                        "physical root fallthrough lacks one reserved helper"
                     )
                 publication_helper = state.binding(matching_helpers[0].helper_block_id)
             edge_id = f"{root_block_id}:{predecessor.block_id}:{role.value}"
@@ -2047,6 +2247,7 @@ def prepare_semantic_fragment_root_publication(
         for edge in edges
         if edge.role
         not in {
+            SemanticEdgeRole.CALL_FALLTHROUGH,
             SemanticEdgeRole.DIRECT,
             SemanticEdgeRole.CONDITIONAL_TAKEN,
             SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
@@ -2054,12 +2255,24 @@ def prepare_semantic_fragment_root_publication(
     )
     if unsupported:
         raise SemanticFragmentBackendRejected(
-            "conditional root publication requires its dedicated atomic lowering"
+            "root publication requires a supported predecessor-atomic lowering"
+        )
+    groups = _group_semantic_fragment_root_edges(
+        modifier,
+        state,
+        tuple(edges),
+    )
+    grouped_edge_ids = tuple(
+        edge.edge_id for group in groups for edge in group.edges
+    )
+    if set(grouped_edge_ids) != set(edge_ids) or len(grouped_edge_ids) != len(edge_ids):
+        raise SemanticFragmentBackendRejected(
+            "root publication groups do not cover the complete edge inventory"
         )
     return SemanticFragmentRootPublicationToken(
         plan_id=plan.plan_id,
         atomic_group_id=plan.atomic_group_id,
-        edges=tuple(edges),
+        groups=groups,
     )
 
 
@@ -2214,6 +2427,7 @@ __all__ = [
     "SemanticFragmentBackendRejected",
     "SemanticFragmentBackendState",
     "SemanticFragmentRootEdgeBinding",
+    "SemanticFragmentRootPublicationGroup",
     "SemanticFragmentRootPublicationToken",
     "SemanticNativeBodyMaterializer",
     "SemanticNativeBodyStagingContext",

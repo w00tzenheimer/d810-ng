@@ -18,7 +18,10 @@ class SemanticFragmentRootInventoryItem:
 
     @property
     def requires_helper(self) -> bool:
-        return self.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+        return self.role in {
+            SemanticEdgeRole.CALL_FALLTHROUGH,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        }
 
 
 @dataclass(frozen=True, slots=True)
