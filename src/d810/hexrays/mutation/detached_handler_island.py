@@ -1623,19 +1623,20 @@ def _split_nonterminal_raw_call_blocks(
     return tuple(result)
 
 
-def _split_boundary_target_entry_blocks(
+def _split_semantic_target_entry_blocks(
     blocks: tuple[DetachedSnippetBlockTemplate, ...],
     boundary_ports: DetachedSnippetBoundaryPorts,
+    resolver_internal_successor_eas: Mapping[int, int],
 ) -> tuple[DetachedSnippetBlockTemplate, ...] | None:
     """Make every imported semantic target an exact template entry.
 
     Hex-Rays can place an unreferenced native handler immediately after the
-    dispatcher tail in one microcode block.  A boundary target that merely
+    dispatcher tail in one microcode block.  A semantic edge that merely
     selects that containing block lands before the handler and can execute the
     resolver tail again.  Split at the first instruction carrying each exact
     imported target EA so native semantic identity also becomes CFG identity.
-    Existing predecessors continue to enter the prefix; only explicit boundary
-    ports bind the new suffix.
+    Existing predecessors continue to enter the prefix; only the exact
+    semantic edge is rebound to the new suffix.
     """
     target_eas = {
         int(port.target_ea)
@@ -1654,8 +1655,60 @@ def _split_boundary_target_entry_blocks(
         if target_ea is not None
         and owner is DetachedSnippetBoundaryPortOwner.IMPORTED
     )
+    target_eas.update(
+        int(target_ea)
+        for target_ea in resolver_internal_successor_eas.values()
+    )
     if not target_eas:
         return blocks
+
+    raw_internal_routes: dict[int, tuple[int, int, int]] = {}
+    for resolver_ea, target_ea in sorted(
+        (
+            (int(resolver_ea), int(target_ea))
+            for resolver_ea, target_ea in resolver_internal_successor_eas.items()
+        )
+    ):
+        source_matches = tuple(
+            block
+            for block in blocks
+            if any(
+                int(instruction.ea) == resolver_ea
+                for instruction in block.instructions
+            )
+        )
+        target_matches = tuple(
+            block
+            for block in blocks
+            if any(
+                int(instruction.ea) == target_ea
+                for instruction in block.instructions
+            )
+        )
+        if len(source_matches) != 1 or len(target_matches) != 1:
+            logger.info(
+                "detached snippet semantic-target split abstained: "
+                "resolver_ea=0x%X target=0x%X sources=%s targets=%s "
+                "reason=non_unique_exact_internal_route",
+                resolver_ea,
+                target_ea,
+                tuple(
+                    "blk%d@0x%X"
+                    % (int(block.source_serial), int(block.native_entry_ea))
+                    for block in source_matches
+                ),
+                tuple(
+                    "blk%d@0x%X"
+                    % (int(block.source_serial), int(block.native_entry_ea))
+                    for block in target_matches
+                ),
+            )
+            return None
+        raw_internal_routes[resolver_ea] = (
+            target_ea,
+            int(target_matches[0].source_serial),
+            int(target_matches[0].native_entry_ea),
+        )
 
     split_indexes_by_serial: dict[int, set[int]] = {}
     for target_ea in sorted(target_eas):
@@ -1748,6 +1801,97 @@ def _split_boundary_target_entry_blocks(
                     ),
                 )
             )
+    for resolver_ea, (
+        target_ea,
+        previous_target_serial,
+        previous_target_entry_ea,
+    ) in raw_internal_routes.items():
+        source_matches = tuple(
+            (index, block)
+            for index, block in enumerate(result)
+            if any(
+                int(instruction.ea) == resolver_ea
+                for instruction in block.instructions
+            )
+        )
+        target_matches = tuple(
+            block
+            for block in result
+            if int(block.native_entry_ea) == target_ea
+            and any(
+                int(instruction.ea) == target_ea
+                for instruction in block.instructions
+            )
+        )
+        if len(source_matches) != 1 or len(target_matches) != 1:
+            logger.info(
+                "detached snippet semantic-target rebind abstained: "
+                "resolver_ea=0x%X target=0x%X sources=%s targets=%s "
+                "reason=non_unique_split_internal_route",
+                resolver_ea,
+                target_ea,
+                tuple(
+                    "blk%d@0x%X"
+                    % (int(block.source_serial), int(block.native_entry_ea))
+                    for _index, block in source_matches
+                ),
+                tuple(
+                    "blk%d@0x%X"
+                    % (int(block.source_serial), int(block.native_entry_ea))
+                    for block in target_matches
+                ),
+            )
+            return None
+        source_index, source = source_matches[0]
+        target_serial = int(target_matches[0].source_serial)
+        if target_serial == previous_target_serial:
+            continue
+        replacements = sum(
+            int(successor) == previous_target_serial
+            for successor in source.successor_serials
+        )
+        if replacements != 1:
+            logger.info(
+                "detached snippet semantic-target rebind abstained: "
+                "source=blk%d@0x%X resolver_ea=0x%X target=0x%X "
+                "old_target=blk%d@0x%X new_target=blk%d@0x%X replacements=%d "
+                "reason=non_unique_internal_successor",
+                int(source.source_serial),
+                int(source.native_entry_ea),
+                resolver_ea,
+                target_ea,
+                previous_target_serial,
+                previous_target_entry_ea,
+                target_serial,
+                target_ea,
+                replacements,
+            )
+            return None
+        successor_serials = tuple(
+            target_serial
+            if int(successor) == previous_target_serial
+            else int(successor)
+            for successor in source.successor_serials
+        )
+        tail = source.instructions[-1] if source.instructions else None
+        if (
+            tail is not None
+            and int(tail.opcode) == int(ida_hexrays.m_goto)
+            and int(tail.l.t) == int(ida_hexrays.mop_b)
+            and int(tail.l.b) == previous_target_serial
+        ):
+            tail.l.b = target_serial
+        elif (
+            tail is not None
+            and ida_hexrays.is_mcode_jcond(int(tail.opcode))
+            and int(tail.d.t) == int(ida_hexrays.mop_b)
+            and int(tail.d.b) == previous_target_serial
+        ):
+            tail.d.b = target_serial
+        result[source_index] = replace(
+            source,
+            successor_serials=successor_serials,
+        )
     return tuple(result)
 
 
@@ -2209,6 +2353,7 @@ def _capture_detached_snippet_template(
     stack_map: dict[int, int] = {}
     instruction_stack_map: dict[tuple[int, int], int] = {}
     stable_identities_by_vd: dict[int, set[int]] = {}
+    captured_resolver_internal_successor_eas: dict[int, int] = {}
     templates: list[DetachedSnippetBlockTemplate] = []
     for serial, block in sorted(included.items()):
         instructions = tuple(
@@ -2352,8 +2497,12 @@ def _capture_detached_snippet_template(
             target_serials = tuple(
                 int(candidate_serial)
                 for candidate_serial, candidate in included.items()
-                if _unique_block_native_ea(candidate)
-                == int(proven_internal_target_ea)
+                if (
+                    _unique_block_native_ea(candidate)
+                    == int(proven_internal_target_ea)
+                    or int(proven_internal_target_ea)
+                    in _block_native_eas(candidate)
+                )
             )
             if len(target_serials) != 1:
                 logger.info(
@@ -2366,10 +2515,20 @@ def _capture_detached_snippet_template(
                     int(block.start),
                     int(block.tail.ea),
                     int(proven_internal_target_ea),
-                    target_serials,
+                    tuple(
+                        "blk%d@0x%X"
+                        % (
+                            int(candidate_serial),
+                            int(included[int(candidate_serial)].start),
+                        )
+                        for candidate_serial in target_serials
+                    ),
                 )
                 return False
             proven_internal_target_serial = int(target_serials[0])
+            captured_resolver_internal_successor_eas[int(block.tail.ea)] = int(
+                proven_internal_target_ea
+            )
         native_entry = _unique_block_native_ea(block)
         if (
             native_entry is None
@@ -2488,6 +2647,50 @@ def _capture_detached_snippet_template(
         template_block_flags = int(block.flags)
         if proven_internal_target_serial is not None:
             tail = instructions[-1] if instructions else None
+            explicit_resolver_fallthrough_indexes = (
+                tuple(
+                    index
+                    for index, (successor, external_ea) in enumerate(
+                        zip(internal_successors, external_successors)
+                    )
+                    if int(external_ea) == int(block.end)
+                    and int(external_ea) > 0
+                    and int(successor) != int(tail.d.b)
+                )
+                if tail is not None
+                and block.tail is not None
+                and int(tail.ea) == int(block.tail.ea)
+                and ida_hexrays.is_mcode_jcond(int(tail.opcode))
+                and int(tail.d.t) == int(ida_hexrays.mop_b)
+                and int(block.nsucc()) == 2
+                and len(internal_successors) == 2
+                and len(external_successors) == 2
+                and int(tail.d.b) in internal_successors
+                and int(proven_internal_target_serial) not in internal_successors
+                else ()
+            )
+            if len(explicit_resolver_fallthrough_indexes) == 1:
+                fallthrough_index = explicit_resolver_fallthrough_indexes[0]
+                replaced_serial = int(internal_successors[fallthrough_index])
+                replaced_ea = int(external_successors[fallthrough_index])
+                internal_successors[fallthrough_index] = int(
+                    proven_internal_target_serial
+                )
+                external_successors[fallthrough_index] = 0
+                logger.info(
+                    "detached snippet replaced proven resolver fallthrough: "
+                    "target=0x%X source=blk%d@0x%X predicate=0x%X "
+                    "resolver_fallthrough=blk%d@0x%X "
+                    "semantic_target=blk%d@0x%X",
+                    int(target_ea),
+                    int(block.serial),
+                    int(block.start),
+                    int(block.tail.ea),
+                    replaced_serial,
+                    replaced_ea,
+                    int(proven_internal_target_serial),
+                    int(proven_internal_target_ea or 0),
+                )
             conditional_route_closed = bool(
                 tail is not None
                 and block.tail is not None
@@ -2514,7 +2717,19 @@ def _capture_detached_snippet_template(
                     int(block.start),
                     int(block.tail.ea),
                     int(proven_internal_target_ea or 0),
-                    tuple(internal_successors),
+                    tuple(
+                        "blk%d@0x%X"
+                        % (
+                            int(successor),
+                            int(
+                                _unique_block_native_ea(
+                                    mba.get_mblock(int(successor))
+                                )
+                                or int(mba.get_mblock(int(successor)).start)
+                            ),
+                        )
+                        for successor in internal_successors
+                    ),
                     tuple(external_successors),
                 )
             else:
@@ -2555,7 +2770,19 @@ def _capture_detached_snippet_template(
                         int(block.start),
                         int(block.tail.ea),
                         int(proven_internal_target_ea or 0),
-                        tuple(internal_successors),
+                        tuple(
+                            "blk%d@0x%X"
+                            % (
+                                int(successor),
+                                int(
+                                    _unique_block_native_ea(
+                                        mba.get_mblock(int(successor))
+                                    )
+                                    or int(mba.get_mblock(int(successor)).start)
+                                ),
+                            )
+                            for successor in internal_successors
+                        ),
                         tuple(external_successors),
                         int(block.nsucc()),
                         None if tail is None else int(tail.opcode),
@@ -2667,9 +2894,10 @@ def _capture_detached_snippet_template(
             owned_entries=owned_entries,
             owned_ranges=normalized_ranges,
         )
-    boundary_split_templates = _split_boundary_target_entry_blocks(
+    boundary_split_templates = _split_semantic_target_entry_blocks(
         captured_templates,
         boundary_ports,
+        captured_resolver_internal_successor_eas,
     )
     if boundary_split_templates is None:
         logger.info(
