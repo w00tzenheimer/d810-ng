@@ -21,6 +21,7 @@ from d810.hexrays.ir.flag_queries import (
     ConditionCodeQueryUnavailable,
     condition_code_write_eas,
 )
+from d810.hexrays.opcode_lift import value_op_from_opcode
 from d810.hexrays.ir.logical_block_proxy import (
     LogicalBlockProxy,
     LogicalBlockVersion,
@@ -34,15 +35,20 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventoryItem,
 )
 from d810.ir.block_identity import BlockHandleProvenance
+from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockKind
 from d810.ir.semantic_edge import SemanticEdgeRole
-from d810.ir.storage_identity import StorageIdentityKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentNativeBody,
     FragmentPlan,
     FragmentRangeObservation,
+    FragmentReturnCarrier,
+    FragmentReturnSource,
+    FragmentReturnSourceKind,
+    FragmentTerminalReturn,
 )
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
@@ -634,6 +640,538 @@ def _instruction_eas(
     return tuple(result)
 
 
+_RETURN_CARRIER_OPCODES = {
+    ValueOpKind.MOVE: int(ida_hexrays.m_mov),
+    ValueOpKind.ZEXT: int(ida_hexrays.m_xdu),
+    ValueOpKind.SEXT: int(ida_hexrays.m_xds),
+}
+
+
+def _return_mreg() -> int:
+    try:
+        return int(ida_hexrays.reg2mreg(0))
+    except Exception as exc:
+        raise SemanticFragmentBackendRejected(
+            "Hex-Rays return-register identity is unavailable"
+        ) from exc
+
+
+def _native_instruction_rows(
+    state: SemanticFragmentBackendState,
+    block_id: str,
+    block,
+) -> tuple[tuple[int, object], ...]:
+    origins = state.instruction_origins_by_block_id.get(str(block_id), {})
+    rows: list[tuple[int, object]] = []
+    for instruction in _iter_block_instructions(block):
+        live_ea = int(getattr(instruction, "ea", -1) or -1)
+        native_ea = int(origins.get(live_ea, live_ea))
+        if 0 <= native_ea < _BADADDR:
+            rows.append((native_ea, instruction))
+    return tuple(rows)
+
+
+def _bind_synthesized_instruction_origin(
+    state: SemanticFragmentBackendState,
+    *,
+    block_id: str,
+    live_ea: int,
+    native_ea: int,
+) -> None:
+    block_id = str(block_id)
+    live_ea = int(live_ea)
+    native_ea = int(native_ea)
+    origins = state.instruction_origins_by_block_id.setdefault(block_id, {})
+    if live_ea in origins or native_ea in origins.values():
+        raise SemanticFragmentBackendRejected(
+            f"semantic fragment instruction origin is ambiguous at "
+            f"{block_id}@0x{native_ea:X}"
+        )
+    origins[live_ea] = native_ea
+
+
+def _storage_operand(
+    mba,
+    storage: StorageIdentity,
+    *,
+    width: int,
+):
+    operand = ida_hexrays.mop_t()
+    if storage.kind is StorageIdentityKind.GLOBAL:
+        operand.make_gvar(int(storage.offset))
+    elif storage.kind is StorageIdentityKind.STACK:
+        try:
+            vd_offset = int(mba.stkoff_ida2vd(int(storage.offset)))
+        except Exception as exc:
+            raise SemanticFragmentBackendRejected(
+                "fragment return stack source cannot bind to the live MBA"
+            ) from exc
+        operand.make_stkvar(mba, vd_offset)
+    else:
+        raise SemanticFragmentBackendRejected(
+            "fragment return source has unsupported storage identity"
+        )
+    operand.size = int(width)
+    return operand
+
+
+def _return_source_operand(
+    mba,
+    source: FragmentReturnSource,
+    *,
+    live_ea: int,
+):
+    operand = ida_hexrays.mop_t()
+    if source.kind is FragmentReturnSourceKind.CONSTANT:
+        operand.make_number(
+            int(source.constant),
+            int(source.width),
+            int(live_ea),
+        )
+        return operand
+
+    storage = source.storage_identity
+    if storage is None:
+        raise SemanticFragmentBackendRejected(
+            "fragment return source lost its storage identity"
+        )
+    inner = _storage_operand(mba, storage, width=source.width)
+    if source.kind is FragmentReturnSourceKind.STORAGE_VALUE:
+        operand.assign(inner)
+        return operand
+    if source.kind is not FragmentReturnSourceKind.ADDRESS_OF_STORAGE:
+        raise SemanticFragmentBackendRejected(
+            "fragment return source has unsupported portable kind"
+        )
+    try:
+        address = ida_hexrays.mop_addr_t(
+            inner,
+            int(source.width),
+            int(source.width),
+        )
+        operand.assign(address)
+        operand.size = int(source.width)
+    except Exception as exc:
+        raise SemanticFragmentBackendRejected(
+            "fragment return address source cannot be materialized"
+        ) from exc
+    return operand
+
+
+def _stack_identity_from_operand(mba, operand) -> StorageIdentity | None:
+    stack_ref = getattr(operand, "s", None)
+    if stack_ref is None:
+        return None
+    try:
+        ida_offset = int(mba.stkoff_vd2ida(int(stack_ref.off)))
+    except Exception:
+        return None
+    if ida_offset < 0:
+        return None
+    return StorageIdentity(StorageIdentityKind.STACK, ida_offset)
+
+
+def _storage_identity_from_operand(mba, operand) -> StorageIdentity | None:
+    operand_type = int(getattr(operand, "t", -1))
+    if operand_type == int(ida_hexrays.mop_v):
+        offset = int(getattr(operand, "g", -1))
+        if offset < 0:
+            return None
+        return StorageIdentity(StorageIdentityKind.GLOBAL, offset)
+    if operand_type == int(ida_hexrays.mop_S):
+        return _stack_identity_from_operand(mba, operand)
+    return None
+
+
+def _observed_return_source(mba, operand) -> FragmentReturnSource | None:
+    operand_type = int(getattr(operand, "t", -1))
+    width = int(getattr(operand, "size", 0))
+    try:
+        if operand_type == int(ida_hexrays.mop_n):
+            number = getattr(operand, "nnn", None)
+            if number is None:
+                return None
+            return FragmentReturnSource(
+                kind=FragmentReturnSourceKind.CONSTANT,
+                width=width,
+                constant=int(number.value),
+            )
+        storage = _storage_identity_from_operand(mba, operand)
+        if storage is not None:
+            return FragmentReturnSource(
+                kind=FragmentReturnSourceKind.STORAGE_VALUE,
+                width=width,
+                storage_identity=storage,
+            )
+        if operand_type != int(ida_hexrays.mop_a):
+            return None
+        address = getattr(operand, "a", None)
+        inner = None if address is None else getattr(address, "v", None)
+        if inner is None:
+            inner = address
+        storage = _storage_identity_from_operand(mba, inner)
+        if storage is None:
+            return None
+        return FragmentReturnSource(
+            kind=FragmentReturnSourceKind.ADDRESS_OF_STORAGE,
+            width=width,
+            storage_identity=storage,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _observe_return_carrier(
+    modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
+    planned: FragmentReturnCarrier,
+    block,
+) -> FragmentReturnCarrier | None:
+    rows = _native_instruction_rows(state, planned.block_id, block)
+    state_matches = tuple(
+        index
+        for index, (native_ea, _instruction) in enumerate(rows)
+        if native_ea == planned.state_write_ea
+    )
+    carrier_matches = tuple(
+        index
+        for index, (native_ea, _instruction) in enumerate(rows)
+        if native_ea == planned.carrier_ea
+    )
+    if len(state_matches) != 1 or len(carrier_matches) != 1:
+        return None
+    state_index = state_matches[0]
+    carrier_index = carrier_matches[0]
+    if carrier_index <= state_index:
+        return None
+    instruction = rows[carrier_index][1]
+    operation = value_op_from_opcode(int(getattr(instruction, "opcode", -1)))
+    destination = getattr(instruction, "d", None)
+    right = getattr(instruction, "r", None)
+    if (
+        operation not in _RETURN_CARRIER_OPCODES
+        or destination is None
+        or int(getattr(destination, "t", -1)) != int(ida_hexrays.mop_r)
+        or int(getattr(destination, "r", -1)) != _return_mreg()
+        or int(getattr(destination, "size", 0)) <= 0
+        or right is None
+        or int(getattr(right, "t", -1)) != int(ida_hexrays.mop_z)
+    ):
+        return None
+    source = _observed_return_source(modifier.mba, getattr(instruction, "l", None))
+    if source is None:
+        return None
+    try:
+        return FragmentReturnCarrier(
+            carrier_id=planned.carrier_id,
+            block_id=planned.block_id,
+            state_write_ea=rows[state_index][0],
+            carrier_ea=rows[carrier_index][0],
+            operation=operation,
+            source=source,
+            return_width=int(destination.size),
+            corridor_instruction_eas=tuple(
+                native_ea
+                for native_ea, _instruction in rows[
+                    state_index : carrier_index + 1
+                ]
+            ),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _project_return_carriers(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    live_by_id: dict[str, object],
+) -> tuple[FragmentReturnCarrier, ...]:
+    observed: list[FragmentReturnCarrier] = []
+    for planned in plan.return_carriers:
+        block = live_by_id.get(planned.block_id)
+        if block is None:
+            continue
+        carrier = _observe_return_carrier(modifier, state, planned, block)
+        if carrier is not None:
+            observed.append(carrier)
+    return tuple(observed)
+
+
+def _observe_terminal_return(
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    planned: FragmentTerminalReturn,
+    block,
+    observed_carriers: tuple[FragmentReturnCarrier, ...],
+) -> FragmentTerminalReturn | None:
+    rows = _native_instruction_rows(state, planned.block_id, block)
+    matches = tuple(
+        index
+        for index, (native_ea, _instruction) in enumerate(rows)
+        if native_ea == planned.instruction_ea
+    )
+    if len(matches) != 1 or matches[0] != len(rows) - 1:
+        return None
+    instruction = rows[matches[0]][1]
+    if (
+        int(getattr(instruction, "opcode", -1)) != int(ida_hexrays.m_ret)
+        or any(
+            int(getattr(getattr(instruction, slot, None), "t", -1))
+            != int(ida_hexrays.mop_z)
+            for slot in ("l", "r", "d")
+        )
+        or int(block.type)
+        not in {
+            int(ida_hexrays.BLT_0WAY),
+            int(ida_hexrays.BLT_STOP),
+        }
+        or tuple(int(value) for value in block.succset)
+    ):
+        return None
+
+    carrier_by_id = {
+        carrier.carrier_id: carrier for carrier in observed_carriers
+    }
+    linked_routes = tuple(
+        route for route in plan.terminal_routes if route.return_id == planned.return_id
+    )
+    linked_carriers = tuple(
+        carrier_by_id.get(route.carrier_id) for route in linked_routes
+    )
+    if (
+        not linked_carriers
+        or any(carrier is None for carrier in linked_carriers)
+        or len({carrier.return_width for carrier in linked_carriers if carrier}) != 1
+    ):
+        return None
+    return_width = next(
+        carrier.return_width for carrier in linked_carriers if carrier is not None
+    )
+    try:
+        return FragmentTerminalReturn(
+            return_id=planned.return_id,
+            block_id=planned.block_id,
+            instruction_ea=rows[matches[0]][0],
+            return_width=return_width,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _project_terminal_returns(
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    live_by_id: dict[str, object],
+    observed_carriers: tuple[FragmentReturnCarrier, ...],
+) -> tuple[FragmentTerminalReturn, ...]:
+    observed: list[FragmentTerminalReturn] = []
+    for planned in plan.terminal_returns:
+        block = live_by_id.get(planned.block_id)
+        if block is None:
+            continue
+        terminal_return = _observe_terminal_return(
+            plan,
+            state,
+            planned,
+            block,
+            observed_carriers,
+        )
+        if terminal_return is not None:
+            observed.append(terminal_return)
+    return tuple(observed)
+
+
+def _materialize_return_carrier(
+    modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
+    planned: FragmentReturnCarrier,
+) -> None:
+    block = _live_block_for_binding(modifier, state.binding(planned.block_id))
+    rows = _native_instruction_rows(state, planned.block_id, block)
+    carrier_matches = tuple(
+        instruction
+        for native_ea, instruction in rows
+        if native_ea == planned.carrier_ea
+    )
+    if carrier_matches:
+        observed = _observe_return_carrier(modifier, state, planned, block)
+        if len(carrier_matches) != 1 or observed != planned:
+            raise SemanticFragmentBackendRejected(
+                f"fragment return carrier conflicts at "
+                f"{planned.block_id}@0x{planned.carrier_ea:X}"
+            )
+        return
+
+    prefix = planned.corridor_instruction_eas[:-1]
+    prefix_positions: list[int] = []
+    for native_ea in prefix:
+        matches = tuple(
+            index
+            for index, (candidate_ea, _instruction) in enumerate(rows)
+            if candidate_ea == native_ea
+        )
+        if len(matches) != 1:
+            raise SemanticFragmentBackendRejected(
+                f"fragment return corridor is ambiguous at "
+                f"{planned.block_id}@0x{native_ea:X}"
+            )
+        prefix_positions.append(matches[0])
+    if any(
+        following != current + 1
+        for current, following in zip(prefix_positions, prefix_positions[1:])
+    ):
+        raise SemanticFragmentBackendRejected(
+            f"fragment return corridor is not contiguous in {planned.block_id!r}"
+        )
+
+    live_ea = int(modifier.mba.alloc_fict_ea(planned.carrier_ea))
+    try:
+        instruction = ida_hexrays.minsn_t(live_ea)
+        instruction.opcode = _RETURN_CARRIER_OPCODES[planned.operation]
+        source = _return_source_operand(
+            modifier.mba,
+            planned.source,
+            live_ea=live_ea,
+        )
+        instruction.l.assign(source)
+        instruction.r.erase()
+        instruction.d.make_reg(_return_mreg(), planned.return_width)
+        modifier.insert_instruction_now(
+            block,
+            instruction,
+            rows[prefix_positions[-1]][1],
+        )
+    except Exception as exc:
+        if isinstance(exc, SemanticFragmentBackendRejected):
+            raise
+        raise SemanticFragmentBackendRejected(
+            f"fragment return carrier could not be synthesized at "
+            f"{planned.block_id}@0x{planned.carrier_ea:X}"
+        ) from exc
+    _bind_synthesized_instruction_origin(
+        state,
+        block_id=planned.block_id,
+        live_ea=live_ea,
+        native_ea=planned.carrier_ea,
+    )
+    modifier.mark_blocks_dirty_now(block)
+    if _observe_return_carrier(modifier, state, planned, block) != planned:
+        raise SemanticFragmentBackendRejected(
+            f"fragment return carrier failed live observation at "
+            f"{planned.block_id}@0x{planned.carrier_ea:X}"
+        )
+
+
+def _materialize_terminal_return(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    planned: FragmentTerminalReturn,
+) -> None:
+    block = _live_block_for_binding(modifier, state.binding(planned.block_id))
+    if tuple(int(value) for value in block.succset):
+        raise SemanticFragmentBackendRejected(
+            f"fragment terminal return block {planned.block_id!r} has successors"
+        )
+    rows = _native_instruction_rows(state, planned.block_id, block)
+    matches = tuple(
+        index
+        for index, (native_ea, _instruction) in enumerate(rows)
+        if native_ea == planned.instruction_ea
+    )
+    if len(matches) > 1 or (matches and matches[0] != len(rows) - 1):
+        raise SemanticFragmentBackendRejected(
+            f"fragment terminal return is ambiguous at "
+            f"{planned.block_id}@0x{planned.instruction_ea:X}"
+        )
+    if matches:
+        instruction = rows[matches[0]][1]
+    else:
+        tail = block.tail
+        if tail is not None and (
+            ida_hexrays.is_mcode_jcond(int(tail.opcode))
+            or int(tail.opcode)
+            in {
+                int(ida_hexrays.m_goto),
+                int(ida_hexrays.m_ijmp),
+                int(ida_hexrays.m_jtbl),
+                int(ida_hexrays.m_call),
+                int(ida_hexrays.m_icall),
+                int(ida_hexrays.m_ret),
+            }
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"fragment terminal return cannot append after a closing "
+                f"instruction in {planned.block_id!r}"
+            )
+        live_ea = int(modifier.mba.alloc_fict_ea(planned.instruction_ea))
+        instruction = ida_hexrays.minsn_t(live_ea)
+        modifier.insert_instruction_now(block, instruction, block.tail)
+        _bind_synthesized_instruction_origin(
+            state,
+            block_id=planned.block_id,
+            live_ea=live_ea,
+            native_ea=planned.instruction_ea,
+        )
+    instruction.opcode = int(ida_hexrays.m_ret)
+    instruction.l.erase()
+    instruction.r.erase()
+    instruction.d.erase()
+    modifier.configure_block_now(
+        block,
+        block_type=int(ida_hexrays.BLT_STOP),
+        flags=(
+            int(block.flags)
+            & ~int(ida_hexrays.MBL_GOTO)
+            & ~int(ida_hexrays.MBL_CALL)
+        ),
+    )
+    modifier.mark_blocks_dirty_now(block)
+    observed_carriers = _project_return_carriers(
+        modifier,
+        plan,
+        state,
+        {
+            carrier.block_id: _live_block_for_binding(
+                modifier,
+                state.binding(carrier.block_id),
+            )
+            for carrier in plan.return_carriers
+        },
+    )
+    if (
+        _observe_terminal_return(
+            plan,
+            state,
+            planned,
+            block,
+            observed_carriers,
+        )
+        != planned
+    ):
+        raise SemanticFragmentBackendRejected(
+            f"fragment terminal return failed live observation at "
+            f"{planned.block_id}@0x{planned.instruction_ea:X}"
+        )
+
+
+def _materialize_terminal_effects(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+) -> None:
+    for carrier in plan.return_carriers:
+        _materialize_return_carrier(modifier, state, carrier)
+    for terminal_return in plan.terminal_returns:
+        _materialize_terminal_return(
+            modifier,
+            plan,
+            state,
+            terminal_return,
+        )
+
+
 def _exact_site_instruction(
     live_by_id: dict[str, object],
     site,
@@ -1131,12 +1669,26 @@ def _project_fragment(
         ids_by_serial,
     )
     value_ranges = _project_value_ranges(plan, live_by_id)
+    return_carriers = _project_return_carriers(
+        modifier,
+        plan,
+        state,
+        live_by_id,
+    )
+    terminal_returns = _project_terminal_returns(
+        plan,
+        state,
+        live_by_id,
+        return_carriers,
+    )
     return ProjectedFragment(
         entry_block_id=entry_ids[0],
         blocks=projected_blocks,
         identity_bindings=projected_bindings,
         fallthrough_helpers=tuple(state.fallthrough_helpers),
         root_fallthrough_helpers=tuple(state.root_fallthrough_helpers),
+        return_carriers=return_carriers,
+        terminal_returns=terminal_returns,
         data_flow_relations=data_flow_relations,
         value_ranges=value_ranges,
     )
@@ -1499,6 +2051,28 @@ def observe_published_semantic_fragment(
         ):
             observable_operations.append(operation)
 
+    observable_return_carriers = tuple(
+        carrier
+        for carrier in projection.return_carriers
+        if any(
+            outcome.postcondition
+            is FragmentValidationPostcondition.RETURN_CARRIER_INTEGRITY
+            and outcome.subject_id == carrier.carrier_id
+            and outcome.passed
+            for outcome in validation.outcomes
+        )
+    )
+    observable_terminal_returns = tuple(
+        terminal_return
+        for terminal_return in projection.terminal_returns
+        if any(
+            outcome.postcondition
+            is FragmentValidationPostcondition.TERMINAL_RETURN_INTEGRITY
+            and outcome.subject_id == terminal_return.return_id
+            and outcome.passed
+            for outcome in validation.outcomes
+        )
+    )
     return PublishedFragmentObservation(
         plan_id=plan.plan_id,
         atomic_group_id=plan.atomic_group_id,
@@ -1507,6 +2081,8 @@ def observe_published_semantic_fragment(
         semantic_outcomes=validation.outcomes,
         fallthrough_helpers=projection.fallthrough_helpers,
         root_fallthrough_helpers=projection.root_fallthrough_helpers,
+        observable_return_carriers=observable_return_carriers,
+        observable_terminal_returns=observable_terminal_returns,
     )
 
 
@@ -1550,6 +2126,7 @@ def stage_semantic_fragment(
                     block,
                     reference_version=reference_version,
                 )
+        _materialize_terminal_effects(modifier, plan, state)
         _realize_operations(modifier, plan, state)
         _reserve_root_fallthrough_helpers(modifier, plan, state)
         projection = _project_fragment(modifier, plan, state)

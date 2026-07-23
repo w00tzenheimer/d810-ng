@@ -22,11 +22,13 @@ from d810.hexrays.ir.exact_value_ranges import (  # noqa: E402
 from d810.hexrays.mutation.semantic_fragment_publication import (  # noqa: E402
     SemanticFragmentPublicationRejected,
 )
+from d810.ir.expressions import ValueOpKind  # noqa: E402
 from d810.ir.block_identity import (  # noqa: E402
     BlockHandleProvenance,
     NativeEaInterval,
     StableBlockIdentity,
 )
+from d810.ir.flowgraph import BlockKind  # noqa: E402
 from d810.ir.semantic_edge import SemanticEdgeRole  # noqa: E402
 from d810.ir.storage_identity import (  # noqa: E402
     StorageIdentity,
@@ -46,6 +48,11 @@ from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentPublicationPurpose,
     FragmentRangeAssumption,
     FragmentRangeObservation,
+    FragmentReturnCarrier,
+    FragmentReturnSource,
+    FragmentReturnSourceKind,
+    FragmentTerminalReturn,
+    FragmentTerminalRoute,
     FragmentValueSite,
 )
 from d810.transforms.fragment_validation import (  # noqa: E402
@@ -109,22 +116,79 @@ class _BlockReference:
     def __init__(self, serial: int | None = None):
         self.t = int(ida_hexrays.mop_z if serial is None else ida_hexrays.mop_b)
         self.b = -1 if serial is None else int(serial)
+        self.size = 0
+        self.r = -1
+        self.g = -1
+        self.nnn = None
+        self.s = None
+        self.a = None
         self.writes_ccflags = False
         self.writes_cc = False
 
+    def _reset_value(self) -> None:
+        self.b = -1
+        self.size = 0
+        self.r = -1
+        self.g = -1
+        self.nnn = None
+        self.s = None
+        self.a = None
+
     def make_blkref(self, serial: int) -> None:
+        self._reset_value()
         self.t = int(ida_hexrays.mop_b)
         self.b = int(serial)
 
+    def make_number(self, value: int, size: int, *_args) -> None:
+        self._reset_value()
+        self.t = int(ida_hexrays.mop_n)
+        self.size = int(size)
+        self.nnn = type("_Number", (), {"value": int(value)})()
+
+    def make_reg(self, register: int, size: int) -> None:
+        self._reset_value()
+        self.t = int(ida_hexrays.mop_r)
+        self.r = int(register)
+        self.size = int(size)
+
+    def make_gvar(self, address: int) -> None:
+        self._reset_value()
+        self.t = int(ida_hexrays.mop_v)
+        self.g = int(address)
+
+    def make_stkvar(self, _mba, offset: int) -> None:
+        self._reset_value()
+        self.t = int(ida_hexrays.mop_S)
+        self.s = type("_StackReference", (), {"off": int(offset)})()
+
+    def assign(self, other):
+        self.t = int(other.t)
+        self.b = int(getattr(other, "b", -1))
+        self.size = int(getattr(other, "size", 0))
+        self.r = int(getattr(other, "r", -1))
+        self.g = int(getattr(other, "g", -1))
+        self.nnn = deepcopy(getattr(other, "nnn", None))
+        self.s = deepcopy(getattr(other, "s", None))
+        self.a = deepcopy(getattr(other, "a", None))
+        return self
+
     def erase(self) -> None:
+        self._reset_value()
         self.t = int(ida_hexrays.mop_z)
-        self.b = -1
 
     def is_ccflags(self) -> bool:
         return self.writes_ccflags
 
     def is_cc(self) -> bool:
         return self.writes_cc
+
+
+class _AddressOperand(_BlockReference):
+    def __init__(self, inner: _BlockReference, _insize: int, outsize: int):
+        super().__init__()
+        self.t = int(ida_hexrays.mop_a)
+        self.size = int(outsize)
+        self.a = type("_AddressReference", (), {"v": deepcopy(inner)})()
 
 
 class _Instruction:
@@ -138,6 +202,10 @@ class _Instruction:
 
     def setaddr(self, ea: int) -> None:
         self.ea = int(ea)
+
+
+def _fake_minsn(ea: int) -> _Instruction:
+    return _Instruction(ida_hexrays.m_nop, int(ea))
 
 
 class _Block:
@@ -246,6 +314,10 @@ class _Mba:
 
     @staticmethod
     def stkoff_ida2vd(stack_offset: int) -> int:
+        return int(stack_offset)
+
+    @staticmethod
+    def stkoff_vd2ida(stack_offset: int) -> int:
         return int(stack_offset)
 
     def copy_block(self, source: _Block, destination: int, _flags: int):
@@ -393,6 +465,29 @@ def _change_fake_zero_way_successor(
         target_serial,
     )
     block.head = block.tail
+    block.succset.push_back(target_serial)
+    target = block.mba.get_mblock(target_serial)
+    if target is not None:
+        target.predset.push_back(block.serial)
+    block.mba.mark_chains_dirty()
+    return True
+
+
+def _change_fake_zero_way_successor_preserving_instructions(
+    block: _Block,
+    target_serial: int,
+    *,
+    verify: bool = False,
+) -> bool:
+    del verify
+    target_serial = int(target_serial)
+    goto = _Instruction(
+        ida_hexrays.m_goto,
+        block.mba.entry_ea,
+        target_serial,
+    )
+    block.insert_into_block(goto, block.tail)
+    block.type = int(ida_hexrays.BLT_1WAY)
     block.succset.push_back(target_serial)
     target = block.mba.get_mblock(target_serial)
     if target is not None:
@@ -580,6 +675,218 @@ class _RecordingNativeBodyMaterializer:
         )
         for block_id in native_body.block_ids:
             context.stage_block(block_id)
+
+
+class _TerminalEffectNativeBodyMaterializer:
+    def __init__(self, *, conflicting_carrier: bool = False) -> None:
+        self.conflicting_carrier = bool(conflicting_carrier)
+
+    def stage_native_body(
+        self,
+        *,
+        context,
+        native_body: FragmentNativeBody,
+    ) -> None:
+        assert native_body.block_ids == (
+            "imported-carrier",
+            "imported-return",
+        )
+        for block_id in native_body.block_ids:
+            context.stage_block(block_id)
+        carrier_instructions = [
+            (
+                0x500000,
+                _Instruction(ida_hexrays.m_mov, 0x500000),
+            ),
+        ]
+        if self.conflicting_carrier:
+            carrier_instructions.append(
+                (
+                    0x500004,
+                    _Instruction(ida_hexrays.m_add, 0x500004),
+                )
+            )
+        context.populate_block(
+            block_id="imported-carrier",
+            instructions=tuple(carrier_instructions),
+            block_flags=0,
+        )
+        context.populate_block(
+            block_id="imported-return",
+            instructions=(),
+            block_flags=0,
+        )
+
+
+def _plan_with_terminal_effects(
+    gateway,
+    *,
+    entry: int,
+    original: int,
+    target: int,
+    dispatcher: int,
+) -> FragmentPlan:
+    plan = _plan(
+        gateway,
+        entry=entry,
+        original=original,
+        target=target,
+        dispatcher=dispatcher,
+    )
+    carrier_range = NativeEaInterval(0x500000, 0x500010)
+    return_range = NativeEaInterval(0x500100, 0x500110)
+    carrier = FragmentBlock(
+        block_id="imported-carrier",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x500000,
+        stable_identity=StableBlockIdentity.from_intervals(
+            (carrier_range,),
+            native_key=gateway.native_key,
+            exact_instruction_eas=(0x500000, 0x500004),
+        ),
+        native_body_id="terminal-native-body",
+    )
+    terminal = FragmentBlock(
+        block_id="imported-return",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x500100,
+        stable_identity=StableBlockIdentity.from_intervals(
+            (return_range,),
+            native_key=gateway.native_key,
+            exact_instruction_eas=(0x500100,),
+        ),
+        native_body_id="terminal-native-body",
+    )
+    root_route = replace(
+        plan.operations[0],
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=carrier.block_id,
+            ),
+        ),
+    )
+    terminal_route = FragmentOperation(
+        operation_id="carrier-to-return",
+        source_block_id=carrier.block_id,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=terminal.block_id,
+            ),
+        ),
+    )
+    return replace(
+        plan,
+        plan_id="runtime-terminal-fragment",
+        atomic_group_id="terminal@0x500000",
+        blocks=tuple(block for block in plan.blocks if block.block_id != "target")
+        + (carrier, terminal),
+        operations=(root_route, terminal_route),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id="terminal-native-body",
+                block_ids=(carrier.block_id, terminal.block_id),
+                entry_block_ids=(carrier.block_id,),
+                terminal_block_ids=(terminal.block_id,),
+                native_ranges=(carrier_range, return_range),
+                proof_ids=("proof:terminal-native-body",),
+            ),
+        ),
+        return_carriers=(
+            FragmentReturnCarrier(
+                carrier_id="return-value",
+                block_id=carrier.block_id,
+                state_write_ea=0x500000,
+                carrier_ea=0x500004,
+                operation=ValueOpKind.MOVE,
+                source=FragmentReturnSource(
+                    kind=FragmentReturnSourceKind.CONSTANT,
+                    width=4,
+                    constant=7,
+                ),
+                return_width=4,
+                corridor_instruction_eas=(0x500000, 0x500004),
+            ),
+        ),
+        terminal_returns=(
+            FragmentTerminalReturn(
+                return_id="function-return",
+                block_id=terminal.block_id,
+                instruction_ea=0x500100,
+                return_width=4,
+            ),
+        ),
+        terminal_routes=(
+            FragmentTerminalRoute(
+                terminal_route_id="carrier-terminal-route",
+                operation_id=terminal_route.operation_id,
+                carrier_id="return-value",
+                return_id="function-return",
+            ),
+        ),
+    )
+
+
+def _terminal_effect_runtime_case(
+    monkeypatch,
+    *,
+    source: FragmentReturnSource | None = None,
+    operation: ValueOpKind = ValueOpKind.MOVE,
+    return_width: int = 4,
+    materializer: _TerminalEffectNativeBodyMaterializer | None = None,
+):
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    monkeypatch.setattr(sfb.ida_hexrays, "minsn_t", _fake_minsn)
+    monkeypatch.setattr(sfb.ida_hexrays, "mop_t", _BlockReference)
+    monkeypatch.setattr(sfb.ida_hexrays, "mop_addr_t", _AddressOperand)
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    monkeypatch.setattr(
+        dm,
+        "change_0way_block_successor",
+        _change_fake_zero_way_successor_preserving_instructions,
+    )
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=gateway,
+        semantic_native_body_materializer=(
+            materializer or _TerminalEffectNativeBodyMaterializer()
+        ),
+    )
+    plan = _plan_with_terminal_effects(
+        gateway,
+        entry=0,
+        original=1,
+        target=2,
+        dispatcher=3,
+    )
+    if source is not None:
+        carrier = replace(
+            plan.return_carriers[0],
+            operation=operation,
+            source=source,
+            return_width=int(return_width),
+        )
+        terminal_return = replace(
+            plan.terminal_returns[0],
+            return_width=int(return_width),
+        )
+        plan = replace(
+            plan,
+            return_carriers=(carrier,),
+            terminal_returns=(terminal_return,),
+        )
+    return mba, gateway, modifier, plan, entry, original
 
 
 class _OriginBoundConditionalNativeBodyMaterializer:
@@ -1121,6 +1428,203 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
     assert mba.qty == 5
     assert gateway.active is False
     assert gateway.receipts == ()
+
+
+def test_backend_materializes_and_observes_terminal_effects_from_live_mba(
+    monkeypatch,
+) -> None:
+    mba, gateway, modifier, plan, _entry, _original = (
+        _terminal_effect_runtime_case(monkeypatch)
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    validation = validate_fragment_projection(plan, projection)
+    assert validation.passed, validation.failures
+    assert projection.return_carriers == plan.return_carriers
+    assert projection.terminal_returns == plan.terminal_returns
+    assert projection.block("imported-carrier").instruction_eas[:2] == (
+        0x500000,
+        0x500004,
+    )
+    assert projection.block("imported-return").instruction_eas == (0x500100,)
+    assert projection.block("imported-return").kind is BlockKind.STOP
+
+    state = modifier._semantic_fragment_state
+    assert state is not None
+    carrier_block = sfb._live_block_for_binding(
+        modifier,
+        state.binding("imported-carrier"),
+    )
+    carrier_live_ea = state.live_instruction_ea(
+        "imported-carrier",
+        0x500004,
+    )
+    carrier_matches = tuple(
+        instruction
+        for instruction in sfb._iter_block_instructions(carrier_block)
+        if int(instruction.ea) == carrier_live_ea
+    )
+    assert len(carrier_matches) == 1
+    carrier_instruction = carrier_matches[0]
+    assert int(carrier_instruction.opcode) == int(ida_hexrays.m_mov)
+    assert int(carrier_instruction.l.t) == int(ida_hexrays.mop_n)
+    assert int(carrier_instruction.l.nnn.value) == 7
+    assert int(carrier_instruction.l.size) == 4
+    assert int(carrier_instruction.d.t) == int(ida_hexrays.mop_r)
+    assert int(carrier_instruction.d.r) == int(ida_hexrays.reg2mreg(0))
+    assert int(carrier_instruction.d.size) == 4
+
+    terminal_block = sfb._live_block_for_binding(
+        modifier,
+        state.binding("imported-return"),
+    )
+    assert terminal_block.tail is not None
+    assert int(terminal_block.tail.opcode) == int(ida_hexrays.m_ret)
+    assert int(terminal_block.type) == int(ida_hexrays.BLT_STOP)
+    assert tuple(terminal_block.succset) == ()
+
+    carrier_instruction.opcode = int(ida_hexrays.m_xdu)
+    corrupted = sfb._project_fragment(modifier, plan, state)
+    assert corrupted.return_carriers == ()
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime terminal-effect staging cleanup")
+
+
+@pytest.mark.parametrize(
+    ("operation", "source", "return_width", "expected_opcode", "expected_type"),
+    (
+        (
+            ValueOpKind.ZEXT,
+            FragmentReturnSource(
+                kind=FragmentReturnSourceKind.STORAGE_VALUE,
+                width=1,
+                storage_identity=StorageIdentity(
+                    StorageIdentityKind.STACK,
+                    0x30,
+                ),
+            ),
+            4,
+            ida_hexrays.m_xdu,
+            ida_hexrays.mop_S,
+        ),
+        (
+            ValueOpKind.SEXT,
+            FragmentReturnSource(
+                kind=FragmentReturnSourceKind.STORAGE_VALUE,
+                width=2,
+                storage_identity=StorageIdentity(
+                    StorageIdentityKind.GLOBAL,
+                    0x600000,
+                ),
+            ),
+            4,
+            ida_hexrays.m_xds,
+            ida_hexrays.mop_v,
+        ),
+        (
+            ValueOpKind.MOVE,
+            FragmentReturnSource(
+                kind=FragmentReturnSourceKind.ADDRESS_OF_STORAGE,
+                width=8,
+                storage_identity=StorageIdentity(
+                    StorageIdentityKind.GLOBAL,
+                    0x600000,
+                ),
+            ),
+            8,
+            ida_hexrays.m_mov,
+            ida_hexrays.mop_a,
+        ),
+        (
+            ValueOpKind.MOVE,
+            FragmentReturnSource(
+                kind=FragmentReturnSourceKind.ADDRESS_OF_STORAGE,
+                width=8,
+                storage_identity=StorageIdentity(
+                    StorageIdentityKind.STACK,
+                    0x38,
+                ),
+            ),
+            8,
+            ida_hexrays.m_mov,
+            ida_hexrays.mop_a,
+        ),
+    ),
+)
+def test_backend_round_trips_portable_terminal_carrier_sources(
+    monkeypatch,
+    operation: ValueOpKind,
+    source: FragmentReturnSource,
+    return_width: int,
+    expected_opcode: int,
+    expected_type: int,
+) -> None:
+    _mba, gateway, modifier, plan, _entry, _original = (
+        _terminal_effect_runtime_case(
+            monkeypatch,
+            source=source,
+            operation=operation,
+            return_width=return_width,
+        )
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    validation = validate_fragment_projection(plan, projection)
+    assert validation.passed, validation.failures
+    assert projection.return_carriers == plan.return_carriers
+    state = modifier._semantic_fragment_state
+    assert state is not None
+    carrier_block = sfb._live_block_for_binding(
+        modifier,
+        state.binding("imported-carrier"),
+    )
+    carrier_live_ea = state.live_instruction_ea(
+        "imported-carrier",
+        0x500004,
+    )
+    carrier_instruction = next(
+        instruction
+        for instruction in sfb._iter_block_instructions(carrier_block)
+        if int(instruction.ea) == carrier_live_ea
+    )
+    assert int(carrier_instruction.opcode) == int(expected_opcode)
+    assert int(carrier_instruction.l.t) == int(expected_type)
+    assert int(carrier_instruction.d.size) == return_width
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime terminal-source round-trip cleanup")
+
+
+def test_backend_rejects_conflicting_terminal_carrier_atomically(
+    monkeypatch,
+) -> None:
+    mba, gateway, modifier, plan, entry, original = _terminal_effect_runtime_case(
+        monkeypatch,
+        materializer=_TerminalEffectNativeBodyMaterializer(
+            conflicting_carrier=True,
+        ),
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="return carrier conflicts",
+    ):
+        modifier._stage_semantic_fragment(plan)
+    gateway.abort(reason="runtime conflicting terminal carrier cleanup")
+
+    assert mba.qty == 5
+    assert tuple(entry.succset) == (original.serial,)
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
 
 
 def test_native_body_origin_binding_translates_operations_and_projection(
