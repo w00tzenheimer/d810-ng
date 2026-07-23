@@ -68,6 +68,10 @@ from d810.transforms.semantic_regions import plan_semantic_regions
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 from d810.transforms.minimal_unflatten_emit import emit_minimal_unflatten
 from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
+from d810.transforms.canonical_semantic_fragment import (
+    CanonicalSemanticFragmentRejected,
+    build_canonical_semantic_fragment_plan,
+)
 from d810.capabilities.branch_witness import BranchWitnessCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
@@ -642,6 +646,84 @@ class PlanSemanticRegions(PipelinePass):
             facts=(PassFact("semantic_region", regions),),
             preserved=PreservedAnalyses.all(),
             analysis_outputs={self.name: regions},
+        )
+
+
+class LowerCanonicalSemanticFragment(PipelinePass):
+    """Lower one bound atomic evidence group through fragment publication only."""
+
+    name = "lower_state_machine"
+
+    def run(self, context: FunctionPipelineContext) -> PassResult:
+        bound = _analysis(context, BOUND_CANONICAL_SEMANTIC_EVIDENCE)
+        if bound is None:
+            raise CanonicalSemanticFragmentRejected(
+                "canonical semantic lowering requires one fully bound evidence group"
+            )
+        recovery = _analysis(context, "recover_dispatcher")
+        range_evidence = _analysis(context, "range_evidence")
+        dispatch_map = (
+            getattr(recovery, "dispatch_map", None)
+            if recovery is not None
+            else None
+        )
+        dispatcher_serials = {
+            int(serial)
+            for serial in getattr(dispatch_map, "dispatcher_blocks", ()) or ()
+        }
+        dispatcher_serial = getattr(recovery, "dispatcher_block_serial", None)
+        if dispatcher_serial is not None:
+            dispatcher_serials.add(int(dispatcher_serial))
+        dispatcher_serials.update(
+            int(serial)
+            for serial in (
+                _analysis(
+                    context,
+                    "materialized_dispatcher_router_serials",
+                    (),
+                )
+                or ()
+            )
+        )
+        if range_evidence is not None:
+            dispatcher_serials.update(
+                int(serial)
+                for serial in (
+                    getattr(range_evidence, "condition_chain_blocks", ()) or ()
+                )
+            )
+            decision_dag = getattr(range_evidence, "decision_dag", None)
+            if decision_dag is not None:
+                dispatcher_serials.update(
+                    int(serial)
+                    for serial in getattr(decision_dag, "nodes", ()) or ()
+                )
+        if not dispatcher_serials:
+            raise CanonicalSemanticFragmentRejected(
+                "canonical semantic lowering requires residual dispatcher identity"
+            )
+
+        plan = build_canonical_semantic_fragment_plan(
+            context.graph,
+            bound,
+            prohibited_dispatcher_serials=dispatcher_serials,
+        )
+        metadata = {
+            "plan_id": plan.plan_id,
+            "atomic_group_id": plan.atomic_group_id,
+            "evidence_generation": int(bound.evidence.generation),
+            "operation_count": len(plan.operations),
+            "owned_original_count": len(plan.owned_originals),
+            "prohibited_dispatcher_count": len(
+                plan.prohibited_dispatcher_blocks
+            ),
+        }
+        _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, metadata)
+        return PassResult(
+            facts=(PassFact("recovered_cfg_edge", metadata),),
+            fragment_plan=plan,
+            preserved=PreservedAnalyses.none(),
+            analysis_outputs={LOWER_STATE_MACHINE_PLAN_METADATA: metadata},
         )
 
 

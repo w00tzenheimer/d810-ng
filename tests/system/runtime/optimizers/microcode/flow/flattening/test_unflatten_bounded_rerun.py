@@ -1362,7 +1362,11 @@ def test_complete_materialized_identity_evidence_reopens_the_family_gate(
     assert family is not None
     assert family.name == "materialized_computed_goto_continuation"
     assert family.pipeline_for(family, {}) == tuple(
-        unflat_mod.standard_state_machine_passes()
+        unflat_mod.semantic_evidence_state_machine_passes()
+    )
+    assert (
+        family.pipeline_for(family, {})[-1].backend_route.value
+        == "fragment_publication"
     )
     assert (
         rule._select_family(

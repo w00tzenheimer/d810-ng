@@ -89,6 +89,13 @@ def _mark_lifecycle_staged(
     authority.record_fragment_staged(plan)
 
 
+def _mark_lifecycle_plan_ready(
+    authority: FragmentPublicationLifecycleAuthority,
+    plan: FragmentPlan,
+) -> None:
+    authority.record_fragment_plan_ready(plan)
+
+
 def _mark_lifecycle_validated(
     authority: FragmentPublicationLifecycleAuthority,
     plan: FragmentPlan,
@@ -124,6 +131,7 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
         )
     _require_backend_port(backend)
     lifecycle_authority = _require_lifecycle_authority(gateway)
+    _mark_lifecycle_plan_ready(lifecycle_authority, plan)
 
     root_inventory = backend._plan_semantic_fragment_root_publication_inventory(plan)
     if not isinstance(root_inventory, SemanticFragmentRootInventory):
