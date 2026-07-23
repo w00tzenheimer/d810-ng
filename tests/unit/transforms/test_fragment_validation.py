@@ -1048,6 +1048,31 @@ def test_block_kind_must_match_projected_successor_shape() -> None:
     )
 
 
+def test_external_block_kind_accepts_zero_successor_frontier() -> None:
+    projection = _projection()
+    projection = _replace_blocks(
+        projection,
+        replace(projection.block("true"), kind=BlockKind.EXTERNAL),
+    )
+
+    result = validate_fragment_projection(_plan(), projection)
+
+    assert result.passed, result.failures
+
+
+def test_unknown_block_kind_is_rejected_without_exception() -> None:
+    projection = _projection()
+    projection = _replace_blocks(
+        projection,
+        replace(projection.block("true"), kind=BlockKind.UNKNOWN),
+    )
+
+    assert FragmentValidationPostcondition.BLOCK_TOPOLOGY in _failed_codes(
+        _plan(),
+        projection,
+    )
+
+
 def _published_observation(
     plan: FragmentPlan | None = None,
 ) -> PublishedFragmentObservation:
