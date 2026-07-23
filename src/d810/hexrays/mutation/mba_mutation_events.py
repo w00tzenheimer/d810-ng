@@ -20,9 +20,15 @@ from d810.hexrays.ir.semantic_edge import (
     LogicalSemanticEdgeOperation,
     SemanticEdgeOperationRejected,
 )
+from d810.hexrays.mutation.semantic_fragment_inventory import (
+    SemanticFragmentRootInventory,
+)
 from d810.ir.block_identity import MbaBlockHandle, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
-from d810.transforms.fragment_plan import FragmentPlan
+from d810.transforms.fragment_plan import (
+    FragmentBlockMaterialization,
+    FragmentPlan,
+)
 from d810.transforms.fragment_validation import FragmentValidationResult
 
 
@@ -378,24 +384,53 @@ class MbaMutationGateway:
     def _fragment_plan_items(
         self,
         plan: FragmentPlan,
+        root_inventory: SemanticFragmentRootInventory,
     ) -> tuple[MbaMutationPlanItem, ...]:
+        if (
+            root_inventory.plan_id != plan.plan_id
+            or root_inventory.atomic_group_id != plan.atomic_group_id
+        ):
+            raise ValueError("semantic-fragment root inventory scope drifted")
         items: list[MbaMutationPlanItem] = []
-        for root_id in plan.roots:
-            replacement = plan.block(root_id)
-            original = plan.block(str(replacement.replaces_block_id))
-            items.append(
-                MbaMutationPlanItem(
-                    item_index=len(items),
-                    mutation_kind="semantic_fragment_root_publication",
-                    source_anchor_ea=int(original.semantic_anchor_ea),
-                    source_identity=original.stable_identity,
-                    target_anchor_ea=int(replacement.semantic_anchor_ea),
-                    target_identity=replacement.stable_identity,
-                    reason=f"atomic-group:{plan.atomic_group_id}",
+        for block in plan.blocks:
+            if block.materialization is FragmentBlockMaterialization.CLONE_PUBLISHED:
+                original = plan.block(str(block.replaces_block_id))
+                items.append(
+                    MbaMutationPlanItem(
+                        item_index=len(items),
+                        mutation_kind=(
+                            "semantic_fragment_replacement_materialization"
+                        ),
+                        source_anchor_ea=int(original.semantic_anchor_ea),
+                        source_identity=original.stable_identity,
+                        target_anchor_ea=int(block.semantic_anchor_ea),
+                        target_identity=block.stable_identity,
+                        reason=f"replacement:{block.block_id}",
+                    )
                 )
-            )
+            elif block.materialization is FragmentBlockMaterialization.CREATE_EMPTY:
+                items.append(
+                    MbaMutationPlanItem(
+                        item_index=len(items),
+                        mutation_kind="semantic_fragment_synthetic_materialization",
+                        target_anchor_ea=int(block.semantic_anchor_ea),
+                        reason=f"synthetic:{block.block_id}",
+                    )
+                )
         for operation in plan.operations:
             source = plan.block(operation.source_block_id)
+            if SemanticEdgeRole.CONDITIONAL_FALLTHROUGH in operation.roles:
+                items.append(
+                    MbaMutationPlanItem(
+                        item_index=len(items),
+                        mutation_kind=(
+                            "semantic_fragment_operation_fallthrough_helper"
+                        ),
+                        source_anchor_ea=int(source.semantic_anchor_ea),
+                        source_identity=source.stable_identity,
+                        reason=f"operation:{operation.operation_id}",
+                    )
+                )
             for edge in operation.edges:
                 target = plan.block(edge.target_block_id)
                 items.append(
@@ -409,17 +444,50 @@ class MbaMutationGateway:
                         reason=f"operation:{operation.operation_id}",
                     )
                 )
+        for root_edge in root_inventory.items:
+            if not root_edge.requires_helper:
+                continue
+            predecessor = plan.block(root_edge.predecessor_block_id)
+            replacement = plan.block(root_edge.root_block_id)
+            items.append(
+                MbaMutationPlanItem(
+                    item_index=len(items),
+                    mutation_kind="semantic_fragment_root_fallthrough_helper",
+                    source_anchor_ea=int(predecessor.semantic_anchor_ea),
+                    source_identity=predecessor.stable_identity,
+                    target_anchor_ea=int(replacement.semantic_anchor_ea),
+                    target_identity=replacement.stable_identity,
+                    reason=f"root-edge:{root_edge.edge_id}",
+                )
+            )
+        for root_edge in root_inventory.items:
+            predecessor = plan.block(root_edge.predecessor_block_id)
+            replacement = plan.block(root_edge.root_block_id)
+            items.append(
+                MbaMutationPlanItem(
+                    item_index=len(items),
+                    mutation_kind=(
+                        f"semantic_fragment_root_{root_edge.role.value}"
+                    ),
+                    source_anchor_ea=int(predecessor.semantic_anchor_ea),
+                    source_identity=predecessor.stable_identity,
+                    target_anchor_ea=int(replacement.semantic_anchor_ea),
+                    target_identity=replacement.stable_identity,
+                    reason=f"root-edge:{root_edge.edge_id}",
+                )
+            )
         return tuple(items)
 
     def _begin_semantic_fragment_batch(
         self,
         backend: object,
         plan: FragmentPlan,
+        root_inventory: SemanticFragmentRootInventory,
     ) -> None:
         mba = getattr(backend, "mba", None)
         if mba is None:
             raise TypeError("semantic-fragment backend requires a live MBA")
-        items = self._fragment_plan_items(plan)
+        items = self._fragment_plan_items(plan, root_inventory)
         self.begin_batch(
             StructuralMutationKind.FRAGMENT_PUBLICATION,
             serial_quantity=int(getattr(mba, "qty", 0) or 0),
@@ -862,6 +930,15 @@ class MbaMutationGateway:
             raise RuntimeError(
                 "fragment publication cannot commit before semantic postvalidation"
             )
+        if (
+            self._active_kind is StructuralMutationKind.FRAGMENT_PUBLICATION
+            and self._operation_count != self._planned_operation_count
+        ):
+            raise RuntimeError(
+                "fragment publication operation inventory mismatch: "
+                f"planned={self._planned_operation_count} "
+                f"applied={self._operation_count}"
+            )
         version_transitions = self.identity_index.commit_proxy_transaction(
             str(self._active_batch_id)
         )
@@ -874,9 +951,10 @@ class MbaMutationGateway:
             post_generation=post_generation,
             affected_identities=tuple(self._affected_identities),
             operation_count=self._operation_count,
-            planned_operation_count=max(
-                self._planned_operation_count,
-                self._operation_count,
+            planned_operation_count=(
+                self._planned_operation_count
+                if fragment_plan is not None
+                else max(self._planned_operation_count, self._operation_count)
             ),
             description=self._active_description,
             version_transitions=version_transitions,

@@ -216,8 +216,12 @@ from d810.hexrays.mutation.semantic_fragment_backend import (
     SemanticFragmentRootPublicationToken,
     discard_staged_semantic_fragment,
     observe_published_semantic_fragment,
+    plan_semantic_fragment_root_inventory,
     prepare_semantic_fragment_root_publication,
     stage_semantic_fragment,
+)
+from d810.hexrays.mutation.semantic_fragment_inventory import (
+    SemanticFragmentRootInventory,
 )
 from d810.hexrays.mutation.cfg_verify import (
     capture_failure_artifact)
@@ -3547,9 +3551,17 @@ class DeferredGraphModifier:
     def _prepare_semantic_fragment_root_publication(
         self,
         plan: FragmentPlan,
+        inventory: SemanticFragmentRootInventory,
     ) -> SemanticFragmentRootPublicationToken:
         """Capture serial-free root authority before the first live rewrite."""
-        return prepare_semantic_fragment_root_publication(self, plan)
+        return prepare_semantic_fragment_root_publication(self, plan, inventory)
+
+    def _plan_semantic_fragment_root_publication_inventory(
+        self,
+        plan: FragmentPlan,
+    ) -> SemanticFragmentRootInventory:
+        """Plan every incoming root role before opening the transaction."""
+        return plan_semantic_fragment_root_inventory(self, plan)
 
     def _rewrite_semantic_fragment_entry_edge(
         self,

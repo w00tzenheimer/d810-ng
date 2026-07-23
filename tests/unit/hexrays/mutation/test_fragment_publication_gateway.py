@@ -12,11 +12,16 @@ from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationAborted,
     MbaMutationCommitted,
     MbaMutationGateway,
+    MbaMutationPlanned,
     StructuralMutationKind,
 )
 from d810.hexrays.mutation.semantic_fragment_publication import (
     SemanticFragmentPublicationRejected,
     SemanticFragmentRollbackFailed,
+)
+from d810.hexrays.mutation.semantic_fragment_inventory import (
+    SemanticFragmentRootInventory,
+    SemanticFragmentRootInventoryItem,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockKind
@@ -158,6 +163,7 @@ class _FragmentBackend:
         invalid_postobservation: bool = False,
         raise_during_publish: bool = False,
         raise_during_rollback: bool = False,
+        omit_semantic_edge_record: bool = False,
     ) -> None:
         self.mba = SimpleNamespace(qty=4)
         self.gateway = gateway
@@ -165,11 +171,30 @@ class _FragmentBackend:
         self.invalid_postobservation = invalid_postobservation
         self.raise_during_publish = raise_during_publish
         self.raise_during_rollback = raise_during_rollback
+        self.omit_semantic_edge_record = omit_semantic_edge_record
         self.calls: list[str] = []
         self.root_published = False
         self.projection: ProjectedFragment | None = None
         self.original_handle = None
         self.replacement_handle = None
+
+    def _plan_semantic_fragment_root_publication_inventory(
+        self,
+        plan: FragmentPlan,
+    ) -> SemanticFragmentRootInventory:
+        self.calls.append("plan-roots")
+        return SemanticFragmentRootInventory(
+            plan_id=plan.plan_id,
+            atomic_group_id=plan.atomic_group_id,
+            items=(
+                SemanticFragmentRootInventoryItem(
+                    edge_id="replacement:entry:direct",
+                    root_block_id="replacement",
+                    predecessor_block_id="entry",
+                    role=SemanticEdgeRole.DIRECT,
+                ),
+            ),
+        )
 
     def _published_binding(
         self,
@@ -205,6 +230,11 @@ class _FragmentBackend:
             replacement=replacement,
             returned_serial=4,
         )
+        if not self.omit_semantic_edge_record:
+            self.gateway.record_edge_redirect(
+                source=replacement,
+                target=index.handle_for_serial(2),
+            )
         proxy = index.logical_proxy_for_handle(original)
         assert proxy is not None
         published = proxy.resolve()
@@ -283,7 +313,13 @@ class _FragmentBackend:
     def _discard_staged_semantic_fragment(self, _plan: FragmentPlan) -> None:
         self.calls.append("discard")
 
-    def _prepare_semantic_fragment_root_publication(self, _plan: FragmentPlan):
+    def _prepare_semantic_fragment_root_publication(
+        self,
+        plan: FragmentPlan,
+        inventory: SemanticFragmentRootInventory,
+    ):
+        assert inventory.plan_id == plan.plan_id
+        assert inventory.atomic_group_id == plan.atomic_group_id
         self.calls.append("prepare-roots")
         return "prior-root-authority"
 
@@ -353,10 +389,13 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     assert original is not None
     proxy = gateway.identity_index.logical_proxy_for_handle(original)
     assert proxy is not None
+    planned: list[MbaMutationPlanned] = []
+    gateway.event_emitter.on(MbaMutationPlanned, planned.append)
 
     receipt = gateway.publish_semantic_fragment(backend, plan)
 
     assert backend.calls == [
+        "plan-roots",
         "stage",
         "prepare-roots",
         "publish-roots",
@@ -370,7 +409,21 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     assert receipt.prepublication_validation.passed
     assert receipt.postpublication_validation.passed
     assert receipt.root_publication_confirmed
-    assert receipt.operation_count == 2
+    assert receipt.operation_count == 3
+    assert receipt.planned_operation_count == 3
+    assert len(planned) == 1
+    assert planned[0].planned_operation_count == 3
+    assert tuple(item.mutation_kind for item in planned[0].items) == (
+        "semantic_fragment_replacement_materialization",
+        "semantic_fragment_direct",
+        "semantic_fragment_root_direct",
+    )
+    assert planned[0].items[2].source_anchor_ea == 0x400000
+    assert planned[0].items[2].source_identity == plan.block("entry").stable_identity
+    assert planned[0].items[2].target_anchor_ea == 0x401000
+    assert (
+        planned[0].items[2].target_identity == plan.block("replacement").stable_identity
+    )
     assert len(receipt.version_transitions) == 1
     assert gateway.generation == 6
     assert proxy.resolve().handle is backend.replacement_handle
@@ -399,6 +452,26 @@ def test_commit_observer_failure_cannot_trigger_postcommit_root_rollback() -> No
     assert aborted == []
 
 
+def test_gateway_aborts_when_applied_operations_do_not_match_inventory() -> None:
+    plan = _plan()
+    gateway, committed, aborted = _gateway(plan)
+    backend = _FragmentBackend(gateway, omit_semantic_edge_record=True)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"operation inventory mismatch: planned=3 applied=2",
+    ):
+        gateway.publish_semantic_fragment(backend, plan)
+
+    assert not backend.root_published
+    assert backend.calls[-3:] == ["rollback-roots", "rebuild", "discard"]
+    assert gateway.generation == 5
+    assert gateway.receipts == ()
+    assert committed == []
+    assert len(aborted) == 1
+    assert "planned=3 applied=2" in aborted[0].reason
+
+
 def test_prepublication_failure_discards_stage_without_exposing_roots() -> None:
     plan = _plan()
     gateway, committed, aborted = _gateway(plan)
@@ -412,7 +485,7 @@ def test_prepublication_failure_discards_stage_without_exposing_roots() -> None:
     ):
         gateway.publish_semantic_fragment(backend, plan)
 
-    assert backend.calls == ["stage", "discard"]
+    assert backend.calls == ["plan-roots", "stage", "discard"]
     assert not backend.root_published
     assert proxy.resolve().handle is original
     assert gateway.generation == 5
@@ -435,6 +508,7 @@ def test_postpublication_failure_restores_roots_then_discards_stage() -> None:
         gateway.publish_semantic_fragment(backend, plan)
 
     assert backend.calls == [
+        "plan-roots",
         "stage",
         "prepare-roots",
         "publish-roots",
@@ -460,6 +534,7 @@ def test_partial_root_publication_exception_still_rolls_back() -> None:
         gateway.publish_semantic_fragment(backend, plan)
 
     assert backend.calls == [
+        "plan-roots",
         "stage",
         "prepare-roots",
         "publish-roots",

@@ -15,6 +15,10 @@ from d810.hexrays.ir.semantic_edge import (
     LogicalSemanticEdge,
     LogicalSemanticEdgeOperation,
 )
+from d810.hexrays.mutation.semantic_fragment_inventory import (
+    SemanticFragmentRootInventory,
+    SemanticFragmentRootInventoryItem,
+)
 from d810.ir.flowgraph import BlockKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.fragment_plan import (
@@ -552,6 +556,78 @@ def _incoming_root_edge_role(predecessor, original) -> SemanticEdgeRole:
     return SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
 
 
+def plan_semantic_fragment_root_inventory(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+) -> SemanticFragmentRootInventory:
+    """Inspect all incoming root roles without retaining live coordinates."""
+    gateway = modifier._mutation_gateway
+    if gateway is None or gateway.active:
+        raise SemanticFragmentBackendRejected(
+            "root inventory requires an idle mutation gateway"
+        )
+    live_by_id = {}
+    ids_by_serial: dict[int, str] = {}
+    for block in plan.blocks:
+        if block.role is FragmentBlockRole.REPLACEMENT:
+            continue
+        if block.stable_identity is None:
+            continue
+        rebound = gateway.identity_index.rebind_identity(block.stable_identity)
+        if rebound.block is None:
+            raise SemanticFragmentBackendRejected(
+                f"root inventory block {block.block_id!r} does not rebind uniquely"
+            )
+        live = modifier.mba.get_mblock(int(rebound.block.serial))
+        if live is None:
+            raise SemanticFragmentBackendRejected(
+                f"root inventory block {block.block_id!r} is absent from the MBA"
+            )
+        if int(live.serial) in ids_by_serial:
+            raise SemanticFragmentBackendRejected(
+                "root inventory maps two plan blocks to one physical version"
+            )
+        live_by_id[block.block_id] = live
+        ids_by_serial[int(live.serial)] = block.block_id
+
+    items: list[SemanticFragmentRootInventoryItem] = []
+    for root_block_id in plan.roots:
+        original_block_id = str(plan.block(root_block_id).replaces_block_id)
+        original = live_by_id.get(original_block_id)
+        if original is None:
+            raise SemanticFragmentBackendRejected(
+                f"root inventory lacks original {original_block_id!r}"
+            )
+        predecessor_serials = tuple(int(value) for value in original.predset)
+        if not predecessor_serials:
+            raise SemanticFragmentBackendRejected(
+                f"root inventory original {original_block_id!r} has no predecessors"
+            )
+        for predecessor_serial in predecessor_serials:
+            predecessor_block_id = ids_by_serial.get(predecessor_serial)
+            predecessor = modifier.mba.get_mblock(predecessor_serial)
+            if predecessor_block_id is None or predecessor is None:
+                raise SemanticFragmentBackendRejected(
+                    "root inventory predecessor is outside the closed fragment plan"
+                )
+            role = _incoming_root_edge_role(predecessor, original)
+            items.append(
+                SemanticFragmentRootInventoryItem(
+                    edge_id=(
+                        f"{root_block_id}:{predecessor_block_id}:{role.value}"
+                    ),
+                    root_block_id=root_block_id,
+                    predecessor_block_id=predecessor_block_id,
+                    role=role,
+                )
+            )
+    return SemanticFragmentRootInventory(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        items=tuple(items),
+    )
+
+
 def _reserve_root_fallthrough_helpers(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
@@ -609,6 +685,7 @@ def _reserve_root_fallthrough_helpers(
 def prepare_semantic_fragment_root_publication(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
+    inventory: SemanticFragmentRootInventory,
 ) -> SemanticFragmentRootPublicationToken:
     """Capture every incoming root edge before exposing any staged version."""
     state = modifier._semantic_fragment_state
@@ -617,6 +694,13 @@ def prepare_semantic_fragment_root_publication(
     if state.plan_id != plan.plan_id or state.atomic_group_id != plan.atomic_group_id:
         raise SemanticFragmentBackendRejected(
             "staged semantic fragment does not match root publication request"
+        )
+    if (
+        inventory.plan_id != plan.plan_id
+        or inventory.atomic_group_id != plan.atomic_group_id
+    ):
+        raise SemanticFragmentBackendRejected(
+            "root inventory does not match the staged fragment"
         )
 
     edges: list[SemanticFragmentRootEdgeBinding] = []
@@ -678,6 +762,18 @@ def prepare_semantic_fragment_root_publication(
     if len(set(edge_ids)) != len(edge_ids):
         raise SemanticFragmentBackendRejected(
             "semantic fragment root publication contains duplicate edges"
+        )
+    actual_inventory = tuple(
+        (edge.edge_id, edge.root_block_id, edge.predecessor.block_id, edge.role)
+        for edge in edges
+    )
+    planned_inventory = tuple(
+        (item.edge_id, item.root_block_id, item.predecessor_block_id, item.role)
+        for item in inventory.items
+    )
+    if actual_inventory != planned_inventory:
+        raise SemanticFragmentBackendRejected(
+            "live root ownership changed after the publication inventory"
         )
     unsupported = tuple(
         edge
@@ -830,6 +926,7 @@ __all__ = [
     "SemanticFragmentRootPublicationToken",
     "discard_staged_semantic_fragment",
     "observe_published_semantic_fragment",
+    "plan_semantic_fragment_root_inventory",
     "prepare_semantic_fragment_root_publication",
     "stage_semantic_fragment",
 ]

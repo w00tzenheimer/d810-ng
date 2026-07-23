@@ -16,9 +16,13 @@ from d810.transforms.fragment_validation import (
     validate_fragment_projection,
     validate_published_fragment_observation,
 )
+from d810.hexrays.mutation.semantic_fragment_inventory import (
+    SemanticFragmentRootInventory,
+)
 
 
 _BACKEND_PORT = (
+    "_plan_semantic_fragment_root_publication_inventory",
     "_stage_semantic_fragment",
     "_discard_staged_semantic_fragment",
     "_prepare_semantic_fragment_root_publication",
@@ -74,7 +78,10 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
         )
     _require_backend_port(backend)
 
-    gateway._begin_semantic_fragment_batch(backend, plan)
+    root_inventory = backend._plan_semantic_fragment_root_publication_inventory(plan)
+    if not isinstance(root_inventory, SemanticFragmentRootInventory):
+        raise TypeError("semantic-fragment backend returned an invalid root inventory")
+    gateway._begin_semantic_fragment_batch(backend, plan, root_inventory)
     stage_attempted = False
     root_attempted = False
     rollback_token = None
@@ -91,10 +98,13 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
                 prepublication,
             )
 
-        rollback_token = backend._prepare_semantic_fragment_root_publication(plan)
+        rollback_token = backend._prepare_semantic_fragment_root_publication(
+            plan,
+            root_inventory,
+        )
         root_attempted = True
         backend._publish_semantic_fragment_roots(plan, rollback_token)
-        for _root_id in plan.roots:
+        for _root_edge in root_inventory.items:
             gateway.record_edge_redirect()
         backend._rebuild_semantic_fragment_chains(plan)
         observation = backend._observe_published_semantic_fragment(plan)

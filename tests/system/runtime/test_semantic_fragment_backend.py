@@ -534,7 +534,8 @@ def test_backend_stages_hidden_replacement_and_projects_root_publication() -> No
     assert proxy is not None
     published = proxy.resolve()
     assert published is not None
-    gateway._begin_semantic_fragment_batch(modifier, plan)
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
 
     projection = modifier._stage_semantic_fragment(plan)
 
@@ -605,6 +606,8 @@ def test_gateway_publishes_direct_fragment_root_from_entry() -> None:
     assert receipt.root_publication_confirmed
     assert receipt.prepublication_validation.passed
     assert receipt.postpublication_validation.passed
+    assert receipt.operation_count == 3
+    assert receipt.planned_operation_count == 3
     assert gateway.active is False
     assert modifier._semantic_fragment_state is None
 
@@ -734,6 +737,8 @@ def test_gateway_publishes_conditional_taken_fragment_root(
     assert tuple(sibling.predset) == (predecessor.serial,)
     assert receipt.root_publication_confirmed
     assert receipt.postpublication_validation.passed
+    assert receipt.operation_count == 3
+    assert receipt.planned_operation_count == 3
     assert gateway.active is False
     assert modifier._semantic_fragment_state is None
 
@@ -829,6 +834,8 @@ def test_gateway_publishes_conditional_fallthrough_fragment_root(
     assert helper_handle is not None and helper_handle.stable_identity is None
     assert receipt.root_publication_confirmed
     assert receipt.postpublication_validation.passed
+    assert receipt.operation_count == 4
+    assert receipt.planned_operation_count == 4
     assert gateway.active is False
     assert modifier._semantic_fragment_state is None
 
@@ -883,7 +890,8 @@ def test_backend_stages_plan_owned_empty_synthetic_block(monkeypatch) -> None:
             ),
         ),
     )
-    gateway._begin_semantic_fragment_batch(modifier, plan)
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
 
     projection = modifier._stage_semantic_fragment(plan)
 
@@ -930,7 +938,8 @@ def test_backend_stages_complete_conditional_with_owned_fallthrough_helper(
         fallthrough=3,
         dispatcher=4,
     )
-    gateway._begin_semantic_fragment_batch(modifier, plan)
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
 
     projection = modifier._stage_semantic_fragment(plan)
 
@@ -987,7 +996,8 @@ def test_conditional_staging_failure_discards_helper_and_replacement(
         fallthrough=3,
         dispatcher=4,
     )
-    gateway._begin_semantic_fragment_batch(modifier, plan)
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
 
     def _reject_after_helper(*_blocks) -> None:
         raise RuntimeError("post-helper failure")
