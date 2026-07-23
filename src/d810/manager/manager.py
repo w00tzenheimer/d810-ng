@@ -325,7 +325,7 @@ class D810Manager:
                 _has_unresolved_computed_goto,
                 discover_static_native_bootstrap_routes,
                 prepare_detached_handler_snippets,
-                prepare_terminal_return_carrier_templates,
+                prepare_terminal_return_carrier_evidence,
                 stage_computed_goto_preanalysis,
             )
             from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
@@ -349,7 +349,7 @@ class D810Manager:
                 state.begin_materialization(resolution)
             lifecycle.begin_native_preanalysis(session)
             try:
-                prepared_carriers = prepare_terminal_return_carrier_templates(state)
+                prepared_carriers = prepare_terminal_return_carrier_evidence(state)
                 prepared_snippets = prepare_detached_handler_snippets(state)
                 # Snippet preparation materializes the portable transfer
                 # inventory that identifies the state selector.  Bootstrap

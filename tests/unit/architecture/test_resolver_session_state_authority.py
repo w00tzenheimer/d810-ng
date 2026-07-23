@@ -25,6 +25,33 @@ LIFECYCLE_PATH = (
     / "manager"
     / "decompilation_lifecycle.py"
 )
+COMPUTED_GOTO_RESOLVER_PATH = (
+    Path(__file__).parents[3]
+    / "src"
+    / "d810"
+    / "optimizers"
+    / "microcode"
+    / "flow"
+    / "jumps"
+    / "computed_goto_resolver.py"
+)
+MANAGER_PATH = Path(__file__).parents[3] / "src" / "d810" / "manager" / "manager.py"
+
+
+def _referenced_identifiers(tree: ast.AST) -> set[str]:
+    identifiers = {
+        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+    }
+    identifiers.update(
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    )
+    identifiers.update(
+        alias.name.rsplit(".", 1)[-1]
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    )
+    return identifiers
 
 
 class FieldLifetime(Enum):
@@ -248,3 +275,26 @@ def test_known_resolver_lifecycle_boundaries_do_not_use_getattr() -> None:
         and node.func.id == "getattr"
     ]
     assert violations == []
+
+
+def test_production_terminal_carrier_capture_has_no_legacy_template_authority() -> None:
+    resolver_tree = ast.parse(
+        COMPUTED_GOTO_RESOLVER_PATH.read_text(encoding="utf-8"),
+        filename=str(COMPUTED_GOTO_RESOLVER_PATH),
+    )
+    assert _referenced_identifiers(resolver_tree).isdisjoint(
+        {
+            "capture_terminal_return_carrier_template",
+            "has_terminal_return_carrier_template",
+            "prepare_terminal_return_carrier_templates",
+        }
+    )
+
+    manager_tree = ast.parse(
+        MANAGER_PATH.read_text(encoding="utf-8"),
+        filename=str(MANAGER_PATH),
+    )
+    assert (
+        "prepare_terminal_return_carrier_templates"
+        not in _referenced_identifiers(manager_tree)
+    )

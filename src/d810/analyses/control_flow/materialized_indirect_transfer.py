@@ -693,7 +693,7 @@ def plan_terminal_return_carrier_requests_from_state_writes(
     The caller supplies only live native write anchors and independently proven
     return epilogues.  This pure planner requires one exact entry-route target
     per state.  The later carrier producer still validates the source block's
-    state write and ABI return assignment before retaining any template.
+    state write and ABI return assignment before publishing portable evidence.
     """
     terminal_targets = frozenset(int(ea) for ea in terminal_target_eas)
     targets_by_state: dict[int, set[int]] = {}
