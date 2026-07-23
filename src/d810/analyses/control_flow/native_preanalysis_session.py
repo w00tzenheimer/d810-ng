@@ -41,6 +41,10 @@ from d810.analyses.control_flow.native_semantic_closure import (
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    SemanticCarrierProof,
+    SemanticCorridorPoint,
+    SemanticPredicateKind,
+    SemanticPredicateProof,
     SemanticRouteDestination,
     SemanticRouteProof,
     SemanticRouteProofKind,
@@ -593,6 +597,195 @@ def _patch_plan_frontend_proof(
     )
 
 
+def _semantic_corridor_point(
+    native_key: NativePreanalysisKey,
+    native_cfg: NativeCfg,
+    anchor_ea: int,
+    *,
+    description: str,
+) -> SemanticCorridorPoint:
+    block = _unique_native_block_for_anchor(
+        native_cfg,
+        int(anchor_ea),
+        description=description,
+    )
+    return SemanticCorridorPoint(
+        _native_block_identity(
+            native_key,
+            block,
+            exact_eas=(int(anchor_ea),),
+        ),
+        int(anchor_ea),
+    )
+
+
+def _entry_consumer_semantic_route_proof(
+    native_key: NativePreanalysisKey,
+    native_cfg: NativeCfg,
+    transfer: MaterializedIndirectTransfer,
+    *,
+    atomic_group_id: str,
+) -> SemanticRouteProof | None:
+    """Project one field-complete carried choice without provider-name routing."""
+    consumer_load_eas = tuple(
+        int(ea) for ea in transfer.state_carrier_consumer_load_eas
+    )
+    target_eas = (
+        transfer.true_target_ea,
+        transfer.false_target_ea,
+    )
+    state_values = (
+        transfer.predicate_true_state,
+        transfer.predicate_false_state,
+    )
+    width = 0 if transfer.predicate_size is None else int(transfer.predicate_size)
+    if (
+        len(consumer_load_eas) != 1
+        or transfer.state_carrier_store_ea is None
+        or transfer.state_carrier_stack_displacement is None
+        or transfer.state_carrier_ida_stkoff is None
+        or transfer.predicate_stack_ida_stkoff is None
+        or not 1 <= width <= 8
+        or transfer.condition_code not in {4, 5}
+        or transfer.predicate_true_is_taken not in (True, False)
+        or any(value is None for value in target_eas)
+        or any(value is None for value in state_values)
+        or int(target_eas[0]) == int(target_eas[1])
+        or int(state_values[0]) == int(state_values[1])
+        or set(int(ea) for ea in transfer.target_eas)
+        != {int(target_eas[0]), int(target_eas[1])}
+        or int(transfer.state_carrier_store_ea)
+        not in {int(ea) for ea in transfer.materialized_anchor_eas}
+        or not transfer.owned_native_ranges
+    ):
+        return None
+
+    predicate_ea = int(transfer.source_jmp_ea)
+    store_ea = int(transfer.state_carrier_store_ea)
+    consumer_ea = int(consumer_load_eas[0])
+    try:
+        predicate_origin = _semantic_corridor_point(
+            native_key,
+            native_cfg,
+            predicate_ea,
+            description="semantic predicate origin",
+        )
+        carrier_definition = _semantic_corridor_point(
+            native_key,
+            native_cfg,
+            store_ea,
+            description="semantic carrier definition",
+        )
+        consumer = _semantic_corridor_point(
+            native_key,
+            native_cfg,
+            consumer_ea,
+            description="semantic entry consumer",
+        )
+        consumer_block = _unique_native_block_for_anchor(
+            native_cfg,
+            consumer_ea,
+            description="semantic entry consumer",
+        )
+        if not any(
+            int(start_ea) <= int(consumer_block.start_ea)
+            and int(consumer_block.end_ea) <= int(end_ea)
+            for start_ea, end_ea in transfer.owned_native_ranges
+        ):
+            return None
+        true_target = _semantic_corridor_point(
+            native_key,
+            native_cfg,
+            int(target_eas[0]),
+            description="semantic true target",
+        )
+        false_target = _semantic_corridor_point(
+            native_key,
+            native_cfg,
+            int(target_eas[1]),
+            description="semantic false target",
+        )
+    except FrontendNormalizationEvidenceRejected:
+        return None
+
+    predicate_corridor = tuple(
+        dict.fromkeys((predicate_origin, carrier_definition, consumer))
+    )
+    carrier_corridor = tuple(dict.fromkeys((carrier_definition, consumer)))
+    true_pair = (int(state_values[0]), true_target)
+    false_pair = (int(state_values[1]), false_target)
+    if transfer.predicate_true_is_taken:
+        taken_pair, fallthrough_pair = true_pair, false_pair
+    else:
+        taken_pair, fallthrough_pair = false_pair, true_pair
+    if int(transfer.condition_code) == 4:
+        equality_true, equality_false = taken_pair, fallthrough_pair
+    else:
+        equality_true, equality_false = fallthrough_pair, taken_pair
+
+    return SemanticRouteProof(
+        proof_id=(
+            f"state-choice@0x{consumer_ea:X}:"
+            f"0x{equality_true[0] & 0xFFFFFFFF:X}:"
+            f"0x{equality_false[0] & 0xFFFFFFFF:X}"
+        ),
+        atomic_group_id=atomic_group_id,
+        proof_kind=SemanticRouteProofKind.STATE_CHOICE,
+        shape=SemanticRouteShape.CONDITIONAL,
+        source_identity=consumer.identity,
+        source_anchor_ea=consumer.anchor_ea,
+        source_owner_identity=consumer.identity,
+        source_owner_anchor_ea=consumer.anchor_ea,
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                state_constant=int(equality_true[0]) & 0xFFFFFFFF,
+                target_identity=equality_true[1].identity,
+                target_anchor_ea=equality_true[1].anchor_ea,
+            ),
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                state_constant=int(equality_false[0]) & 0xFFFFFFFF,
+                target_identity=equality_false[1].identity,
+                target_anchor_ea=equality_false[1].anchor_ea,
+            ),
+        ),
+        predicate=SemanticPredicateProof(
+            kind=SemanticPredicateKind.STORAGE_EQUALS,
+            origin=predicate_origin,
+            consumer=consumer,
+            corridor=predicate_corridor,
+            storage_identity=StorageIdentity(
+                StorageIdentityKind.STACK,
+                int(transfer.predicate_stack_ida_stkoff),
+            ),
+            width=width,
+            compare_constant=0,
+        ),
+        carriers=(
+            SemanticCarrierProof(
+                carrier_id=f"state-carrier@0x{store_ea:X}:0x{consumer_ea:X}",
+                definition=carrier_definition,
+                consumers=(consumer,),
+                corridor=carrier_corridor,
+                storage_identity=StorageIdentity(
+                    StorageIdentityKind.STACK,
+                    int(transfer.state_carrier_ida_stkoff),
+                ),
+                width=width,
+                state_values=(
+                    int(state_values[0]) & 0xFFFFFFFF,
+                    int(state_values[1]) & 0xFFFFFFFF,
+                ),
+                permitted_write_eas=frozenset({store_ea}),
+            ),
+        ),
+        diagnostic_provenance=(
+            ("provider_resolver_kind", str(transfer.resolver_kind)),
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class PreoptUnionPreparationResult:
     """EA-keyed outcome of one production PREOPT union preparation."""
@@ -1048,15 +1241,21 @@ class NativePreanalysisSessionState:
         """Project postvalidated native state delivery into canonical proofs."""
         resolver_evidence = self._resolver_evidence_for(key)
         generation = int(self.evidence_generation)
+        preparation = resolver_evidence.preopt_union_preparation
+        entry_consumer_routes = (
+            ()
+            if preparation is None
+            else tuple(dict.fromkeys(preparation.entry_consumer_routes))
+        )
         if (
             generation <= 0
             or self.normalization_published_postvalidated_generation != generation
-            or not resolver_evidence.state_write_routes
+            or (not resolver_evidence.state_write_routes and not entry_consumer_routes)
         ):
             return None
 
         atomic_group_id = f"canonical-semantic:g{generation}"
-        proofs = tuple(
+        direct_proofs = tuple(
             SemanticRouteProof(
                 proof_id=(
                     f"state-assignment@0x{int(route.delivery_ea):X}:"
@@ -1094,6 +1293,28 @@ class NativePreanalysisSessionState:
             )
             for route in resolver_evidence.state_write_routes
         )
+        conditional_proofs: list[SemanticRouteProof] = []
+        if entry_consumer_routes:
+            facts = self.facts
+            if (
+                facts is None
+                or preparation is None
+                or not preparation.prepared
+                or not preparation.published
+            ):
+                return None
+            facts.require_key(key)
+            for route in entry_consumer_routes:
+                proof = _entry_consumer_semantic_route_proof(
+                    key,
+                    facts.native_cfg,
+                    route,
+                    atomic_group_id=atomic_group_id,
+                )
+                if proof is None:
+                    return None
+                conditional_proofs.append(proof)
+        proofs = (*direct_proofs, *conditional_proofs)
         return CanonicalSemanticEvidence(
             native_key=key,
             generation=generation,
