@@ -904,7 +904,8 @@ def plan_frontend_computed_branch_normalization(
                 target_id = target_block_id(int(edge.target_ea))
                 if target_id is None:
                     raise FrontendNormalizationEvidenceRejected(
-                        f"detached block 0x{entry_ea:X} targets an unavailable block"
+                        f"detached block 0x{entry_ea:X} {edge.kind.value} "
+                        f"target 0x{int(edge.target_ea):X} is unavailable"
                     )
                 operations.append(
                     FragmentOperation(

@@ -678,6 +678,61 @@ def test_imported_call_continuation_keeps_its_portable_fallthrough_role() -> Non
     )
 
 
+def test_unavailable_detached_target_rejection_names_both_native_anchors() -> None:
+    closure = NativeSemanticClosure(
+        included_block_eas=(0x1300, 0x1400),
+        native_ranges=(
+            NativeRange(0x1300, 0x1310),
+            NativeRange(0x1400, 0x1410),
+        ),
+        proven_internal_edges=(
+            ProvenInternalEdge(
+                source_ea=0x1300,
+                target_ea=0x1400,
+                kind=NativeEdgeKind.DIRECT_JUMP,
+            ),
+        ),
+        abstentions=(),
+        seed_provenance=(),
+    )
+    native_cfg = NativeCfg(
+        {
+            0x1300: NativeBlock(
+                start_ea=0x1300,
+                end_ea=0x1310,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.DIRECT_JUMP,
+                        target_ea=0x1400,
+                    ),
+                ),
+            ),
+            0x1400: NativeBlock(
+                start_ea=0x1400,
+                end_ea=0x1410,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.DIRECT_JUMP,
+                        target_ea=0x1500,
+                    ),
+                ),
+            ),
+        }
+    )
+
+    with pytest.raises(
+        FrontendNormalizationEvidenceRejected,
+        match=(
+            r"detached block 0x1400 direct_jump target "
+            r"0x1500 is unavailable"
+        ),
+    ):
+        plan_frontend_computed_branch_normalization(
+            _graph(faithful=False, include_false_target=False),
+            _evidence(closure=closure, native_cfg=native_cfg),
+        )
+
+
 def test_normalization_plan_replaces_lost_branch_with_one_atomic_two_arm_operation() -> (
     None
 ):
