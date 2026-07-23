@@ -1712,6 +1712,97 @@ def test_live_fragment_publication_is_reconstructible_from_diagnostic_db(
     ]
 
 
+def test_failed_live_staging_restores_graph_and_records_rollback(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_0WAY)
+    taken = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    fallthrough = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(5, start=0x401050, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    original.tail = _Instruction(ida_hexrays.m_jz, 0x401010)
+    original.head = original.tail
+    mba = _Mba((entry, original, taken, fallthrough, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    plan = _conditional_plan(
+        gateway,
+        entry=0,
+        original=1,
+        taken=2,
+        fallthrough=3,
+        dispatcher=4,
+    )
+    diag_conn = create_diag_database(":memory:").connection()
+    reset_diagnostic_bus()
+    monkeypatch.setattr(
+        "d810.core.diag.event_handlers.get_diag_conn",
+        lambda *_args, **_kwargs: diag_conn,
+    )
+    install_diag_event_handlers()
+    emitter = EventEmitter()
+    aborted: list[MbaMutationAborted] = []
+    emitter.on(MbaMutationPlanned, D810Manager._on_mutation_planned)
+    emitter.on(MbaMutationAborted, D810Manager._on_mutation_aborted)
+    emitter.on(MbaMutationAborted, aborted.append)
+    gateway.event_emitter = emitter
+    emit_diagnostic(
+        DiagnosticSessionObserved(
+            gateway.session_id,
+            gateway.function_ea,
+            1,
+            gateway.native_key.to_json(),
+            "active",
+        )
+    )
+
+    def _reject_after_helper(*_blocks) -> None:
+        raise RuntimeError("post-helper failure")
+
+    monkeypatch.setattr(modifier, "_semantic_edge_mark", _reject_after_helper)
+    try:
+        with pytest.raises(RuntimeError, match="post-helper failure"):
+            gateway.publish_semantic_fragment(modifier, plan)
+    finally:
+        uninstall_diag_event_handlers()
+        reset_diagnostic_bus()
+
+    assert mba.qty == 6
+    assert tuple(entry.succset) == (1,)
+    assert tuple(original.succset) == ()
+    assert tuple(taken.predset) == ()
+    assert tuple(fallthrough.predset) == ()
+    assert gateway.receipts == ()
+    assert gateway.active is False
+    assert len(aborted) == 1
+    assert aborted[0].rollback_attempted
+    assert aborted[0].rollback_succeeded
+    assert diag_conn.execute(
+        "SELECT outcome,fragment_staged,root_publication_attempted,"
+        "rollback_attempted,rollback_succeeded,reason "
+        "FROM semantic_fragment_transactions"
+    ).fetchone() == (
+        "aborted",
+        0,
+        0,
+        1,
+        1,
+        "post-helper failure",
+    )
+    assert diag_conn.execute(
+        "SELECT event_kind,outcome FROM semantic_fragment_transaction_events "
+        "ORDER BY event_index"
+    ).fetchall() == [
+        ("plan_recorded", "planned"),
+        ("fragment_staged", "failed"),
+        ("rollback", "succeeded"),
+        ("receipt", "aborted"),
+    ]
+
+
 def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_work(
     monkeypatch,
 ) -> None:
