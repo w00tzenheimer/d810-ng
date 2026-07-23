@@ -8253,6 +8253,7 @@ def _analyze_select_block(jmp_ea: int, block_start: int, arch: str) -> dict | No
     mask = (1 << (elsize * 8)) - 1
 
     lea_cell: dict[int, int] = {}
+    cmp_ea: int | None = None
     cmp_end: int | None = None
     cmov: tuple[int, int] | None = None
     cc: int | None = None
@@ -8271,6 +8272,7 @@ def _analyze_select_block(jmp_ea: int, block_start: int, arch: str) -> dict | No
         ):
             lea_cell[insn.ops[0].reg] = int(insn.ops[1].addr)
         elif mnem == "cmp" and insn.ops[1].type == idaapi.o_imm:
+            cmp_ea = int(ea)
             cmp_end = ea + length
         elif mnem.startswith("cmov"):
             cmov = (insn.ops[0].reg, insn.ops[1].reg)
@@ -8279,13 +8281,20 @@ def _analyze_select_block(jmp_ea: int, block_start: int, arch: str) -> dict | No
             key = int(insn.ops[1].value) & mask
         ea += length
 
-    if cmov is None or cc is None or key is None or cmp_end is None:
+    if (
+        cmov is None
+        or cc is None
+        or key is None
+        or cmp_ea is None
+        or cmp_end is None
+    ):
         return None
     dst, src = cmov
     cell_false, cell_true = lea_cell.get(dst), lea_cell.get(src)
     if cell_false is None or cell_true is None:
         return None
     return {
+        "cmp_ea": int(cmp_ea),
         "cmp_end": int(cmp_end),
         "cc": int(cc),
         "target_false": (getptr(cell_false) + key)
@@ -8309,6 +8318,105 @@ def _block_start_of(jmp_ea: int, text_start: int) -> int:
         if mnem in ("jmp", "retn", "ret", "retf", "int") or mnem.startswith("j"):
             return ea
         ea = prev
+
+
+def _concolic_frontend_normalization_plans(
+    resolution: ComputedGotoResolution,
+    *,
+    instruction_end: Callable[[int], int] | None = None,
+    block_start: Callable[[int], int] | None = None,
+    select_analyzer: Callable[[int, int, str], dict | None] | None = None,
+) -> tuple[_PatchPlan, ...]:
+    """Convert a complete concolic target ledger into portable branch proofs.
+
+    The returned records describe native identities and semantic destinations;
+    they intentionally contain no native byte payload.  If any resolved site
+    cannot provide a complete direct or predicate-preserving conditional proof,
+    the whole ledger abstains so no partial frontend authority is published.
+    """
+    if not resolution.jmp_targets:
+        return ()
+
+    if instruction_end is None:
+        import ida_ua  # type: ignore[import-untyped]
+
+        def instruction_end(ea: int) -> int:
+            insn = ida_ua.insn_t()
+            length = int(ida_ua.decode_insn(insn, int(ea)))
+            return int(ea) + length if length > 0 else int(ea)
+
+    if block_start is None:
+        text = _text_segment(int(resolution.function_ea))
+        if text is None:
+            return ()
+        text_start = int(text[0])
+
+        def block_start(ea: int) -> int:
+            return _block_start_of(int(ea), text_start)
+
+    analyzer = _analyze_select_block if select_analyzer is None else select_analyzer
+    plans: list[_PatchPlan] = []
+    for jmp_ea, resolved_targets in sorted(resolution.jmp_targets.items()):
+        jmp_ea = int(jmp_ea)
+        target_eas = tuple(int(target) for target in resolved_targets)
+        block_entry = int(block_start(jmp_ea))
+        region_end = int(instruction_end(jmp_ea))
+        if (
+            block_entry < 0
+            or block_entry > jmp_ea
+            or region_end <= jmp_ea
+            or len(target_eas) not in {1, 2}
+        ):
+            return ()
+        if len(target_eas) == 1:
+            plans.append(
+                _PatchPlan(
+                    jmp_ea=jmp_ea,
+                    block_entry=block_entry,
+                    patch_start=jmp_ea,
+                    patch_bytes=b"",
+                    region_end=region_end,
+                    insn_heads=(jmp_ea,),
+                    new_block_eas=(),
+                    target_eas=target_eas,
+                )
+            )
+            continue
+
+        analysis = analyzer(jmp_ea, block_entry, resolution.arch)
+        if analysis is None:
+            return ()
+        try:
+            condition_producer_ea = int(analysis["cmp_ea"])
+            predicate_ea = int(analysis["cmp_end"])
+            condition_code = int(analysis["cc"])
+            true_target_ea = int(analysis["target_true"])
+            false_target_ea = int(analysis["target_false"])
+        except (KeyError, TypeError, ValueError):
+            return ()
+        if (
+            not block_entry <= condition_producer_ea < predicate_ea < jmp_ea
+            or true_target_ea == false_target_ea
+            or {true_target_ea, false_target_ea} != set(target_eas)
+        ):
+            return ()
+        plans.append(
+            _PatchPlan(
+                jmp_ea=jmp_ea,
+                block_entry=block_entry,
+                patch_start=predicate_ea,
+                patch_bytes=b"",
+                region_end=region_end,
+                insn_heads=(predicate_ea, jmp_ea),
+                new_block_eas=(predicate_ea, jmp_ea),
+                target_eas=target_eas,
+                condition_code=condition_code,
+                true_target_ea=true_target_ea,
+                false_target_ea=false_target_ea,
+                condition_producer_ea=condition_producer_ea,
+            )
+        )
+    return tuple(plans)
 
 
 def deliver_by_byte_patch(resolution: ComputedGotoResolution) -> int:
@@ -8406,7 +8514,7 @@ def materialize_computed_gotos(
     import ida_segment  # type: ignore[import-untyped]
 
     # Static x86 fixpoint path carries pre-baked patch plans + the full block set.
-    if resolution.patch_plans:
+    if resolution.arch == "x86" and resolution.patch_plans:
         return _materialize_static(resolution, state)
 
     func = ida_funcs.get_func(int(resolution.function_ea))
@@ -8470,13 +8578,27 @@ def _resolve_computed_goto_resolution(
 ) -> ComputedGotoResolution | None:
     """Resolve one computed goto without changing native bytes."""
     resolution = resolve_computed_gotos(int(function_ea), **kwargs)  # type: ignore[arg-type]
+    if (
+        resolution is not None
+        and resolution.jmp_targets
+        and not resolution.patch_plans
+    ):
+        plans = _concolic_frontend_normalization_plans(resolution)
+        if (
+            len(plans) == len(resolution.jmp_targets)
+            and {int(plan.jmp_ea) for plan in plans}
+            == {int(ea) for ea in resolution.jmp_targets}
+        ):
+            resolution = replace(resolution, patch_plans=plans)
+        else:
+            resolution = None
     if resolution is None or not resolution.jmp_targets:
         static = resolve_computed_gotos_static(int(function_ea))
         if static is not None:
             resolution = static
     if resolution is None:
         return None
-    if resolution.patch_plans:
+    if resolution.arch == "x86" and resolution.patch_plans:
         native_stack_offsets = dict(resolution.native_stack_frame_offsets)
         if not native_stack_offsets:
             stack_envelope_end = (

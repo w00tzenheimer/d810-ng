@@ -1069,6 +1069,74 @@ def test_lifecycle_owns_portable_resolution_and_union_evidence() -> None:
     assert state.evidence_generation == 0
 
 
+def test_computed_goto_resolution_is_frontend_ready_without_detached_closure() -> None:
+    plan = ComputedGotoPatchPlan(
+        jmp_ea=0x401010,
+        block_entry=0x401000,
+        patch_start=0x401010,
+        patch_bytes=b"",
+        region_end=0x401012,
+        insn_heads=(0x401010,),
+        new_block_eas=(),
+        target_eas=(0x402000,),
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x401000,
+        jmp_targets={plan.jmp_ea: plan.target_eas},
+        reachable_eas=(0x401000, 0x401010, 0x402000),
+        arch="x86_64",
+        executed_insns=17,
+        seeds_run=1,
+        patch_plans=(plan,),
+    )
+    state = NativePreanalysisSessionState()
+
+    assert state.set_computed_goto_resolution(NATIVE_KEY, resolution)
+
+    evidence = state.frontend_normalization_evidence_for(NATIVE_KEY)
+    assert state.evidence_generation == 1
+    assert state.portable_evidence_ready_generation == 1
+    assert evidence is not None
+    assert evidence.generation == 1
+    assert evidence.semantic_closure is None
+    assert evidence.native_cfg is None
+    assert tuple(proof.source_anchor_ea for proof in evidence.transfer_proofs) == (
+        plan.jmp_ea,
+    )
+
+
+def test_removing_frontend_ready_resolution_advances_the_evidence_generation() -> None:
+    plan = ComputedGotoPatchPlan(
+        jmp_ea=0x401010,
+        block_entry=0x401000,
+        patch_start=0x401010,
+        patch_bytes=b"",
+        region_end=0x401012,
+        insn_heads=(0x401010,),
+        new_block_eas=(),
+        target_eas=(0x402000,),
+    )
+    ready = ComputedGotoResolution(
+        function_ea=0x401000,
+        jmp_targets={plan.jmp_ea: plan.target_eas},
+        reachable_eas=(0x401000, 0x401010, 0x402000),
+        arch="x86_64",
+        executed_insns=17,
+        seeds_run=1,
+        patch_plans=(plan,),
+    )
+    unavailable = replace(ready, patch_plans=())
+    state = NativePreanalysisSessionState()
+    assert state.set_computed_goto_resolution(NATIVE_KEY, ready)
+    _publish_normalization(state)
+
+    assert state.set_computed_goto_resolution(NATIVE_KEY, unavailable)
+
+    assert state.evidence_generation == 2
+    assert state.portable_evidence_ready_generation == 2
+    assert state.frontend_normalization_evidence_for(NATIVE_KEY) is None
+
+
 def test_lifecycle_owns_portable_preopt_entry_bridge_evidence() -> None:
     evidence = EntryBridgeEvidence(
         predicate_ea=0x40A5A0,
