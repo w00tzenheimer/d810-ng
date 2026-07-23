@@ -51,6 +51,10 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteShape,
     SemanticStateWriteProof,
 )
+from d810.analyses.control_flow.terminal_return_carrier_evidence import (
+    TerminalReturnCarrierEvidence,
+    TerminalReturnCarrierEvidenceRejected,
+)
 from d810.core.native_preanalysis_key import (
     NativePreanalysisKey,
     NativePreanalysisKeyMismatch,
@@ -824,6 +828,7 @@ class ResolverPortableEvidence:
     state_write_routes: tuple[PortableStateWriteRouteEvidence, ...] = ()
     dispatcher_region_identity: StableBlockIdentity | None = None
     terminal_return_carrier_requests: tuple[TerminalReturnCarrierRequest, ...] = ()
+    terminal_return_carriers: tuple[TerminalReturnCarrierEvidence, ...] = ()
     call_result_carriers: tuple[CallResultCarrier, ...] = ()
     call_abi_proofs: tuple[tuple[int, StackCallAbiProof], ...] = ()
     bootstrap_route_bindings: tuple[
@@ -1255,44 +1260,76 @@ class NativePreanalysisSessionState:
             return None
 
         atomic_group_id = f"canonical-semantic:g{generation}"
-        direct_proofs = tuple(
-            SemanticRouteProof(
-                proof_id=(
-                    f"state-assignment@0x{int(route.delivery_ea):X}:"
-                    f"0x{int(route.state_constant) & 0xFFFFFFFF:X}"
-                ),
-                atomic_group_id=atomic_group_id,
-                proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
-                shape=SemanticRouteShape.DIRECT,
-                source_identity=route.delivery_identity,
-                source_anchor_ea=int(route.delivery_ea),
-                destinations=(
-                    SemanticRouteDestination(
-                        role=SemanticEdgeRole.DIRECT,
-                        state_constant=int(route.state_constant) & 0xFFFFFFFF,
-                        target_identity=route.target_identity,
-                        target_anchor_ea=int(route.target_ea),
-                    ),
-                ),
-                state_write=SemanticStateWriteProof(
-                    identity=route.write_identity,
-                    instruction_ea=int(route.source_write_ea),
-                    state_variable=StorageIdentity(
-                        StorageIdentityKind.REGISTER,
-                        int(route.state_var_reg),
-                    ),
-                    width=4,
-                    state_constant=int(route.state_constant) & 0xFFFFFFFF,
-                    corridor_instruction_eas=tuple(
-                        int(ea) for ea in route.corridor_instruction_eas
-                    ),
-                ),
-                diagnostic_provenance=(
-                    ("provider_proof_kind", str(route.proof_kind)),
-                ),
+        terminal_carriers = resolver_evidence.terminal_return_carriers
+        matched_terminal_carriers: set[TerminalReturnCarrierEvidence] = set()
+        direct_proofs: list[SemanticRouteProof] = []
+        for route in resolver_evidence.state_write_routes:
+            matching_terminal_carriers = tuple(
+                carrier
+                for carrier in terminal_carriers
+                if carrier.state_write_ea == int(route.source_write_ea)
+                and int(carrier.request.state_var_reg) == int(route.state_var_reg)
+                and int(carrier.request.state_constant)
+                == (int(route.state_constant) & 0xFFFFFFFF)
+                and int(carrier.request.terminal_target_ea) == int(route.target_ea)
+                and carrier.capture_identity.native_ranges
+                == route.write_identity.native_ranges
+                and carrier.terminal_identity.native_ranges
+                == route.target_identity.native_ranges
             )
-            for route in resolver_evidence.state_write_routes
-        )
+            if len(matching_terminal_carriers) > 1:
+                return None
+            terminal_carrier = (
+                matching_terminal_carriers[0] if matching_terminal_carriers else None
+            )
+            if terminal_carrier is not None:
+                matched_terminal_carriers.add(terminal_carrier)
+            proof_kind = (
+                SemanticRouteProofKind.TERMINAL_RETURN
+                if terminal_carrier is not None
+                else SemanticRouteProofKind.STATE_ASSIGNMENT
+            )
+            direct_proofs.append(
+                SemanticRouteProof(
+                    proof_id=(
+                        f"{proof_kind.value}@0x{int(route.delivery_ea):X}:"
+                        f"0x{int(route.state_constant) & 0xFFFFFFFF:X}"
+                    ),
+                    atomic_group_id=atomic_group_id,
+                    proof_kind=proof_kind,
+                    shape=SemanticRouteShape.DIRECT,
+                    source_identity=route.delivery_identity,
+                    source_anchor_ea=int(route.delivery_ea),
+                    destinations=(
+                        SemanticRouteDestination(
+                            role=SemanticEdgeRole.DIRECT,
+                            state_constant=int(route.state_constant) & 0xFFFFFFFF,
+                            target_identity=route.target_identity,
+                            target_anchor_ea=int(route.target_ea),
+                            terminal=terminal_carrier is not None,
+                        ),
+                    ),
+                    state_write=SemanticStateWriteProof(
+                        identity=route.write_identity,
+                        instruction_ea=int(route.source_write_ea),
+                        state_variable=StorageIdentity(
+                            StorageIdentityKind.REGISTER,
+                            int(route.state_var_reg),
+                        ),
+                        width=4,
+                        state_constant=int(route.state_constant) & 0xFFFFFFFF,
+                        corridor_instruction_eas=tuple(
+                            int(ea) for ea in route.corridor_instruction_eas
+                        ),
+                    ),
+                    terminal_return_carrier=terminal_carrier,
+                    diagnostic_provenance=(
+                        ("provider_proof_kind", str(route.proof_kind)),
+                    ),
+                )
+            )
+        if matched_terminal_carriers != set(terminal_carriers):
+            return None
         conditional_proofs: list[SemanticRouteProof] = []
         if entry_consumer_routes:
             facts = self.facts
@@ -1444,6 +1481,58 @@ class NativePreanalysisSessionState:
             evidence_family="terminal_return_carrier_requests",
             evidence_reason="terminal return-carrier evidence changed",
             terminal_return_carrier_requests=merged,
+        )
+
+    def merge_terminal_return_carriers(
+        self,
+        key: NativePreanalysisKey,
+        carriers: tuple[TerminalReturnCarrierEvidence, ...],
+    ) -> bool:
+        """Merge portable terminal ABI carriers without choosing conflicts."""
+        if any(
+            not isinstance(carrier, TerminalReturnCarrierEvidence)
+            for carrier in carriers
+        ):
+            raise TypeError(
+                "resolver terminal return-carrier evidence requires typed carriers"
+            )
+        for carrier in carriers:
+            if carrier.native_key != key:
+                raise NativePreanalysisKeyMismatch(
+                    key,
+                    carrier.native_key,
+                    key.mismatch_fields(carrier.native_key),
+                )
+
+        def identity(
+            carrier: TerminalReturnCarrierEvidence,
+        ) -> tuple[int, int, int, int]:
+            request = carrier.request
+            return (
+                int(request.source_handler_ea),
+                int(request.terminal_target_ea),
+                int(request.state_var_reg),
+                int(request.state_constant) & 0xFFFFFFFF,
+            )
+
+        current = self._resolver_evidence_for(key)
+        by_identity = {
+            identity(carrier): carrier for carrier in current.terminal_return_carriers
+        }
+        for carrier in carriers:
+            carrier_identity = identity(carrier)
+            previous = by_identity.get(carrier_identity)
+            if previous is not None and previous != carrier:
+                raise TerminalReturnCarrierEvidenceRejected(
+                    "conflicting terminal carrier evidence for one request"
+                )
+            by_identity[carrier_identity] = carrier
+        merged = tuple(by_identity[item] for item in sorted(by_identity))
+        return self._replace_resolver_evidence(
+            key,
+            evidence_family="terminal_return_carriers",
+            evidence_reason="portable terminal return-carrier evidence changed",
+            terminal_return_carriers=merged,
         )
 
     def merge_call_abi_proof(

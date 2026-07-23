@@ -35,6 +35,12 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     TerminalReturnCarrierRequest,
 )
 from d810.analyses.control_flow.native_preanalysis_session import CallResultCarrier
+from d810.analyses.control_flow.terminal_return_carrier_evidence import (
+    TerminalReturnCarrierEvidence,
+    TerminalReturnCarrierEvidenceRejected,
+    TerminalReturnCarrierSource,
+    TerminalReturnCarrierSourceKind,
+)
 from d810.core.logging import getLogger
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
@@ -58,6 +64,8 @@ from d810.ir.block_identity import (
     StableBlockIdentity,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.expressions import ValueOpKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 
 logger = getLogger("D810.mutation.detached_handler_island")
 _MISSING_BOUNDARY_PORT_SERIAL = object()
@@ -8973,6 +8981,161 @@ def _is_stable_terminal_carrier_write(instruction: object) -> bool:
     )
 
 
+def _unique_terminal_return_carrier_candidate(
+    request: TerminalReturnCarrierRequest,
+    mba: object,
+) -> tuple[object, object, tuple[object, ...]] | None:
+    """Return one exact state write, carrier, and intervening corridor."""
+    candidates: list[tuple[object, object, tuple[object, ...]]] = []
+    for block in _blocks_containing_ea(mba, int(request.source_handler_ea)):
+        instructions = _instructions(block)
+        state_writes = tuple(
+            instruction
+            for instruction in instructions
+            if _exact_register_state_write(instruction, request)
+        )
+        if len(state_writes) != 1:
+            continue
+        state_write = state_writes[0]
+        state_index = instructions.index(state_write)
+        block_carriers = tuple(
+            instruction
+            for instruction in instructions[state_index + 1 :]
+            if _is_stable_terminal_carrier_write(instruction)
+        )
+        if len(block_carriers) != 1:
+            continue
+        carrier = block_carriers[0]
+        carrier_index = instructions.index(carrier)
+        candidates.append(
+            (
+                state_write,
+                carrier,
+                tuple(instructions[state_index : carrier_index + 1]),
+            )
+        )
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _terminal_return_carrier_source(
+    function_ea: int,
+    carrier: object,
+) -> TerminalReturnCarrierSource | None:
+    """Lift one supported live carrier source into stable value coordinates."""
+    operand = carrier.l
+    operand_type = int(operand.t)
+    width = int(operand.size)
+    if operand_type == int(ida_hexrays.mop_n):
+        return TerminalReturnCarrierSource(
+            kind=TerminalReturnCarrierSourceKind.CONSTANT,
+            width=width,
+            constant=int(operand.nnn.value),
+        )
+    if operand_type == int(ida_hexrays.mop_v):
+        return TerminalReturnCarrierSource(
+            kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
+            width=width,
+            storage_identity=StorageIdentity(
+                StorageIdentityKind.GLOBAL,
+                int(operand.g),
+            ),
+        )
+    if operand_type == int(ida_hexrays.mop_S):
+        native_frame_offsets = _native_instruction_stack_frame_offsets(
+            int(function_ea),
+            int(carrier.ea),
+        )
+        if len(native_frame_offsets) != 1 or int(native_frame_offsets[0]) < 0:
+            return None
+        return TerminalReturnCarrierSource(
+            kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
+            width=width,
+            storage_identity=StorageIdentity(
+                StorageIdentityKind.STACK,
+                int(native_frame_offsets[0]),
+            ),
+        )
+    if operand_type != int(ida_hexrays.mop_a):
+        return None
+    address = getattr(operand, "a", None)
+    addressed = getattr(address, "v", None)
+    if addressed is None:
+        addressed = address
+    addressed_type = int(getattr(addressed, "t", -1))
+    if addressed_type == int(ida_hexrays.mop_v):
+        storage = StorageIdentity(
+            StorageIdentityKind.GLOBAL,
+            int(addressed.g),
+        )
+    elif addressed_type == int(ida_hexrays.mop_S):
+        native_frame_offsets = _native_instruction_stack_frame_offsets(
+            int(function_ea),
+            int(carrier.ea),
+        )
+        if len(native_frame_offsets) != 1 or int(native_frame_offsets[0]) < 0:
+            return None
+        storage = StorageIdentity(
+            StorageIdentityKind.STACK,
+            int(native_frame_offsets[0]),
+        )
+    else:
+        return None
+    return TerminalReturnCarrierSource(
+        kind=TerminalReturnCarrierSourceKind.ADDRESS_OF_STORAGE,
+        width=width,
+        storage_identity=storage,
+    )
+
+
+def capture_terminal_return_carrier_evidence(
+    function_ea: int,
+    request: TerminalReturnCarrierRequest,
+    mba: object,
+    *,
+    capture_identity: StableBlockIdentity,
+    terminal_identity: StableBlockIdentity,
+) -> TerminalReturnCarrierEvidence | None:
+    """Capture one early terminal carrier without retaining live SDK objects."""
+    candidate = _unique_terminal_return_carrier_candidate(request, mba)
+    if candidate is None:
+        return None
+    state_write, carrier, corridor = candidate
+    operation = {
+        int(ida_hexrays.m_mov): ValueOpKind.MOVE,
+        int(ida_hexrays.m_xdu): ValueOpKind.ZEXT,
+        int(ida_hexrays.m_xds): ValueOpKind.SEXT,
+    }.get(int(carrier.opcode))
+    if operation is None:
+        return None
+    try:
+        source = _terminal_return_carrier_source(int(function_ea), carrier)
+        if source is None:
+            return None
+        return TerminalReturnCarrierEvidence(
+            request=request,
+            capture_identity=capture_identity,
+            terminal_identity=terminal_identity,
+            state_write_ea=int(state_write.ea),
+            carrier_ea=int(carrier.ea),
+            operation=operation,
+            source=source,
+            return_width=int(carrier.d.size),
+            corridor_instruction_eas=tuple(
+                int(instruction.ea) for instruction in corridor
+            ),
+        )
+    except TerminalReturnCarrierEvidenceRejected:
+        logger.info(
+            "terminal return-carrier portable capture abstained: "
+            "source=0x%X target=0x%X state=0x%X",
+            int(request.source_handler_ea),
+            int(request.terminal_target_ea),
+            int(request.state_constant) & 0xFFFFFFFF,
+            exc_info=True,
+        )
+        return None
+
+
 def capture_terminal_return_carrier_template(
     function_ea: int,
     request: TerminalReturnCarrierRequest,
@@ -8986,33 +9149,17 @@ def capture_terminal_return_carrier_template(
     block. Stack sources additionally require one stable native frame identity;
     ambiguity abstains.
     """
-    blocks = _blocks_containing_ea(mba, int(request.source_handler_ea))
-    candidates: list[object] = []
-    for block in blocks:
-        instructions = _instructions(block)
-        state_writes = tuple(
-            instruction
-            for instruction in instructions
-            if _exact_register_state_write(instruction, request)
-        )
-        if len(state_writes) != 1:
-            continue
-        state_index = instructions.index(state_writes[0])
-        block_carriers = tuple(
-            instruction
-            for instruction in instructions[state_index + 1 :]
-            if _is_stable_terminal_carrier_write(instruction)
-        )
-        if len(block_carriers) == 1:
-            candidates.append(block_carriers[0])
-    if len(candidates) != 1 or int(candidates[0].ea) <= 0:
+    candidate_row = _unique_terminal_return_carrier_candidate(request, mba)
+    if candidate_row is None:
         return False
     key = (
         int(function_ea),
         int(request.source_handler_ea),
         int(request.state_constant) & 0xFFFFFFFF,
     )
-    candidate = candidates[0]
+    _state_write, candidate, _corridor = candidate_row
+    if int(candidate.ea) <= 0:
+        return False
     source_stack_ida_offset: int | None = None
     if int(candidate.l.t) == int(ida_hexrays.mop_S):
         native_frame_offsets = _native_instruction_stack_frame_offsets(
