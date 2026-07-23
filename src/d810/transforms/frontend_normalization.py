@@ -295,18 +295,17 @@ def _entry_root_corridor_serials(
     return forward_reachable & root_ancestors
 
 
-def _owned_original_route_corridor_serials(
+def _projected_route_corridor_serials(
     graph: FlowGraph,
-    source_serials: tuple[int, ...],
     relevant_serials: set[int],
 ) -> set[int] | None:
-    """Close superseded originals' outgoing routes without guessing boundaries."""
+    """Close projected outgoing routes without guessing incoming boundaries."""
     relevant = {int(serial) for serial in relevant_serials}
     corridor: set[int] = set()
     pending = [
         int(successor)
-        for source_serial in source_serials
-        for successor in graph.blocks[int(source_serial)].succs
+        for serial in relevant
+        for successor in graph.blocks[serial].succs
         if int(successor) not in relevant
     ]
     while pending:
@@ -438,14 +437,13 @@ def plan_frontend_computed_branch_normalization(
             live_target = _live_block_at_native_ea(graph, int(edge.target_ea))
             if live_target is not None:
                 relevant_serials.add(int(live_target.serial))
-    original_route_corridor_serials = _owned_original_route_corridor_serials(
+    projected_route_corridor_serials = _projected_route_corridor_serials(
         graph,
-        source_serials,
         relevant_serials,
     )
-    if original_route_corridor_serials is None:
+    if projected_route_corridor_serials is None:
         return None
-    relevant_serials.update(original_route_corridor_serials)
+    relevant_serials.update(projected_route_corridor_serials)
 
     identities = _graph_identities(graph, evidence, relevant_serials)
     if identities is None:

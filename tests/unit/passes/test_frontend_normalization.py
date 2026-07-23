@@ -576,9 +576,9 @@ def test_normalization_publishes_only_owned_boundary_roots() -> None:
             3: _block(
                 3,
                 0x1300,
+                (8,),
                 (),
-                (),
-                (_insn(0x1300, InsnKind.RET),),
+                (_insn(0x1300, InsnKind.GOTO, target=8),),
             ),
             4: _block(
                 4,
@@ -607,6 +607,20 @@ def test_normalization_publishes_only_owned_boundary_roots() -> None:
                 (),
                 (4,),
                 (_insn(0x1450, InsnKind.RET),),
+            ),
+            8: _block(
+                8,
+                0x1500,
+                (9,),
+                (3,),
+                (_insn(0x1500, InsnKind.GOTO, target=9),),
+            ),
+            9: _block(
+                9,
+                0x1550,
+                (),
+                (8,),
+                (_insn(0x1550, InsnKind.RET),),
             ),
         },
         entry_serial=0,
@@ -640,7 +654,15 @@ def test_normalization_publishes_only_owned_boundary_roots() -> None:
         for block in plan.blocks
         if block.role is FragmentBlockRole.EXTERNAL
     }
-    assert {0x1000, 0x1020, 0x1050, 0x1400, 0x1450} <= external_anchors
+    assert {
+        0x1000,
+        0x1020,
+        0x1050,
+        0x1400,
+        0x1450,
+        0x1500,
+        0x1550,
+    } <= external_anchors
 
 
 def test_normalization_abstains_when_original_route_corridor_is_not_closed() -> None:
