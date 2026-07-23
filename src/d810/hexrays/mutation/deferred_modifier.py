@@ -2943,6 +2943,39 @@ class DeferredGraphModifier:
             f"@0x{int(getattr(block, 'start', 0)):X}"
         )
 
+    @staticmethod
+    def _semantic_edge_conditional_diagnostic(
+        operation: LogicalSemanticEdgeOperation,
+        source_binding: LogicalBlockVersion,
+        source: object,
+    ) -> str:
+        identity = source_binding.handle.stable_identity
+        native_anchor = None
+        if identity is not None:
+            native_anchor = min(
+                (
+                    int(ea)
+                    for ea in identity.exact_instruction_eas
+                ),
+                default=int(identity.native_ranges.intervals[0].start_ea),
+            )
+        tail = getattr(source, "tail", None)
+        observed_tail = (
+            "none"
+            if tail is None
+            else (
+                f"ea=0x{int(getattr(tail, 'ea', -1)):X} "
+                f"opcode={int(getattr(tail, 'opcode', -1))}"
+            )
+        )
+        return (
+            f"operation={operation.description!r} "
+            f"source={DeferredGraphModifier._semantic_edge_block_label(source)} "
+            f"native@{('none' if native_anchor is None else f'0x{native_anchor:X}')} "
+            f"expected_predicate=0x{int(operation.predicate_anchor_ea):X} "
+            f"observed_tail={observed_tail}"
+        )
+
     def _semantic_edge_live_binding(self, proxy):
         gateway = self._mutation_gateway
         if gateway is None or not gateway.active:
@@ -3263,6 +3296,11 @@ class DeferredGraphModifier:
             fallthrough_edge.target
         )
         label = self._semantic_edge_block_label(source)
+        predicate_diagnostic = self._semantic_edge_conditional_diagnostic(
+            operation,
+            source_binding,
+            source,
+        )
         tail = source.tail
         if (
             tail is None
@@ -3270,7 +3308,8 @@ class DeferredGraphModifier:
             or int(tail.ea) != int(operation.predicate_anchor_ea)
         ):
             raise SemanticEdgeOperationRejected(
-                f"conditional reconstruction predicate does not match {label}"
+                "conditional reconstruction predicate does not match "
+                f"{predicate_diagnostic}"
             )
         if int(source.nsucc()) not in {0, 2}:
             raise SemanticEdgeOperationRejected(
@@ -3355,7 +3394,12 @@ class DeferredGraphModifier:
             or int(tail.ea) != int(operation.predicate_anchor_ea)
         ):
             raise SemanticEdgeOperationRejected(
-                "conditional predicate changed while staging its destinations"
+                "conditional predicate changed while staging its destinations; "
+                + self._semantic_edge_conditional_diagnostic(
+                    operation,
+                    source_binding,
+                    source,
+                )
             )
 
         for old_block in old_blocks:

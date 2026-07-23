@@ -532,6 +532,50 @@ def test_gateway_rejects_wrong_arm_without_mutating_or_committing() -> None:
     assert aborted and "requires a two-way conditional" in aborted[-1].reason
 
 
+def test_conditional_predicate_rejection_names_logical_operation_and_native_source() -> (
+    None
+):
+    source = _Block(1, start=0x401010)
+    fallthrough = _Block(2, start=0x401020)
+    taken = _Block(3, start=0x401030)
+    source.type = int(ida_hexrays.BLT_2WAY)
+    source.tail = _conditional_tail(3, ea=0x401019)
+    source.succset = _EdgeSet((2, 3))
+    fallthrough.predset.push_back(1)
+    taken.predset.push_back(1)
+    mba = _Mba(source, fallthrough, taken)
+    gateway = make_mutation_gateway(mba)
+    operation = LogicalSemanticEdgeOperation(
+        source=_proxy(gateway, 1),
+        edges=(
+            LogicalSemanticEdge(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                target=_proxy(gateway, 3),
+            ),
+            LogicalSemanticEdge(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                target=_proxy(gateway, 2),
+            ),
+        ),
+        predicate_anchor_ea=0x401011,
+        description="fragment operation native-indirect-transfer@0x40A5E3",
+    )
+
+    with pytest.raises(
+        SemanticEdgeOperationRejected,
+        match=(
+            r"native-indirect-transfer@0x40A5E3.*"
+            r"blk1@0x401010.*native@0x401010.*"
+            r"expected_predicate=0x401011.*"
+            r"observed_tail=ea=0x401019"
+        ),
+    ):
+        _apply(gateway, mba, operation)
+
+    assert tuple(source.succset) == (2, 3)
+    assert gateway.generation == 0
+
+
 def test_gateway_rejects_stale_expected_fallthrough_before_helper_creation(
     monkeypatch,
 ) -> None:
