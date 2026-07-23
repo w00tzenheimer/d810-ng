@@ -2741,6 +2741,33 @@ class DeferredGraphModifier:
             if int(instruction.opcode) == int(ida_hexrays.m_nop):
                 block.remove_from_block(instruction)
 
+    def replace_instruction_suffix_now(
+        self,
+        block: ida_hexrays.mblock_t,
+        *,
+        cut_ea: int,
+        replacement: ida_hexrays.minsn_t,
+    ) -> None:
+        """Replace one uniquely EA-anchored detached suffix through this backend."""
+        instructions = self._block_instructions(block)
+        cut_indexes = tuple(
+            index
+            for index, instruction in enumerate(instructions)
+            if int(instruction.ea) == int(cut_ea)
+        )
+        if len(cut_indexes) != 1:
+            raise ValueError(
+                "instruction suffix replacement requires one exact cut EA; "
+                f"blk{int(block.serial)}@0x{int(block.start):X} "
+                f"cut=0x{int(cut_ea):X} matches={len(cut_indexes)}"
+            )
+        for instruction in instructions[cut_indexes[0] :]:
+            block.make_nop(instruction)
+            block.remove_from_block(instruction)
+        block.insert_into_block(replacement, block.tail)
+        block.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+
     def insert_instruction_now(
         self,
         block: ida_hexrays.mblock_t,

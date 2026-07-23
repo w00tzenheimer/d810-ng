@@ -22,7 +22,12 @@ from d810.hexrays.ir.flag_queries import (
     condition_code_write_eas,
     instruction_writes_condition_codes,
 )
-from d810.hexrays.opcode_lift import value_op_from_opcode
+from d810.hexrays.mutation.ir_translator import capture_mop_snapshot
+from d810.hexrays.opcode_lift import (
+    branch_opcode_for_predicate,
+    branch_predicate_from_opcode,
+    value_op_from_opcode,
+)
 from d810.hexrays.ir.logical_block_proxy import (
     LogicalBlockProxy,
     LogicalBlockVersion,
@@ -38,8 +43,10 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
 )
 from d810.ir.block_identity import BlockHandleProvenance
 from d810.ir.expressions import ValueOpKind
-from d810.ir.flowgraph import BlockKind
+from d810.ir.flowgraph import BlockKind, InsnSnapshot
+from d810.ir.predicate_expressions import exact_branch_predicate_kind
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind, inverted_predicate_kind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
@@ -81,6 +88,24 @@ def _iter_block_instructions(block):
         if instruction is block.tail:
             break
         instruction = instruction.next
+
+
+def _capture_predicate_insn_snapshot(instruction) -> InsnSnapshot:
+    """Lift only portable operands, avoiding provenance-owned mop clones."""
+    opcode = int(instruction.opcode)
+    predicate = branch_predicate_from_opcode(opcode)
+    return InsnSnapshot(
+        opcode=opcode,
+        ea=int(instruction.ea),
+        operands=(),
+        l=capture_mop_snapshot(instruction.l),
+        r=capture_mop_snapshot(instruction.r),
+        d=capture_mop_snapshot(instruction.d),
+        value_op_kind=value_op_from_opcode(opcode),
+        predicate_kind=predicate,
+        branch_predicate=predicate,
+        is_conditional_jump=predicate is not None,
+    )
 
 
 class SemanticFragmentBackendRejected(RuntimeError):
@@ -536,6 +561,213 @@ def _clone_replacement(
         state=FragmentBindingState.STAGED,
     )
     state.staged_block_ids.append(replacement_block.block_id)
+
+
+def _normalize_conditional_select_replacement(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    operation,
+) -> None:
+    """Rewrite one proven live conditional-select only on its detached clone."""
+    normalization = operation.computed_branch_normalization
+    envelope = (
+        None
+        if normalization is None
+        else normalization.conditional_select_envelope
+    )
+    if normalization is None or envelope is None:
+        return
+    source_plan_block = plan.block(operation.source_block_id)
+    original_block_id = source_plan_block.replaces_block_id
+    if original_block_id is None:
+        raise SemanticFragmentBackendRejected(
+            "conditional-select normalization source has no replaced original"
+        )
+    original = _live_block_for_binding(
+        modifier,
+        state.binding(original_block_id),
+    )
+    replacement = _live_block_for_binding(
+        modifier,
+        state.binding(operation.source_block_id),
+    )
+    selected = _live_block_for_binding(
+        modifier,
+        state.binding(envelope.selected_value_block_id),
+    )
+    join = _live_block_for_binding(
+        modifier,
+        state.binding(envelope.join_block_id),
+    )
+    label = (
+        f"operation={operation.operation_id!r} "
+        f"source=blk{int(original.serial)}@0x{int(original.start):X} "
+        f"predicate=0x{int(envelope.predicate_ea):X} "
+        f"selected=blk{int(selected.serial)}@0x{int(selected.start):X} "
+        f"join=blk{int(join.serial)}@0x{int(join.start):X} "
+        f"transfer=0x{int(normalization.unresolved_transfer_ea):X}"
+    )
+    original_instructions = tuple(_iter_block_instructions(original))
+    replacement_instructions = tuple(_iter_block_instructions(replacement))
+    selected_instructions = tuple(_iter_block_instructions(selected))
+    original_tail = original.tail
+    replacement_tail = replacement.tail
+    join_tail = join.tail
+    observed_predicate = exact_branch_predicate_kind(
+        tuple(
+            _capture_predicate_insn_snapshot(instruction)
+            for instruction in original_instructions
+        ),
+        condition_producer_ea=int(normalization.condition_producer_ea),
+    )
+    replacement_predicate = exact_branch_predicate_kind(
+        tuple(
+            _capture_predicate_insn_snapshot(instruction)
+            for instruction in replacement_instructions
+        ),
+        condition_producer_ea=int(normalization.condition_producer_ea),
+    )
+    explicit_target = (
+        None
+        if original_tail is None
+        or int(original_tail.d.t) != int(ida_hexrays.mop_b)
+        else int(original_tail.d.b)
+    )
+    original_successors = tuple(int(value) for value in original.succset)
+    nonexplicit_targets = tuple(
+        serial
+        for serial in original_successors
+        if explicit_target is not None and serial != explicit_target
+    )
+    semantic_true_target = None
+    if observed_predicate is normalization.predicate_kind:
+        semantic_true_target = explicit_target
+    elif (
+        observed_predicate is not None
+        and inverted_predicate_kind(observed_predicate)
+        is normalization.predicate_kind
+        and len(nonexplicit_targets) == 1
+    ):
+        semantic_true_target = nonexplicit_targets[0]
+    condition_indexes = tuple(
+        index
+        for index, instruction in enumerate(replacement_instructions)
+        if int(instruction.ea) == int(normalization.condition_producer_ea)
+    )
+    cut_indexes = tuple(
+        index
+        for index, instruction in enumerate(replacement_instructions)
+        if int(instruction.ea) == int(operation.predicate_anchor_ea)
+    )
+    if (
+        int(original.type) != int(ida_hexrays.BLT_2WAY)
+        or set(original_successors) != {int(selected.serial), int(join.serial)}
+        or explicit_target is None
+        or len(nonexplicit_targets) != 1
+        or original.nextb is None
+        or int(original.nextb.serial) != nonexplicit_targets[0]
+        or observed_predicate is not envelope.observed_predicate_kind
+        or semantic_true_target != int(selected.serial)
+        or original_tail is None
+        or int(original_tail.ea) != int(envelope.predicate_ea)
+        or replacement_tail is None
+        or int(replacement_tail.ea) != int(envelope.predicate_ea)
+        or replacement_predicate is not envelope.observed_predicate_kind
+        or tuple(
+            (int(instruction.ea), int(instruction.opcode))
+            for instruction in replacement_instructions
+        )
+        != tuple(
+            (int(instruction.ea), int(instruction.opcode))
+            for instruction in original_instructions
+        )
+        or int(selected.type) != int(ida_hexrays.BLT_1WAY)
+        or tuple(int(value) for value in selected.succset)
+        != (int(join.serial),)
+        or tuple(int(value) for value in selected.predset)
+        != (int(original.serial),)
+        or selected.nextb is None
+        or int(selected.nextb.serial) != int(join.serial)
+        or len(selected_instructions) != 1
+        or value_op_from_opcode(int(selected_instructions[0].opcode))
+        is not ValueOpKind.MOVE
+        or int(selected_instructions[0].ea) != int(envelope.predicate_ea)
+        or set(int(value) for value in join.predset)
+        != {int(original.serial), int(selected.serial)}
+        or int(join.type) != int(ida_hexrays.BLT_0WAY)
+        or join_tail is None
+        or int(join_tail.opcode) != int(ida_hexrays.m_ijmp)
+        or int(join_tail.ea) != int(normalization.unresolved_transfer_ea)
+        or not condition_indexes
+        or len(cut_indexes) != 1
+        or max(condition_indexes) >= cut_indexes[0]
+        or cut_indexes[0] >= len(replacement_instructions) - 1
+    ):
+        raise SemanticFragmentBackendRejected(
+            "live conditional-select envelope changed before detached "
+            f"normalization; {label}"
+        )
+    branch = ida_hexrays.minsn_t(replacement_tail)
+    branch.ea = int(operation.predicate_anchor_ea)
+    if int(branch.opcode) == int(ida_hexrays.m_jcnd):
+        expression = (
+            None
+            if int(branch.l.t) != int(ida_hexrays.mop_d)
+            else branch.l.d
+        )
+        if (
+            observed_predicate is normalization.predicate_kind
+        ):
+            pass
+        elif (
+            observed_predicate is PredicateKind.SGE
+            and normalization.predicate_kind is PredicateKind.SLT
+            and expression is not None
+            and int(expression.opcode) == int(ida_hexrays.m_lnot)
+            and int(expression.l.t) == int(ida_hexrays.mop_d)
+        ):
+            branch.l.assign(expression.l)
+        else:
+            raise SemanticFragmentBackendRejected(
+                "live conditional-select truthiness predicate cannot be "
+                f"oriented exactly; {label}"
+            )
+    else:
+        branch_opcode = branch_opcode_for_predicate(
+            normalization.predicate_kind
+        )
+        if branch_opcode is None:
+            raise SemanticFragmentBackendRejected(
+                "live conditional-select predicate has no Hex-Rays branch "
+                f"opcode; {label}"
+            )
+        branch.opcode = int(branch_opcode)
+    modifier.replace_instruction_suffix_now(
+        replacement,
+        cut_ea=int(operation.predicate_anchor_ea),
+        replacement=branch,
+    )
+
+
+def _normalize_replacement_computed_branches(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+) -> None:
+    for operation in plan.operations:
+        normalization = operation.computed_branch_normalization
+        if (
+            normalization is None
+            or normalization.conditional_select_envelope is None
+        ):
+            continue
+        _normalize_conditional_select_replacement(
+            modifier,
+            plan,
+            state,
+            operation,
+        )
 
 
 def _create_empty_block(
@@ -2584,6 +2816,11 @@ def stage_semantic_fragment(
         for block in plan.blocks:
             if block.role is FragmentBlockRole.REPLACEMENT:
                 _clone_replacement(modifier, state, block)
+        _normalize_replacement_computed_branches(
+            modifier,
+            plan,
+            state,
+        )
         reference_version = state.binding(plan.roots[0]).version
         _stage_native_bodies(
             modifier,

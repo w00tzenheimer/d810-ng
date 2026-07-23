@@ -47,6 +47,7 @@ from d810.ir.block_identity import (  # noqa: E402
 )
 from d810.ir.flowgraph import BlockKind  # noqa: E402
 from d810.ir.semantic_edge import SemanticEdgeRole  # noqa: E402
+from d810.ir.semantics import PredicateKind  # noqa: E402
 from d810.ir.storage_identity import (  # noqa: E402
     StorageIdentity,
     StorageIdentityKind,
@@ -56,6 +57,8 @@ from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentComputedBranchNormalization,
+    FragmentConditionalSelectEnvelope,
     FragmentDataFlowObligation,
     FragmentDataFlowRole,
     FragmentEdge,
@@ -72,6 +75,7 @@ from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentTerminalReturn,
     FragmentTerminalRoute,
     FragmentValueSite,
+    FragmentWorkItemScope,
 )
 from d810.transforms.fragment_validation import (  # noqa: E402
     FragmentBindingState,
@@ -170,6 +174,7 @@ class _BlockReference:
         self.nnn = None
         self.s = None
         self.a = None
+        self.d = None
         self.writes_ccflags = False
         self.writes_cc = False
 
@@ -181,6 +186,7 @@ class _BlockReference:
         self.nnn = None
         self.s = None
         self.a = None
+        self.d = None
 
     def make_blkref(self, serial: int) -> None:
         self._reset_value()
@@ -218,7 +224,14 @@ class _BlockReference:
         self.nnn = deepcopy(getattr(other, "nnn", None))
         self.s = deepcopy(getattr(other, "s", None))
         self.a = deepcopy(getattr(other, "a", None))
+        self.d = deepcopy(getattr(other, "d", None))
         return self
+
+    def create_from_insn(self, instruction: "_Instruction") -> None:
+        self._reset_value()
+        self.t = int(ida_hexrays.mop_d)
+        self.d = deepcopy(instruction)
+        self.size = int(instruction.d.size)
 
     def erase(self) -> None:
         self._reset_value()
@@ -1440,6 +1453,7 @@ def _conditional_plan(
     taken: int,
     fallthrough: int,
     dispatcher: int,
+    predicate_ea: int = 0x401010,
 ) -> FragmentPlan:
     index = gateway.identity_index
 
@@ -1490,7 +1504,7 @@ def _conditional_plan(
             FragmentOperation(
                 operation_id="conditional-route",
                 source_block_id=replacement.block_id,
-                predicate_anchor_ea=0x401010,
+                predicate_anchor_ea=int(predicate_ea),
                 edges=(
                     FragmentEdge(
                         role=SemanticEdgeRole.CONDITIONAL_TAKEN,
@@ -1500,6 +1514,73 @@ def _conditional_plan(
                         role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
                         target_block_id="fallthrough",
                     ),
+                ),
+            ),
+        ),
+    )
+
+
+def _conditional_select_plan(
+    gateway,
+    *,
+    entry: int,
+    original: int,
+    selected_value: int,
+    join: int,
+    taken: int,
+    fallthrough: int,
+) -> FragmentPlan:
+    plan = _conditional_plan(
+        gateway,
+        entry=entry,
+        original=original,
+        taken=taken,
+        fallthrough=fallthrough,
+        dispatcher=join,
+        predicate_ea=0x40A5F6,
+    )
+    selected_handle = gateway.identity_index.handle_for_serial(selected_value)
+    assert selected_handle is not None
+    assert selected_handle.stable_identity is not None
+    selected_rebound = gateway.identity_index.resolve(selected_handle)
+    assert selected_rebound is not None
+    selected_block = FragmentBlock(
+        block_id="selected-value",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=int(selected_rebound.anchor_ea),
+        stable_identity=selected_handle.stable_identity,
+    )
+    operation = plan.operations[0]
+    return replace(
+        plan,
+        plan_id="runtime-conditional-select-normalization",
+        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id="conditional-select@0x40A605",
+            selected_obligation_ids=("native-indirect-transfer@0x40A605",),
+            remaining_obligation_ids=(),
+        ),
+        blocks=plan.blocks + (selected_block,),
+        operations=(
+            replace(
+                operation,
+                operation_id="native-indirect-transfer@0x40A605",
+                predicate_anchor_ea=0x40A5F6,
+                computed_branch_normalization=(
+                    FragmentComputedBranchNormalization(
+                        predicate_kind=PredicateKind.SLT,
+                        condition_producer_ea=0x40A5F0,
+                        unresolved_transfer_ea=0x40A605,
+                        conditional_select_envelope=(
+                            FragmentConditionalSelectEnvelope(
+                                predicate_ea=0x40A5FE,
+                                observed_predicate_kind=PredicateKind.SGE,
+                                selected_value_block_id=selected_block.block_id,
+                                join_block_id="dispatcher",
+                            )
+                        ),
+                    )
                 ),
             ),
         ),
@@ -4362,6 +4443,288 @@ def test_backend_stages_complete_conditional_with_owned_fallthrough_helper(
     assert tuple(taken.predset) == ()
     assert tuple(fallthrough.predset) == ()
     assert gateway.active is False
+
+
+def test_backend_normalizes_conditional_select_only_on_detached_replacement(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x40A5E0, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x40A5F0, block_type=ida_hexrays.BLT_2WAY)
+    selected = _Block(2, start=0x40A5FE, block_type=ida_hexrays.BLT_1WAY)
+    join = _Block(3, start=0x40A601, block_type=ida_hexrays.BLT_0WAY)
+    taken = _Block(4, start=0x40B6C0, block_type=ida_hexrays.BLT_0WAY)
+    fallthrough = _Block(5, start=0x40A607, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(6, start=0x40C000, block_type=ida_hexrays.BLT_STOP)
+    original.end = 0x40A5FF
+    selected.end = 0x40A5FF
+    join.end = 0x40A607
+    _connect(entry, original)
+    original_instructions = (
+        _Instruction(ida_hexrays.m_nop, 0x40A5F0),
+        _Instruction(ida_hexrays.m_mov, 0x40A5F6),
+        _Instruction(ida_hexrays.m_mov, 0x40A5F8),
+        _Instruction(ida_hexrays.m_jge, 0x40A5FE),
+    )
+    original.head = original_instructions[0]
+    for current, following in zip(
+        original_instructions[:-1],
+        original_instructions[1:],
+        strict=True,
+    ):
+        current.next = following
+    original.tail = original_instructions[-1]
+    original.tail.d.make_blkref(join.serial)
+    original.succset = _EdgeSet((selected.serial, join.serial))
+    selected.predset.push_back(original.serial)
+    join.predset.push_back(original.serial)
+    selected.head = selected.tail = _Instruction(
+        ida_hexrays.m_mov,
+        0x40A5FE,
+    )
+    selected.succset.push_back(join.serial)
+    join.predset.push_back(selected.serial)
+    join_prefix = _Instruction(ida_hexrays.m_add, 0x40A601)
+    join_transfer = _Instruction(ida_hexrays.m_ijmp, 0x40A605)
+    join_prefix.next = join_transfer
+    join.head = join_prefix
+    join.tail = join_transfer
+    mba = _Mba((entry, original, selected, join, taken, fallthrough, stop))
+    gateway = make_fragment_publication_gateway(
+        mba,
+        publication_purpose=(
+            FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+        ),
+    )
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    monkeypatch.setattr(sfb.ida_hexrays, "minsn_t", deepcopy)
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    plan = _conditional_select_plan(
+        gateway,
+        entry=0,
+        original=1,
+        selected_value=2,
+        join=3,
+        taken=4,
+        fallthrough=5,
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    state = modifier._semantic_fragment_state
+    assert state is not None
+    replacement = sfb._live_block_for_binding(
+        modifier,
+        state.binding("replacement"),
+    )
+    replacement_instructions = tuple(sfb._iter_block_instructions(replacement))
+    assert tuple(
+        (int(instruction.ea), int(instruction.opcode))
+        for instruction in replacement_instructions
+    ) == (
+        (0x40A5F0, int(ida_hexrays.m_nop)),
+        (0x40A5F6, int(ida_hexrays.m_jl)),
+    )
+    assert tuple(
+        (int(instruction.ea), int(instruction.opcode))
+        for instruction in sfb._iter_block_instructions(original)
+    ) == (
+        (0x40A5F0, int(ida_hexrays.m_nop)),
+        (0x40A5F6, int(ida_hexrays.m_mov)),
+        (0x40A5F8, int(ida_hexrays.m_mov)),
+        (0x40A5FE, int(ida_hexrays.m_jge)),
+    )
+    assert set(projection.block("replacement").successors) == {
+        "taken",
+        "fallthrough-helper:native-indirect-transfer@0x40A605",
+    }
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime conditional-select staging cleanup")
+
+
+def test_backend_unwraps_exact_nested_signed_skip_on_detached_replacement(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x40A5E0, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x40A5F0, block_type=ida_hexrays.BLT_2WAY)
+    selected = _Block(2, start=0x40A5FE, block_type=ida_hexrays.BLT_1WAY)
+    join = _Block(3, start=0x40A601, block_type=ida_hexrays.BLT_0WAY)
+    taken = _Block(4, start=0x40B6C0, block_type=ida_hexrays.BLT_0WAY)
+    fallthrough = _Block(5, start=0x40A607, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(6, start=0x40C000, block_type=ida_hexrays.BLT_STOP)
+    original.end = 0x40A5FF
+    selected.end = 0x40A5FF
+    join.end = 0x40A607
+    _connect(entry, original)
+
+    sign = _Instruction(ida_hexrays.m_sets, 0x40A5F0)
+    sign.d.make_reg(2, 1)
+    overflow = _Instruction(ida_hexrays.m_seto, 0x40A5F0)
+    overflow.d.make_reg(3, 1)
+    predicate_anchor = _Instruction(ida_hexrays.m_mov, 0x40A5F6)
+    carrier = _Instruction(ida_hexrays.m_mov, 0x40A5F8)
+    signed_flag_xor = _Instruction(ida_hexrays.m_xor, 0x40A5FE)
+    signed_flag_xor.l.make_reg(2, 1)
+    signed_flag_xor.r.make_reg(3, 1)
+    signed_flag_xor.d.size = 1
+    complement = _Instruction(ida_hexrays.m_lnot, 0x40A5FE)
+    complement.l.create_from_insn(signed_flag_xor)
+    complement.d.size = 1
+    skip = _Instruction(ida_hexrays.m_jcnd, 0x40A5FE)
+    skip.l.create_from_insn(complement)
+    skip.d.make_blkref(join.serial)
+    original_instructions = (
+        sign,
+        overflow,
+        predicate_anchor,
+        carrier,
+        skip,
+    )
+    original.head = original_instructions[0]
+    for current, following in zip(
+        original_instructions[:-1],
+        original_instructions[1:],
+        strict=True,
+    ):
+        current.next = following
+    original.tail = skip
+    original.succset = _EdgeSet((selected.serial, join.serial))
+    selected.predset.push_back(original.serial)
+    join.predset.push_back(original.serial)
+    selected.head = selected.tail = _Instruction(
+        ida_hexrays.m_mov,
+        0x40A5FE,
+    )
+    selected.succset.push_back(join.serial)
+    join.predset.push_back(selected.serial)
+    join_prefix = _Instruction(ida_hexrays.m_add, 0x40A601)
+    join_transfer = _Instruction(ida_hexrays.m_ijmp, 0x40A605)
+    join_prefix.next = join_transfer
+    join.head = join_prefix
+    join.tail = join_transfer
+    mba = _Mba((entry, original, selected, join, taken, fallthrough, stop))
+    gateway = make_fragment_publication_gateway(
+        mba,
+        publication_purpose=(
+            FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+        ),
+    )
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    monkeypatch.setattr(sfb.ida_hexrays, "minsn_t", deepcopy)
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    plan = _conditional_select_plan(
+        gateway,
+        entry=0,
+        original=1,
+        selected_value=2,
+        join=3,
+        taken=4,
+        fallthrough=5,
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    state = modifier._semantic_fragment_state
+    assert state is not None
+    replacement = sfb._live_block_for_binding(
+        modifier,
+        state.binding("replacement"),
+    )
+    replacement_instructions = tuple(sfb._iter_block_instructions(replacement))
+    assert tuple(
+        (int(instruction.ea), int(instruction.opcode))
+        for instruction in replacement_instructions
+    ) == (
+        (0x40A5F0, int(ida_hexrays.m_sets)),
+        (0x40A5F0, int(ida_hexrays.m_seto)),
+        (0x40A5F6, int(ida_hexrays.m_jcnd)),
+    )
+    normalized_branch = replacement_instructions[-1]
+    assert int(normalized_branch.l.t) == int(ida_hexrays.mop_d)
+    assert int(normalized_branch.l.d.opcode) == int(ida_hexrays.m_xor)
+    assert {
+        int(normalized_branch.l.d.l.r),
+        int(normalized_branch.l.d.r.r),
+    } == {2, 3}
+    assert int(original.tail.l.d.opcode) == int(ida_hexrays.m_lnot)
+    assert set(projection.block("replacement").successors) == {
+        "taken",
+        "fallthrough-helper:native-indirect-transfer@0x40A605",
+    }
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime nested conditional-select staging cleanup")
+
+
+def test_backend_rejects_stale_conditional_select_copy_shape(monkeypatch) -> None:
+    entry = _Block(0, start=0x40A5E0, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x40A5F0, block_type=ida_hexrays.BLT_2WAY)
+    selected = _Block(2, start=0x40A5FE, block_type=ida_hexrays.BLT_1WAY)
+    join = _Block(3, start=0x40A601, block_type=ida_hexrays.BLT_0WAY)
+    taken = _Block(4, start=0x40B6C0, block_type=ida_hexrays.BLT_0WAY)
+    fallthrough = _Block(5, start=0x40A607, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(6, start=0x40C000, block_type=ida_hexrays.BLT_STOP)
+    original.end = 0x40A5FF
+    selected.end = 0x40A5FF
+    join.end = 0x40A607
+    _connect(entry, original)
+    original_head = _Instruction(ida_hexrays.m_nop, 0x40A5F0)
+    original_cut = _Instruction(ida_hexrays.m_mov, 0x40A5F6)
+    original_tail = _Instruction(
+        ida_hexrays.m_jge,
+        0x40A5FE,
+    )
+    original_head.next = original_cut
+    original_cut.next = original_tail
+    original.head = original_head
+    original.tail = original_tail
+    original.tail.d.make_blkref(join.serial)
+    original.succset = _EdgeSet((selected.serial, join.serial))
+    selected.predset.push_back(original.serial)
+    join.predset.push_back(original.serial)
+    selected.head = selected.tail = _Instruction(
+        ida_hexrays.m_add,
+        0x40A5FE,
+    )
+    selected.succset.push_back(join.serial)
+    join.predset.push_back(selected.serial)
+    join.head = join.tail = _Instruction(ida_hexrays.m_ijmp, 0x40A605)
+    mba = _Mba((entry, original, selected, join, taken, fallthrough, stop))
+    gateway = make_fragment_publication_gateway(
+        mba,
+        publication_purpose=(
+            FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+        ),
+    )
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    monkeypatch.setattr(sfb.ida_hexrays, "minsn_t", deepcopy)
+    plan = _conditional_select_plan(
+        gateway,
+        entry=0,
+        original=1,
+        selected_value=2,
+        join=3,
+        taken=4,
+        fallthrough=5,
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="conditional-select envelope",
+    ):
+        modifier._stage_semantic_fragment(plan)
+
+    assert tuple(entry.succset) == (original.serial,)
+    assert gateway.active
+    gateway.abort(reason="runtime stale conditional-select cleanup")
 
 
 def test_backend_stages_conditional_with_transaction_local_targets(
