@@ -5214,6 +5214,190 @@ def test_manager_preanalysis_publishes_static_resolution_without_byte_delivery(
     assert not hasattr(state, "pending_prepatch_materialization")
 
 
+def test_concolic_resolution_builds_complete_frontend_normalization_plans() -> None:
+    direct_jmp_ea = 0x401020
+    conditional_jmp_ea = 0x401050
+    true_target_ea = 0x403000
+    false_target_ea = 0x404000
+    resolution = ComputedGotoResolution(
+        function_ea=0x401000,
+        jmp_targets={
+            direct_jmp_ea: (0x402000,),
+            conditional_jmp_ea: (true_target_ea, false_target_ea),
+        },
+        reachable_eas=(
+            0x401000,
+            direct_jmp_ea,
+            conditional_jmp_ea,
+            0x402000,
+            true_target_ea,
+            false_target_ea,
+        ),
+        arch="x86_64",
+        executed_insns=17,
+        seeds_run=1,
+    )
+    instruction_ends = {
+        direct_jmp_ea: direct_jmp_ea + 2,
+        conditional_jmp_ea: conditional_jmp_ea + 2,
+    }
+    block_entries = {
+        direct_jmp_ea: 0x401010,
+        conditional_jmp_ea: 0x401030,
+    }
+
+    plans = computed_goto_resolver._concolic_frontend_normalization_plans(
+        resolution,
+        instruction_end=lambda ea: instruction_ends[int(ea)],
+        block_start=lambda ea: block_entries[int(ea)],
+        select_analyzer=lambda jmp_ea, block_entry, arch: {
+            "cmp_ea": 0x401040,
+            "cmp_end": 0x401044,
+            "cc": 5,
+            "target_true": true_target_ea,
+            "target_false": false_target_ea,
+        },
+    )
+
+    assert len(plans) == 2
+    direct, conditional = plans
+    assert direct == _PatchPlan(
+        jmp_ea=direct_jmp_ea,
+        block_entry=0x401010,
+        patch_start=direct_jmp_ea,
+        patch_bytes=b"",
+        region_end=direct_jmp_ea + 2,
+        insn_heads=(direct_jmp_ea,),
+        new_block_eas=(),
+        target_eas=(0x402000,),
+    )
+    assert conditional == _PatchPlan(
+        jmp_ea=conditional_jmp_ea,
+        block_entry=0x401030,
+        patch_start=0x401044,
+        patch_bytes=b"",
+        region_end=conditional_jmp_ea + 2,
+        insn_heads=(0x401044, conditional_jmp_ea),
+        new_block_eas=(0x401044, conditional_jmp_ea),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        condition_producer_ea=0x401040,
+    )
+
+
+def test_concolic_resolution_abstains_when_any_site_lacks_complete_proof() -> None:
+    resolution = ComputedGotoResolution(
+        function_ea=0x401000,
+        jmp_targets={
+            0x401020: (0x402000,),
+            0x401050: (0x403000, 0x404000),
+        },
+        reachable_eas=(0x401000,),
+        arch="x86_64",
+        executed_insns=17,
+        seeds_run=1,
+    )
+
+    assert (
+        computed_goto_resolver._concolic_frontend_normalization_plans(
+            resolution,
+            instruction_end=lambda ea: int(ea) + 2,
+            block_start=lambda _ea: 0x401000,
+            select_analyzer=lambda *_args: None,
+        )
+        == ()
+    )
+
+
+def test_resolution_attaches_complete_concolic_normalization_plans(
+    monkeypatch,
+) -> None:
+    resolution = ComputedGotoResolution(
+        function_ea=0x401000,
+        jmp_targets={0x401020: (0x402000,)},
+        reachable_eas=(0x401000, 0x401020, 0x402000),
+        arch="x86_64",
+        executed_insns=17,
+        seeds_run=1,
+    )
+    plan = _PatchPlan(
+        jmp_ea=0x401020,
+        block_entry=0x401010,
+        patch_start=0x401020,
+        patch_bytes=b"",
+        region_end=0x401022,
+        insn_heads=(0x401020,),
+        new_block_eas=(),
+        target_eas=(0x402000,),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "resolve_computed_gotos",
+        lambda _function_ea, **_kwargs: resolution,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_concolic_frontend_normalization_plans",
+        lambda _resolution: (plan,),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "resolve_computed_gotos_static",
+        lambda _function_ea: pytest.fail(
+            "complete concolic evidence must not fall back to static resolution"
+        ),
+    )
+
+    resolved = computed_goto_resolver._resolve_computed_goto_resolution(
+        resolution.function_ea
+    )
+
+    assert resolved is not None
+    assert resolved.patch_plans == (plan,)
+
+
+def test_resolution_rejects_partial_concolic_normalization_evidence(
+    monkeypatch,
+) -> None:
+    resolution = ComputedGotoResolution(
+        function_ea=0x401000,
+        jmp_targets={
+            0x401020: (0x402000,),
+            0x401050: (0x403000, 0x404000),
+        },
+        reachable_eas=(0x401000,),
+        arch="x86_64",
+        executed_insns=17,
+        seeds_run=1,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "resolve_computed_gotos",
+        lambda _function_ea, **_kwargs: resolution,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_concolic_frontend_normalization_plans",
+        lambda _resolution: (),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "resolve_computed_gotos_static",
+        lambda _function_ea: None,
+    )
+
+    assert (
+        computed_goto_resolver._resolve_computed_goto_resolution(
+            resolution.function_ea
+        )
+        is None
+    )
+
+
 def test_function_context_register_values_abstain_on_conflicting_or_unknown_values():
     states = {
         0x1000: {"esi": frozenset({1})},

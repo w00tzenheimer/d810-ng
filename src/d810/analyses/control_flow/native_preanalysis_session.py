@@ -462,7 +462,7 @@ def _patch_plan_frontend_proof(
         or plan.true_target_ea is None
         or plan.false_target_ea is None
         or plan.condition_producer_ea is None
-        or len(plan.insn_heads) < 3
+        or len(plan.insn_heads) < 2
         or len(plan.new_block_eas) < 2
     ):
         raise FrontendNormalizationEvidenceRejected(
@@ -1121,25 +1121,29 @@ class NativePreanalysisSessionState:
         self,
         key: NativePreanalysisKey,
     ) -> FrontendNormalizationEvidence | None:
-        """Project the complete native patch ledger into one generic generation.
+        """Project the complete native transfer ledger into one generic generation.
 
         Final state-machine routes are intentionally absent.  This capability
-        contains only native computed transfers already delivered as faithful
-        direct or conditional branch shapes, plus the native closure required
-        to make their missing destinations available.
+        contains only native computed transfers proved as faithful direct or
+        conditional branch shapes.  A detached closure is included only when
+        missing destinations must also be made available.
         """
         facts = self.facts
         resolver_evidence = self._resolver_evidence_for(key)
         resolution = resolver_evidence.computed_goto_resolution
         if (
-            facts is None
-            or facts.semantic_closure is None
-            or not isinstance(resolution, ComputedGotoResolution)
+            not isinstance(resolution, ComputedGotoResolution)
             or not resolution.patch_plans
             or int(self.evidence_generation) <= 0
         ):
             return None
-        facts.require_key(key)
+        semantic_closure = None
+        native_cfg = None
+        if facts is not None:
+            facts.require_key(key)
+            if facts.semantic_closure is not None:
+                semantic_closure = facts.semantic_closure
+                native_cfg = facts.native_cfg
         atomic_group_id = (
             f"frontend-normalization:g{int(self.evidence_generation)}"
         )
@@ -1162,8 +1166,8 @@ class NativePreanalysisSessionState:
             generation=int(self.evidence_generation),
             atomic_group_id=atomic_group_id,
             transfer_proofs=proofs,
-            semantic_closure=facts.semantic_closure,
-            native_cfg=facts.native_cfg,
+            semantic_closure=semantic_closure,
+            native_cfg=native_cfg,
         )
 
     def canonical_semantic_evidence_for(
@@ -1522,14 +1526,22 @@ class NativePreanalysisSessionState:
         key: NativePreanalysisKey,
         resolution: ComputedGotoResolution,
     ) -> bool:
-        """Publish the native computed-goto result without advancing an epoch."""
+        """Publish native computed-goto evidence as frontend-ready evidence."""
         if not isinstance(resolution, ComputedGotoResolution):
             raise TypeError("computed-goto resolution must be portable evidence")
+        previous = self._resolver_evidence_for(key).computed_goto_resolution
+        changes_frontend_authority = bool(
+            resolution.patch_plans
+            or (
+                isinstance(previous, ComputedGotoResolution)
+                and previous.patch_plans
+            )
+        )
         return self._replace_resolver_evidence(
             key,
             evidence_family="computed_goto_resolution",
             evidence_reason="computed-goto resolution changed",
-            advance_generation=False,
+            advance_generation=changes_frontend_authority,
             computed_goto_resolution=resolution,
         )
 
