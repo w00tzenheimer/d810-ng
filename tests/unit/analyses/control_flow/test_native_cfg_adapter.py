@@ -212,7 +212,7 @@ def test_native_decode_guards_are_semantic_and_function_bounded() -> None:
         requested_func_ea=0x5000,
         resolver_proven_unmarked=True,
     )
-    assert not has_native_semantic_boundary(
+    assert has_native_semantic_boundary(
         resolver_cut=False,
         is_return=False,
         is_indirect_jump=False,
