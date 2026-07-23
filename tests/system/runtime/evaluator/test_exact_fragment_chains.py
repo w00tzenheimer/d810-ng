@@ -267,3 +267,21 @@ def test_read_modify_write_counts_as_both_use_and_definition() -> None:
     assert find_reaching_defs_for_reg_use(mba, 0, 0x1008, 10, 4) == [
         DefSite(0, 0x1004, ida_hexrays.m_mov)
     ]
+
+
+def test_definition_query_preserves_duplicate_physical_use_anchors() -> None:
+    block = _Block(
+        0,
+        (
+            _Instruction(0x1000, destination=_reg()),
+            _Instruction(0x1004, source=_reg()),
+            _Instruction(0x1004, source=_reg()),
+        ),
+    )
+    chains = _GraphChains({0: _BlockChains()})
+    mba = _Mba((block,), ud=chains, du=chains)
+
+    assert find_uses_reached_by_reg_definition(mba, 0, 0x1000, 10, 4) == [
+        UseSite(0, 0x1004, ida_hexrays.m_mov),
+        UseSite(0, 0x1004, ida_hexrays.m_mov),
+    ]
