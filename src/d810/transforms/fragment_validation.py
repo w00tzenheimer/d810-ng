@@ -266,7 +266,7 @@ class ProjectedFallthroughHelper:
 
 @dataclass(frozen=True, slots=True)
 class ProjectedRootFallthroughHelper:
-    """Adjacent helper required to publish one conditional root fallthrough."""
+    """Adjacent helper required to publish one physical root fallthrough."""
 
     helper_block_id: str
     source_block_id: str
@@ -853,15 +853,26 @@ def _validate_root_fallthrough_helpers(
         pair = (helper.source_block_id, helper.root_block_id)
         unique = pair not in pairs
         pairs.add(pair)
+        source_topology_valid = bool(
+            source is not None
+            and (
+                (
+                    source.kind is BlockKind.TWO_WAY
+                    and len(source.successors) == 2
+                    and source.successors[0] == helper.helper_block_id
+                )
+                or (
+                    source.kind is BlockKind.ONE_WAY
+                    and source.successors == (helper.helper_block_id,)
+                )
+            )
+        )
         passed = bool(
             unique
             and helper.root_block_id in plan.roots
             and helper_block is not None
-            and source is not None
             and root is not None
-            and source.kind is BlockKind.TWO_WAY
-            and len(source.successors) == 2
-            and source.successors[0] == helper.helper_block_id
+            and source_topology_valid
             and helper_block.physical_position == source.physical_position + 1
             and helper_block.kind is BlockKind.ONE_WAY
             and helper_block.successors == (helper.root_block_id,)

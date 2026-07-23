@@ -1256,6 +1256,87 @@ def _plan_with_conditional_predecessor(
     )
 
 
+def _plan_with_shared_conditional_roots(
+    gateway,
+    *,
+    entry: int,
+    predecessor: int,
+    fallthrough_original: int,
+    taken_original: int,
+    target: int,
+    dispatcher: int,
+) -> FragmentPlan:
+    plan = _plan(
+        gateway,
+        entry=entry,
+        original=fallthrough_original,
+        target=target,
+        dispatcher=dispatcher,
+    )
+    index = gateway.identity_index
+
+    def _published(
+        block_id: str,
+        role: FragmentBlockRole,
+        serial: int,
+    ) -> FragmentBlock:
+        handle = index.handle_for_serial(serial)
+        assert handle is not None and handle.stable_identity is not None
+        rebound = index.resolve(handle)
+        assert rebound is not None and rebound.anchor_ea is not None
+        return FragmentBlock(
+            block_id=block_id,
+            role=role,
+            materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+            semantic_anchor_ea=int(rebound.anchor_ea),
+            stable_identity=handle.stable_identity,
+        )
+
+    taken_original_block = _published(
+        "taken-original",
+        FragmentBlockRole.ORIGINAL,
+        taken_original,
+    )
+    taken_replacement = FragmentBlock(
+        block_id="taken-replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=taken_original_block.semantic_anchor_ea,
+        stable_identity=taken_original_block.stable_identity,
+        replaces_block_id=taken_original_block.block_id,
+    )
+    return replace(
+        plan,
+        plan_id="runtime-shared-conditional-root-fragment",
+        atomic_group_id="conditional-roots@0x401010",
+        blocks=plan.blocks
+        + (
+            _published(
+                "conditional-predecessor",
+                FragmentBlockRole.EXTERNAL,
+                predecessor,
+            ),
+            taken_original_block,
+            taken_replacement,
+        ),
+        roots=("replacement", taken_replacement.block_id),
+        owned_originals=("original", taken_original_block.block_id),
+        operations=(
+            plan.operations[0],
+            FragmentOperation(
+                operation_id="taken-replacement-route",
+                source_block_id=taken_replacement.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="target",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
 def _conditional_plan(
     gateway,
     *,
@@ -3257,6 +3338,278 @@ def test_direct_root_partial_write_restores_previous_authority(monkeypatch) -> N
     assert tuple(original.succset) == (dispatcher.serial,)
     assert tuple(target.predset) == ()
     assert proxy.resolve() is published
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
+
+
+@pytest.mark.parametrize("fail_during_taken_write", (False, True))
+def test_gateway_publishes_shared_conditional_roots_as_one_atomic_group(
+    monkeypatch,
+    fail_during_taken_write: bool,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    predecessor = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_2WAY)
+    fallthrough_original = _Block(
+        2,
+        start=0x401020,
+        block_type=ida_hexrays.BLT_1WAY,
+    )
+    taken_original = _Block(
+        3,
+        start=0x401030,
+        block_type=ida_hexrays.BLT_1WAY,
+    )
+    target = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(5, start=0x401050, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(6, start=0x401060, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, predecessor)
+    _connect_conditional(
+        predecessor,
+        taken=taken_original,
+        fallthrough=fallthrough_original,
+    )
+    _connect(fallthrough_original, dispatcher)
+    _connect(taken_original, dispatcher)
+    mba = _Mba(
+        (
+            entry,
+            predecessor,
+            fallthrough_original,
+            taken_original,
+            target,
+            dispatcher,
+            stop,
+        )
+    )
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+
+    def _conditional_successor(*args, **kwargs) -> bool:
+        changed = _change_fake_conditional_successor(*args, **kwargs)
+        if not fail_during_taken_write:
+            return changed
+        block = args[0]
+        target_serial = int(args[1])
+        block.type = int(ida_hexrays.BLT_1WAY)
+        block.succset.clear()
+        block.succset.push_back(target_serial)
+        raise RuntimeError("partial shared conditional root write")
+
+    monkeypatch.setattr(
+        dm,
+        "change_2way_block_conditional_successor",
+        _conditional_successor,
+    )
+    plan = _plan_with_shared_conditional_roots(
+        gateway,
+        entry=entry.serial,
+        predecessor=predecessor.serial,
+        fallthrough_original=fallthrough_original.serial,
+        taken_original=taken_original.serial,
+        target=target.serial,
+        dispatcher=dispatcher.serial,
+    )
+    fallthrough_handle = gateway.identity_index.handle_for_serial(
+        fallthrough_original.serial
+    )
+    taken_handle = gateway.identity_index.handle_for_serial(taken_original.serial)
+    assert fallthrough_handle is not None
+    assert taken_handle is not None
+    fallthrough_proxy = gateway.identity_index.logical_proxy_for_handle(
+        fallthrough_handle
+    )
+    taken_proxy = gateway.identity_index.logical_proxy_for_handle(taken_handle)
+    assert fallthrough_proxy is not None
+    assert taken_proxy is not None
+    fallthrough_published = fallthrough_proxy.resolve()
+    taken_published = taken_proxy.resolve()
+    assert fallthrough_published is not None
+    assert taken_published is not None
+
+    if fail_during_taken_write:
+        with pytest.raises(
+            RuntimeError,
+            match="partial shared conditional root write",
+        ):
+            gateway.publish_semantic_fragment(modifier, plan)
+        assert mba.qty == 7
+        assert predecessor.type == int(ida_hexrays.BLT_2WAY)
+        assert predecessor.nextb is fallthrough_original
+        assert predecessor.tail.d.b == taken_original.serial
+        assert tuple(predecessor.succset) == (
+            fallthrough_original.serial,
+            taken_original.serial,
+        )
+        assert tuple(fallthrough_original.predset) == (predecessor.serial,)
+        assert tuple(taken_original.predset) == (predecessor.serial,)
+        assert fallthrough_proxy.resolve() is fallthrough_published
+        assert taken_proxy.resolve() is taken_published
+        assert gateway.active is False
+        assert modifier._semantic_fragment_state is None
+        return
+
+    receipt = gateway.publish_semantic_fragment(modifier, plan)
+
+    fallthrough_promoted = fallthrough_proxy.resolve()
+    taken_promoted = taken_proxy.resolve()
+    assert fallthrough_promoted is not None
+    assert taken_promoted is not None
+    assert fallthrough_promoted is not fallthrough_published
+    assert taken_promoted is not taken_published
+    fallthrough_binding = gateway.identity_index.resolve_logical_version(
+        fallthrough_promoted
+    )
+    taken_binding = gateway.identity_index.resolve_logical_version(taken_promoted)
+    assert fallthrough_binding is not None
+    assert taken_binding is not None
+    fallthrough_replacement = mba.get_mblock(fallthrough_binding.serial)
+    taken_replacement = mba.get_mblock(taken_binding.serial)
+    helper = predecessor.nextb
+    assert fallthrough_replacement is not None
+    assert taken_replacement is not None
+    assert helper is not None and helper is not fallthrough_original
+    assert predecessor.type == int(ida_hexrays.BLT_2WAY)
+    assert predecessor.tail.d.b == taken_replacement.serial
+    assert tuple(predecessor.succset) == (
+        helper.serial,
+        taken_replacement.serial,
+    )
+    assert tuple(helper.predset) == (predecessor.serial,)
+    assert tuple(helper.succset) == (fallthrough_replacement.serial,)
+    assert tuple(fallthrough_original.predset) == ()
+    assert tuple(taken_original.predset) == ()
+    assert receipt.root_publication_confirmed
+    assert receipt.prepublication_validation.passed
+    assert receipt.postpublication_validation.passed
+    assert receipt.operation_count == 7
+    assert receipt.planned_operation_count == 7
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
+
+
+@pytest.mark.parametrize("fail_after_root_write", (False, True))
+def test_gateway_publishes_one_way_call_root_through_owned_helper(
+    monkeypatch,
+    fail_after_root_write: bool,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    call_predecessor = _Block(
+        1,
+        start=0x401010,
+        block_type=ida_hexrays.BLT_1WAY,
+    )
+    original = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(5, start=0x401050, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, call_predecessor)
+    call = _Instruction(ida_hexrays.m_call, call_predecessor.start)
+    call_predecessor.head = call
+    call_predecessor.tail = call
+    call_predecessor.succset.push_back(original.serial)
+    original.predset.push_back(call_predecessor.serial)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, call_predecessor, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    plan = _plan(
+        gateway,
+        entry=entry.serial,
+        original=original.serial,
+        target=target.serial,
+        dispatcher=dispatcher.serial,
+    )
+    predecessor_handle = gateway.identity_index.handle_for_serial(
+        call_predecessor.serial
+    )
+    assert predecessor_handle is not None
+    assert predecessor_handle.stable_identity is not None
+    predecessor_binding = gateway.identity_index.resolve(predecessor_handle)
+    assert predecessor_binding is not None
+    assert predecessor_binding.anchor_ea is not None
+    plan = replace(
+        plan,
+        plan_id="runtime-call-root-fragment",
+        atomic_group_id="call-root@0x401010",
+        blocks=plan.blocks
+        + (
+            FragmentBlock(
+                block_id="call-predecessor",
+                role=FragmentBlockRole.EXTERNAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=int(predecessor_binding.anchor_ea),
+                stable_identity=predecessor_handle.stable_identity,
+            ),
+        ),
+    )
+    inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    assert len(inventory.items) == 1
+    assert inventory.items[0].role is SemanticEdgeRole.CALL_FALLTHROUGH
+
+    original_handle = gateway.identity_index.handle_for_serial(original.serial)
+    assert original_handle is not None
+    proxy = gateway.identity_index.logical_proxy_for_handle(original_handle)
+    assert proxy is not None
+    published = proxy.resolve()
+    assert published is not None
+    mark = modifier._semantic_edge_mark
+    root_write_failed = False
+
+    def _fail_once_after_root_write(*blocks) -> None:
+        nonlocal root_write_failed
+        mark(*blocks)
+        if (
+            fail_after_root_write
+            and not root_write_failed
+            and any(
+                int(block.start) == int(call_predecessor.start)
+                for block in blocks
+            )
+        ):
+            root_write_failed = True
+            raise RuntimeError("failure after one-way call root write")
+
+    monkeypatch.setattr(modifier, "_semantic_edge_mark", _fail_once_after_root_write)
+
+    if fail_after_root_write:
+        with pytest.raises(
+            RuntimeError,
+            match="failure after one-way call root write",
+        ):
+            gateway.publish_semantic_fragment(modifier, plan)
+        assert root_write_failed
+        assert mba.qty == 6
+        assert call_predecessor.nextb is original
+        assert call_predecessor.tail.opcode == int(ida_hexrays.m_call)
+        assert tuple(call_predecessor.succset) == (original.serial,)
+        assert tuple(original.predset) == (call_predecessor.serial,)
+        assert proxy.resolve() is published
+        assert gateway.active is False
+        assert modifier._semantic_fragment_state is None
+        return
+
+    receipt = gateway.publish_semantic_fragment(modifier, plan)
+
+    promoted = proxy.resolve()
+    assert promoted is not None and promoted is not published
+    promoted_binding = gateway.identity_index.resolve_logical_version(promoted)
+    assert promoted_binding is not None
+    replacement = mba.get_mblock(promoted_binding.serial)
+    helper = call_predecessor.nextb
+    assert replacement is not None
+    assert helper is not None and helper is not original
+    assert call_predecessor.tail.opcode == int(ida_hexrays.m_call)
+    assert tuple(call_predecessor.succset) == (helper.serial,)
+    assert tuple(helper.predset) == (call_predecessor.serial,)
+    assert tuple(helper.succset) == (replacement.serial,)
+    assert tuple(original.predset) == ()
+    assert receipt.root_publication_confirmed
+    assert receipt.prepublication_validation.passed
+    assert receipt.postpublication_validation.passed
+    assert receipt.operation_count == 4
+    assert receipt.planned_operation_count == 4
     assert gateway.active is False
     assert modifier._semantic_fragment_state is None
 
