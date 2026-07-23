@@ -664,6 +664,52 @@ def test_captures_terminal_return_carrier_as_portable_evidence() -> None:
     assert evidence.corridor_instruction_eas == (0x40C7E5, 0x40C7EA)
 
 
+def test_terminal_carrier_capture_owns_exact_corridor_missing_from_route() -> None:
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        TerminalReturnCarrierRequest,
+    )
+    from d810.hexrays.mutation import detached_handler_island
+
+    source_ea = 0x40C7E5
+    carrier_ea = 0x40C7EA
+    delivery_ea = 0x40C7F0
+    terminal_ea = 0x40C898
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=source_ea,
+        terminal_target_ea=terminal_ea,
+        state_var_reg=20,
+        state_constant=0x19A7218A,
+    )
+    route_identity = StableBlockIdentity.from_intervals(
+        (
+            NativeEaInterval(source_ea, source_ea + 1),
+            NativeEaInterval(delivery_ea, delivery_ea + 1),
+        ),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(source_ea, delivery_ea),
+    )
+
+    evidence = detached_handler_island.capture_terminal_return_carrier_evidence(
+        0x40A560,
+        request,
+        _terminal_return_carrier_snippet(),
+        capture_identity=route_identity,
+        terminal_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(terminal_ea, terminal_ea + 8),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(terminal_ea,),
+        ),
+    )
+
+    assert evidence is not None
+    assert evidence.corridor_instruction_eas == (source_ea, carrier_ea)
+    assert evidence.capture_identity.exact_instruction_eas == frozenset(
+        {source_ea, carrier_ea, delivery_ea}
+    )
+    assert evidence.capture_identity.native_ranges.contains(carrier_ea)
+    assert carrier_ea not in route_identity.exact_instruction_eas
+
+
 def test_portable_terminal_carrier_capture_abstains_on_invalid_source() -> None:
     from d810.analyses.control_flow.materialized_indirect_transfer import (
         TerminalReturnCarrierRequest,

@@ -9342,6 +9342,27 @@ def _terminal_return_carrier_source(
     )
 
 
+def _terminal_carrier_capture_identity(
+    route_identity: StableBlockIdentity,
+    corridor: tuple[object, ...],
+) -> StableBlockIdentity | None:
+    """Own only the exact carrier corridor proven by this early capture."""
+    corridor_eas = tuple(int(instruction.ea) for instruction in corridor)
+    if any(not 0 < ea < int(ida_idaapi.BADADDR) for ea in corridor_eas):
+        return None
+    exact_instruction_eas = frozenset(
+        (*route_identity.exact_instruction_eas, *corridor_eas)
+    )
+    return StableBlockIdentity.from_intervals(
+        (
+            *route_identity.native_ranges.intervals,
+            *(NativeEaInterval(ea, ea + 1) for ea in corridor_eas),
+        ),
+        native_key=route_identity.native_key,
+        exact_instruction_eas=exact_instruction_eas,
+    )
+
+
 def capture_terminal_return_carrier_evidence(
     function_ea: int,
     request: TerminalReturnCarrierRequest,
@@ -9366,9 +9387,15 @@ def capture_terminal_return_carrier_evidence(
         source = _terminal_return_carrier_source(int(function_ea), carrier)
         if source is None:
             return None
+        exact_capture_identity = _terminal_carrier_capture_identity(
+            capture_identity,
+            corridor,
+        )
+        if exact_capture_identity is None:
+            return None
         return TerminalReturnCarrierEvidence(
             request=request,
-            capture_identity=capture_identity,
+            capture_identity=exact_capture_identity,
             terminal_identity=terminal_identity,
             state_write_ea=int(state_write.ea),
             carrier_ea=int(carrier.ea),
