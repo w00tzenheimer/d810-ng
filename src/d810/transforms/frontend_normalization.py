@@ -1064,76 +1064,94 @@ def _select_frontend_root_component(
     plan: FragmentPlan,
     evidence: FrontendNormalizationEvidence,
 ) -> FragmentPlan:
-    """Return the first stable publication-root component and its obligations."""
+    """Return the smallest complete publication-root component and its obligations."""
     if (
         plan.publication_purpose
         is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
     ):
         raise TypeError("frontend work-item selection requires a normalization plan")
-    selected_root = min(
-        plan.roots,
-        key=lambda block_id: (
-            int(plan.block(block_id).semantic_anchor_ea),
-            str(block_id),
-        ),
-    )
     operation_by_source = {
         operation.source_block_id: operation for operation in plan.operations
     }
-    selected_block_ids: set[str] = set()
-    selected_operation_ids: set[str] = set()
-    pending = [selected_root]
-    while pending:
-        block_id = pending.pop()
-        if block_id in selected_block_ids:
-            continue
-        selected_block_ids.add(block_id)
-        operation = operation_by_source.get(block_id)
-        if operation is None:
-            continue
-        selected_operation_ids.add(operation.operation_id)
-        pending.extend(edge.target_block_id for edge in operation.edges)
 
-    selected_flag_corridors = tuple(
-        corridor
-        for corridor in plan.flag_corridors
-        if corridor.consumer.block_id in selected_block_ids
-    )
-    dependency_block_ids = {
-        block_id
-        for corridor in selected_flag_corridors
-        for block_id in (
-            corridor.producer.block_id,
-            corridor.consumer.block_id,
-            *corridor.block_path,
-        )
-    }
-    while dependency_block_ids - selected_block_ids:
-        pending.extend(dependency_block_ids - selected_block_ids)
+    def root_component(
+        root_block_id: str,
+    ) -> tuple[set[str], set[str], tuple[FragmentFlagCorridor, ...]]:
+        block_ids: set[str] = set()
+        operation_ids: set[str] = set()
+        pending = [root_block_id]
         while pending:
             block_id = pending.pop()
-            if block_id in selected_block_ids:
+            if block_id in block_ids:
                 continue
-            selected_block_ids.add(block_id)
+            block_ids.add(block_id)
             operation = operation_by_source.get(block_id)
             if operation is None:
                 continue
-            selected_operation_ids.add(operation.operation_id)
+            operation_ids.add(operation.operation_id)
             pending.extend(edge.target_block_id for edge in operation.edges)
-        selected_flag_corridors = tuple(
+
+        flag_corridors = tuple(
             corridor
             for corridor in plan.flag_corridors
-            if corridor.consumer.block_id in selected_block_ids
+            if corridor.consumer.block_id in block_ids
         )
         dependency_block_ids = {
             block_id
-            for corridor in selected_flag_corridors
+            for corridor in flag_corridors
             for block_id in (
                 corridor.producer.block_id,
                 corridor.consumer.block_id,
                 *corridor.block_path,
             )
         }
+        while dependency_block_ids - block_ids:
+            pending.extend(dependency_block_ids - block_ids)
+            while pending:
+                block_id = pending.pop()
+                if block_id in block_ids:
+                    continue
+                block_ids.add(block_id)
+                operation = operation_by_source.get(block_id)
+                if operation is None:
+                    continue
+                operation_ids.add(operation.operation_id)
+                pending.extend(edge.target_block_id for edge in operation.edges)
+            flag_corridors = tuple(
+                corridor
+                for corridor in plan.flag_corridors
+                if corridor.consumer.block_id in block_ids
+            )
+            dependency_block_ids = {
+                block_id
+                for corridor in flag_corridors
+                for block_id in (
+                    corridor.producer.block_id,
+                    corridor.consumer.block_id,
+                    *corridor.block_path,
+                )
+            }
+        return block_ids, operation_ids, flag_corridors
+
+    root_components = tuple(
+        (root_block_id, *root_component(root_block_id))
+        for root_block_id in plan.roots
+    )
+    (
+        selected_root,
+        selected_block_ids,
+        selected_operation_ids,
+        selected_flag_corridors,
+    ) = min(
+        root_components,
+        key=lambda component: (
+            len(component[2]),
+            len(component[1]),
+            len(component[3]),
+            int(plan.block(component[0]).semantic_anchor_ea),
+            str(component[0]),
+        ),
+    )
 
     selected_replacements = {
         block_id

@@ -503,6 +503,128 @@ def test_next_work_item_selects_one_connected_missing_body_component() -> None:
     assert native_body.native_ranges == (NativeEaInterval(0x1300, 0x1310),)
 
 
+def test_next_work_item_selects_smallest_complete_root_component() -> None:
+    graph = FlowGraph(
+        blocks={
+            0: _block(
+                0,
+                0x1000,
+                (1, 4),
+                (),
+                (_insn(0x1000, InsnKind.COND_JUMP, target=4),),
+            ),
+            1: _block(
+                1,
+                0x1100,
+                (2,),
+                (0,),
+                (_insn(0x1100, InsnKind.INDIRECT_JUMP),),
+            ),
+            2: _block(
+                2,
+                0x1200,
+                (),
+                (1,),
+                (_insn(0x1200, InsnKind.RET),),
+            ),
+            4: _block(
+                4,
+                0x1400,
+                (5,),
+                (0,),
+                (_insn(0x1400, InsnKind.INDIRECT_JUMP),),
+            ),
+            5: _block(
+                5,
+                0x1500,
+                (),
+                (4,),
+                (_insn(0x1500, InsnKind.RET),),
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    closure = NativeSemanticClosure(
+        included_block_eas=(0x1300, 0x1310, 0x1600),
+        native_ranges=(
+            NativeRange(0x1300, 0x1310),
+            NativeRange(0x1310, 0x1320),
+            NativeRange(0x1600, 0x1610),
+        ),
+        proven_internal_edges=(
+            ProvenInternalEdge(
+                source_ea=0x1300,
+                target_ea=0x1310,
+                kind=NativeEdgeKind.DIRECT_JUMP,
+            ),
+        ),
+        abstentions=(),
+        seed_provenance=(),
+    )
+    native_cfg = NativeCfg(
+        {
+            0x1300: NativeBlock(
+                start_ea=0x1300,
+                end_ea=0x1310,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.DIRECT_JUMP,
+                        target_ea=0x1310,
+                    ),
+                ),
+            ),
+            0x1310: NativeBlock(
+                start_ea=0x1310,
+                end_ea=0x1320,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+            0x1600: NativeBlock(
+                start_ea=0x1600,
+                end_ea=0x1610,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+        }
+    )
+    evidence = FrontendNormalizationEvidence(
+        native_key=NATIVE_KEY,
+        generation=7,
+        atomic_group_id="frontend-normalization:g7",
+        transfer_proofs=(
+            _direct_proof(
+                proof_id="direct@0x1100",
+                source_ea=0x1100,
+                target_ea=0x1300,
+            ),
+            _direct_proof(
+                proof_id="direct@0x1400",
+                source_ea=0x1400,
+                target_ea=0x1600,
+            ),
+        ),
+        semantic_closure=closure,
+        native_cfg=native_cfg,
+    )
+
+    plan = plan_next_frontend_normalization_work_item(graph, evidence)
+
+    assert plan is not None
+    assert len(plan.roots) == 1
+    assert plan.block(plan.roots[0]).semantic_anchor_ea == 0x1400
+    assert tuple(operation.operation_id for operation in plan.operations) == (
+        "direct@0x1400",
+    )
+    assert plan.work_item_scope is not None
+    assert plan.work_item_scope.selected_obligation_ids == ("direct@0x1400",)
+    assert plan.work_item_scope.remaining_obligation_ids == ("direct@0x1100",)
+    assert len(plan.native_bodies) == 1
+    native_body = plan.native_bodies[0]
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea
+        for block_id in native_body.block_ids
+    ) == (0x1600,)
+
+
 def test_missing_target_is_staged_inside_the_same_normalization_fragment() -> None:
     plan = plan_frontend_computed_branch_normalization(
         _graph(faithful=False, include_false_target=False),
