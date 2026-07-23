@@ -115,6 +115,7 @@ from d810.capabilities.machine_engines import MachineRecoveryEnginesCapability
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.capabilities.resolver import CapabilitySet
+from d810.capabilities.semantic_routes import CanonicalSemanticEvidenceCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.core import logging
@@ -156,6 +157,9 @@ from d810.hexrays.observability import (
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
     ComposedUnflatteningRule,
+)
+from d810.optimizers.microcode.flow.flattening.semantic_evidence_adapter import (
+    SessionCanonicalSemanticEvidenceProvider,
 )
 from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     _build_conditional_handler_state_routes,
@@ -1544,7 +1548,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
             return 0
         backend = HexRaysMutationBackend(mutation_gateway=mutation_gateway)
-        capabilities = self._build_capabilities(mba, prelim, range_evidence)
+        capabilities = self._build_capabilities(
+            mba,
+            prelim,
+            range_evidence,
+            resolver_state=resolver_state,
+        )
         project_config = self._project_config or (
             rule_config if isinstance(rule_config, dict) else {}
         )
@@ -3063,7 +3072,14 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         )
         return (fact_view, prelim, range_evidence, analysis_seeds, facts)
 
-    def _build_capabilities(self, mba: "ida_hexrays.mba_t", prelim, range_evidence):
+    def _build_capabilities(
+        self,
+        mba: "ida_hexrays.mba_t",
+        prelim,
+        range_evidence,
+        *,
+        resolver_state: ResolverSessionState | None = None,
+    ):
         """Assemble the live capability set the pass pipeline consumes."""
         _cfg = getattr(self, "config", None)
         # Provide the live value-range capability so RecoverStateTransitions can resolve handler
@@ -3120,6 +3136,14 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 concolic_enabled=bool(_concolic_on),
             )
         )
+        if isinstance(resolver_state, ResolverSessionState):
+            cap_instances[CanonicalSemanticEvidenceCapability] = (
+                SessionCanonicalSemanticEvidenceProvider(
+                    function_ea=int(mba.entry_ea),
+                    native_key=resolver_state.native_key,
+                    state=resolver_state.native_preanalysis,
+                )
+            )
         return CapabilitySet(cap_instances)
 
     def _select_family(

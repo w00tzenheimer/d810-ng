@@ -39,6 +39,14 @@ from d810.analyses.control_flow.native_semantic_closure import (
     NativeSemanticClosure,
 )
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
+from d810.analyses.control_flow.semantic_route_evidence import (
+    CanonicalSemanticEvidence,
+    SemanticRouteDestination,
+    SemanticRouteProof,
+    SemanticRouteProofKind,
+    SemanticRouteShape,
+    SemanticStateWriteProof,
+)
 from d810.core.native_preanalysis_key import (
     NativePreanalysisKey,
     NativePreanalysisKeyMismatch,
@@ -47,6 +55,7 @@ from d810.core import getLogger
 from d810.core.typing import Callable, Mapping, NamedTuple, Protocol, runtime_checkable
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 
 logger = getLogger(__name__)
 
@@ -1030,6 +1039,66 @@ class NativePreanalysisSessionState:
             transfer_proofs=proofs,
             semantic_closure=facts.semantic_closure,
             native_cfg=facts.native_cfg,
+        )
+
+    def canonical_semantic_evidence_for(
+        self,
+        key: NativePreanalysisKey,
+    ) -> CanonicalSemanticEvidence | None:
+        """Project postvalidated native state delivery into canonical proofs."""
+        resolver_evidence = self._resolver_evidence_for(key)
+        generation = int(self.evidence_generation)
+        if (
+            generation <= 0
+            or self.normalization_published_postvalidated_generation != generation
+            or not resolver_evidence.state_write_routes
+        ):
+            return None
+
+        atomic_group_id = f"canonical-semantic:g{generation}"
+        proofs = tuple(
+            SemanticRouteProof(
+                proof_id=(
+                    f"state-assignment@0x{int(route.delivery_ea):X}:"
+                    f"0x{int(route.state_constant) & 0xFFFFFFFF:X}"
+                ),
+                atomic_group_id=atomic_group_id,
+                proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+                shape=SemanticRouteShape.DIRECT,
+                source_identity=route.delivery_identity,
+                source_anchor_ea=int(route.delivery_ea),
+                destinations=(
+                    SemanticRouteDestination(
+                        role=SemanticEdgeRole.DIRECT,
+                        state_constant=int(route.state_constant) & 0xFFFFFFFF,
+                        target_identity=route.target_identity,
+                        target_anchor_ea=int(route.target_ea),
+                    ),
+                ),
+                state_write=SemanticStateWriteProof(
+                    identity=route.write_identity,
+                    instruction_ea=int(route.source_write_ea),
+                    state_variable=StorageIdentity(
+                        StorageIdentityKind.REGISTER,
+                        int(route.state_var_reg),
+                    ),
+                    width=4,
+                    state_constant=int(route.state_constant) & 0xFFFFFFFF,
+                    corridor_instruction_eas=tuple(
+                        int(ea) for ea in route.corridor_instruction_eas
+                    ),
+                ),
+                diagnostic_provenance=(
+                    ("provider_proof_kind", str(route.proof_kind)),
+                ),
+            )
+            for route in resolver_evidence.state_write_routes
+        )
+        return CanonicalSemanticEvidence(
+            native_key=key,
+            generation=generation,
+            atomic_group_id=atomic_group_id,
+            route_proofs=proofs,
         )
 
     def _replace_resolver_evidence(

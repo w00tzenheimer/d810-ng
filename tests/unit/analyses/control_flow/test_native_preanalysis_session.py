@@ -21,6 +21,10 @@ from d810.analyses.control_flow.frontend_normalization import (
     FrontendNormalizationEvidenceRejected,
     NativeTransferShape,
 )
+from d810.analyses.control_flow.semantic_route_evidence import (
+    SemanticRouteProofKind,
+    SemanticRouteShape,
+)
 from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteBindingEvidence,
     BootstrapRouteEvidence,
@@ -44,6 +48,7 @@ from d810.analyses.control_flow.native_semantic_closure import (
 from d810.core.native_preanalysis_key import NativePreanalysisKeyMismatch
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.storage_identity import StorageIdentityKind
 from tests.native_preanalysis import make_native_key
 
 NATIVE_KEY = make_native_key()
@@ -383,6 +388,77 @@ def test_lifecycle_owns_native_state_write_delivery_routes() -> None:
     assert not state.needs_state_write_route_binding()
     assert observed[-1].evidence_family == "state_write_routes"
     assert observed[-1].reason == "native state-write route evidence changed"
+
+
+def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() -> (
+    None
+):
+    write_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40A5B2, 0x40A5B8),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40A5B2,),
+    )
+    delivery_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40A5B8, 0x40A5CD),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40A5C8,),
+    )
+    target_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40BECC, 0x40BED0),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40BECC,),
+    )
+    route = PortableStateWriteRouteEvidence(
+        write_identity=write_identity,
+        delivery_identity=delivery_identity,
+        source_write_ea=0x40A5B2,
+        delivery_ea=0x40A5C8,
+        delivery_region_start_ea=0x40A5B8,
+        delivery_region_end_ea=0x40A5CD,
+        corridor_instruction_eas=(0x40A5B2, 0x40A5B8, 0x40A5C2, 0x40A5C8),
+        state_var_reg=16,
+        state_constant=0xABB95547,
+        target_identity=target_identity,
+        target_ea=0x40BECC,
+        proof_kind="reference_style_immediate_flow_route",
+    )
+    state = NativePreanalysisSessionState()
+    assert state.merge_state_write_routes(NATIVE_KEY, (route,))
+
+    assert state.canonical_semantic_evidence_for(NATIVE_KEY) is None
+
+    _publish_normalization(state)
+    evidence = state.canonical_semantic_evidence_for(NATIVE_KEY)
+
+    assert evidence is not None
+    assert evidence.native_key == NATIVE_KEY
+    assert evidence.generation == state.evidence_generation == 1
+    assert evidence.atomic_group_id == "canonical-semantic:g1"
+    assert len(evidence.route_proofs) == 1
+    proof = evidence.route_proofs[0]
+    assert proof.proof_kind is SemanticRouteProofKind.STATE_ASSIGNMENT
+    assert proof.shape is SemanticRouteShape.DIRECT
+    assert proof.source_identity == delivery_identity
+    assert proof.source_anchor_ea == 0x40A5C8
+    assert proof.destinations[0].role is SemanticEdgeRole.DIRECT
+    assert proof.destinations[0].target_identity == target_identity
+    assert proof.destinations[0].target_anchor_ea == 0x40BECC
+    assert proof.destinations[0].state_constant == 0xABB95547
+    assert proof.state_write is not None
+    assert proof.state_write.identity == write_identity
+    assert proof.state_write.instruction_ea == 0x40A5B2
+    assert proof.state_write.state_variable.kind is StorageIdentityKind.REGISTER
+    assert proof.state_write.state_variable.offset == 16
+    assert proof.state_write.width == 4
+    assert proof.state_write.corridor_instruction_eas == (
+        0x40A5B2,
+        0x40A5B8,
+        0x40A5C2,
+        0x40A5C8,
+    )
+    assert dict(proof.diagnostic_provenance) == {
+        "provider_proof_kind": "reference_style_immediate_flow_route"
+    }
 
 
 def test_state_write_delivery_route_rejects_mismatched_native_key() -> None:
