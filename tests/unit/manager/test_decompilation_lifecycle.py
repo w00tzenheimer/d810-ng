@@ -169,6 +169,26 @@ def _native_facts(*, key=NATIVE_KEY, blocks=(), transfers=()) -> NativePreanalys
     )
 
 
+@pytest.mark.parametrize(
+    "method_name",
+    (
+        "mark_normalization_staged",
+        "mark_normalization_validated",
+        "mark_normalization_published_and_postvalidated",
+        "mark_semantic_fragment_staged",
+        "mark_semantic_fragment_validated",
+        "mark_semantic_fragment_published_and_postvalidated",
+        "mark_receipt_committed",
+    ),
+)
+def test_coordinator_has_no_gateway_owned_lifecycle_transition_surface(
+    method_name: str,
+) -> None:
+    coordinator, _runtime = _coordinator([])
+
+    assert not hasattr(coordinator, method_name)
+
+
 def test_native_fact_session_api_is_idempotent_and_generation_aware() -> None:
     calls: list[tuple[str, object]] = []
     coordinator, _runtime = _coordinator(calls)
@@ -192,18 +212,13 @@ def test_native_fact_session_api_is_idempotent_and_generation_aware() -> None:
     empty = _native_facts()
     assert coordinator.merge_facts(NATIVE_KEY, empty) is True
     assert coordinator.merge_facts(NATIVE_KEY, _native_facts()) is False
-    assert session.native_preanalysis.evidence_generation == 1
-    assert coordinator.mark_normalization_staged(NATIVE_KEY, 1) is True
-    assert coordinator.mark_normalization_validated(NATIVE_KEY, 1) is True
-    assert (
-        coordinator.mark_normalization_published_and_postvalidated(NATIVE_KEY, 1)
-        is True
-    )
-    assert (
-        coordinator.mark_normalization_published_and_postvalidated(NATIVE_KEY, 1)
-        is False
-    )
-    assert session.native_preanalysis.canonical_semantic_plan_generation is None
+    state = session.native_preanalysis
+    assert state.evidence_generation == 1
+    assert state.mark_normalization_staged() is True
+    assert state.mark_normalization_validated() is True
+    assert state.mark_normalization_published_and_postvalidated() is True
+    assert state.mark_normalization_published_and_postvalidated() is False
+    assert state.canonical_semantic_plan_generation is None
 
     changed = _native_facts(blocks=(NativeBlock(0x401000, 0x401010),))
     assert coordinator.merge_facts(NATIVE_KEY, changed) is True
@@ -218,25 +233,20 @@ def test_coordinator_owns_canonical_semantic_publication_lifecycle() -> None:
         database_identity="sample.i64",
     )
     assert coordinator.merge_facts(NATIVE_KEY, _native_facts())
-    assert coordinator.mark_normalization_staged(NATIVE_KEY, 1)
-    assert coordinator.mark_normalization_validated(NATIVE_KEY, 1)
-    assert coordinator.mark_normalization_published_and_postvalidated(
-        NATIVE_KEY,
-        1,
-    )
+    state = session.native_preanalysis
+    assert state.mark_normalization_staged()
+    assert state.mark_normalization_validated()
+    assert state.mark_normalization_published_and_postvalidated()
 
     with pytest.raises(ValueError, match="lifecycle evidence epoch mismatch"):
         coordinator.mark_canonical_semantic_plan_ready(NATIVE_KEY, 2)
 
     assert coordinator.mark_canonical_semantic_plan_ready(NATIVE_KEY, 1)
-    assert coordinator.mark_semantic_fragment_staged(NATIVE_KEY, 1)
-    assert coordinator.mark_semantic_fragment_validated(NATIVE_KEY, 1)
-    assert coordinator.mark_semantic_fragment_published_and_postvalidated(
-        NATIVE_KEY,
-        1,
-    )
-    assert coordinator.mark_receipt_committed(NATIVE_KEY, 1)
-    assert session.native_preanalysis.receipt_committed_generation == 1
+    assert state.mark_semantic_fragment_staged()
+    assert state.mark_semantic_fragment_validated()
+    assert state.mark_semantic_fragment_published_and_postvalidated()
+    assert state.mark_receipt_committed()
+    assert state.receipt_committed_generation == 1
 
 
 def test_native_fact_session_api_rejects_key_mismatch() -> None:
