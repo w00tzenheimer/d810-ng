@@ -38,6 +38,9 @@ from d810.analyses.control_flow.native_preanalysis_session import CallResultCarr
 from d810.core.logging import getLogger
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+from d810.hexrays.mutation.semantic_fragment_backend import (
+    SemanticFragmentBackendRejected,
+)
 from d810.hexrays.mutation.cfg_verify import (
     clear_owned_fake_block_registrations,
     clear_resolver_proven_live_predicates,
@@ -48,6 +51,7 @@ from d810.transforms.graph_modification import (
     PreserveLivePredicateCondition,
     SyntheticStackValueEqualsCondition,
 )
+from d810.transforms.fragment_plan import FragmentNativeBody
 from d810.ir.block_identity import (
     BlockHandleProvenance,
     NativeEaInterval,
@@ -946,6 +950,239 @@ _LAST_IMPORTED_INSTRUCTION_ORIGINS: dict[
     int,
     tuple[tuple[int, int], ...],
 ] = {}
+
+
+@dataclass(slots=True)
+class PreoptUnionSemanticNativeBodyMaterializer:
+    """Populate one unpublished FragmentPlan body from a cached PREOPT union."""
+
+    mba: object
+    function_ea: int
+
+    def _select_template_blocks(
+        self,
+        context: object,
+        native_body: FragmentNativeBody,
+    ) -> tuple[DetachedSnippetTemplate, dict[str, DetachedSnippetBlockTemplate]]:
+        entry_anchors = {
+            int(context.plan.block(block_id).semantic_anchor_ea)
+            for block_id in native_body.entry_block_ids
+        }
+        required_ranges = tuple(
+            (int(native_range.start_ea), int(native_range.end_ea))
+            for native_range in native_body.native_ranges
+        )
+        candidates: list[
+            tuple[
+                DetachedSnippetTemplate,
+                dict[str, DetachedSnippetBlockTemplate],
+            ]
+        ] = []
+        for (owner_ea, target_ea), template in (
+            _PREOPT_UNION_SNIPPET_TEMPLATES.items()
+        ):
+            if (
+                int(owner_ea) != int(self.function_ea)
+                or int(target_ea) not in entry_anchors
+                or int(template.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED)
+                or not all(
+                    any(
+                        int(owned_start) <= required_start
+                        and required_end <= int(owned_end)
+                        for owned_start, owned_end in template.owned_ranges
+                    )
+                    for required_start, required_end in required_ranges
+                )
+            ):
+                continue
+            matched: dict[str, DetachedSnippetBlockTemplate] = {}
+            for block_id in native_body.block_ids:
+                identity = context.plan.block(block_id).stable_identity
+                matches = (
+                    ()
+                    if identity is None
+                    or identity.native_key != context.plan.native_key
+                    else tuple(
+                        template_block
+                        for template_block in template.blocks
+                        if int(template_block.native_entry_ea)
+                        in identity.exact_instruction_eas
+                        and identity.native_ranges.contains(
+                            int(template_block.native_entry_ea)
+                        )
+                        and all(
+                            identity.native_ranges.contains(int(instruction.ea))
+                            for instruction in template_block.instructions
+                        )
+                    )
+                )
+                if len(matches) != 1:
+                    break
+                matched[str(block_id)] = matches[0]
+            if len(matched) == len(native_body.block_ids):
+                candidates.append((template, matched))
+        if len(candidates) != 1:
+            raise SemanticFragmentBackendRejected(
+                f"native body {native_body.body_id!r} requires exactly one "
+                f"PREOPT union template, observed {len(candidates)}"
+            )
+        return candidates[0]
+
+    def _preflight_stack_rebase(
+        self,
+        template: DetachedSnippetTemplate,
+        matched: Mapping[str, DetachedSnippetBlockTemplate],
+        native_body: FragmentNativeBody,
+        plan: object,
+    ) -> dict[int, int]:
+        stack_map = _stack_map_with_positive_identity_overrides(
+            _destination_stack_map(self.mba, template),
+            _stable_destination_stack_map(self.mba, template),
+        )
+        terminal_block_ids = set(native_body.terminal_block_ids)
+        for block_id, template_block in matched.items():
+            return_indexes = tuple(
+                index
+                for index, instruction in enumerate(template_block.instructions)
+                if int(instruction.opcode) == int(ida_hexrays.m_ret)
+            )
+            has_terminal_return = return_indexes == (
+                len(template_block.instructions) - 1,
+            )
+            if (block_id in terminal_block_ids) != has_terminal_return:
+                raise SemanticFragmentBackendRejected(
+                    "PREOPT native body terminal return ownership differs from the plan"
+                )
+            for captured in template_block.instructions:
+                instruction_stack_map = _stack_map_with_positive_identity_overrides(
+                    stack_map,
+                    _instruction_destination_stack_map(
+                        self.mba,
+                        template,
+                        int(captured.ea),
+                    ),
+                )
+                operands = _instruction_operands(captured)
+                if any(int(operand.t) == int(ida_hexrays.mop_l) for operand in operands):
+                    raise SemanticFragmentBackendRejected(
+                        "PREOPT native body contains an unportable local variable"
+                    )
+                missing_stack_offset = next(
+                    (
+                        int(operand.s.off)
+                        for operand in operands
+                        if int(operand.t) == int(ida_hexrays.mop_S)
+                        and int(operand.s.off) not in instruction_stack_map
+                    ),
+                    None,
+                )
+                if missing_stack_offset is not None:
+                    raise SemanticFragmentBackendRejected(
+                        "PREOPT native body stack identity cannot be rebound"
+                    )
+                block_ref_count = sum(
+                    int(operand.t) == int(ida_hexrays.mop_b)
+                    for operand in operands
+                )
+                allowed_top_level_block_ref = bool(
+                    (
+                        ida_hexrays.is_mcode_jcond(int(captured.opcode))
+                        and int(captured.d.t) == int(ida_hexrays.mop_b)
+                    )
+                    or (
+                        int(captured.opcode) == int(ida_hexrays.m_goto)
+                        and int(captured.l.t) == int(ida_hexrays.mop_b)
+                    )
+                )
+                if block_ref_count > int(allowed_top_level_block_ref):
+                    raise SemanticFragmentBackendRejected(
+                        "PREOPT native body contains a non-control block reference"
+                    )
+                if int(captured.opcode) in {
+                    int(ida_hexrays.m_call),
+                    int(ida_hexrays.m_icall),
+                }:
+                    raise SemanticFragmentBackendRejected(
+                        "PREOPT native body call fallthrough requires a gateway role"
+                    )
+            operations = tuple(
+                operation
+                for operation in plan.operations
+                if operation.source_block_id == block_id
+            )
+            expected_operations = 0 if block_id in terminal_block_ids else 1
+            conditional_tail = bool(
+                template_block.instructions
+                and ida_hexrays.is_mcode_jcond(
+                    int(template_block.instructions[-1].opcode)
+                )
+            )
+            if (
+                len(operations) != expected_operations
+                or (
+                    operations
+                    and (len(operations[0].edges) == 2) != conditional_tail
+                )
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "PREOPT native body topology is not owned by exactly one "
+                    "compatible FragmentPlan operation"
+                )
+        return stack_map
+
+    def stage_native_body(
+        self,
+        *,
+        context: object,
+        native_body: FragmentNativeBody,
+    ) -> None:
+        """Copy instruction bodies only; FragmentPlan operations own all topology."""
+        if int(self.mba.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED):
+            raise SemanticFragmentBackendRejected(
+                "PREOPT native body requires a PREOPTIMIZED destination MBA"
+            )
+        template, matched = self._select_template_blocks(context, native_body)
+        stack_map = self._preflight_stack_rebase(
+            template,
+            matched,
+            native_body,
+            context.plan,
+        )
+        for block_id in native_body.block_ids:
+            context.stage_block(block_id)
+        for block_id in native_body.block_ids:
+            template_block = matched[block_id]
+            instructions: list[tuple[int, object]] = []
+            for captured in template_block.instructions:
+                instruction = ida_hexrays.minsn_t(captured)
+                instruction_stack_map = _stack_map_with_positive_identity_overrides(
+                    stack_map,
+                    _instruction_destination_stack_map(
+                        self.mba,
+                        template,
+                        int(captured.ea),
+                    ),
+                )
+                if not all(
+                    _rebase_template_operand(
+                        self.mba,
+                        root,
+                        instruction_stack_map,
+                    )
+                    for root in (instruction.l, instruction.r, instruction.d)
+                ):
+                    raise SemanticFragmentBackendRejected(
+                        "PREOPT native body stack rebase failed after preflight"
+                    )
+                native_ea = int(captured.ea)
+                instructions.append((native_ea, instruction))
+            context.populate_block(
+                block_id=block_id,
+                instructions=tuple(instructions),
+                block_flags=int(template_block.block_flags),
+            )
+
+
 _IMPORTED_DIRECT_BOUNDARY_EVIDENCE: dict[
     int,
     tuple[AppliedDetachedSnippetDirectBoundaryPort, ...],
@@ -9567,6 +9804,7 @@ __all__ = [
     "DetachedSnippetCompanionCaptureResult",
     "DetachedSnippetBlockTemplate",
     "DetachedSnippetTemplate",
+    "PreoptUnionSemanticNativeBodyMaterializer",
     "capture_call_result_carriers",
     "capture_terminal_return_carrier_template",
     "capture_detached_handler_call_templates",

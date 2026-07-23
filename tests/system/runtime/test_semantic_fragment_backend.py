@@ -12,6 +12,7 @@ import pytest
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.hexrays.mutation import deferred_modifier as dm  # noqa: E402
+from d810.hexrays.mutation import detached_handler_island as dhi  # noqa: E402
 from d810.hexrays.mutation import semantic_fragment_backend as sfb  # noqa: E402
 from d810.hexrays.ir.exact_data_flow import DefSite, UseSite  # noqa: E402
 from d810.hexrays.ir.exact_value_ranges import (  # noqa: E402
@@ -131,8 +132,12 @@ class _Instruction:
         self.opcode = int(opcode)
         self.ea = int(ea)
         self.l = _BlockReference(target)
+        self.r = _BlockReference()
         self.d = _BlockReference()
         self.next = None
+
+    def setaddr(self, ea: int) -> None:
+        self.ea = int(ea)
 
 
 class _Block:
@@ -154,6 +159,9 @@ class _Block:
 
     def nsucc(self) -> int:
         return self.succset.size()
+
+    def npred(self) -> int:
+        return self.predset.size()
 
     def mark_lists_dirty(self) -> None:
         return None
@@ -218,6 +226,8 @@ class _Mba:
         self.entry_ea = 0x401000
         self.maturity = int(ida_hexrays.MMAT_PREOPTIMIZED)
         self.chains_dirty = False
+        self.next_fictitious_ea = 0xF10000
+        self.fictitious_ea_map: dict[int, int] = {}
         for block in blocks:
             block.mba = self
         self._relink()
@@ -227,6 +237,16 @@ class _Mba:
 
     def mark_chains_dirty(self) -> None:
         self.chains_dirty = True
+
+    def alloc_fict_ea(self, native_ea: int) -> int:
+        live_ea = int(self.next_fictitious_ea)
+        self.next_fictitious_ea += 1
+        self.fictitious_ea_map[live_ea] = int(native_ea)
+        return live_ea
+
+    @staticmethod
+    def stkoff_ida2vd(stack_offset: int) -> int:
+        return int(stack_offset)
 
     def copy_block(self, source: _Block, destination: int, _flags: int):
         destination = int(destination)
@@ -1082,6 +1102,85 @@ def test_native_body_origin_binding_translates_operations_and_projection(
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="runtime imported origin binding cleanup")
+
+
+def test_cached_preopt_body_materializes_through_the_fragment_transaction(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    predicate_native_ea = 0x500004
+    plan = _plan_with_imported_conditional(
+        gateway,
+        entry=0,
+        original=1,
+        target=2,
+        dispatcher=3,
+        predicate_native_ea=predicate_native_ea,
+    )
+    template = dhi.DetachedSnippetTemplate(
+        function_ea=int(gateway.function_ea),
+        target_ea=0x500000,
+        maturity=int(ida_hexrays.MMAT_PREOPTIMIZED),
+        root_source_serial=0,
+        blocks=(
+            dhi.DetachedSnippetBlockTemplate(
+                source_serial=0,
+                native_entry_ea=0x500000,
+                native_end_ea=0x500010,
+                instructions=(
+                    _Instruction(ida_hexrays.m_jz, predicate_native_ea),
+                ),
+                block_type=int(ida_hexrays.BLT_0WAY),
+                block_flags=0,
+                successor_serials=(),
+                external_successor_eas=(),
+            ),
+        ),
+        stack_vd_to_ida=(),
+        owned_ranges=((0x500000, 0x500010),),
+    )
+    monkeypatch.setattr(
+        dhi,
+        "_PREOPT_UNION_SNIPPET_TEMPLATES",
+        {(int(gateway.function_ea), 0x500000): template},
+    )
+    monkeypatch.setattr(dhi.ida_hexrays, "minsn_t", deepcopy)
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=gateway,
+        semantic_native_body_materializer=(
+            dhi.PreoptUnionSemanticNativeBodyMaterializer(
+                mba=mba,
+                function_ea=int(gateway.function_ea),
+            )
+        ),
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    imported = projection.block("imported-conditional")
+    assert imported.instruction_eas == (predicate_native_ea,)
+    assert set(imported.successors) == {
+        "target",
+        "fallthrough-helper:imported-conditional-route",
+    }
+    assert tuple(mba.fictitious_ea_map.values()) == (predicate_native_ea,)
+    assert gateway.receipts == ()
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime cached PREOPT body cleanup")
 
 
 def test_native_body_rejects_an_unbound_materialized_instruction(
