@@ -186,7 +186,7 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
     )
     monkeypatch.setattr(
         computed_goto_resolver,
-        "prepare_terminal_return_carrier_templates",
+        "prepare_terminal_return_carrier_evidence",
         lambda state: calls.append(("prepare-carriers", state)) or 2,
     )
     monkeypatch.setattr(

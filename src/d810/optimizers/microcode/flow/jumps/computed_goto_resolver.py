@@ -145,6 +145,9 @@ from d810.analyses.control_flow.semantic_transition import StateWriteAnchor
 from d810.analyses.control_flow.state_machine_analysis import (
     _transfer_snapshot_constant_block,
 )
+from d810.analyses.control_flow.terminal_return_carrier_evidence import (
+    TerminalReturnCarrierEvidence,
+)
 from d810.analyses.value_flow.state_write_anchor import StateWriteAnchorFactCollector
 from d810.core.logging import getLogger
 from d810.core.observability import emit as emit_diagnostic
@@ -442,6 +445,20 @@ def _merge_native_facts(
     changed = state.native_preanalysis.merge_native_facts(
         state.native_key,
         **facts,
+    )
+    if changed:
+        state.invalidate_current_mba_binding()
+    return changed
+
+
+def _merge_terminal_return_carriers(
+    state: ResolverSessionState,
+    carriers: tuple[TerminalReturnCarrierEvidence, ...],
+) -> bool:
+    """Publish portable return carriers and invalidate any older MBA binding."""
+    changed = state.native_preanalysis.merge_terminal_return_carriers(
+        state.native_key,
+        carriers,
     )
     if changed:
         state.invalidate_current_mba_binding()
@@ -10460,23 +10477,92 @@ def _live_mba_native_eas(
     return frozenset(live_eas)
 
 
+def _terminal_return_carrier_capture_identities(
+    state: ResolverSessionState,
+    request: TerminalReturnCarrierRequest,
+) -> tuple[StableBlockIdentity, StableBlockIdentity] | None:
+    """Bind one carrier request to its unique exact state-route anchors."""
+    routes = tuple(
+        route
+        for route in state.portable_evidence.state_write_routes
+        if int(route.source_write_ea) == int(request.source_handler_ea)
+        and int(route.state_var_reg) == int(request.state_var_reg)
+        and (int(route.state_constant) & _MASK32)
+        == (int(request.state_constant) & _MASK32)
+        and int(route.target_ea) == int(request.terminal_target_ea)
+        and int(request.source_handler_ea) in route.write_identity.exact_instruction_eas
+        and int(request.terminal_target_ea)
+        in route.target_identity.exact_instruction_eas
+    )
+    if len(routes) != 1:
+        return None
+    route = routes[0]
+    capture_exact_eas = tuple(
+        dict.fromkeys(
+            (
+                int(request.source_handler_ea),
+                *(int(ea) for ea in route.corridor_instruction_eas),
+            )
+        )
+    )
+    capture_identity = StableBlockIdentity.from_intervals(
+        (
+            *route.write_identity.native_ranges.intervals,
+            *(NativeEaInterval(ea, ea + 1) for ea in capture_exact_eas),
+        ),
+        native_key=state.native_key,
+        exact_instruction_eas=capture_exact_eas,
+    )
+    terminal_ea = int(request.terminal_target_ea)
+    terminal_exact_eas = tuple(
+        sorted(
+            {
+                *route.target_identity.exact_instruction_eas,
+                terminal_ea,
+            }
+        )
+    )
+    terminal_identity = StableBlockIdentity.from_intervals(
+        (
+            *route.target_identity.native_ranges.intervals,
+            NativeEaInterval(terminal_ea, terminal_ea + 1),
+        ),
+        native_key=state.native_key,
+        exact_instruction_eas=terminal_exact_eas,
+    )
+    return capture_identity, terminal_identity
+
+
 def _capture_terminal_return_carrier_requests(
+    state: ResolverSessionState,
     function_ea: int,
     requests: tuple[TerminalReturnCarrierRequest, ...],
 ) -> int:
-    """Capture pending terminal carriers independently of snippet topology."""
+    """Capture pending terminal carriers into lifecycle-owned portable evidence."""
     import ida_hexrays  # type: ignore[import-untyped]
     import idaapi  # type: ignore[import-untyped]
 
     from d810.hexrays.mutation.detached_handler_island import (
-        capture_terminal_return_carrier_template,
-        has_terminal_return_carrier_template,
+        capture_terminal_return_carrier_evidence,
     )
 
-    captured = 0
+    existing_requests = {
+        carrier.request for carrier in state.portable_evidence.terminal_return_carriers
+    }
+    captured = []
     for request in requests:
-        if has_terminal_return_carrier_template(function_ea, request):
+        if request in existing_requests:
             continue
+        identities = _terminal_return_carrier_capture_identities(state, request)
+        if identities is None:
+            logger.info(
+                "terminal return-carrier capture abstained: source=0x%X "
+                "target=0x%X reason=no_unique_state_route_identity",
+                int(request.source_handler_ea),
+                int(request.terminal_target_ea),
+            )
+            continue
+        capture_identity, terminal_identity = identities
         if not _native_target_is_return_epilogue(int(request.terminal_target_ea)):
             logger.info(
                 "terminal return-carrier capture abstained: source=0x%X "
@@ -10513,22 +10599,29 @@ def _capture_terminal_return_carrier_requests(
                 exc_info=True,
             )
             snippet = None
-        if snippet is None or not capture_terminal_return_carrier_template(
-            function_ea,
-            request,
-            snippet,
-        ):
+        evidence = (
+            None
+            if snippet is None
+            else capture_terminal_return_carrier_evidence(
+                function_ea,
+                request,
+                snippet,
+                capture_identity=capture_identity,
+                terminal_identity=terminal_identity,
+            )
+        )
+        if evidence is None:
             logger.info(
                 "terminal return-carrier capture abstained: source=0x%X "
-                "target=0x%X state=0x%X reason=no_unique_template",
+                "target=0x%X state=0x%X reason=no_unique_portable_evidence",
                 int(request.source_handler_ea),
                 int(request.terminal_target_ea),
                 int(request.state_constant) & _MASK32,
             )
             continue
-        captured += 1
+        captured.append(evidence)
         logger.info(
-            "terminal return-carrier captured: func=0x%X source=0x%X "
+            "terminal return-carrier evidence captured: func=0x%X source=0x%X "
             "target=0x%X state=0x%X blocks=%d",
             function_ea,
             int(request.source_handler_ea),
@@ -10536,11 +10629,13 @@ def _capture_terminal_return_carrier_requests(
             int(request.state_constant) & _MASK32,
             int(snippet.qty),
         )
-    return captured
+    if captured:
+        _merge_terminal_return_carriers(state, tuple(captured))
+    return len(captured)
 
 
-def prepare_terminal_return_carrier_templates(state: ResolverSessionState) -> int:
-    """Consume pending CALLS carrier evidence between decompilations."""
+def prepare_terminal_return_carrier_evidence(state: ResolverSessionState) -> int:
+    """Consume pending carrier requests into portable session evidence."""
     resolution = state.portable_evidence.computed_goto_resolution
     if not isinstance(resolution, ComputedGotoResolution):
         return 0
@@ -10556,7 +10651,7 @@ def prepare_terminal_return_carrier_templates(state: ResolverSessionState) -> in
     if not state.begin_snippet_capture(key):
         return 0
     try:
-        return _capture_terminal_return_carrier_requests(key, requests)
+        return _capture_terminal_return_carrier_requests(state, key, requests)
     finally:
         state.finish_snippet_capture()
 
@@ -10589,53 +10684,60 @@ def _capture_preopt_union_terminal_return_carriers(
     if not terminal_target_eas:
         return 0
 
-    from d810.hexrays.mutation.detached_handler_island import (
-        capture_terminal_return_carrier_template,
-    )
-    from d810.hexrays.mutation.ir_translator import lift
-
-    flow_graph = lift(mba)
-    write_sites = _exact_register_state_write_sites(
-        flow_graph,
-        state_var_reg=int(state_var_reg),
-        maturity=int(mba.maturity),
-    )
     write_eas_by_state: dict[int, list[int]] = {}
-    for (_serial, state_constant), write_ea in write_sites.items():
-        write_eas_by_state.setdefault(int(state_constant), []).append(int(write_ea))
+    for route in state.portable_evidence.state_write_routes:
+        if int(route.state_var_reg) != int(state_var_reg):
+            continue
+        write_eas_by_state.setdefault(
+            int(route.state_constant) & _MASK32,
+            [],
+        ).append(int(route.source_write_ea))
     requests = plan_terminal_return_carrier_requests_from_state_writes(
         transfers,
         write_eas_by_state,
         terminal_target_eas,
         state_var_reg=int(state_var_reg),
     )
-    captured_requests = tuple(
-        request
-        for request in requests
-        if capture_terminal_return_carrier_template(
+    if requests:
+        state.native_preanalysis.merge_terminal_return_carrier_requests(
+            state.native_key,
+            requests,
+        )
+
+    from d810.hexrays.mutation.detached_handler_island import (
+        capture_terminal_return_carrier_evidence,
+    )
+
+    captured = []
+    for request in requests:
+        identities = _terminal_return_carrier_capture_identities(state, request)
+        if identities is None:
+            continue
+        capture_identity, terminal_identity = identities
+        evidence = capture_terminal_return_carrier_evidence(
             int(function_ea),
             request,
             mba,
+            capture_identity=capture_identity,
+            terminal_identity=terminal_identity,
         )
-    )
-    if not captured_requests:
+        if evidence is not None:
+            captured.append(evidence)
+    if not captured:
         return 0
-    state.native_preanalysis.merge_terminal_return_carrier_requests(
-        state.native_key,
-        captured_requests,
-    )
+    _merge_terminal_return_carriers(state, tuple(captured))
     logger.info(
-        "PREOPT union captured terminal return carriers: %s",
+        "PREOPT union captured portable terminal return carriers: %s",
         [
             (
-                hex(int(request.source_handler_ea)),
-                hex(int(request.terminal_target_ea)),
-                hex(int(request.state_constant)),
+                hex(int(evidence.request.source_handler_ea)),
+                hex(int(evidence.request.terminal_target_ea)),
+                hex(int(evidence.request.state_constant)),
             )
-            for request in captured_requests
+            for evidence in captured
         ],
     )
-    return len(captured_requests)
+    return len(captured)
 
 
 def _unique_native_register_indirect_exit(
@@ -17157,7 +17259,7 @@ __all__ = [
     "prepare_detached_handler_snippets",
     "prepare_preopt_union_closure",
     "get_prepared_preopt_union_closure",
-    "prepare_terminal_return_carrier_templates",
+    "prepare_terminal_return_carrier_evidence",
     "capture_detached_route_callinfo_templates",
     "recover_conditional_handler_bridge_transfers_from_mba",
     "rebind_live_preopt_routes",

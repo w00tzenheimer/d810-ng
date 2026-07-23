@@ -1053,6 +1053,8 @@ def test_preopt_union_captures_terminal_carrier_into_session(
     state_constant = 0x19A7218A
     terminal_ea = 0x40C898
     source_ea = 0x40C7E5
+    carrier_ea = 0x40C7EA
+    delivery_ea = 0x40C7F0
     transfer = MaterializedIndirectTransfer(
         source_jmp_ea=0x40A5CA,
         source_block_ea=0x40A5CA,
@@ -1071,26 +1073,95 @@ def test_preopt_union_captures_terminal_carrier_into_session(
         seeds_run=0,
     )
     _session, state = _resolver_session(resolution)
+    route = PortableStateWriteRouteEvidence(
+        write_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(source_ea, source_ea + 1),),
+            native_key=state.native_key,
+        ),
+        delivery_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(delivery_ea, delivery_ea + 1),),
+            native_key=state.native_key,
+        ),
+        source_write_ea=source_ea,
+        delivery_ea=delivery_ea,
+        delivery_region_start_ea=source_ea,
+        delivery_region_end_ea=delivery_ea + 1,
+        corridor_instruction_eas=(source_ea, carrier_ea, delivery_ea),
+        state_var_reg=20,
+        state_constant=state_constant,
+        target_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(terminal_ea, terminal_ea + 1),),
+            native_key=state.native_key,
+        ),
+        target_ea=terminal_ea,
+    )
+    assert state.native_preanalysis.merge_state_write_routes(
+        state.native_key,
+        (route,),
+    )
     captured = []
+    captured_evidence = []
     monkeypatch.setattr(
         computed_goto_resolver,
         "_native_target_is_return_epilogue",
         lambda target_ea: int(target_ea) == terminal_ea,
     )
-    monkeypatch.setattr(
-        computed_goto_resolver,
-        "_exact_register_state_write_sites",
-        lambda *_args, **_kwargs: {(17, state_constant): source_ea},
+    from d810.analyses.control_flow.terminal_return_carrier_evidence import (
+        TerminalReturnCarrierEvidence,
+        TerminalReturnCarrierSource,
+        TerminalReturnCarrierSourceKind,
     )
-    from d810.hexrays.mutation import detached_handler_island, ir_translator
+    from d810.hexrays.mutation import detached_handler_island
+    from d810.ir.expressions import ValueOpKind
+    from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 
-    monkeypatch.setattr(ir_translator, "lift", lambda _mba: object())
+    def capture_portable(
+        function_ea,
+        request,
+        _mba,
+        *,
+        capture_identity,
+        terminal_identity,
+    ):
+        evidence = TerminalReturnCarrierEvidence(
+            request=request,
+            capture_identity=capture_identity,
+            terminal_identity=terminal_identity,
+            state_write_ea=source_ea,
+            carrier_ea=carrier_ea,
+            operation=ValueOpKind.MOVE,
+            source=TerminalReturnCarrierSource(
+                kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
+                width=4,
+                storage_identity=StorageIdentity(
+                    StorageIdentityKind.GLOBAL,
+                    0x48B8A4,
+                ),
+            ),
+            return_width=4,
+            corridor_instruction_eas=(source_ea, carrier_ea),
+        )
+        captured.append(
+            (
+                function_ea,
+                request,
+                capture_identity,
+                terminal_identity,
+            )
+        )
+        captured_evidence.append(evidence)
+        return evidence
 
     monkeypatch.setattr(
         detached_handler_island,
+        "capture_terminal_return_carrier_evidence",
+        capture_portable,
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
         "capture_terminal_return_carrier_template",
-        lambda function_ea, request, _mba: (
-            captured.append((function_ea, request)) or True
+        lambda *_args, **_kwargs: pytest.fail(
+            "production capture must not publish legacy templates"
         ),
     )
 
@@ -1103,18 +1174,23 @@ def test_preopt_union_captures_terminal_carrier_into_session(
         )
         == 1
     )
-    assert captured == [
-        (
-            0x40A560,
-            TerminalReturnCarrierRequest(
-                source_handler_ea=source_ea,
-                terminal_target_ea=terminal_ea,
-                state_var_reg=20,
-                state_constant=state_constant,
-            ),
-        )
-    ]
-    assert state.portable_evidence.terminal_return_carrier_requests == (captured[0][1],)
+    assert len(captured) == 1
+    function_ea, request, capture_identity, terminal_identity = captured[0]
+    assert function_ea == 0x40A560
+    assert request == TerminalReturnCarrierRequest(
+        source_handler_ea=source_ea,
+        terminal_target_ea=terminal_ea,
+        state_var_reg=20,
+        state_constant=state_constant,
+    )
+    assert capture_identity.exact_instruction_eas == frozenset(
+        {source_ea, carrier_ea, delivery_ea}
+    )
+    assert terminal_identity.exact_instruction_eas == frozenset({terminal_ea})
+    assert state.portable_evidence.terminal_return_carrier_requests == (request,)
+    assert state.portable_evidence.terminal_return_carriers == tuple(
+        captured_evidence
+    )
 
 
 def test_branch_state_choice_recovers_default_and_overriding_dispatch_states() -> None:
@@ -5302,7 +5378,7 @@ def test_prepare_detached_snippets_enriches_session_before_union_gate(
     assert planned == []
 
 
-def test_prepare_terminal_return_carriers_is_independent_of_materialization(
+def test_prepare_terminal_return_carrier_evidence_is_independent_of_materialization(
     monkeypatch,
 ) -> None:
     function_ea = 0x40A560
@@ -5327,13 +5403,20 @@ def test_prepare_terminal_return_carriers_is_independent_of_materialization(
         state.native_key,
         (request,),
     )
+
+    def capture_requests(candidate_state, key, requests):
+        if candidate_state is not state:
+            pytest.fail("capture must use the current resolver session")
+        captured.append((key, requests))
+        return 1
+
     monkeypatch.setattr(
         computed_goto_resolver,
         "_capture_terminal_return_carrier_requests",
-        lambda key, requests: captured.append((key, requests)) or 1,
+        capture_requests,
         raising=False,
     )
-    assert computed_goto_resolver.prepare_terminal_return_carrier_templates(state) == 1
+    assert computed_goto_resolver.prepare_terminal_return_carrier_evidence(state) == 1
     assert captured == [(function_ea, (request,))]
 
 
