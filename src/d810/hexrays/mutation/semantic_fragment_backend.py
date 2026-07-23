@@ -189,6 +189,7 @@ class SemanticNativeBodyStagingContext:
     _receipt_count: int
     _identity_generation: int
     _staged_block_ids: list[str] = field(default_factory=list)
+    _populated_block_ids: list[str] = field(default_factory=list)
 
     def stage_block(self, block_id: str):
         """Create, bind, and return one unpublished imported-native block."""
@@ -249,6 +250,38 @@ class SemanticNativeBodyStagingContext:
         self.state.staged_block_ids.append(block_id)
         self._staged_block_ids.append(block_id)
         return _live_block_for_binding(self._modifier, binding)
+
+    def populate_block(
+        self,
+        *,
+        block_id: str,
+        instructions: tuple[tuple[int, object], ...],
+        block_flags: int,
+    ) -> None:
+        """Populate one staged block through the central mutation backend."""
+        block_id = str(block_id)
+        if block_id not in self._staged_block_ids:
+            raise SemanticFragmentBackendRejected(
+                f"native body population references unstaged block {block_id!r}"
+            )
+        if block_id in self._populated_block_ids:
+            raise SemanticFragmentBackendRejected(
+                f"native body block {block_id!r} was populated more than once"
+            )
+        origin_bindings = (
+            self._modifier._populate_imported_native_semantic_block(
+                version=self.state.binding(block_id).version,
+                instructions=instructions,
+                block_flags=int(block_flags),
+            )
+        )
+        for live_ea, native_ea in origin_bindings:
+            self.bind_instruction_origin(
+                block_id=block_id,
+                live_ea=live_ea,
+                native_ea=native_ea,
+            )
+        self._populated_block_ids.append(block_id)
 
     def bind_instruction_origin(
         self,

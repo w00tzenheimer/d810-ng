@@ -19,6 +19,15 @@ from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
 )
+from d810.transforms.fragment_plan import (
+    FragmentBlock,
+    FragmentBlockMaterialization,
+    FragmentBlockRole,
+    FragmentEdge,
+    FragmentNativeBody,
+    FragmentOperation,
+)
+from d810.ir.semantic_edge import SemanticEdgeRole
 from tests.native_preanalysis import make_native_key
 from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
@@ -464,6 +473,440 @@ def _install_runtime_fakes(monkeypatch) -> list[tuple[object, int, int]]:
         raising=False,
     )
     return created
+
+
+class _NativeBodyPlan:
+    def __init__(
+        self,
+        blocks: tuple[FragmentBlock, ...],
+        operations: tuple[FragmentOperation, ...] = (),
+    ) -> None:
+        self.native_key = NATIVE_KEY
+        self._blocks = {block.block_id: block for block in blocks}
+        self.operations = tuple(operations)
+
+    def block(self, block_id: str) -> FragmentBlock:
+        return self._blocks[str(block_id)]
+
+
+class _NativeBodyStagingContext:
+    def __init__(self, mba: _MBA, plan: _NativeBodyPlan) -> None:
+        self.mba = mba
+        self.plan = plan
+        self.staged_block_ids: list[str] = []
+        self.populated_block_ids: list[str] = []
+        self.blocks: dict[str, _Block] = {}
+        self.instruction_origins: dict[tuple[str, int], int] = {}
+
+    def stage_block(self, block_id: str) -> None:
+        block_id = str(block_id)
+        assert block_id not in self.blocks
+        block = _Block(self.mba.qty, self.mba.entry_ea, ())
+        self.mba.append_block(block)
+        self.staged_block_ids.append(block_id)
+        self.blocks[block_id] = block
+
+    def populate_block(
+        self,
+        *,
+        block_id: str,
+        instructions: tuple[tuple[int, _Instruction], ...],
+        block_flags: int,
+    ) -> None:
+        block_id = str(block_id)
+        assert block_id in self.blocks
+        assert block_id not in self.populated_block_ids
+        block = self.blocks[block_id]
+        assert block.head is None
+        assert block.tail is None
+        assert int(block.nsucc()) == 0
+        assert int(block.npred()) == 0
+        for native_ea, instruction in instructions:
+            live_ea = int(self.mba.alloc_fict_ea(int(native_ea)))
+            instruction.setaddr(live_ea)
+            block.insert_into_block(instruction, block.tail)
+            self.bind_instruction_origin(
+                block_id=block_id,
+                live_ea=live_ea,
+                native_ea=int(native_ea),
+            )
+        block.type = int(ida_hexrays.BLT_0WAY)
+        block.flags = (
+            int(block_flags) & int(ida_hexrays.MBL_PUSH)
+        ) | int(ida_hexrays.MBL_KEEP) | int(ida_hexrays.MBL_FAKE)
+        block.start = int(self.mba.entry_ea)
+        block.end = int(self.mba.entry_ea) + 1
+        block.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+        self.populated_block_ids.append(block_id)
+
+    def bind_instruction_origin(
+        self,
+        *,
+        block_id: str,
+        live_ea: int,
+        native_ea: int,
+    ) -> None:
+        key = (str(block_id), int(live_ea))
+        assert key not in self.instruction_origins
+        self.instruction_origins[key] = int(native_ea)
+
+
+def _imported_fragment_block(
+    block_id: str,
+    body_id: str,
+    start_ea: int,
+    end_ea: int,
+) -> FragmentBlock:
+    return FragmentBlock(
+        block_id=block_id,
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=int(start_ea),
+        stable_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(int(start_ea), int(end_ea)),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(int(start_ea),),
+        ),
+        native_body_id=body_id,
+    )
+
+
+def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    entry_ea = 0x3300
+    terminal_ea = 0x3304
+    source = _MBA(
+        (
+            _Block(
+                0,
+                entry_ea,
+                (_Instruction(ida_hexrays.m_mov, entry_ea),),
+                (1,),
+            ),
+            _Block(
+                1,
+                terminal_ea,
+                (_Instruction(ida_hexrays.m_ret, terminal_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        entry_ea,
+        source,
+        ((entry_ea, terminal_ea + 1),),
+        owned_block_entry_eas=(entry_ea, terminal_ea),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    body_id = "native-body:test"
+    entry_block = _imported_fragment_block(
+        "imported-entry",
+        body_id,
+        entry_ea,
+        terminal_ea,
+    )
+    terminal_block = _imported_fragment_block(
+        "imported-terminal",
+        body_id,
+        terminal_ea,
+        terminal_ea + 1,
+    )
+    native_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=(entry_block.block_id, terminal_block.block_id),
+        entry_block_ids=(entry_block.block_id,),
+        terminal_block_ids=(terminal_block.block_id,),
+        native_ranges=(NativeEaInterval(entry_ea, terminal_ea + 1),),
+        proof_ids=("proof:preopt-union",),
+    )
+    context = _NativeBodyStagingContext(
+        destination,
+        _NativeBodyPlan(
+            (entry_block, terminal_block),
+            operations=(
+                FragmentOperation(
+                    operation_id="native-body-entry-edge",
+                    source_block_id=entry_block.block_id,
+                    edges=(
+                        FragmentEdge(
+                            role=SemanticEdgeRole.DIRECT,
+                            target_block_id=terminal_block.block_id,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    materializer = (
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+            mba=destination,
+            function_ea=function_ea,
+        )
+    )
+
+    materializer.stage_native_body(
+        context=context,
+        native_body=native_body,
+    )
+
+    assert context.staged_block_ids == [
+        entry_block.block_id,
+        terminal_block.block_id,
+    ]
+    assert context.populated_block_ids == [
+        entry_block.block_id,
+        terminal_block.block_id,
+    ]
+    assert tuple(context.blocks[entry_block.block_id].succset) == ()
+    assert tuple(context.blocks[terminal_block.block_id].succset) == ()
+    assert int(context.blocks[entry_block.block_id].type) == int(
+        ida_hexrays.BLT_0WAY
+    )
+    assert int(context.blocks[terminal_block.block_id].type) == int(
+        ida_hexrays.BLT_0WAY
+    )
+    imported_entry = context.blocks[entry_block.block_id].instructions()
+    imported_terminal = context.blocks[terminal_block.block_id].instructions()
+    assert tuple(instruction.opcode for instruction in imported_entry) == (
+        ida_hexrays.m_mov,
+    )
+    assert tuple(instruction.opcode for instruction in imported_terminal) == (
+        ida_hexrays.m_ret,
+    )
+    assert all(
+        int(instruction.ea) not in {entry_ea, terminal_ea}
+        for instruction in (*imported_entry, *imported_terminal)
+    )
+    assert set(context.instruction_origins.values()) == {entry_ea, terminal_ea}
+    assert destination.verify_calls == 0
+
+
+def test_preopt_native_body_rejects_non_control_block_refs_before_staging(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    entry_ea = 0x3400
+    source = _MBA(
+        (
+            _Block(
+                0,
+                entry_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_mov,
+                        entry_ea,
+                        left=_Operand(ida_hexrays.mop_b, block_ref=7),
+                    ),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        entry_ea,
+        source,
+        ((entry_ea, entry_ea + 1),),
+        owned_block_entry_eas=(entry_ea,),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    body_id = "native-body:block-ref"
+    imported = _imported_fragment_block(
+        "imported-block-ref",
+        body_id,
+        entry_ea,
+        entry_ea + 1,
+    )
+    native_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=(imported.block_id,),
+        entry_block_ids=(imported.block_id,),
+        terminal_block_ids=(),
+        native_ranges=(NativeEaInterval(entry_ea, entry_ea + 1),),
+        proof_ids=("proof:block-ref",),
+    )
+    context = _NativeBodyStagingContext(
+        destination,
+        _NativeBodyPlan((imported,)),
+    )
+
+    with pytest.raises(
+        detached_handler_island.SemanticFragmentBackendRejected,
+        match="block reference",
+    ):
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+            mba=destination,
+            function_ea=function_ea,
+        ).stage_native_body(
+            context=context,
+            native_body=native_body,
+        )
+
+    assert context.staged_block_ids == []
+    assert destination.qty == 1
+
+
+def test_preopt_native_body_rejects_terminal_without_return_before_staging(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    entry_ea = 0x3500
+    source = _MBA(
+        (
+            _Block(
+                0,
+                entry_ea,
+                (_Instruction(ida_hexrays.m_nop, entry_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        entry_ea,
+        source,
+        ((entry_ea, entry_ea + 1),),
+        owned_block_entry_eas=(entry_ea,),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    body_id = "native-body:terminal"
+    imported = _imported_fragment_block(
+        "imported-terminal",
+        body_id,
+        entry_ea,
+        entry_ea + 1,
+    )
+    native_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=(imported.block_id,),
+        entry_block_ids=(imported.block_id,),
+        terminal_block_ids=(imported.block_id,),
+        native_ranges=(NativeEaInterval(entry_ea, entry_ea + 1),),
+        proof_ids=("proof:terminal",),
+    )
+    context = _NativeBodyStagingContext(
+        destination,
+        _NativeBodyPlan((imported,)),
+    )
+
+    with pytest.raises(
+        detached_handler_island.SemanticFragmentBackendRejected,
+        match="terminal return",
+    ):
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+            mba=destination,
+            function_ea=function_ea,
+        ).stage_native_body(
+            context=context,
+            native_body=native_body,
+        )
+
+    assert context.staged_block_ids == []
+    assert destination.qty == 1
+
+
+def test_preopt_native_body_rejects_unowned_topology_before_staging(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    entry_ea = 0x3600
+    source = _MBA(
+        (
+            _Block(
+                0,
+                entry_ea,
+                (_Instruction(ida_hexrays.m_mov, entry_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        entry_ea,
+        source,
+        ((entry_ea, entry_ea + 1),),
+        owned_block_entry_eas=(entry_ea,),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    body_id = "native-body:unowned-topology"
+    imported = _imported_fragment_block(
+        "imported-nonterminal",
+        body_id,
+        entry_ea,
+        entry_ea + 1,
+    )
+    native_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=(imported.block_id,),
+        entry_block_ids=(imported.block_id,),
+        terminal_block_ids=(),
+        native_ranges=(NativeEaInterval(entry_ea, entry_ea + 1),),
+        proof_ids=("proof:unowned-topology",),
+    )
+    context = _NativeBodyStagingContext(
+        destination,
+        _NativeBodyPlan((imported,)),
+    )
+
+    with pytest.raises(
+        detached_handler_island.SemanticFragmentBackendRejected,
+        match="topology",
+    ):
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+            mba=destination,
+            function_ea=function_ea,
+        ).stage_native_body(
+            context=context,
+            native_body=native_body,
+        )
+
+    assert context.staged_block_ids == []
+    assert destination.qty == 1
 
 
 def test_recursively_rebases_all_stack_operand_shapes(monkeypatch) -> None:

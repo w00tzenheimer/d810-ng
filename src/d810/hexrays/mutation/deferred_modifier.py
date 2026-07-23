@@ -3544,6 +3544,59 @@ class DeferredGraphModifier:
             self._discard_semantic_fragment_blocks((created,))
             raise
 
+    def _populate_imported_native_semantic_block(
+        self,
+        *,
+        version: LogicalBlockVersion,
+        instructions: tuple[tuple[int, object], ...],
+        block_flags: int,
+    ) -> tuple[tuple[int, int], ...]:
+        """Populate one unpublished imported block behind the gateway boundary."""
+        if version.handle.provenance is not BlockHandleProvenance.IMPORTED_NATIVE:
+            raise SemanticFragmentBackendRejected(
+                "native body population requires imported-native provenance"
+            )
+        block = self._resolve_semantic_fragment_version(version)
+        if (
+            block.head is not None
+            or block.tail is not None
+            or int(block.nsucc()) != 0
+            or int(block.npred()) != 0
+        ):
+            raise SemanticFragmentBackendRejected(
+                "PREOPT native body block was not staged empty"
+            )
+
+        origin_bindings: list[tuple[int, int]] = []
+        for native_ea, instruction in instructions:
+            native_ea = int(native_ea)
+            if getattr(instruction, "next", None) is not None:
+                raise SemanticFragmentBackendRejected(
+                    "PREOPT native body instruction is already linked"
+                )
+            live_ea = int(self.mba.alloc_fict_ea(native_ea))
+            instruction.setaddr(live_ea)
+            self.insert_instruction_now(
+                block,
+                instruction,
+                block.tail,
+            )
+            origin_bindings.append((live_ea, native_ea))
+
+        self.configure_block_now(
+            block,
+            block_type=int(ida_hexrays.BLT_0WAY),
+            flags=(
+                int(block_flags) & int(ida_hexrays.MBL_PUSH)
+            )
+            | int(ida_hexrays.MBL_KEEP)
+            | int(ida_hexrays.MBL_FAKE),
+            start_ea=int(self.mba.entry_ea),
+            end_ea=int(self.mba.entry_ea) + 1,
+        )
+        self.mark_blocks_dirty_now(block)
+        return tuple(origin_bindings)
+
     def _stage_semantic_fallthrough_helper(
         self,
         source,
