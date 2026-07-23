@@ -706,12 +706,17 @@ def _validate_operation(
     helper = None
     helper_block = None
     fallthrough_target_id = None
-    if len(operation.edges) == 2:
-        fallthrough_target_id = next(
-            edge.target_block_id
-            for edge in operation.edges
-            if edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
-        )
+    fallthrough_edges = tuple(
+        edge
+        for edge in operation.edges
+        if edge.role
+        in {
+            SemanticEdgeRole.CALL_FALLTHROUGH,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        }
+    )
+    if len(fallthrough_edges) == 1:
+        fallthrough_target_id = fallthrough_edges[0].target_block_id
         if len(matching_helpers) == 1:
             helper = matching_helpers[0]
             helper_block = blocks.get(helper.helper_block_id)
@@ -724,8 +729,9 @@ def _validate_operation(
         and len(actual_targets) == len(operation.edges)
         and (
             not matching_helpers
-            if len(operation.edges) == 1
-            else helper is not None
+            if not fallthrough_edges
+            else len(fallthrough_edges) == 1
+            and helper is not None
             and helper.source_block_id == operation.source_block_id
             and helper.semantic_target_block_id == fallthrough_target_id
             and helper_block is not None
@@ -746,11 +752,6 @@ def _validate_operation(
         *sorted(expected_targets),
     )
 
-    fallthrough_edges = tuple(
-        edge
-        for edge in operation.edges
-        if edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
-    )
     if not fallthrough_edges:
         return
     passed = bool(
@@ -769,9 +770,9 @@ def _validate_operation(
         FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
         operation.operation_id,
         passed,
-        "conditional fallthrough uses one adjacent transparent helper"
+        "semantic fallthrough uses one adjacent transparent helper"
         if passed
-        else "conditional fallthrough helper is missing, nonadjacent, or nontransparent",
+        else "semantic fallthrough helper is missing, nonadjacent, or nontransparent",
         operation.source_block_id,
         "" if helper is None else helper.helper_block_id,
         fallthrough_edges[0].target_block_id,
@@ -1250,7 +1251,12 @@ def _required_postpublication_outcomes(
                 operation.operation_id,
             )
         )
-        if SemanticEdgeRole.CONDITIONAL_FALLTHROUGH in operation.roles:
+        if operation.roles.intersection(
+            {
+                SemanticEdgeRole.CALL_FALLTHROUGH,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }
+        ):
             required.append(
                 (
                     FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,

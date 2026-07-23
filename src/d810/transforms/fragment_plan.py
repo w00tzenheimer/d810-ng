@@ -310,7 +310,10 @@ class FragmentOperation:
         )
         predicate_anchor_ea = self.predicate_anchor_ea
         if len(edges) == 1:
-            if edges[0].role is not SemanticEdgeRole.DIRECT:
+            if edges[0].role not in {
+                SemanticEdgeRole.DIRECT,
+                SemanticEdgeRole.CALL_FALLTHROUGH,
+            }:
                 raise FragmentPlanRejected(
                     "fragment conditional requires both conditional roles"
                 )

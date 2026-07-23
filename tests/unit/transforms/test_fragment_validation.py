@@ -404,6 +404,43 @@ def test_valid_projection_proves_every_required_postcondition() -> None:
     }.issubset({outcome.postcondition for outcome in result.outcomes})
 
 
+def test_call_fallthrough_projection_requires_one_adjacent_helper() -> None:
+    plan = _plan()
+    plan = replace(
+        plan,
+        operations=(
+            FragmentOperation(
+                operation_id="condition",
+                source_block_id="replacement",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                        target_block_id="false",
+                    ),
+                ),
+            ),
+        ),
+    )
+    projection = _projection(plan)
+    projection = _replace_blocks(
+        projection,
+        replace(
+            projection.block("replacement"),
+            kind=BlockKind.ONE_WAY,
+            successors=("condition.fallthrough",),
+        ),
+        replace(projection.block("true"), predecessors=()),
+    )
+
+    result = validate_fragment_projection(plan, projection)
+
+    assert result.passed
+    assert (
+        FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY
+        in {outcome.postcondition for outcome in result.outcomes}
+    )
+
+
 def test_unreachable_replacement_root_is_rejected() -> None:
     projection = _projection()
     projection = _replace_blocks(

@@ -134,6 +134,17 @@ def _conditional_tail(target: int | None, *, ea: int):
     )
 
 
+def _call_tail(*, ea: int):
+    return SimpleNamespace(
+        opcode=int(ida_hexrays.m_call),
+        ea=int(ea),
+        l=_BlockReference(),
+        r=_BlockReference(),
+        d=_BlockReference(),
+        next=None,
+    )
+
+
 def _proxy(gateway: MbaMutationGateway, serial: int):
     handle = gateway.identity_index.handle_for_serial(int(serial))
     assert handle is not None
@@ -251,6 +262,85 @@ def test_gateway_materializes_zero_way_direct_edge() -> None:
     assert tuple(source.succset) == (2,)
     assert tuple(target.predset) == (1,)
     assert int(source.type) == int(ida_hexrays.BLT_1WAY)
+
+
+def test_gateway_materializes_call_fallthrough_through_adjacent_helper(
+    monkeypatch,
+) -> None:
+    source = _Block(1, start=0x401010)
+    target = _Block(3, start=0x401030)
+    call = _call_tail(ea=0x401011)
+    source.tail = call
+    source.head = call
+    mba = _Mba(source, target)
+    gateway = make_mutation_gateway(mba)
+    _install_helper_builder(monkeypatch)
+
+    receipt = _apply(
+        gateway,
+        mba,
+        _operation(
+            gateway,
+            source=1,
+            role=SemanticEdgeRole.CALL_FALLTHROUGH,
+            target=3,
+        ),
+    )
+
+    assert receipt is not None
+    live_source = mba.get_mblock(1)
+    helper = mba.get_mblock(2)
+    live_target = mba.get_mblock(4)
+    assert live_source.tail is call
+    assert int(live_source.tail.opcode) == int(ida_hexrays.m_call)
+    assert tuple(live_source.succset) == (2,)
+    assert live_source.nextb is helper
+    assert tuple(helper.succset) == (int(live_target.serial),)
+    assert tuple(helper.predset) == (int(live_source.serial),)
+    assert tuple(live_target.predset) == (int(helper.serial),)
+    assert receipt.operation_count == 2
+    assert receipt.planned_operation_count == 2
+
+
+def test_gateway_rejects_call_fallthrough_for_non_call_before_helper_creation(
+    monkeypatch,
+) -> None:
+    source = _Block(1, start=0x401010)
+    target = _Block(2, start=0x401020)
+    source.tail = _goto_tail(-1, ea=0x401011)
+    mba = _Mba(source, target)
+    gateway = make_mutation_gateway(mba)
+    helper_calls = 0
+
+    def _unexpected_helper(*_args, **_kwargs):
+        nonlocal helper_calls
+        helper_calls += 1
+        return None
+
+    monkeypatch.setattr(
+        dm.DeferredGraphModifier,
+        "_build_fallthrough_goto_helper",
+        _unexpected_helper,
+    )
+
+    with pytest.raises(
+        SemanticEdgeOperationRejected,
+        match="block-closing call",
+    ):
+        _apply(
+            gateway,
+            mba,
+            _operation(
+                gateway,
+                source=1,
+                role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                target=2,
+            ),
+        )
+
+    assert helper_calls == 0
+    assert tuple(source.succset) == ()
+    assert gateway.receipts == ()
 
 
 def test_gateway_redirects_one_way_edge() -> None:

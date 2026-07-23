@@ -3038,6 +3038,62 @@ class DeferredGraphModifier:
             )
         self._semantic_edge_record(source_binding, target_binding)
 
+    def _semantic_edge_materialize_call_fallthrough(
+        self,
+        operation: LogicalSemanticEdgeOperation,
+        edge: LogicalSemanticEdge,
+    ) -> LogicalBlockVersion:
+        source_binding, source = self._semantic_edge_live_binding(operation.source)
+        target_binding, target = self._semantic_edge_live_binding(edge.target)
+        label = self._semantic_edge_block_label(source)
+        tail = source.tail
+        if (
+            int(source.nsucc()) != 0
+            or tail is None
+            or int(tail.opcode)
+            not in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}
+        ):
+            raise SemanticEdgeOperationRejected(
+                f"call fallthrough requires a zero-way block-closing call at {label}"
+            )
+        if edge.expected_target is not None:
+            raise SemanticEdgeOperationRejected(
+                "zero-way call fallthrough cannot name an expected target"
+            )
+
+        helper_serial, helper_version = self._stage_semantic_fallthrough_helper(
+            source,
+            target,
+        )
+        source_binding, source = self._semantic_edge_live_binding(operation.source)
+        target_binding, target = self._semantic_edge_live_binding(edge.target)
+        helper = self.mba.get_mblock(int(helper_serial))
+        tail = source.tail
+        if (
+            helper is None
+            or source.nextb is None
+            or int(helper.serial) != int(source.serial) + 1
+            or int(source.nextb.serial) != int(helper.serial)
+            or int(source.nsucc()) != 0
+            or tail is None
+            or int(tail.opcode)
+            not in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}
+            or tuple(int(value) for value in helper.succset)
+            != (int(target.serial),)
+        ):
+            raise SemanticEdgeOperationRejected(
+                "call fallthrough helper is not one adjacent transparent successor"
+            )
+
+        source.type = int(ida_hexrays.BLT_1WAY)
+        source.flags &= ~int(ida_hexrays.MBL_GOTO)
+        source.succset.push_back(int(helper.serial))
+        if int(source.serial) not in {int(value) for value in helper.predset}:
+            helper.predset.push_back(int(source.serial))
+        self._semantic_edge_mark(source, helper, target)
+        self._semantic_edge_record(source_binding, target_binding)
+        return helper_version
+
     def _semantic_edge_redirect_taken(
         self,
         operation: LogicalSemanticEdgeOperation,
@@ -3298,6 +3354,11 @@ class DeferredGraphModifier:
                 edge = operation.edges[0]
                 if edge.role is SemanticEdgeRole.DIRECT:
                     self._semantic_edge_redirect_direct(operation, edge)
+                elif edge.role is SemanticEdgeRole.CALL_FALLTHROUGH:
+                    result = self._semantic_edge_materialize_call_fallthrough(
+                        operation,
+                        edge,
+                    )
                 elif edge.role is SemanticEdgeRole.CONDITIONAL_TAKEN:
                     self._semantic_edge_redirect_taken(operation, edge)
                 elif edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH:
