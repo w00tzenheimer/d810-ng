@@ -50,6 +50,32 @@ def _find_indirect_jump_ea(function: ida_funcs.func_t) -> int:
     raise AssertionError("fixture function has no native indirect jump")
 
 
+def _find_conditional_flow_block(
+    function: ida_funcs.func_t,
+) -> tuple[int, int, int, int]:
+    for flow_block in ida_gdl.FlowChart(function):
+        successors = tuple(int(successor.start_ea) for successor in flow_block.succs())
+        if len(successors) != 2:
+            continue
+        start_ea = int(flow_block.start_ea)
+        tail_ea = int(ida_bytes.prev_head(int(flow_block.end_ea), start_ea))
+        instruction = _decoded_instruction(tail_ea)
+        if (
+            int(instruction.ops[0].type)
+            not in {int(idaapi.o_near), int(idaapi.o_far)}
+            or ida_idp.is_call_insn(instruction)
+            or int(instruction.get_canon_feature()) & int(ida_idp.CF_STOP)
+        ):
+            continue
+        return (
+            start_ea,
+            tail_ea,
+            tail_ea + int(instruction.size),
+            int(instruction.ops[0].addr),
+        )
+    raise AssertionError("fixture function has no conditional flow block")
+
+
 def _find_function_with_call() -> tuple[ida_funcs.func_t, int]:
     for function_ea in idautils.Functions():
         function = ida_funcs.get_func(int(function_ea))
@@ -120,6 +146,44 @@ class TestNativeSemanticCfgAdapter:
         )
         assert set(closure.included_block_eas) == set(result.cfg.blocks_by_ea)
         assert not result.abstentions
+
+    def test_native_redecode_preserves_unmarked_conditional_fallthrough(
+        self,
+        ida_database,
+        monkeypatch,
+    ) -> None:
+        function = _function("lab_if_diamond")
+        (
+            block_entry_ea,
+            predicate_ea,
+            fallthrough_ea,
+            taken_ea,
+        ) = _find_conditional_flow_block(function)
+        original_func_contains = ida_funcs.func_contains
+
+        def without_fallthrough_owner(owner, ea):
+            if int(ea) == fallthrough_ea:
+                return False
+            return original_func_contains(owner, ea)
+
+        monkeypatch.setattr(ida_funcs, "func_contains", without_fallthrough_owner)
+        abstentions = []
+
+        fact = native_backend._decode_missing_flow_block(
+            function,
+            start_ea=block_entry_ea,
+            resolver_cut_eas=(),
+            resolver_target_eas_by_source={},
+            resolver_proven_unmarked=True,
+            semantic_entry_eas=(),
+            abstentions=abstentions,
+        )
+
+        assert fact is not None
+        assert fact.is_conditional_jump_tail
+        assert fact.terminal_instruction_ea == predicate_ea
+        assert set(fact.successor_eas) == {taken_ea, fallthrough_ea}
+        assert not abstentions
 
     def test_retains_calls_inside_native_ranges_without_traversing_them(
         self,
