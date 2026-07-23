@@ -323,12 +323,53 @@ class FragmentEdge:
 
 
 @dataclass(frozen=True, slots=True)
+class FragmentConditionalSelectEnvelope:
+    """Portable ownership of one live conditional-select lowering envelope."""
+
+    predicate_ea: int
+    observed_predicate_kind: PredicateKind
+    selected_value_block_id: str
+    join_block_id: str
+
+    def __post_init__(self) -> None:
+        predicate_ea = _require_native_ea(
+            self.predicate_ea,
+            "conditional-select predicate",
+        )
+        if not isinstance(self.observed_predicate_kind, PredicateKind):
+            raise TypeError(
+                "conditional-select envelope requires a PredicateKind"
+            )
+        selected_value_block_id = _require_identifier(
+            self.selected_value_block_id,
+            "conditional-select selected-value block",
+        )
+        join_block_id = _require_identifier(
+            self.join_block_id,
+            "conditional-select join block",
+        )
+        if selected_value_block_id == join_block_id:
+            raise FragmentPlanRejected(
+                "conditional-select envelope requires distinct selected-value "
+                "and join blocks"
+            )
+        object.__setattr__(self, "predicate_ea", predicate_ea)
+        object.__setattr__(
+            self,
+            "selected_value_block_id",
+            selected_value_block_id,
+        )
+        object.__setattr__(self, "join_block_id", join_block_id)
+
+
+@dataclass(frozen=True, slots=True)
 class FragmentComputedBranchNormalization:
     """Typed proof for replacing one unresolved imported computed branch."""
 
     predicate_kind: PredicateKind
     condition_producer_ea: int
     unresolved_transfer_ea: int
+    conditional_select_envelope: FragmentConditionalSelectEnvelope | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.predicate_kind, PredicateKind):
@@ -346,6 +387,14 @@ class FragmentComputedBranchNormalization:
         if condition_producer_ea == unresolved_transfer_ea:
             raise FragmentPlanRejected(
                 "computed branch producer and transfer require distinct anchors"
+            )
+        conditional_select_envelope = self.conditional_select_envelope
+        if conditional_select_envelope is not None and not isinstance(
+            conditional_select_envelope,
+            FragmentConditionalSelectEnvelope,
+        ):
+            raise TypeError(
+                "computed branch conditional-select envelope is invalid"
             )
         object.__setattr__(
             self,
@@ -1107,39 +1156,96 @@ class FragmentPlan:
                 operation.computed_branch_normalization
             )
             if computed_normalization is not None:
-                if (
-                    self.publication_purpose
-                    is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
-                    or source.role is not FragmentBlockRole.IMPORTED
+                if self.publication_purpose is not (
+                    FragmentPublicationPurpose.FRONTEND_NORMALIZATION
                 ):
                     raise FragmentPlanRejected(
                         f"fragment operation {operation.operation_id!r} "
-                        "computed branch normalization requires an imported "
-                        "frontend-normalization source"
+                        "computed branch normalization requires a "
+                        "frontend-normalization plan"
                     )
+                envelope = computed_normalization.conditional_select_envelope
                 identity = source.stable_identity
-                if identity is None or any(
-                    not identity.native_ranges.contains(ea)
-                    for ea in (
+                if identity is None:
+                    raise FragmentPlanRejected(
+                        f"fragment operation {operation.operation_id!r} "
+                        "computed branch source lacks stable identity"
+                    )
+                if envelope is None:
+                    if source.role is not FragmentBlockRole.IMPORTED:
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "computed branch suffix normalization requires an "
+                            "imported source"
+                        )
+                    if any(
+                        not identity.native_ranges.contains(ea)
+                        for ea in (
+                            computed_normalization.condition_producer_ea,
+                            computed_normalization.unresolved_transfer_ea,
+                        )
+                    ):
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "computed branch anchors do not belong to its source "
+                            "identity"
+                        )
+                    native_body = native_body_by_id.get(
+                        str(source.native_body_id)
+                    )
+                    if (
+                        native_body is None
+                        or operation.operation_id not in native_body.proof_ids
+                    ):
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "computed branch normalization lacks native-body "
+                            "proof ownership"
+                        )
+                else:
+                    if source.role is not FragmentBlockRole.REPLACEMENT:
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "conditional-select normalization requires a "
+                            "replacement source"
+                        )
+                    source_anchors = (
                         computed_normalization.condition_producer_ea,
-                        computed_normalization.unresolved_transfer_ea,
+                        operation.predicate_anchor_ea,
+                        envelope.predicate_ea,
                     )
-                ):
-                    raise FragmentPlanRejected(
-                        f"fragment operation {operation.operation_id!r} "
-                        "computed branch anchors do not belong to its source "
-                        "identity"
+                    if any(
+                        ea is None or not identity.native_ranges.contains(ea)
+                        for ea in source_anchors
+                    ):
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "conditional-select source anchors do not belong to "
+                            "its replacement identity"
+                        )
+                    selected = block_by_id.get(
+                        envelope.selected_value_block_id
                     )
-                native_body = native_body_by_id.get(str(source.native_body_id))
-                if (
-                    native_body is None
-                    or operation.operation_id not in native_body.proof_ids
-                ):
-                    raise FragmentPlanRejected(
-                        f"fragment operation {operation.operation_id!r} "
-                        "computed branch normalization lacks native-body proof "
-                        "ownership"
-                    )
+                    join = block_by_id.get(envelope.join_block_id)
+                    if (
+                        selected is None
+                        or join is None
+                        or selected.role is not FragmentBlockRole.EXTERNAL
+                        or join.role is not FragmentBlockRole.EXTERNAL
+                        or selected.stable_identity is None
+                        or join.stable_identity is None
+                        or not selected.stable_identity.native_ranges.contains(
+                            envelope.predicate_ea
+                        )
+                        or not join.stable_identity.native_ranges.contains(
+                            computed_normalization.unresolved_transfer_ea
+                        )
+                    ):
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "conditional-select envelope does not own its "
+                            "published copy and join anchors"
+                        )
             for edge in operation.edges:
                 if edge.target_block_id not in block_by_id:
                     raise FragmentPlanRejected(
@@ -1558,6 +1664,7 @@ __all__ = [
     "FragmentBlock",
     "FragmentBlockMaterialization",
     "FragmentBlockRole",
+    "FragmentConditionalSelectEnvelope",
     "FragmentComputedBranchNormalization",
     "FragmentDataFlowObligation",
     "FragmentDataFlowRole",

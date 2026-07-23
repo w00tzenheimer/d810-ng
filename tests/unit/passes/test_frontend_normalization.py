@@ -31,6 +31,7 @@ from d810.capabilities.frontend_normalization import (
 )
 from d810.capabilities.resolver import CapabilitySet
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
@@ -59,6 +60,7 @@ from d810.passes.pass_pipeline import (
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentConditionalSelectEnvelope,
     FragmentEdge,
     FragmentPublicationPurpose,
 )
@@ -86,8 +88,12 @@ def _insn(
     kind: InsnKind,
     *,
     target: int | None = None,
+    predicate_kind: PredicateKind | None = None,
+    left: MopSnapshot | None = None,
+    result: MopSnapshot | None = None,
+    value_op_kind: ValueOpKind | None = None,
 ) -> InsnSnapshot:
-    destination = (
+    branch_destination = (
         None
         if target is None
         else MopSnapshot(
@@ -96,12 +102,21 @@ def _insn(
             size=8,
         )
     )
+    destination = result if result is not None else branch_destination
     return InsnSnapshot(
         opcode=max(1, int(ea) & 0xFF),
         ea=int(ea),
-        operands=() if destination is None else (destination,),
+        operands=tuple(
+            operand
+            for operand in (left, destination)
+            if operand is not None
+        ),
+        l=left,
         d=destination,
         kind=kind,
+        value_op_kind=value_op_kind,
+        predicate_kind=predicate_kind,
+        branch_predicate=predicate_kind,
         is_conditional_jump=kind is InsnKind.COND_JUMP,
         is_unconditional_jump=kind is InsnKind.GOTO,
     )
@@ -230,6 +245,178 @@ def _evidence(
     )
 
 
+def _conditional_select_case(
+    *,
+    malformed_copy: bool = False,
+    nested_signed_truthiness: bool = False,
+    mismatched_signed_flag_register: bool = False,
+) -> tuple[FlowGraph, FrontendNormalizationEvidence]:
+    condition_ea = 0x1100
+    predicate_anchor_ea = 0x1101
+    live_predicate_ea = 0x1108
+    unresolved_transfer_ea = 0x110F
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(predicate_anchor_ea, 0x1110),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(predicate_anchor_ea,),
+    )
+    condition_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(condition_ea, predicate_anchor_ea),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(condition_ea,),
+    )
+    proof = NativeIndirectTransferProof(
+        proof_id=f"conditional@0x{unresolved_transfer_ea:X}",
+        atomic_group_id="frontend-normalization:g7",
+        shape=NativeTransferShape.CONDITIONAL,
+        source_identity=source_identity,
+        source_anchor_ea=predicate_anchor_ea,
+        source_transfer_ea=unresolved_transfer_ea,
+        endpoints=(
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                identity=_identity(0x1200),
+                anchor_ea=0x1200,
+            ),
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                identity=_identity(0x1300),
+                anchor_ea=0x1300,
+            ),
+        ),
+        predicate_kind=PredicateKind.SLT,
+        predicate_anchor_ea=predicate_anchor_ea,
+        condition_producer_ea=condition_ea,
+        flag_corridor=(condition_identity, source_identity),
+        permitted_flag_write_eas=frozenset({condition_ea}),
+    )
+    selected_instructions = (
+        _insn(
+            live_predicate_ea,
+            InsnKind.ADD if malformed_copy else InsnKind.MOV,
+        ),
+    )
+    source_prefix = (_insn(condition_ea, InsnKind.SUB),)
+    live_predicate_kind = PredicateKind.SGE
+    live_predicate_left = None
+    if nested_signed_truthiness:
+        sign_register = MopSnapshot(
+            kind=OperandKind.REGISTER,
+            reg=2,
+            size=1,
+        )
+        overflow_register = MopSnapshot(
+            kind=OperandKind.REGISTER,
+            reg=3,
+            size=1,
+        )
+        xor_overflow_register = (
+            MopSnapshot(
+                kind=OperandKind.REGISTER,
+                reg=4,
+                size=1,
+            )
+            if mismatched_signed_flag_register
+            else overflow_register
+        )
+        signed_flag_xor = MopSnapshot(
+            kind=OperandKind.SUBINSN,
+            size=1,
+            sub_value_op_kind=ValueOpKind.XOR,
+            sub_l=sign_register,
+            sub_r=xor_overflow_register,
+        )
+        live_predicate_left = MopSnapshot(
+            kind=OperandKind.SUBINSN,
+            size=1,
+            sub_value_op_kind=ValueOpKind.LNOT,
+            sub_l=signed_flag_xor,
+        )
+        live_predicate_kind = PredicateKind.TRUTHY
+        source_prefix = (
+            _insn(
+                condition_ea,
+                InsnKind.UNKNOWN,
+                result=sign_register,
+                value_op_kind=ValueOpKind.SIGN_BIT,
+            ),
+            _insn(
+                condition_ea,
+                InsnKind.UNKNOWN,
+                result=overflow_register,
+                value_op_kind=ValueOpKind.OVERFLOW_FLAG,
+            ),
+        )
+    graph = FlowGraph(
+        blocks={
+            0: _block(
+                0,
+                0x1000,
+                (1,),
+                (),
+                (_insn(0x1000, InsnKind.GOTO, target=1),),
+            ),
+            1: _block(
+                1,
+                condition_ea,
+                (2, 3),
+                (0,),
+                source_prefix
+                + (
+                    _insn(predicate_anchor_ea, InsnKind.MOV),
+                    _insn(0x1103, InsnKind.MOV),
+                    _insn(
+                        live_predicate_ea,
+                        InsnKind.COND_JUMP,
+                        target=3,
+                        predicate_kind=live_predicate_kind,
+                        left=live_predicate_left,
+                    ),
+                ),
+            ),
+            2: _block(
+                2,
+                live_predicate_ea,
+                (3,),
+                (1,),
+                selected_instructions,
+            ),
+            3: _block(
+                3,
+                0x110A,
+                (),
+                (1, 2),
+                (
+                    _insn(0x110A, InsnKind.ADD),
+                    _insn(unresolved_transfer_ea, InsnKind.INDIRECT_JUMP),
+                ),
+            ),
+            4: _block(
+                4,
+                0x1200,
+                (),
+                (),
+                (_insn(0x1200, InsnKind.RET),),
+            ),
+            5: _block(
+                5,
+                0x1300,
+                (),
+                (),
+                (_insn(0x1300, InsnKind.RET),),
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    return graph, FrontendNormalizationEvidence(
+        native_key=NATIVE_KEY,
+        generation=7,
+        atomic_group_id="frontend-normalization:g7",
+        transfer_proofs=(proof,),
+    )
+
+
 def _closure() -> NativeSemanticClosure:
     return NativeSemanticClosure(
         included_block_eas=(0x1300,),
@@ -302,6 +489,75 @@ def test_provider_provenance_is_diagnostic_and_does_not_change_plan() -> None:
     )
 
     assert first == second
+
+
+def test_live_conditional_select_is_one_detached_normalization_contract() -> None:
+    graph, evidence = _conditional_select_case()
+
+    plan = plan_frontend_computed_branch_normalization(graph, evidence)
+
+    assert plan is not None
+    operation = plan.operations[0]
+    normalization = operation.computed_branch_normalization
+    assert normalization is not None
+    assert normalization.predicate_kind is PredicateKind.SLT
+    assert normalization.condition_producer_ea == 0x1100
+    assert normalization.unresolved_transfer_ea == 0x110F
+    assert normalization.conditional_select_envelope == (
+        FragmentConditionalSelectEnvelope(
+            predicate_ea=0x1108,
+            observed_predicate_kind=PredicateKind.SGE,
+            selected_value_block_id=next(
+                block.block_id
+                for block in plan.blocks
+                if block.semantic_anchor_ea == 0x1108
+                and block.role is FragmentBlockRole.EXTERNAL
+            ),
+            join_block_id=next(
+                block.block_id
+                for block in plan.blocks
+                if block.semantic_anchor_ea == 0x110A
+            ),
+        )
+    )
+
+
+def test_live_nested_signed_truthiness_is_exact_sge_select_contract() -> None:
+    graph, evidence = _conditional_select_case(nested_signed_truthiness=True)
+
+    plan = plan_frontend_computed_branch_normalization(graph, evidence)
+
+    assert plan is not None
+    normalization = plan.operations[0].computed_branch_normalization
+    assert normalization is not None
+    assert normalization.conditional_select_envelope is not None
+    assert (
+        normalization.conditional_select_envelope.observed_predicate_kind
+        is PredicateKind.SGE
+    )
+
+
+def test_live_nested_signed_truthiness_rejects_unproved_flag_registers() -> None:
+    graph, evidence = _conditional_select_case(
+        nested_signed_truthiness=True,
+        mismatched_signed_flag_register=True,
+    )
+
+    with pytest.raises(
+        FrontendNormalizationEvidenceRejected,
+        match="conditional-select envelope",
+    ):
+        plan_frontend_computed_branch_normalization(graph, evidence)
+
+
+def test_live_conditional_select_rejects_a_noncopy_selection_arm() -> None:
+    graph, evidence = _conditional_select_case(malformed_copy=True)
+
+    with pytest.raises(
+        FrontendNormalizationEvidenceRejected,
+        match="conditional-select envelope",
+    ):
+        plan_frontend_computed_branch_normalization(graph, evidence)
 
 
 def test_import_request_names_only_missing_proven_closure_entries() -> None:

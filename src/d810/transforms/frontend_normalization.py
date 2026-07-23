@@ -25,12 +25,16 @@ from d810.ir.block_identity import (
     StableBlockIdentity,
     stable_block_identity_from_snapshot,
 )
-from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
+from d810.ir.expressions import ValueOpKind
+from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind
+from d810.ir.predicate_expressions import exact_branch_predicate_kind
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind, inverted_predicate_kind
 from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentConditionalSelectEnvelope,
     FragmentComputedBranchNormalization,
     FragmentEdge,
     FragmentFlagCorridor,
@@ -69,6 +73,16 @@ class _ImportedTransferProof:
         ...,
     ]
     corridor: tuple[NativeBlock, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundConditionalSelectEnvelope:
+    """One exact live conditional-select shape owned by a portable proof."""
+
+    predicate_ea: int
+    observed_predicate_kind: PredicateKind
+    selected_value: BlockSnapshot
+    join: BlockSnapshot
 
 
 def _semantic_anchor(identity: StableBlockIdentity) -> int:
@@ -205,6 +219,202 @@ def _proof_is_faithful(binding: _BoundTransferProof) -> bool:
         and int(tail.ea) == int(proof.predicate_anchor_ea)
         and explicit_target is not None
         and int(explicit_target) == int(taken.serial)
+    )
+
+
+def _bind_conditional_select_envelope(
+    graph: FlowGraph,
+    binding: _BoundTransferProof,
+) -> _BoundConditionalSelectEnvelope | None:
+    """Bind one exact CMOV-style split without relying on block serials later."""
+    proof = binding.proof
+    source = binding.source
+    tail = source.tail
+    if (
+        proof.shape is not NativeTransferShape.CONDITIONAL
+        or proof.predicate_kind is None
+        or proof.predicate_anchor_ea is None
+        or source.kind is not BlockKind.TWO_WAY
+        or len(source.succs) != 2
+        or tail is None
+        or not tail.is_conditional_jump
+        or int(tail.ea) == int(proof.predicate_anchor_ea)
+    ):
+        return None
+    observed_predicate = exact_branch_predicate_kind(
+        source.insn_snapshots,
+        condition_producer_ea=int(proof.condition_producer_ea),
+    )
+    inverted_predicate = inverted_predicate_kind(proof.predicate_kind)
+    if observed_predicate not in {
+        proof.predicate_kind,
+        inverted_predicate,
+    }:
+        return None
+    explicit_target = None if tail.d is None else tail.d.block_ref
+    if explicit_target is None:
+        return None
+    nonexplicit_targets = tuple(
+        int(serial)
+        for serial in source.succs
+        if int(serial) != int(explicit_target)
+    )
+    if int(explicit_target) not in source.succs or len(nonexplicit_targets) != 1:
+        return None
+    semantic_true_target = (
+        int(explicit_target)
+        if observed_predicate is proof.predicate_kind
+        else nonexplicit_targets[0]
+    )
+
+    candidates: list[tuple[BlockSnapshot, BlockSnapshot]] = []
+    for selected_serial in source.succs:
+        selected = graph.blocks.get(int(selected_serial))
+        if selected is None:
+            continue
+        other_serials = tuple(
+            int(serial)
+            for serial in source.succs
+            if int(serial) != int(selected.serial)
+        )
+        if len(other_serials) != 1:
+            continue
+        join = graph.blocks.get(other_serials[0])
+        selected_instructions = selected.insn_snapshots
+        join_tail = None if join is None else join.tail
+        if (
+            join is None
+            or semantic_true_target != int(selected.serial)
+            or selected.kind is not BlockKind.ONE_WAY
+            or selected.succs != (int(join.serial),)
+            or tuple(graph.predecessors(int(selected.serial)))
+            != (int(source.serial),)
+            or set(graph.predecessors(int(join.serial)))
+            != {int(source.serial), int(selected.serial)}
+            or len(selected_instructions) != 1
+            or selected_instructions[0].value_op_kind is not ValueOpKind.MOVE
+            or int(selected_instructions[0].ea) != int(tail.ea)
+            or join.kind is not BlockKind.ZERO_WAY
+            or join_tail is None
+            or join_tail.kind is not InsnKind.INDIRECT_JUMP
+            or int(join_tail.ea) != int(proof.source_transfer_ea)
+        ):
+            continue
+        candidates.append((selected, join))
+    if len(candidates) != 1:
+        return None
+    selected, join = candidates[0]
+    return _BoundConditionalSelectEnvelope(
+        predicate_ea=int(tail.ea),
+        observed_predicate_kind=observed_predicate,
+        selected_value=selected,
+        join=join,
+    )
+
+
+def _conditional_select_diagnostic(
+    graph: FlowGraph,
+    binding: _BoundTransferProof,
+) -> str:
+    """Render one serial-safe portable shape for the diagnostic database."""
+
+    def label(serial: int) -> str:
+        block = graph.blocks.get(int(serial))
+        return (
+            f"blk{int(serial)}@missing"
+            if block is None
+            else f"blk{int(serial)}@0x{int(block.start_ea):X}"
+        )
+
+    def operand_row(operand) -> object:
+        if operand is None:
+            return None
+        return (
+            operand.kind.value,
+            int(operand.size),
+            operand.reg,
+            operand.value,
+            (
+                None
+                if operand.sub_kind is None
+                else operand.sub_kind.value
+            ),
+            (
+                None
+                if operand.sub_value_op_kind is None
+                else operand.sub_value_op_kind.value
+            ),
+            operand_row(operand.sub_l),
+            operand_row(operand.sub_r),
+        )
+
+    def block_row(block: BlockSnapshot) -> tuple[object, ...]:
+        tail = block.tail
+        explicit_target = (
+            None
+            if tail is None or tail.d is None or tail.d.block_ref is None
+            else label(int(tail.d.block_ref))
+        )
+        return (
+            label(int(block.serial)),
+            block.kind.value,
+            tuple(label(serial) for serial in block.succs),
+            tuple(label(serial) for serial in graph.predecessors(block.serial)),
+            (
+                None
+                if tail is None
+                else (
+                    f"0x{int(tail.ea):X}",
+                    tail.kind.value,
+                    (
+                        None
+                        if tail.predicate_kind is None
+                        else tail.predicate_kind.value
+                    ),
+                    explicit_target,
+                    operand_row(tail.l),
+                    operand_row(tail.r),
+                )
+            ),
+            tuple(
+                (
+                    f"0x{int(instruction.ea):X}",
+                    instruction.kind.value,
+                    (
+                        None
+                        if instruction.value_op_kind is None
+                        else instruction.value_op_kind.value
+                    ),
+                    (
+                        None
+                        if instruction.predicate_kind is None
+                        else instruction.predicate_kind.value
+                    ),
+                )
+                for instruction in block.insn_snapshots
+            ),
+        )
+
+    source = binding.source
+    neighbour_serials = {
+        int(source.serial),
+        *(int(serial) for serial in source.succs),
+        *(
+            int(successor)
+            for serial in source.succs
+            for successor in graph.blocks.get(int(serial), source).succs
+        ),
+    }
+    rows = tuple(
+        block_row(graph.blocks[serial])
+        for serial in sorted(neighbour_serials)
+        if serial in graph.blocks
+    )
+    return (
+        f"proof_predicate={binding.proof.predicate_kind.value!r} "
+        f"predicate_anchor=0x{int(binding.proof.predicate_anchor_ea):X} "
+        f"transfer=0x{int(binding.proof.source_transfer_ea):X} "
+        f"portable_shape={rows!r}"
     )
 
 
@@ -537,8 +747,41 @@ def plan_frontend_computed_branch_normalization(
     ):
         return None
 
+    live_conditional_selects: dict[str, _BoundConditionalSelectEnvelope] = {}
+    for binding in live_bindings:
+        if _proof_is_faithful(binding):
+            continue
+        proof = binding.proof
+        tail = binding.source.tail
+        is_split_conditional_candidate = bool(
+            proof.shape is NativeTransferShape.CONDITIONAL
+            and proof.predicate_anchor_ea is not None
+            and binding.source.kind is BlockKind.TWO_WAY
+            and tail is not None
+            and tail.is_conditional_jump
+            and int(tail.ea) != int(proof.predicate_anchor_ea)
+        )
+        if not is_split_conditional_candidate:
+            continue
+        envelope = _bind_conditional_select_envelope(graph, binding)
+        if envelope is None:
+            raise FrontendNormalizationEvidenceRejected(
+                f"transfer proof {proof.proof_id!r} live conditional-select "
+                "envelope is incomplete or ambiguous; "
+                f"{_conditional_select_diagnostic(graph, binding)}"
+            )
+        live_conditional_selects[proof.proof_id] = envelope
+
     source_serials = tuple(int(binding.source.serial) for binding in live_bindings)
     source_serial_set = set(source_serials)
+    if any(
+        int(block.serial) in source_serial_set
+        for envelope in live_conditional_selects.values()
+        for block in (envelope.selected_value, envelope.join)
+    ):
+        raise FrontendNormalizationEvidenceRejected(
+            "live conditional-select envelope overlaps another transfer source"
+        )
     if (
         not source_serials
         or len(source_serial_set) != len(source_serials)
@@ -668,6 +911,13 @@ def plan_frontend_computed_branch_normalization(
             if target is not None
         )
         relevant_serials.update(int(block.serial) for block in binding.corridor)
+    for envelope in live_conditional_selects.values():
+        relevant_serials.update(
+            {
+                int(envelope.selected_value.serial),
+                int(envelope.join.serial),
+            }
+        )
     for binding in imported_bindings:
         relevant_serials.update(
             int(live_target.serial)
@@ -762,11 +1012,35 @@ def plan_frontend_computed_branch_normalization(
     for binding in live_bindings:
         proof = binding.proof
         source_block_id = replacement_ids[int(binding.source.serial)]
+        conditional_select = live_conditional_selects.get(proof.proof_id)
         operations.append(
             FragmentOperation(
                 operation_id=proof.proof_id,
                 source_block_id=source_block_id,
                 predicate_anchor_ea=proof.predicate_anchor_ea,
+                computed_branch_normalization=(
+                    None
+                    if conditional_select is None
+                    else FragmentComputedBranchNormalization(
+                        predicate_kind=proof.predicate_kind,
+                        condition_producer_ea=int(proof.condition_producer_ea),
+                        unresolved_transfer_ea=int(proof.source_transfer_ea),
+                        conditional_select_envelope=(
+                            FragmentConditionalSelectEnvelope(
+                                predicate_ea=conditional_select.predicate_ea,
+                                observed_predicate_kind=(
+                                    conditional_select.observed_predicate_kind
+                                ),
+                                selected_value_block_id=base_ids[
+                                    int(conditional_select.selected_value.serial)
+                                ],
+                                join_block_id=base_ids[
+                                    int(conditional_select.join.serial)
+                                ],
+                            )
+                        ),
+                    )
+                ),
                 edges=tuple(
                     FragmentEdge(
                         role=endpoint.role,
