@@ -410,6 +410,122 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
     assert len(plan.owned_originals) == 2
 
 
+def test_terminal_routes_share_one_owned_return_block_atomically() -> None:
+    terminal_identity = _identity(0x1200)
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, 0x1000, succs=(20, 25), preds=()),
+            20: _block(
+                20,
+                0x1100,
+                succs=(30,),
+                preds=(10,),
+                insn_eas=(0x1100, 0x1105),
+            ),
+            25: _block(
+                25,
+                0x1150,
+                succs=(30,),
+                preds=(10,),
+                insn_eas=(0x1150, 0x1155),
+            ),
+            30: _block(30, 0x1400, succs=(20, 25, 40), preds=(20, 25)),
+            40: _block(40, 0x1200, succs=(), preds=(30,)),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    def terminal_proof(
+        source_ea: int,
+        carrier_ea: int,
+        state_constant: int,
+    ) -> SemanticRouteProof:
+        capture_identity = StableBlockIdentity.from_intervals(
+            (NativeEaInterval(source_ea, source_ea + 0x10),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(source_ea, carrier_ea),
+        )
+        carrier = TerminalReturnCarrierEvidence(
+            request=TerminalReturnCarrierRequest(
+                source_handler_ea=source_ea,
+                terminal_target_ea=0x1200,
+                state_var_reg=20,
+                state_constant=state_constant,
+            ),
+            capture_identity=capture_identity,
+            terminal_identity=terminal_identity,
+            state_write_ea=source_ea,
+            carrier_ea=carrier_ea,
+            operation=ValueOpKind.MOVE,
+            source=TerminalReturnCarrierSource(
+                kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
+                width=4,
+                storage_identity=StorageIdentity(
+                    StorageIdentityKind.GLOBAL,
+                    0x48B8A4,
+                ),
+            ),
+            return_width=4,
+            corridor_instruction_eas=(source_ea, carrier_ea),
+        )
+        return SemanticRouteProof(
+            proof_id=f"terminal-return@0x{source_ea:X}",
+            atomic_group_id="canonical-semantic:shared-terminal",
+            proof_kind=SemanticRouteProofKind.TERMINAL_RETURN,
+            shape=SemanticRouteShape.DIRECT,
+            source_identity=capture_identity,
+            source_anchor_ea=source_ea,
+            destinations=(
+                SemanticRouteDestination(
+                    role=SemanticEdgeRole.DIRECT,
+                    state_constant=state_constant,
+                    target_identity=terminal_identity,
+                    target_anchor_ea=0x1200,
+                    terminal=True,
+                ),
+            ),
+            state_write=SemanticStateWriteProof(
+                identity=capture_identity,
+                instruction_ea=source_ea,
+                state_variable=StorageIdentity(
+                    StorageIdentityKind.REGISTER,
+                    20,
+                ),
+                width=4,
+                state_constant=state_constant,
+                corridor_instruction_eas=(source_ea,),
+            ),
+            terminal_return_carrier=carrier,
+        )
+
+    evidence = CanonicalSemanticEvidence(
+        native_key=NATIVE_KEY,
+        generation=6,
+        atomic_group_id="canonical-semantic:shared-terminal",
+        route_proofs=(
+            terminal_proof(0x1100, 0x1105, 0x11),
+            terminal_proof(0x1150, 0x1155, 0x22),
+        ),
+    )
+    bound = bind_canonical_semantic_evidence(graph, evidence)
+    assert bound is not None
+
+    plan = build_canonical_semantic_fragment_plan(
+        graph,
+        bound,
+        prohibited_dispatcher_serials=(30,),
+    )
+
+    assert len(plan.return_carriers) == 2
+    assert len(plan.terminal_routes) == 2
+    assert len(plan.terminal_returns) == 1
+    assert len(plan.owned_originals) == 3
+    assert {
+        route.return_id for route in plan.terminal_routes
+    } == {plan.terminal_returns[0].return_id}
+
+
 def test_dispatcher_fed_semantic_target_remains_internal_not_a_root() -> None:
     def direct_proof(
         source_ea: int,
@@ -490,3 +606,88 @@ def test_dispatcher_fed_semantic_target_remains_internal_not_a_root() -> None:
         plan.block(first_operation.edges[0].target_block_id).semantic_anchor_ea
         == 0x1200
     )
+
+
+def test_shared_external_target_rejects_bound_identity_drift() -> None:
+    def direct_proof(source_ea: int, state_constant: int) -> SemanticRouteProof:
+        source_identity = _identity(source_ea)
+        return SemanticRouteProof(
+            proof_id=f"state-assignment@0x{source_ea:X}",
+            atomic_group_id="canonical-semantic:shared-external",
+            proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+            shape=SemanticRouteShape.DIRECT,
+            source_identity=source_identity,
+            source_anchor_ea=source_ea,
+            destinations=(
+                SemanticRouteDestination(
+                    role=SemanticEdgeRole.DIRECT,
+                    state_constant=state_constant,
+                    target_identity=_identity(0x1300),
+                    target_anchor_ea=0x1300,
+                ),
+            ),
+            state_write=SemanticStateWriteProof(
+                identity=source_identity,
+                instruction_ea=source_ea,
+                state_variable=StorageIdentity(
+                    StorageIdentityKind.REGISTER,
+                    20,
+                ),
+                width=4,
+                state_constant=state_constant,
+                corridor_instruction_eas=(source_ea,),
+            ),
+        )
+
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, 0x1000, succs=(20, 30), preds=()),
+            20: _block(20, 0x1100, succs=(90,), preds=(10,)),
+            30: _block(30, 0x1200, succs=(90,), preds=(10,)),
+            40: _block(40, 0x1300, succs=(), preds=(90,)),
+            90: _block(90, 0x1400, succs=(20, 30, 40), preds=(20, 30)),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    evidence = CanonicalSemanticEvidence(
+        native_key=NATIVE_KEY,
+        generation=7,
+        atomic_group_id="canonical-semantic:shared-external",
+        route_proofs=(
+            direct_proof(0x1100, 0x11),
+            direct_proof(0x1200, 0x22),
+        ),
+    )
+    bound = bind_canonical_semantic_evidence(graph, evidence)
+    assert bound is not None
+    second_route = bound.routes[1]
+    second_destination = second_route.destinations[0]
+    corrupted = replace(
+        bound,
+        routes=(
+            bound.routes[0],
+            replace(
+                second_route,
+                destinations=(
+                    replace(
+                        second_destination,
+                        block=replace(
+                            second_destination.block,
+                            identity=_wide_identity(0x1300, 0x1310),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        CanonicalSemanticFragmentRejected,
+        match="external identity drifted",
+    ):
+        build_canonical_semantic_fragment_plan(
+            graph,
+            corrupted,
+            prohibited_dispatcher_serials=(90,),
+        )

@@ -133,15 +133,27 @@ def build_canonical_semantic_fragment_plan(
         if len(route.destinations) != 1:
             raise CanonicalSemanticFragmentRejected(
                 "terminal semantic route requires one bound destination"
-            )
+        )
         destination = route.destinations[0].block
         serial = int(destination.serial)
+        existing_terminal = terminal_replacement_id_by_serial.get(serial)
+        if existing_terminal is not None:
+            existing_block = next(
+                block for block in blocks if block.block_id == existing_terminal
+            )
+            if (
+                existing_block.stable_identity != destination.identity
+                or existing_block.semantic_anchor_ea
+                != int(destination.anchor_ea)
+            ):
+                raise CanonicalSemanticFragmentRejected(
+                    "shared terminal return block identity drifted"
+                )
+            continue
         if serial in replacement_id_by_serial:
             raise CanonicalSemanticFragmentRejected(
                 "terminal return block cannot also own an outgoing route"
             )
-        if serial in terminal_replacement_id_by_serial:
-            continue
         original_id = f"terminal:{proof.proof_id}:original"
         replacement_id = f"terminal:{proof.proof_id}:replacement"
         blocks.extend(
@@ -178,20 +190,41 @@ def build_canonical_semantic_fragment_plan(
         anchor_ea: int | None = None,
     ) -> str:
         serial = int(serial)
-        existing = external_id_by_serial.get(serial)
-        if existing is not None:
-            return existing
         block = graph.blocks.get(serial)
         if block is None:
             raise CanonicalSemanticFragmentRejected(
                 f"canonical fragment references absent block {serial}"
             )
+        anchor_ea = int(block.start_ea if anchor_ea is None else anchor_ea)
+        block_anchor_eas = {
+            int(block.start_ea),
+            *(
+                int(instruction.ea)
+                for instruction in block.insn_snapshots
+            ),
+        }
+        if anchor_ea not in block_anchor_eas:
+            raise CanonicalSemanticFragmentRejected(
+                "canonical fragment external anchor is not in its bound block"
+            )
+        existing = external_id_by_serial.get(serial)
+        if existing is not None:
+            existing_block = next(
+                block for block in blocks if block.block_id == existing
+            )
+            if (
+                identity is not None
+                and existing_block.stable_identity != identity
+            ):
+                raise CanonicalSemanticFragmentRejected(
+                    "canonical fragment external identity drifted"
+                )
+            return existing
         identity = identity or _external_identity(
             graph,
             serial,
             native_key=evidence.native_key,
         )
-        anchor_ea = int(block.start_ea if anchor_ea is None else anchor_ea)
         block_id = f"external:0x{anchor_ea:X}"
         if any(item.block_id == block_id for item in blocks):
             raise CanonicalSemanticFragmentRejected(
