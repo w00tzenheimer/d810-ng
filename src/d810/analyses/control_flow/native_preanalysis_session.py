@@ -18,6 +18,13 @@ from d810.analyses.control_flow.detached_handler_island import (
     DetachedSnippetBoundaryPorts,
     normalize_detached_snippet_boundary_ports,
 )
+from d810.analyses.control_flow.frontend_normalization import (
+    FrontendNormalizationEvidence,
+    FrontendNormalizationEvidenceRejected,
+    NativeIndirectTransferProof,
+    NativeTransferEndpoint,
+    NativeTransferShape,
+)
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     PortableMaterializedStateRoute,
@@ -26,7 +33,9 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     is_conditional_handler_bridge_kind,
 )
 from d810.analyses.control_flow.native_semantic_closure import (
+    NativeBlock,
     NativeCfg,
+    NativeEdgeKind,
     NativeSemanticClosure,
 )
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
@@ -37,6 +46,7 @@ from d810.core.native_preanalysis_key import (
 from d810.core import getLogger
 from d810.core.typing import Callable, Mapping, NamedTuple, Protocol, runtime_checkable
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.semantic_edge import SemanticEdgeRole
 
 logger = getLogger(__name__)
 
@@ -271,6 +281,307 @@ class ComputedGotoResolution:
     @property
     def target_count(self) -> int:
         return sum(len(targets) for targets in self.jmp_targets.values())
+
+
+_FLAG_CORRIDOR_EDGE_KINDS = frozenset(
+    {
+        NativeEdgeKind.DIRECT_JUMP,
+        NativeEdgeKind.FALLTHROUGH,
+        NativeEdgeKind.CALL_FALLTHROUGH,
+    }
+)
+
+
+def _unique_native_block_for_anchor(
+    native_cfg: NativeCfg,
+    anchor_ea: int,
+    *,
+    description: str,
+) -> NativeBlock:
+    anchor_ea = int(anchor_ea)
+    matches = tuple(
+        block
+        for block in native_cfg.blocks_by_ea.values()
+        if int(block.start_ea) <= anchor_ea < int(block.end_ea)
+    )
+    if len(matches) != 1:
+        raise FrontendNormalizationEvidenceRejected(
+            f"{description} 0x{anchor_ea:X} requires one native CFG owner"
+        )
+    return matches[0]
+
+
+def _native_block_identity(
+    native_key: NativePreanalysisKey,
+    block: NativeBlock,
+    *,
+    exact_eas: tuple[int, ...],
+) -> StableBlockIdentity:
+    normalized_exact_eas = tuple(sorted({int(ea) for ea in exact_eas}))
+    if not normalized_exact_eas or any(
+        not int(block.start_ea) <= ea < int(block.end_ea)
+        for ea in normalized_exact_eas
+    ):
+        raise FrontendNormalizationEvidenceRejected(
+            "native block identity exact anchors escaped their CFG owner"
+        )
+    return StableBlockIdentity.from_intervals(
+        (
+            NativeEaInterval(
+                int(block.start_ea),
+                int(block.end_ea),
+            ),
+        ),
+        native_key=native_key,
+        exact_instruction_eas=normalized_exact_eas,
+    )
+
+
+def _unique_flag_corridor(
+    native_cfg: NativeCfg,
+    *,
+    producer_ea: int,
+    predicate_ea: int,
+) -> tuple[NativeBlock, ...]:
+    producer = _unique_native_block_for_anchor(
+        native_cfg,
+        producer_ea,
+        description="condition producer",
+    )
+    predicate = _unique_native_block_for_anchor(
+        native_cfg,
+        predicate_ea,
+        description="condition consumer",
+    )
+    if producer.start_ea == predicate.start_ea:
+        return (producer,)
+
+    adjacency: dict[int, tuple[int, ...]] = {}
+    for block in native_cfg.blocks_by_ea.values():
+        successors: set[int] = set()
+        for edge in block.outgoing_edges:
+            if edge.kind not in _FLAG_CORRIDOR_EDGE_KINDS or edge.target_ea is None:
+                continue
+            target_matches = tuple(
+                candidate
+                for candidate in native_cfg.blocks_by_ea.values()
+                if int(candidate.start_ea)
+                <= int(edge.target_ea)
+                < int(candidate.end_ea)
+            )
+            if len(target_matches) != 1:
+                continue
+            (target,) = target_matches
+            successors.add(int(target.start_ea))
+        adjacency[int(block.start_ea)] = tuple(sorted(successors))
+
+    target_entry = int(predicate.start_ea)
+    paths: list[tuple[int, ...]] = []
+
+    def visit(entry_ea: int, path: tuple[int, ...]) -> None:
+        if len(paths) > 1:
+            return
+        for successor_ea in adjacency.get(int(entry_ea), ()):
+            if successor_ea in path:
+                continue
+            candidate = (*path, successor_ea)
+            if successor_ea == target_entry:
+                paths.append(candidate)
+                continue
+            visit(successor_ea, candidate)
+
+    producer_entry = int(producer.start_ea)
+    visit(producer_entry, (producer_entry,))
+    if len(paths) != 1:
+        raise FrontendNormalizationEvidenceRejected(
+            "conditional transfer requires one linear native flag corridor"
+        )
+    return tuple(native_cfg.blocks_by_ea[entry_ea] for entry_ea in paths[0])
+
+
+def _patch_plan_frontend_proof(
+    native_key: NativePreanalysisKey,
+    native_cfg: NativeCfg,
+    plan: ComputedGotoPatchPlan,
+    *,
+    atomic_group_id: str,
+) -> NativeIndirectTransferProof:
+    target_eas = tuple(int(ea) for ea in plan.target_eas)
+    proof_id = f"native-indirect-transfer@0x{int(plan.jmp_ea):X}"
+    provenance = (
+        ("provider", "native-computed-goto"),
+        ("source_jmp_ea", f"0x{int(plan.jmp_ea):X}"),
+    )
+    if len(target_eas) == 1:
+        source_anchor_ea = int(plan.patch_start)
+        source_block = _unique_native_block_for_anchor(
+            native_cfg,
+            source_anchor_ea,
+            description="direct transfer source",
+        )
+        matching_edges = tuple(
+            edge
+            for edge in source_block.outgoing_edges
+            if edge.kind is NativeEdgeKind.DIRECT_JUMP
+            and edge.target_ea is not None
+            and int(edge.target_ea) == target_eas[0]
+            and (
+                edge.source_instruction_ea is None
+                or int(edge.source_instruction_ea) == source_anchor_ea
+            )
+        )
+        if len(matching_edges) != 1:
+            raise FrontendNormalizationEvidenceRejected(
+                "direct patch plan is not present in the native CFG"
+            )
+        target_block = _unique_native_block_for_anchor(
+            native_cfg,
+            target_eas[0],
+            description="direct transfer target",
+        )
+        return NativeIndirectTransferProof(
+            proof_id=proof_id,
+            atomic_group_id=atomic_group_id,
+            shape=NativeTransferShape.DIRECT,
+            source_identity=_native_block_identity(
+                native_key,
+                source_block,
+                exact_eas=(source_anchor_ea,),
+            ),
+            source_anchor_ea=source_anchor_ea,
+            endpoints=(
+                NativeTransferEndpoint(
+                    role=SemanticEdgeRole.DIRECT,
+                    identity=_native_block_identity(
+                        native_key,
+                        target_block,
+                        exact_eas=(target_eas[0],),
+                    ),
+                    anchor_ea=target_eas[0],
+                ),
+            ),
+            diagnostic_provenance=provenance,
+        )
+
+    if (
+        len(target_eas) != 2
+        or plan.condition_code is None
+        or plan.true_target_ea is None
+        or plan.false_target_ea is None
+        or plan.condition_producer_ea is None
+        or len(plan.insn_heads) < 3
+        or len(plan.new_block_eas) < 2
+    ):
+        raise FrontendNormalizationEvidenceRejected(
+            "conditional patch plan lacks complete predicate evidence"
+        )
+    true_target_ea = int(plan.true_target_ea)
+    false_target_ea = int(plan.false_target_ea)
+    predicate_ea = int(plan.new_block_eas[0])
+    condition_producer_ea = int(plan.condition_producer_ea)
+    if (
+        true_target_ea == false_target_ea
+        or {true_target_ea, false_target_ea} != set(target_eas)
+        or predicate_ea != int(plan.insn_heads[-2])
+    ):
+        raise FrontendNormalizationEvidenceRejected(
+            "conditional patch plan topology is inconsistent"
+        )
+    source_block = _unique_native_block_for_anchor(
+        native_cfg,
+        predicate_ea,
+        description="conditional transfer source",
+    )
+    edge_by_kind = {
+        edge.kind: edge
+        for edge in source_block.outgoing_edges
+        if edge.kind
+        in {
+            NativeEdgeKind.CONDITIONAL_TRUE,
+            NativeEdgeKind.CONDITIONAL_FALSE,
+        }
+        and edge.source_instruction_ea is not None
+        and int(edge.source_instruction_ea) == predicate_ea
+    }
+    if (
+        len(edge_by_kind) != 2
+        or edge_by_kind[NativeEdgeKind.CONDITIONAL_TRUE].target_ea
+        != true_target_ea
+        or edge_by_kind[NativeEdgeKind.CONDITIONAL_FALSE].target_ea
+        != false_target_ea
+    ):
+        raise FrontendNormalizationEvidenceRejected(
+            "conditional patch plan is not present in the native CFG"
+        )
+    corridor_blocks = _unique_flag_corridor(
+        native_cfg,
+        producer_ea=condition_producer_ea,
+        predicate_ea=predicate_ea,
+    )
+    corridor_identities = tuple(
+        _native_block_identity(
+            native_key,
+            block,
+            exact_eas=tuple(
+                {
+                    *(
+                        (condition_producer_ea,)
+                        if index == 0
+                        else ()
+                    ),
+                    *((predicate_ea,) if index == len(corridor_blocks) - 1 else ()),
+                    *(
+                        (int(block.start_ea),)
+                        if index not in {0, len(corridor_blocks) - 1}
+                        else ()
+                    ),
+                }
+            ),
+        )
+        for index, block in enumerate(corridor_blocks)
+    )
+    endpoints = tuple(
+        NativeTransferEndpoint(
+            role=role,
+            identity=_native_block_identity(
+                native_key,
+                _unique_native_block_for_anchor(
+                    native_cfg,
+                    target_ea,
+                    description="conditional transfer target",
+                ),
+                exact_eas=(target_ea,),
+            ),
+            anchor_ea=target_ea,
+        )
+        for role, target_ea in (
+            (SemanticEdgeRole.CONDITIONAL_TAKEN, true_target_ea),
+            (
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                false_target_ea,
+            ),
+        )
+    )
+    return NativeIndirectTransferProof(
+        proof_id=proof_id,
+        atomic_group_id=atomic_group_id,
+        shape=NativeTransferShape.CONDITIONAL,
+        source_identity=_native_block_identity(
+            native_key,
+            source_block,
+            exact_eas=(predicate_ea,),
+        ),
+        source_anchor_ea=predicate_ea,
+        endpoints=endpoints,
+        predicate_anchor_ea=predicate_ea,
+        condition_producer_ea=condition_producer_ea,
+        flag_corridor=corridor_identities,
+        permitted_flag_write_eas=frozenset({condition_producer_ea}),
+        diagnostic_provenance=(
+            *provenance,
+            ("condition_code", str(int(plan.condition_code))),
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -673,6 +984,53 @@ class NativePreanalysisSessionState:
     ) -> ResolverPortableEvidence:
         """Return the typed resolver aggregate for one exact native identity."""
         return self._resolver_evidence_for(key)
+
+    def frontend_normalization_evidence_for(
+        self,
+        key: NativePreanalysisKey,
+    ) -> FrontendNormalizationEvidence | None:
+        """Project the complete native patch ledger into one generic generation.
+
+        Final state-machine routes are intentionally absent.  This capability
+        contains only native computed transfers already delivered as faithful
+        direct or conditional branch shapes, plus the native closure required
+        to make their missing destinations available.
+        """
+        facts = self.facts
+        resolver_evidence = self._resolver_evidence_for(key)
+        resolution = resolver_evidence.computed_goto_resolution
+        if (
+            facts is None
+            or facts.semantic_closure is None
+            or not isinstance(resolution, ComputedGotoResolution)
+            or not resolution.patch_plans
+            or int(self.evidence_generation) <= 0
+        ):
+            return None
+        facts.require_key(key)
+        atomic_group_id = (
+            f"frontend-normalization:g{int(self.evidence_generation)}"
+        )
+        proofs = tuple(
+            _patch_plan_frontend_proof(
+                key,
+                facts.native_cfg,
+                plan,
+                atomic_group_id=atomic_group_id,
+            )
+            for plan in sorted(
+                resolution.patch_plans,
+                key=lambda item: int(item.jmp_ea),
+            )
+        )
+        return FrontendNormalizationEvidence(
+            native_key=key,
+            generation=int(self.evidence_generation),
+            atomic_group_id=atomic_group_id,
+            transfer_proofs=proofs,
+            semantic_closure=facts.semantic_closure,
+            native_cfg=facts.native_cfg,
+        )
 
     def _replace_resolver_evidence(
         self,
