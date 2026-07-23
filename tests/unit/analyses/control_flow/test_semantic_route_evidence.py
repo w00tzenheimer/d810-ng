@@ -320,6 +320,58 @@ def test_atomic_group_binding_abstains_instead_of_partially_binding() -> None:
     assert bound.routes[0].destinations[0].block.anchor_ea == 0x1200
 
 
+def test_binding_uses_exact_identity_when_branch_ea_has_a_helper_owner() -> None:
+    source_identity = StableBlockIdentity.from_instruction_eas(
+        (0x1100, 0x1105),
+        native_key=NATIVE_KEY,
+    )
+    proof = replace(
+        _proof(),
+        source_identity=source_identity,
+        source_anchor_ea=0x1105,
+        state_write=SemanticStateWriteProof(
+            identity=source_identity,
+            instruction_ea=0x1100,
+            state_variable=StorageIdentity(
+                StorageIdentityKind.REGISTER,
+                20,
+            ),
+            width=4,
+            state_constant=0xAABBCCDD,
+            corridor_instruction_eas=(0x1100, 0x1105),
+        ),
+    )
+    graph = FlowGraph(
+        blocks={
+            0: _block(0, 0x1000, succs=(1,), preds=()),
+            1: _block(
+                1,
+                0x1100,
+                succs=(3, 5),
+                preds=(0,),
+                insn_eas=(0x1100, 0x1105),
+            ),
+            2: _block(2, 0x1200, succs=(), preds=(3, 5)),
+            3: _block(3, 0x1105, succs=(2,), preds=(1,)),
+            5: _block(
+                5,
+                0x1105,
+                succs=(2,),
+                preds=(1,),
+                insn_eas=(0x1105,),
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    bound = bind_canonical_semantic_evidence(graph, _evidence(proof))
+
+    assert bound is not None
+    assert bound.routes[0].source.serial == 1
+    assert bound.routes[0].source.anchor_ea == 0x1105
+
+
 def test_conditional_corridors_bind_all_or_abstain() -> None:
     proof = _storage_choice_proof()
     graph = FlowGraph(

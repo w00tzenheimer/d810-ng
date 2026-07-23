@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from enum import Enum
 
 from d810.core.native_preanalysis_key import NativePreanalysisKey
-from d810.ir.block_identity import StableBlockIdentity
+from d810.ir.block_identity import (
+    StableBlockIdentity,
+    stable_block_identity_from_snapshot,
+)
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
@@ -752,7 +755,7 @@ def _unique_bound_block(
     anchor_ea: int,
 ) -> BoundSemanticBlock | None:
     anchor_ea = int(anchor_ea)
-    matches = tuple(
+    anchor_matches = tuple(
         block
         for block in graph.blocks.values()
         if anchor_ea
@@ -766,10 +769,23 @@ def _unique_bound_block(
         }
         and identity.native_ranges.contains(anchor_ea)
     )
-    if len(matches) != 1:
+    exact_identity_matches = tuple(
+        block
+        for block in anchor_matches
+        if stable_block_identity_from_snapshot(
+            block,
+            native_key=identity.native_key,
+        )
+        == identity
+    )
+    if len(exact_identity_matches) == 1:
+        (matched_block,) = exact_identity_matches
+    elif exact_identity_matches or len(anchor_matches) != 1:
         return None
+    else:
+        (matched_block,) = anchor_matches
     return BoundSemanticBlock(
-        serial=int(matches[0].serial),
+        serial=int(matched_block.serial),
         identity=identity,
         anchor_ea=anchor_ea,
     )
