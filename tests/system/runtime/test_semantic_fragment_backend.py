@@ -21,6 +21,11 @@ from d810.hexrays.ir.exact_value_ranges import (  # noqa: E402
 from d810.hexrays.mutation.semantic_fragment_publication import (  # noqa: E402
     SemanticFragmentPublicationRejected,
 )
+from d810.ir.block_identity import (  # noqa: E402
+    BlockHandleProvenance,
+    NativeEaInterval,
+    StableBlockIdentity,
+)
 from d810.ir.semantic_edge import SemanticEdgeRole  # noqa: E402
 from d810.ir.storage_identity import (  # noqa: E402
     StorageIdentity,
@@ -34,6 +39,7 @@ from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentDataFlowRole,
     FragmentEdge,
     FragmentFlagCorridor,
+    FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
     FragmentPublicationPurpose,
@@ -476,6 +482,88 @@ def _plan(gateway, *, entry: int, original: int, target: int, dispatcher: int):
     )
 
 
+def _plan_with_imported_terminal(
+    gateway,
+    *,
+    entry: int,
+    original: int,
+    target: int,
+    dispatcher: int,
+) -> FragmentPlan:
+    plan = _plan(
+        gateway,
+        entry=entry,
+        original=original,
+        target=target,
+        dispatcher=dispatcher,
+    )
+    native_range = NativeEaInterval(0x500000, 0x500010)
+    imported_identity = StableBlockIdentity.from_intervals(
+        (native_range,),
+        native_key=gateway.native_key,
+        exact_instruction_eas=(0x500000,),
+    )
+    imported = FragmentBlock(
+        block_id="imported-terminal",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x500000,
+        stable_identity=imported_identity,
+        native_body_id="native-body",
+    )
+    direct_route = plan.operations[0]
+    return replace(
+        plan,
+        plan_id="runtime-imported-native-body",
+        blocks=tuple(
+            block for block in plan.blocks if block.block_id != "target"
+        )
+        + (imported,),
+        operations=(
+            replace(
+                direct_route,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=imported.block_id,
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id="native-body",
+                block_ids=(imported.block_id,),
+                entry_block_ids=(imported.block_id,),
+                terminal_block_ids=(imported.block_id,),
+                native_ranges=(native_range,),
+                proof_ids=("proof:native-body",),
+            ),
+        ),
+    )
+
+
+class _RecordingNativeBodyMaterializer:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str | None]] = []
+
+    def stage_native_body(
+        self,
+        *,
+        context,
+        native_body: FragmentNativeBody,
+    ) -> None:
+        self.calls.append(
+            (
+                context.plan.plan_id,
+                native_body.body_id,
+                context.transaction_id,
+            )
+        )
+        for block_id in native_body.block_ids:
+            context.stage_block(block_id)
+
+
 def _with_data_flow(
     plan: FragmentPlan,
     storage: StorageIdentity,
@@ -769,6 +857,115 @@ def test_backend_stages_hidden_replacement_and_projects_root_publication() -> No
     assert tuple(target.predset) == ()
     assert proxy.resolve() is published
     assert gateway.active is False
+
+
+def test_backend_stages_native_body_inside_active_fragment_transaction(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    materializer = _RecordingNativeBodyMaterializer()
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=gateway,
+        semantic_native_body_materializer=materializer,
+    )
+    plan = _plan_with_imported_terminal(
+        gateway,
+        entry=0,
+        original=1,
+        target=2,
+        dispatcher=3,
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    transaction_id = gateway.active_batch_id
+    assert transaction_id is not None
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    assert materializer.calls == [
+        (plan.plan_id, "native-body", transaction_id),
+    ]
+    validation = validate_fragment_projection(plan, projection)
+    assert validation.passed, validation.failures
+    imported_binding = projection.binding("imported-terminal")
+    assert imported_binding.state is FragmentBindingState.STAGED
+    state = modifier._semantic_fragment_state
+    assert state is not None
+    imported_runtime = state.binding("imported-terminal")
+    assert (
+        imported_runtime.version.handle.provenance
+        is BlockHandleProvenance.IMPORTED_NATIVE
+    )
+    imported_proxy = imported_runtime.proxy
+    assert imported_proxy.resolve() is None
+    assert imported_proxy.resolve(transaction_id=transaction_id) is imported_runtime.version
+    assert gateway.active
+    assert gateway.receipts == ()
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime imported native-body staging cleanup")
+
+    assert mba.qty == 5
+    assert gateway.active is False
+    assert gateway.receipts == ()
+
+
+def test_gateway_publishes_native_body_in_one_balanced_receipt(monkeypatch) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    materializer = _RecordingNativeBodyMaterializer()
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=gateway,
+        semantic_native_body_materializer=materializer,
+    )
+    plan = _plan_with_imported_terminal(
+        gateway,
+        entry=0,
+        original=1,
+        target=2,
+        dispatcher=3,
+    )
+    imported_identity = plan.block("imported-terminal").stable_identity
+    assert imported_identity is not None
+
+    receipt = gateway.publish_semantic_fragment(modifier, plan)
+
+    assert receipt.operation_count == receipt.planned_operation_count == 4
+    assert receipt.root_publication_confirmed
+    assert receipt.prepublication_validation.passed
+    assert receipt.postpublication_validation.passed
+    assert materializer.calls == [
+        (plan.plan_id, "native-body", receipt.mutation_batch_id),
+    ]
+    rebound = gateway.identity_index.rebind_identity(imported_identity)
+    assert rebound.block is not None
+    imported_proxy = gateway.identity_index.logical_proxy_for_handle(
+        rebound.block.handle
+    )
+    assert imported_proxy is not None
+    assert imported_proxy.resolve() is not None
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
+    assert gateway.receipts == (receipt,)
 
 
 @pytest.mark.parametrize(

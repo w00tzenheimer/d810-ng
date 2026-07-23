@@ -214,6 +214,7 @@ from d810.hexrays.mutation.semantic_fragment_backend import (
     SemanticFragmentBackendState,
     SemanticFragmentRootEdgeBinding,
     SemanticFragmentRootPublicationToken,
+    SemanticNativeBodyMaterializer,
     discard_staged_semantic_fragment,
     observe_published_semantic_fragment,
     plan_semantic_fragment_root_inventory,
@@ -238,8 +239,6 @@ from d810.hexrays.mutation.cfg_mutations import (
     change_2way_block_conditional_successor)
 from d810.hexrays.mutation.cfg_mutations import (
     coalesce_jtbl_cases)
-from d810.hexrays.mutation.cfg_mutations import (
-    create_block)
 from d810.hexrays.mutation.cfg_mutations import (
     create_standalone_block)
 from d810.hexrays.mutation.cfg_mutations import (
@@ -1101,6 +1100,8 @@ class DeferredGraphModifier:
     # Session/manager-owned transaction gateway. Structural writes fail closed
     # when the coordinator has not injected this port.
     mutation_gateway: MbaMutationGateway | None = None
+    # Backend-owned body importer used only inside semantic-fragment staging.
+    semantic_native_body_materializer: SemanticNativeBodyMaterializer | None = None
     # Metadata injected by callers so payloads carry rich context.
     _optimizer_name: str = field(default="", init=False)
     _pass_id: int = field(default=0, init=False)
@@ -1108,6 +1109,11 @@ class DeferredGraphModifier:
     # The receipt gateway owns current-MBA serial bindings.  This modifier
     # retains neither an EA-to-serial cache nor a private serial-remap table.
     _mutation_gateway: MbaMutationGateway | None = field(default=None, init=False)
+    _semantic_native_body_materializer: SemanticNativeBodyMaterializer | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _semantic_fragment_state: SemanticFragmentBackendState | None = field(
         default=None,
         init=False,
@@ -1121,6 +1127,9 @@ class DeferredGraphModifier:
 
     def __post_init__(self) -> None:
         self._mutation_gateway = self.mutation_gateway
+        self._semantic_native_body_materializer = (
+            self.semantic_native_body_materializer
+        )
 
     def reset(self) -> None:
         """Clear all queued modifications."""
@@ -1129,6 +1138,9 @@ class DeferredGraphModifier:
         if self._mutation_gateway is not None:
             self._mutation_gateway.abort()
         self._mutation_gateway = self.mutation_gateway
+        self._semantic_native_body_materializer = (
+            self.semantic_native_body_materializer
+        )
         self.last_apply_phase = None
         self.last_apply_subphase = None
         self.last_stale_serial_scan = None
@@ -3470,6 +3482,65 @@ class DeferredGraphModifier:
                 )
             return staged
         except Exception:
+            self._discard_semantic_fragment_blocks((created,))
+            raise
+
+    def _stage_imported_native_semantic_block(
+        self,
+        *,
+        reference_version: LogicalBlockVersion,
+        stable_identity: StableBlockIdentity,
+    ) -> LogicalBlockVersion:
+        """Create one unpublished block with exact imported-native identity."""
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise SemanticFragmentBackendRejected(
+                "native body materialization has no mutation gateway"
+            )
+        if stable_identity.native_key != gateway.native_key:
+            raise SemanticFragmentBackendRejected(
+                "native body block identity belongs to another native key"
+            )
+        reference = self._resolve_semantic_fragment_version(reference_version)
+        created = create_standalone_block(
+            ref_blk=reference,
+            blk_ins=[],
+            is_0_way=True,
+            verify=False,
+        )
+        if created is None:
+            raise SemanticFragmentBackendRejected(
+                "Hex-Rays could not create an imported native-body block"
+            )
+        created_handle = None
+        recorded = False
+        try:
+            created_handle = gateway.identity_index.create_imported_native_handle(
+                stable_identity
+            )
+            gateway.record_insert(
+                insertion_serial=int(created.serial),
+                returned_serial=int(created.serial),
+                created=created_handle,
+            )
+            recorded = True
+            proxy = gateway.identity_index.logical_proxy_for_handle(created_handle)
+            if proxy is None:
+                raise SemanticFragmentBackendRejected(
+                    "imported native-body block has no logical proxy"
+                )
+            staged = proxy.resolve(
+                transaction_id=self._semantic_fragment_transaction_id()
+            )
+            if staged is None:
+                raise SemanticFragmentBackendRejected(
+                    "imported native-body block has no staged version"
+                )
+            self._detach_semantic_fragment_block(created)
+            return staged
+        except Exception:
+            if recorded and created_handle is not None:
+                gateway.discard_reserved_insert(created_handle)
             self._discard_semantic_fragment_blocks((created,))
             raise
 
@@ -7044,7 +7115,6 @@ class DeferredGraphModifier:
             if effective_new_target != mod.new_target:
                 mod.new_target = effective_new_target
             _maybe_redirect_to_copy(mod)
-            blk = self.mba.get_mblock(mod.block_serial)
             if cls == StagedAtomicClassification.UNSUPPORTED:
                 logger.warning(
                     "staged_atomic: mod[%d] %s has no staged lowering; "
