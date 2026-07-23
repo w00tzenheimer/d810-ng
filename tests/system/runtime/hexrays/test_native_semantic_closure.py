@@ -140,6 +140,10 @@ class TestNativeSemanticCfgAdapter:
             if block.start_ea <= call_ea < block.end_ea
         )
         assert len(containing_blocks) == 1
+        assert any(
+            edge.kind is NativeEdgeKind.CALL_FALLTHROUGH
+            for edge in containing_blocks[0].outgoing_edges
+        )
         assert all(
             edge.kind is not NativeEdgeKind.CALL
             for block in result.cfg.blocks_by_ea.values()

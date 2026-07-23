@@ -445,6 +445,7 @@ def plan_frontend_computed_branch_normalization(
                 if edge.target_ea is None or edge.kind not in {
                     NativeEdgeKind.DIRECT_JUMP,
                     NativeEdgeKind.FALLTHROUGH,
+                    NativeEdgeKind.CALL_FALLTHROUGH,
                     NativeEdgeKind.INDIRECT,
                 }:
                     return None
@@ -462,7 +463,12 @@ def plan_frontend_computed_branch_normalization(
                         source_block_id=source_block_id,
                         edges=(
                             FragmentEdge(
-                                role=SemanticEdgeRole.DIRECT,
+                                role=(
+                                    SemanticEdgeRole.CALL_FALLTHROUGH
+                                    if edge.kind
+                                    is NativeEdgeKind.CALL_FALLTHROUGH
+                                    else SemanticEdgeRole.DIRECT
+                                ),
                                 target_block_id=target_id,
                             ),
                         ),

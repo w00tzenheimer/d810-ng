@@ -201,9 +201,13 @@ def _outgoing_edges(fact: NativeFlowBlockFact) -> tuple[NativeEdge, ...]:
         )
     if len(successors) == 1:
         kind = (
-            NativeEdgeKind.DIRECT_JUMP
-            if fact.direct_branch_target_ea == successors[0] and not fact.is_call_tail
-            else NativeEdgeKind.FALLTHROUGH
+            NativeEdgeKind.CALL_FALLTHROUGH
+            if fact.is_call_tail
+            else (
+                NativeEdgeKind.DIRECT_JUMP
+                if fact.direct_branch_target_ea == successors[0]
+                else NativeEdgeKind.FALLTHROUGH
+            )
         )
         return (
             NativeEdge(

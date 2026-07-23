@@ -57,6 +57,7 @@ from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
 )
+from d810.ir.semantic_edge import SemanticEdgeRole
 
 logger = getLogger("D810.mutation.detached_handler_island")
 _MISSING_BOUNDARY_PORT_SERIAL = object()
@@ -1053,6 +1054,22 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 raise SemanticFragmentBackendRejected(
                     "PREOPT native body terminal return ownership differs from the plan"
                 )
+            call_indexes = tuple(
+                index
+                for index, instruction in enumerate(template_block.instructions)
+                if int(instruction.opcode)
+                in {
+                    int(ida_hexrays.m_call),
+                    int(ida_hexrays.m_icall),
+                }
+            )
+            has_call_fallthrough = call_indexes == (
+                len(template_block.instructions) - 1,
+            )
+            if call_indexes and not has_call_fallthrough:
+                raise SemanticFragmentBackendRejected(
+                    "PREOPT native body call must be the unique block-closing tail"
+                )
             for captured in template_block.instructions:
                 instruction_stack_map = _stack_map_with_positive_identity_overrides(
                     stack_map,
@@ -1098,13 +1115,6 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     raise SemanticFragmentBackendRejected(
                         "PREOPT native body contains a non-control block reference"
                     )
-                if int(captured.opcode) in {
-                    int(ida_hexrays.m_call),
-                    int(ida_hexrays.m_icall),
-                }:
-                    raise SemanticFragmentBackendRejected(
-                        "PREOPT native body call fallthrough requires a gateway role"
-                    )
             operations = tuple(
                 operation
                 for operation in plan.operations
@@ -1117,12 +1127,19 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     int(template_block.instructions[-1].opcode)
                 )
             )
+            operation_has_call_fallthrough = bool(
+                len(operations) == 1
+                and len(operations[0].edges) == 1
+                and operations[0].edges[0].role
+                is SemanticEdgeRole.CALL_FALLTHROUGH
+            )
             if (
                 len(operations) != expected_operations
                 or (
                     operations
                     and (len(operations[0].edges) == 2) != conditional_tail
                 )
+                or has_call_fallthrough != operation_has_call_fallthrough
             ):
                 raise SemanticFragmentBackendRejected(
                     "PREOPT native body topology is not owned by exactly one "

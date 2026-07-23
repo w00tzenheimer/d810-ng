@@ -695,6 +695,75 @@ def _plan_with_imported_conditional(
     )
 
 
+def _plan_with_imported_call(
+    gateway,
+    *,
+    entry: int,
+    original: int,
+    target: int,
+    dispatcher: int,
+    call_native_ea: int,
+) -> FragmentPlan:
+    plan = _plan(
+        gateway,
+        entry=entry,
+        original=original,
+        target=target,
+        dispatcher=dispatcher,
+    )
+    native_range = NativeEaInterval(0x500000, 0x500010)
+    imported_identity = StableBlockIdentity.from_intervals(
+        (native_range,),
+        native_key=gateway.native_key,
+        exact_instruction_eas=(0x500000, int(call_native_ea)),
+    )
+    imported = FragmentBlock(
+        block_id="imported-call",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x500000,
+        stable_identity=imported_identity,
+        native_body_id="native-body",
+    )
+    direct_route = plan.operations[0]
+    return replace(
+        plan,
+        plan_id="runtime-imported-native-call",
+        blocks=plan.blocks + (imported,),
+        operations=(
+            replace(
+                direct_route,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=imported.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="imported-call-continuation",
+                source_block_id=imported.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                        target_block_id="target",
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id="native-body",
+                block_ids=(imported.block_id,),
+                entry_block_ids=(imported.block_id,),
+                terminal_block_ids=(),
+                native_ranges=(native_range,),
+                proof_ids=("proof:native-body",),
+            ),
+        ),
+    )
+
+
 def _with_data_flow(
     plan: FragmentPlan,
     storage: StorageIdentity,
@@ -1181,6 +1250,86 @@ def test_cached_preopt_body_materializes_through_the_fragment_transaction(
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="runtime cached PREOPT body cleanup")
+
+
+def test_cached_preopt_call_materializes_with_gateway_owned_fallthrough(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    call_native_ea = 0x500004
+    plan = _plan_with_imported_call(
+        gateway,
+        entry=0,
+        original=1,
+        target=2,
+        dispatcher=3,
+        call_native_ea=call_native_ea,
+    )
+    template = dhi.DetachedSnippetTemplate(
+        function_ea=int(gateway.function_ea),
+        target_ea=0x500000,
+        maturity=int(ida_hexrays.MMAT_PREOPTIMIZED),
+        root_source_serial=0,
+        blocks=(
+            dhi.DetachedSnippetBlockTemplate(
+                source_serial=0,
+                native_entry_ea=0x500000,
+                native_end_ea=0x500010,
+                instructions=(
+                    _Instruction(ida_hexrays.m_call, call_native_ea),
+                ),
+                block_type=int(ida_hexrays.BLT_0WAY),
+                block_flags=0,
+                successor_serials=(),
+                external_successor_eas=(),
+            ),
+        ),
+        stack_vd_to_ida=(),
+        owned_ranges=((0x500000, 0x500010),),
+    )
+    monkeypatch.setattr(
+        dhi,
+        "_PREOPT_UNION_SNIPPET_TEMPLATES",
+        {(int(gateway.function_ea), 0x500000): template},
+    )
+    monkeypatch.setattr(dhi.ida_hexrays, "minsn_t", deepcopy)
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=gateway,
+        semantic_native_body_materializer=(
+            dhi.PreoptUnionSemanticNativeBodyMaterializer(
+                mba=mba,
+                function_ea=int(gateway.function_ea),
+            )
+        ),
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    imported = projection.block("imported-call")
+    helper = projection.block(
+        "fallthrough-helper:imported-call-continuation"
+    )
+    assert imported.instruction_eas == (call_native_ea,)
+    assert imported.successors == (helper.block_id,)
+    assert helper.successors == ("target",)
+    assert helper.physical_position == imported.physical_position + 1
+    assert gateway.receipts == ()
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime cached PREOPT call cleanup")
 
 
 def test_native_body_rejects_an_unbound_materialized_instruction(
