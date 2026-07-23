@@ -123,6 +123,8 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
     PortableStateWriteRouteEvidence,
+    StateWriteRouteDeliveryKind,
+    StateWriteRouteProofKind,
     TerminalReturnCarrierRequest,
     find_unique_target_block,
     find_unique_target_entry_block,
@@ -246,17 +248,16 @@ class _ImmediateNativeFlowRoute(NamedTuple):
     target_ea: int
 
 
-def _discover_reference_style_immediate_flow_routes(
+def _discover_immediate_native_state_routes(
     decoded: Sequence[_DecodedNativeFlowInstruction],
     *,
     state_var_reg: int,
     state_targets: Mapping[int, int],
 ) -> tuple[_ImmediateNativeFlowRoute, ...]:
-    """Recover the reference algorithm's one-target flow-state transactions.
+    """Recover complete one-target native flow-state transactions.
 
-    The scan intentionally models the reference implementation's staging
-    state.  A state assignment becomes authoritative only after the later
-    dispatcher comparison and branch identify a complete replacement cut.
+    A state assignment becomes authoritative only after the later dispatcher
+    comparison and branch identify a complete replacement cut.
     Branch-staged, conditional-move, register, and memory assignments abstain
     here; they require atomic two-arm evidence in a separate slice.
     """
@@ -7251,7 +7252,7 @@ def _discover_static_state_write_routes(
             int(site.delivery_ea) for site in patch_delivery_sites
         ),
     )
-    reference_routes = _discover_reference_style_immediate_flow_routes(
+    immediate_routes = _discover_immediate_native_state_routes(
         _decode_native_flow_route_inventory(
             int(resolution.function_ea),
             int(envelope_end_ea),
@@ -7259,8 +7260,8 @@ def _discover_static_state_write_routes(
         state_var_reg=int(state_var_reg),
         state_targets=state_targets,
     )
-    reference_semantic_keys: set[tuple[int, int, int, int]] = set()
-    for route in reference_routes:
+    immediate_semantic_keys: set[tuple[int, int, int, int]] = set()
+    for route in immediate_routes:
         evidence = PortableStateWriteRouteEvidence(
             write_identity=StableBlockIdentity.from_intervals(
                 (
@@ -7292,7 +7293,8 @@ def _discover_static_state_write_routes(
                 native_key=state.native_key,
             ),
             target_ea=int(route.target_ea),
-            proof_kind="reference_style_immediate_flow_route",
+            proof_kind=StateWriteRouteProofKind.STATE_ASSIGNMENT,
+            delivery_kind=StateWriteRouteDeliveryKind.DIRECT_TARGET,
         )
         semantic_key = (
             int(route.source_write_ea),
@@ -7300,7 +7302,7 @@ def _discover_static_state_write_routes(
             int(route.state_constant),
             int(state_var_reg),
         )
-        reference_semantic_keys.add(semantic_key)
+        immediate_semantic_keys.add(semantic_key)
         candidates.setdefault(semantic_key, set()).add(evidence)
     for site in (*patch_delivery_sites, *direct_delivery_sites):
         decoded = _decode_static_state_route_corridor(
@@ -7356,7 +7358,7 @@ def _discover_static_state_write_routes(
             int(state_constant),
             int(state_var_reg),
         )
-        if semantic_key in reference_semantic_keys:
+        if semantic_key in immediate_semantic_keys:
             continue
         candidates.setdefault(semantic_key, set()).add(evidence)
 
@@ -7378,10 +7380,10 @@ def _discover_static_state_write_routes(
         )
         logger.info(
             "static state-write routes published: func=0x%X count=%d "
-            "reference_immediate=%d routes=%s",
+            "immediate_native=%d routes=%s",
             int(resolution.function_ea),
             len(discovered),
-            len(reference_routes),
+            len(immediate_routes),
             [
                 (
                     hex(int(evidence.source_write_ea)),
@@ -7396,13 +7398,13 @@ def _discover_static_state_write_routes(
         logger.info(
             "static state-write route discovery abstained: func=0x%X "
             "reason=no_direct_routes plans=%d direct_deliveries=%d decoded=%d "
-            "reference_immediate=%d assignments=%d "
+            "immediate_native=%d assignments=%d "
             "mapped=%d delivery_regions=%d state_targets=%d",
             int(resolution.function_ea),
             len(resolution.patch_plans),
             len(direct_delivery_sites),
             decoded_count,
-            len(reference_routes),
+            len(immediate_routes),
             assignment_count,
             mapped_count,
             delivery_region_count,
@@ -10873,7 +10875,7 @@ def _preopt_union_internal_successor_eas(
         ).add(int(edge.target_ea))
     for route in state_write_routes:
         if (
-            route.proof_kind != "reference_style_immediate_flow_route"
+            route.delivery_kind is not StateWriteRouteDeliveryKind.DIRECT_TARGET
             or int(route.target_ea) not in included
         ):
             continue

@@ -541,7 +541,8 @@ def test_state_write_route_inventory_is_published_once_on_a_real_snapshot(
     assert observation.source_ea == 0x401020
     assert observation.payload == {
         "generation": 1,
-        "proof_kind": "static_native_state_delivery",
+        "proof_kind": "state_assignment",
+        "delivery_kind": "dispatcher",
         "source_write_ea": "0x401020",
         "delivery_ea": "0x401030",
         "delivery_region_start_ea": "0x401030",

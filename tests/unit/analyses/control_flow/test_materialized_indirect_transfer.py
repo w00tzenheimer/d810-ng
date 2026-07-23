@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,8 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     PortableStateWriteRouteEvidence,
     ResidualIndirectCallNeutralizationPlan,
     ResidualStateRouteBridgePlan,
+    StateWriteRouteDeliveryKind,
+    StateWriteRouteProofKind,
     TerminalReturnCarrierRequest,
     exact_materialized_handler_override_serial,
     override_materialized_handler_targets,
@@ -63,6 +66,41 @@ from tests.native_preanalysis import make_native_key
 
 
 NATIVE_KEY = make_native_key()
+
+
+def test_portable_state_write_route_uses_typed_generic_semantics() -> None:
+    write = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401001),),
+        native_key=NATIVE_KEY,
+    )
+    delivery = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401010, 0x401011),),
+        native_key=NATIVE_KEY,
+    )
+    target = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x402000, 0x402001),),
+        native_key=NATIVE_KEY,
+    )
+    route = PortableStateWriteRouteEvidence(
+        write_identity=write,
+        delivery_identity=delivery,
+        source_write_ea=0x401000,
+        delivery_ea=0x401010,
+        delivery_region_start_ea=0x401010,
+        delivery_region_end_ea=0x401012,
+        corridor_instruction_eas=(0x401000, 0x401010),
+        state_var_reg=8,
+        state_constant=0x1234,
+        target_identity=target,
+        target_ea=0x402000,
+    )
+
+    assert route.proof_kind is StateWriteRouteProofKind.STATE_ASSIGNMENT
+    assert route.delivery_kind is StateWriteRouteDeliveryKind.DISPATCHER
+    with pytest.raises(TypeError, match="typed proof kind"):
+        replace(route, proof_kind="reference_style_immediate_flow_route")
+    with pytest.raises(TypeError, match="typed delivery kind"):
+        replace(route, delivery_kind="direct_target")
 
 
 def test_portable_state_write_route_requires_anchored_native_corridor() -> None:
