@@ -1236,6 +1236,64 @@ def test_preopt_union_capture_rebinds_resolver_proven_internal_successor(
     assert captured_source.external_successor_eas == (0,)
 
 
+def test_preopt_union_capture_splits_embedded_resolver_proven_internal_successor(
+    monkeypatch,
+) -> None:
+    """An exact internal target may follow a prefix in one Hex-Rays block."""
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    source_ea = 0x40A675
+    resolver_ea = 0x40A679
+    target_prefix_ea = 0x40AE20
+    target_ea = 0x40AE26
+    synthetic_exit = 0xFFFFFFFFFFFFFFFF
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_ea,
+                (_Instruction(ida_hexrays.m_icall, resolver_ea),),
+                (2,),
+            ),
+            _Block(
+                1,
+                target_prefix_ea,
+                (
+                    _Instruction(ida_hexrays.m_nop, target_prefix_ea),
+                    _Instruction(ida_hexrays.m_nop, target_ea),
+                ),
+            ),
+            _Block(2, synthetic_exit, ()),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        source_ea,
+        source,
+        (
+            (source_ea, resolver_ea + 1),
+            (target_prefix_ea, target_ea + 1),
+        ),
+        owned_block_entry_eas=(source_ea, target_ea),
+        resolver_proven_internal_successor_eas={resolver_ea: target_ea},
+    )
+    template = detached_handler_island._PREOPT_UNION_SNIPPET_TEMPLATES[
+        (function_ea, source_ea)
+    ]
+    captured_source = next(
+        block for block in template.blocks if block.native_entry_ea == source_ea
+    )
+    captured_target = next(
+        block for block in template.blocks if block.native_entry_ea == target_ea
+    )
+
+    assert captured_source.successor_serials == (captured_target.source_serial,)
+    assert captured_source.external_successor_eas == (0,)
+
+
 def test_preopt_union_capture_lowers_proven_zero_way_route_before_import(
     monkeypatch,
 ) -> None:
@@ -1346,6 +1404,83 @@ def test_preopt_union_capture_closes_proven_conditional_fallthrough_arm(
     )
 
     assert captured_source.successor_serials == (1, 3)
+    assert captured_source.external_successor_eas == (0, 0)
+    assert captured_source.block_type == ida_hexrays.BLT_2WAY
+    assert captured_source.instructions[-1].opcode == ida_hexrays.m_jl
+    assert captured_source.instructions[-1].d.b == 1
+
+
+def test_preopt_union_capture_replaces_explicit_resolver_fallthrough_arm(
+    monkeypatch,
+) -> None:
+    """A native resolver fallthrough is replaced without collapsing its predicate."""
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    source_ea = 0x40B4C5
+    predicate_ea = 0x40B4DC
+    taken_ea = 0x40A7E5
+    resolver_fallthrough_ea = 0x40B4E2
+    false_target_ea = 0x40B758
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_jl,
+                        predicate_ea,
+                        dest=_Operand(ida_hexrays.mop_b, block_ref=1),
+                    ),
+                ),
+                (2, 1),
+            ),
+            _Block(
+                1,
+                taken_ea,
+                (_Instruction(ida_hexrays.m_nop, taken_ea),),
+            ),
+            _Block(
+                2,
+                resolver_fallthrough_ea,
+                (
+                    _Instruction(ida_hexrays.m_nop, resolver_fallthrough_ea),
+                    _Instruction(ida_hexrays.m_ijmp, 0x40B4EE),
+                ),
+            ),
+            _Block(
+                3,
+                false_target_ea,
+                (_Instruction(ida_hexrays.m_nop, false_target_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_2WAY)
+    source.get_mblock(0).end = resolver_fallthrough_ea
+
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        source_ea,
+        source,
+        (
+            (source_ea, resolver_fallthrough_ea),
+            (taken_ea, taken_ea + 1),
+            (false_target_ea, false_target_ea + 1),
+        ),
+        owned_block_entry_eas=(source_ea, taken_ea, false_target_ea),
+        resolver_proven_internal_successor_eas={
+            predicate_ea: false_target_ea,
+        },
+    )
+    template = detached_handler_island._PREOPT_UNION_SNIPPET_TEMPLATES[
+        (function_ea, source_ea)
+    ]
+    captured_source = next(
+        block for block in template.blocks if block.native_entry_ea == source_ea
+    )
+
+    assert captured_source.successor_serials == (3, 1)
     assert captured_source.external_successor_eas == (0, 0)
     assert captured_source.block_type == ida_hexrays.BLT_2WAY
     assert captured_source.instructions[-1].opcode == ida_hexrays.m_jl
@@ -9769,9 +9904,10 @@ def test_boundary_target_entry_splits_off_preceding_dispatcher_tail() -> None:
         delivery_mode="terminal_goto",
     )
 
-    split = detached_handler_island._split_boundary_target_entry_blocks(
+    split = detached_handler_island._split_semantic_target_entry_blocks(
         (block,),
         DetachedSnippetBoundaryPorts(direct=(port,), conditional=()),
+        {},
     )
 
     assert split is not None
