@@ -17,6 +17,7 @@ from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationCommitted,
     MbaMutationGateway,
     MbaMutationPlanned,
+    MbaMutationRootPublicationGroup,
     StructuralMutationKind,
 )
 from d810.hexrays.mutation.semantic_fragment_publication import (
@@ -358,6 +359,7 @@ class _FragmentBackend:
                 SemanticFragmentRootInventoryItem(
                     edge_id="replacement:entry:direct",
                     root_block_id="replacement",
+                    original_block_id="original",
                     predecessor_block_id="entry",
                     role=SemanticEdgeRole.DIRECT,
                 ),
@@ -493,14 +495,22 @@ class _FragmentBackend:
 
     def _publish_semantic_fragment_roots(
         self,
-        _plan: FragmentPlan,
+        plan: FragmentPlan,
         rollback_token,
     ) -> None:
         assert rollback_token == "prior-root-authority"
         self.calls.append("publish-roots")
+        self.gateway._record_fragment_root_group_publication_attempted(
+            plan,
+            "root-group:entry",
+        )
         self.root_published = True
         if self.raise_during_publish:
             raise RuntimeError("partial root publication")
+        self.gateway._record_fragment_root_group_publication_succeeded(
+            plan,
+            "root-group:entry",
+        )
 
     def _rebuild_semantic_fragment_chains(self, _plan: FragmentPlan) -> None:
         self.calls.append("rebuild")
@@ -538,14 +548,28 @@ class _FragmentBackend:
 
     def _rollback_semantic_fragment_roots(
         self,
-        _plan: FragmentPlan,
+        plan: FragmentPlan,
         rollback_token,
     ) -> None:
         assert rollback_token == "prior-root-authority"
         self.calls.append("rollback-roots")
+        self.gateway._record_fragment_root_group_rollback_attempted(
+            plan,
+            "root-group:entry",
+        )
         if self.raise_during_rollback:
+            self.gateway._record_fragment_root_group_rollback_finished(
+                plan,
+                "root-group:entry",
+                succeeded=False,
+            )
             raise RuntimeError("root rollback failed")
         self.root_published = False
+        self.gateway._record_fragment_root_group_rollback_finished(
+            plan,
+            "root-group:entry",
+            succeeded=True,
+        )
 
     def _complete_semantic_fragment_publication(self, _plan: FragmentPlan) -> None:
         self.calls.append("complete")
@@ -613,6 +637,7 @@ def test_gateway_inventories_terminal_effects_as_first_class_fragment_items() ->
             SemanticFragmentRootInventoryItem(
                 edge_id="replacement:entry:direct",
                 root_block_id="replacement",
+                original_block_id="original",
                 predecessor_block_id="entry",
                 role=SemanticEdgeRole.DIRECT,
             ),
@@ -1012,6 +1037,17 @@ def test_generic_commit_cannot_bypass_fragment_postvalidation() -> None:
         serial_quantity=4,
         planned_operation_count=1,
         fragment_plan=plan,
+        fragment_root_publication_groups=(
+            MbaMutationRootPublicationGroup(
+                group_id="root-group:entry",
+                predecessor_block_id="entry",
+                predecessor_anchor_ea=plan.block("entry").semantic_anchor_ea,
+                edge_ids=("replacement:entry:direct",),
+                edge_roles=(SemanticEdgeRole.DIRECT,),
+                original_block_ids=("original",),
+                replacement_block_ids=("replacement",),
+            ),
+        ),
     )
     gateway.record_edge_redirect()
 

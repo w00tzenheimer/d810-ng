@@ -1793,6 +1793,21 @@ def test_live_fragment_publication_is_reconstructible_from_diagnostic_db(
         ("staged", "published"),
         ("staged", "published"),
     ]
+    root_group = diag_conn.execute(
+        "SELECT group_id,predecessor_block_id,predecessor_anchor_ea_i64,"
+        "edge_ids_json,edge_roles_json,original_block_ids_json,"
+        "replacement_block_ids_json,publication_attempted,"
+        "publication_succeeded,rollback_attempted,rollback_succeeded "
+        "FROM semantic_fragment_root_publication_groups"
+    ).fetchone()
+    assert root_group[:3] == ("root-group:entry", "entry", 0x401000)
+    assert tuple(json.loads(payload) for payload in root_group[3:7]) == (
+        ["replacement:entry:direct"],
+        ["direct"],
+        ["original"],
+        ["replacement"],
+    )
+    assert root_group[7:] == (1, 1, 0, None)
 
 
 def test_failed_live_staging_restores_graph_and_records_rollback(
@@ -1894,8 +1909,26 @@ def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_wor
     )
     emitter = EventEmitter()
     aborted: list[MbaMutationAborted] = []
+    diag_conn = create_diag_database(":memory:").connection()
+    reset_diagnostic_bus()
+    monkeypatch.setattr(
+        "d810.core.diag.event_handlers.get_diag_conn",
+        lambda *_args, **_kwargs: diag_conn,
+    )
+    install_diag_event_handlers()
+    emitter.on(MbaMutationPlanned, D810Manager._on_mutation_planned)
+    emitter.on(MbaMutationAborted, D810Manager._on_mutation_aborted)
     emitter.on(MbaMutationAborted, aborted.append)
     gateway.event_emitter = emitter
+    emit_diagnostic(
+        DiagnosticSessionObserved(
+            gateway.session_id,
+            gateway.function_ea,
+            1,
+            gateway.native_key.to_json(),
+            "active",
+        )
+    )
     observe_published = modifier._observe_published_semantic_fragment
 
     def _observe_after_carrier_corruption(observed_plan):
@@ -1923,11 +1956,15 @@ def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_wor
         _observe_after_carrier_corruption,
     )
 
-    with pytest.raises(
-        SemanticFragmentPublicationRejected,
-        match="postpublication.*observable_return_carrier:return-value",
-    ):
-        gateway.publish_semantic_fragment(modifier, plan)
+    try:
+        with pytest.raises(
+            SemanticFragmentPublicationRejected,
+            match="postpublication.*observable_return_carrier:return-value",
+        ):
+            gateway.publish_semantic_fragment(modifier, plan)
+    finally:
+        uninstall_diag_event_handlers()
+        reset_diagnostic_bus()
 
     assert mba.qty == 5
     assert tuple(entry.succset) == (1,)
@@ -1950,6 +1987,27 @@ def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_wor
     assert aborted[0].postpublication_validation is not None
     assert not aborted[0].postpublication_validation.passed
     assert aborted[0].discarded_version_ids
+    assert diag_conn.execute(
+        "SELECT group_id,publication_attempted,publication_succeeded,"
+        "rollback_attempted,rollback_succeeded "
+        "FROM semantic_fragment_root_publication_groups"
+    ).fetchone() == ("root-group:entry", 1, 1, 1, 1)
+    assert diag_conn.execute(
+        "SELECT event_kind,outcome,detail_json "
+        "FROM semantic_fragment_transaction_events "
+        "WHERE event_kind LIKE 'root_group_%' ORDER BY event_index"
+    ).fetchall() == [
+        (
+            "root_group_publication",
+            "published",
+            '{"group_id":"root-group:entry"}',
+        ),
+        (
+            "root_group_rollback",
+            "succeeded",
+            '{"group_id":"root-group:entry"}',
+        ),
+    ]
 
 
 @pytest.mark.parametrize(

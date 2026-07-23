@@ -11,7 +11,7 @@ from __future__ import annotations
 from d810._vendor.peewee import SqliteDatabase
 from d810.core.diag.models import DiagnosticSchemaVersion, MODELS
 
-DIAGNOSTIC_SCHEMA_VERSION = 3
+DIAGNOSTIC_SCHEMA_VERSION = 4
 
 
 class DiagnosticSchemaMismatch(RuntimeError):

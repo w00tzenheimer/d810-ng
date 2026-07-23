@@ -969,7 +969,35 @@ class D810Manager:
                 fragment_plan_id=event.fragment_plan_id,
                 fragment_atomic_group_id=event.fragment_atomic_group_id,
                 fragment_plan_json=event.fragment_plan_json,
+                root_publication_groups=(
+                    D810Manager._fragment_root_group_observations(
+                        event.root_publication_groups
+                    )
+                ),
             )
+        )
+
+    @staticmethod
+    def _fragment_root_group_observations(groups):
+        from d810.core.observability_events import (
+            FragmentRootPublicationGroupObserved,
+        )
+
+        return tuple(
+            FragmentRootPublicationGroupObserved(
+                group_id=group.group_id,
+                predecessor_block_id=group.predecessor_block_id,
+                predecessor_anchor_ea=int(group.predecessor_anchor_ea),
+                edge_ids=group.edge_ids,
+                edge_roles=tuple(role.value for role in group.edge_roles),
+                original_block_ids=group.original_block_ids,
+                replacement_block_ids=group.replacement_block_ids,
+                publication_attempted=group.publication_attempted,
+                publication_succeeded=group.publication_succeeded,
+                rollback_attempted=group.rollback_attempted,
+                rollback_succeeded=group.rollback_succeeded,
+            )
+            for group in groups
         )
 
     @staticmethod
@@ -1077,6 +1105,11 @@ class D810Manager:
                 ),
                 fragment_plan_id=receipt.fragment_plan_id,
                 fragment_atomic_group_id=receipt.fragment_atomic_group_id,
+                root_publication_groups=(
+                    D810Manager._fragment_root_group_observations(
+                        receipt.root_publication_groups
+                    )
+                ),
                 fragment_staged=bool(receipt.fragment_plan_id),
                 root_publication_attempted=receipt.root_publication_confirmed,
                 root_publication_succeeded=receipt.root_publication_confirmed,
@@ -1125,6 +1158,11 @@ class D810Manager:
                 reason=event.reason,
                 fragment_plan_id=event.fragment_plan_id,
                 fragment_atomic_group_id=event.fragment_atomic_group_id,
+                root_publication_groups=(
+                    D810Manager._fragment_root_group_observations(
+                        event.root_publication_groups
+                    )
+                ),
                 fragment_staged=event.fragment_staged,
                 root_publication_attempted=event.root_publication_attempted,
                 root_publication_succeeded=event.root_publication_succeeded,

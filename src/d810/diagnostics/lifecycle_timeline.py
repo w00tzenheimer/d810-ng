@@ -84,6 +84,11 @@ def mutation_batch(conn: sqlite3.Connection, batch_id: str) -> dict[str, Any]:
         "WHERE mutation_batch_id=? ORDER BY outcome_index",
         (batch_id,),
     ))
+    root_publication_groups = _rows(conn.execute(
+        "SELECT * FROM semantic_fragment_root_publication_groups "
+        "WHERE mutation_batch_id=? ORDER BY group_id",
+        (batch_id,),
+    ))
     version_transitions = _rows(conn.execute(
         "SELECT * FROM logical_block_version_transitions "
         "WHERE mutation_batch_id=? ORDER BY transition_index",
@@ -101,6 +106,7 @@ def mutation_batch(conn: sqlite3.Connection, batch_id: str) -> dict[str, Any]:
         "receipt": receipt_rows[0] if receipt_rows else None,
         "receipt_identities": identities,
         "semantic_fragment": fragment_rows[0] if fragment_rows else None,
+        "root_publication_groups": root_publication_groups,
         "fragment_validations": fragment_validations,
         "version_transitions": version_transitions,
         "fragment_events": fragment_events,
@@ -198,6 +204,14 @@ def render_mutation_batch(result: dict[str, Any]) -> str:
             f"root-published={_bool_value(fragment['root_publication_succeeded'])} "
             f"rollback={_bool_value(fragment['rollback_succeeded'])}"
         )
+        for group in result["root_publication_groups"]:
+            lines.append(
+                f"root-group[{group['group_id']}] "
+                f"predecessor=ea@{group['predecessor_anchor_ea_hex']} "
+                f"roles={group['edge_roles_json']} "
+                f"published={_bool_value(group['publication_succeeded'])} "
+                f"rollback={_bool_value(group['rollback_succeeded'])}"
+            )
         for event in result["fragment_events"]:
             lines.append(
                 f"fragment-event[{event['event_index']}] "

@@ -4471,19 +4471,36 @@ class DeferredGraphModifier:
     ) -> None:
         """Publish every preflighted root edge, retaining exact rollback scope."""
         token = self._semantic_fragment_publication_token(plan, rollback_token)
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise SemanticFragmentBackendRejected(
+                "root publication requires an active mutation gateway"
+            )
         for group in token.groups:
             token.attempted_group_ids.append(group.group_id)
+            gateway._record_fragment_root_group_publication_attempted(
+                plan,
+                group.group_id,
+            )
             if group.call_fallthrough:
                 self._publish_semantic_fragment_call_root_group(group)
-                continue
-            if group.conditional:
+            elif group.conditional:
                 self._publish_semantic_fragment_conditional_root_group(group)
-                continue
-            edge = group.edges[0]
-            if edge.role is SemanticEdgeRole.DIRECT:
-                self._rewrite_semantic_fragment_direct_root(edge, restore=False)
             else:
-                raise SemanticFragmentBackendRejected("unsupported root edge role")
+                edge = group.edges[0]
+                if edge.role is SemanticEdgeRole.DIRECT:
+                    self._rewrite_semantic_fragment_direct_root(
+                        edge,
+                        restore=False,
+                    )
+                else:
+                    raise SemanticFragmentBackendRejected(
+                        "unsupported root edge role"
+                    )
+            gateway._record_fragment_root_group_publication_succeeded(
+                plan,
+                group.group_id,
+            )
 
     def _rebuild_semantic_fragment_chains(self, plan: FragmentPlan) -> None:
         """Invalidate live chains after publication or rollback."""
@@ -4509,19 +4526,45 @@ class DeferredGraphModifier:
     ) -> None:
         """Restore every attempted predecessor group in reverse publication order."""
         token = self._semantic_fragment_publication_token(plan, rollback_token)
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise SemanticFragmentBackendRejected(
+                "root rollback requires an active mutation gateway"
+            )
         for group_id in reversed(token.attempted_group_ids):
             group = token.group(group_id)
-            if group.call_fallthrough:
-                self._rollback_semantic_fragment_call_root_group(group)
-                continue
-            if group.conditional:
-                self._rollback_semantic_fragment_conditional_root_group(group)
-                continue
-            edge = group.edges[0]
-            if edge.role is SemanticEdgeRole.DIRECT:
-                self._rewrite_semantic_fragment_direct_root(edge, restore=True)
-            else:
-                raise SemanticFragmentBackendRejected("unsupported root edge role")
+            gateway._record_fragment_root_group_rollback_attempted(
+                plan,
+                group.group_id,
+            )
+            try:
+                if group.call_fallthrough:
+                    self._rollback_semantic_fragment_call_root_group(group)
+                elif group.conditional:
+                    self._rollback_semantic_fragment_conditional_root_group(group)
+                else:
+                    edge = group.edges[0]
+                    if edge.role is SemanticEdgeRole.DIRECT:
+                        self._rewrite_semantic_fragment_direct_root(
+                            edge,
+                            restore=True,
+                        )
+                    else:
+                        raise SemanticFragmentBackendRejected(
+                            "unsupported root edge role"
+                        )
+            except Exception:
+                gateway._record_fragment_root_group_rollback_finished(
+                    plan,
+                    group.group_id,
+                    succeeded=False,
+                )
+                raise
+            gateway._record_fragment_root_group_rollback_finished(
+                plan,
+                group.group_id,
+                succeeded=True,
+            )
 
     def _complete_semantic_fragment_publication(self, plan: FragmentPlan) -> None:
         """Release transaction-local backend state after committed authority."""

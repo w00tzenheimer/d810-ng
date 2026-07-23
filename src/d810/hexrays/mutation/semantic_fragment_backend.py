@@ -34,6 +34,7 @@ from d810.hexrays.ir.semantic_edge import (
 from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventory,
     SemanticFragmentRootInventoryItem,
+    semantic_fragment_root_group_id,
 )
 from d810.ir.block_identity import BlockHandleProvenance
 from d810.ir.expressions import ValueOpKind
@@ -1913,6 +1914,7 @@ def plan_semantic_fragment_root_inventory(
                 SemanticFragmentRootInventoryItem(
                     edge_id=(f"{root_block_id}:{predecessor_block_id}:{role.value}"),
                     root_block_id=root_block_id,
+                    original_block_id=original_block_id,
                     predecessor_block_id=predecessor_block_id,
                     role=role,
                 )
@@ -2039,7 +2041,9 @@ def _group_semantic_fragment_root_edges(
                 )
             groups.append(
                 SemanticFragmentRootPublicationGroup(
-                    group_id=f"root-group:{predecessor_block_id}",
+                    group_id=semantic_fragment_root_group_id(
+                        predecessor_block_id
+                    ),
                     predecessor=predecessor_binding,
                     edges=tuple(grouped_edges),
                     original_predecessor_type=int(predecessor.type),
@@ -2056,7 +2060,9 @@ def _group_semantic_fragment_root_edges(
                 )
             groups.append(
                 SemanticFragmentRootPublicationGroup(
-                    group_id=f"root-group:{predecessor_block_id}",
+                    group_id=semantic_fragment_root_group_id(
+                        predecessor_block_id
+                    ),
                     predecessor=predecessor_binding,
                     edges=tuple(grouped_edges),
                     original_predecessor_type=int(predecessor.type),
@@ -2123,7 +2129,9 @@ def _group_semantic_fragment_root_edges(
                 )
         groups.append(
             SemanticFragmentRootPublicationGroup(
-                group_id=f"root-group:{predecessor_block_id}",
+                group_id=semantic_fragment_root_group_id(
+                    predecessor_block_id
+                ),
                 predecessor=predecessor_binding,
                 edges=tuple(grouped_edges),
                 original_predecessor_type=int(predecessor.type),

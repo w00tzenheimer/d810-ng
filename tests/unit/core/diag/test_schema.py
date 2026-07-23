@@ -36,11 +36,40 @@ def test_create_tables_creates_all_expected_tables():
     assert "state_transition_dispatch_resolutions" in tables
     assert "switch_case_transition_facts" in tables
     assert "branch_ownership_proofs" in tables
+    assert "semantic_fragment_root_publication_groups" in tables
 
 
 def test_create_tables_idempotent():
     db = create_diag_database(":memory:")
     create_tables(db)  # second call (factory already created once) must not raise
+
+
+def test_root_publication_group_schema_is_serial_free_and_ea_anchored():
+    conn = create_diag_database(":memory:").connection()
+    columns = [
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info(semantic_fragment_root_publication_groups)"
+        )
+    ]
+    assert columns == [
+        "plan_event_id",
+        "receipt_event_id",
+        "mutation_batch_id",
+        "group_id",
+        "predecessor_block_id",
+        "predecessor_anchor_ea_hex",
+        "predecessor_anchor_ea_i64",
+        "edge_ids_json",
+        "edge_roles_json",
+        "original_block_ids_json",
+        "replacement_block_ids_json",
+        "publication_attempted",
+        "publication_succeeded",
+        "rollback_attempted",
+        "rollback_succeeded",
+    ]
+    assert all("serial" not in column for column in columns)
 
 
 def test_json_extract_on_meta_columns():
