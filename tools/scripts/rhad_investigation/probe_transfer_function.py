@@ -907,7 +907,8 @@ try:
                         "RESOLVER_SESSION_AFTER_DECOMPILE",
                         f"session_active={active_session is not None}",
                         f"evidence_generation={int(native_state.evidence_generation)}",
-                        f"bound_preopt_generation={native_state.bound_preopt_generation}",
+                        "normalization_published_postvalidated_generation="
+                        f"{native_state.normalization_published_postvalidated_generation}",
                         f"redo_generation={native_state.redo_generation}",
                         "pending_generated_restart_generation="
                         f"{native_state.pending_generated_restart_generation}",

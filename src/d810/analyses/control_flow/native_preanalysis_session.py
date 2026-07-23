@@ -346,7 +346,15 @@ class NativePreanalysisSessionState:
     """First-class portable evidence and epoch authority for a lifecycle."""
 
     evidence_generation: int = 0
-    bound_preopt_generation: int | None = None
+    portable_evidence_ready_generation: int | None = None
+    normalization_staged_generation: int | None = None
+    normalization_validated_generation: int | None = None
+    normalization_published_postvalidated_generation: int | None = None
+    canonical_semantic_plan_generation: int | None = None
+    semantic_fragment_staged_generation: int | None = None
+    semantic_fragment_validated_generation: int | None = None
+    semantic_fragment_published_postvalidated_generation: int | None = None
+    receipt_committed_generation: int | None = None
     facts: NativePreanalysisFacts | None = None
     resolver_evidence: ResolverPortableEvidence | None = None
     bootstrap_routes: dict[tuple[StableBlockIdentity, int], BootstrapRouteEvidence] = (
@@ -376,6 +384,245 @@ class NativePreanalysisSessionState:
         repr=False,
         compare=False,
     )
+
+    def __post_init__(self) -> None:
+        generation = int(self.evidence_generation)
+        if generation < 0:
+            raise ValueError("portable evidence generation must be non-negative")
+        self.evidence_generation = generation
+        if self.portable_evidence_ready_generation is None and generation > 0:
+            self.portable_evidence_ready_generation = generation
+        marker_names = (
+            "portable_evidence_ready_generation",
+            "normalization_staged_generation",
+            "normalization_validated_generation",
+            "normalization_published_postvalidated_generation",
+            "canonical_semantic_plan_generation",
+            "semantic_fragment_staged_generation",
+            "semantic_fragment_validated_generation",
+            "semantic_fragment_published_postvalidated_generation",
+            "receipt_committed_generation",
+        )
+        for name in marker_names:
+            value = getattr(self, name)
+            if value is None:
+                continue
+            value = int(value)
+            if value <= 0:
+                raise ValueError("lifecycle generation markers must be positive")
+            if value > generation:
+                raise ValueError(
+                    "lifecycle generation cannot exceed portable evidence"
+                )
+            setattr(self, name, value)
+        if (
+            self.portable_evidence_ready_generation is not None
+            and self.portable_evidence_ready_generation != generation
+        ):
+            raise ValueError(
+                "portable evidence-ready generation must equal current evidence"
+            )
+
+        normalization_order = (
+            self.normalization_published_postvalidated_generation or 0,
+            self.normalization_validated_generation or 0,
+            self.normalization_staged_generation or 0,
+            self.portable_evidence_ready_generation or 0,
+        )
+        if normalization_order != tuple(sorted(normalization_order)):
+            raise ValueError("invalid normalization lifecycle generation order")
+
+        semantic_order = (
+            self.receipt_committed_generation or 0,
+            self.semantic_fragment_published_postvalidated_generation or 0,
+            self.semantic_fragment_validated_generation or 0,
+            self.semantic_fragment_staged_generation or 0,
+            self.canonical_semantic_plan_generation or 0,
+            self.normalization_published_postvalidated_generation or 0,
+        )
+        if semantic_order != tuple(sorted(semantic_order)):
+            raise ValueError("invalid semantic lifecycle generation order")
+
+    def _require_current_portable_evidence(self) -> int:
+        generation = int(self.evidence_generation)
+        if (
+            generation <= 0
+            or self.portable_evidence_ready_generation != generation
+        ):
+            raise RuntimeError(
+                "lifecycle transition requires the current portable evidence generation"
+            )
+        return generation
+
+    def _mark_lifecycle_generation(
+        self,
+        *,
+        attribute: str,
+        operation: str,
+        evidence_family: str,
+        prerequisite_attribute: str | None = None,
+        prerequisite_error: str = "",
+    ) -> bool:
+        generation = self._require_current_portable_evidence()
+        if (
+            prerequisite_attribute is not None
+            and getattr(self, prerequisite_attribute) != generation
+        ):
+            raise RuntimeError(prerequisite_error)
+        previous = getattr(self, attribute)
+        if previous == generation:
+            return False
+        setattr(self, attribute, generation)
+        self._observe_transition(
+            operation=operation,
+            previous_generation=0 if previous is None else int(previous),
+            evidence_family=evidence_family,
+            reason=f"{operation.replace('_', ' ')} for portable generation {generation}",
+        )
+        return True
+
+    def mark_normalization_staged(self) -> bool:
+        """Record construction of a detached normalization fragment."""
+        return self._mark_lifecycle_generation(
+            attribute="normalization_staged_generation",
+            operation="normalization_staged",
+            evidence_family="frontend_normalization",
+        )
+
+    def mark_normalization_validated(self) -> bool:
+        """Record successful validation of the staged normalization fragment."""
+        return self._mark_lifecycle_generation(
+            attribute="normalization_validated_generation",
+            operation="normalization_validated",
+            evidence_family="frontend_normalization",
+            prerequisite_attribute="normalization_staged_generation",
+            prerequisite_error=(
+                "normalization validation requires the current staged generation"
+            ),
+        )
+
+    def mark_normalization_published_and_postvalidated(self) -> bool:
+        """Advance normalization authority only after publication postvalidation."""
+        return self._mark_lifecycle_generation(
+            attribute="normalization_published_postvalidated_generation",
+            operation="normalization_published_postvalidated",
+            evidence_family="frontend_normalization",
+            prerequisite_attribute="normalization_validated_generation",
+            prerequisite_error=(
+                "normalization publication requires the current validated generation"
+            ),
+        )
+
+    def abort_normalization(self, *, reason: str) -> bool:
+        """Discard current transient normalization state without moving authority."""
+        generation = self._require_current_portable_evidence()
+        if (
+            self.normalization_staged_generation != generation
+            and self.normalization_validated_generation != generation
+        ):
+            return False
+        published = self.normalization_published_postvalidated_generation
+        self.normalization_staged_generation = published
+        self.normalization_validated_generation = published
+        self._observe_transition(
+            operation="normalization_aborted",
+            previous_generation=generation,
+            evidence_family="frontend_normalization",
+            outcome="aborted",
+            reason=str(reason),
+        )
+        return True
+
+    def needs_normalization_publication(self) -> bool:
+        """Return whether current portable evidence lacks normalized authority."""
+        return (
+            self.normalization_published_postvalidated_generation
+            != self.evidence_generation
+        )
+
+    def mark_canonical_semantic_plan_ready(self) -> bool:
+        """Record a canonical pass plan over the current normalized generation."""
+        return self._mark_lifecycle_generation(
+            attribute="canonical_semantic_plan_generation",
+            operation="canonical_semantic_plan_ready",
+            evidence_family="semantic_lowering",
+            prerequisite_attribute=(
+                "normalization_published_postvalidated_generation"
+            ),
+            prerequisite_error=(
+                "canonical semantic planning requires current normalized authority"
+            ),
+        )
+
+    def mark_semantic_fragment_staged(self) -> bool:
+        """Record detached construction of the current canonical semantic plan."""
+        return self._mark_lifecycle_generation(
+            attribute="semantic_fragment_staged_generation",
+            operation="semantic_fragment_staged",
+            evidence_family="semantic_lowering",
+            prerequisite_attribute="canonical_semantic_plan_generation",
+            prerequisite_error=(
+                "semantic fragment staging requires the current canonical plan"
+            ),
+        )
+
+    def mark_semantic_fragment_validated(self) -> bool:
+        """Record successful validation of the staged semantic fragment."""
+        return self._mark_lifecycle_generation(
+            attribute="semantic_fragment_validated_generation",
+            operation="semantic_fragment_validated",
+            evidence_family="semantic_lowering",
+            prerequisite_attribute="semantic_fragment_staged_generation",
+            prerequisite_error=(
+                "semantic fragment validation requires the current staged generation"
+            ),
+        )
+
+    def mark_semantic_fragment_published_and_postvalidated(self) -> bool:
+        """Advance semantic authority only after publication postvalidation."""
+        return self._mark_lifecycle_generation(
+            attribute="semantic_fragment_published_postvalidated_generation",
+            operation="semantic_fragment_published_postvalidated",
+            evidence_family="semantic_lowering",
+            prerequisite_attribute="semantic_fragment_validated_generation",
+            prerequisite_error=(
+                "semantic fragment publication requires the current validated generation"
+            ),
+        )
+
+    def mark_receipt_committed(self) -> bool:
+        """Record the receipt only after semantic publication postvalidation."""
+        return self._mark_lifecycle_generation(
+            attribute="receipt_committed_generation",
+            operation="receipt_committed",
+            evidence_family="semantic_lowering",
+            prerequisite_attribute=(
+                "semantic_fragment_published_postvalidated_generation"
+            ),
+            prerequisite_error=(
+                "receipt commit requires current postvalidated semantic publication"
+            ),
+        )
+
+    def abort_semantic_fragment(self, *, reason: str) -> bool:
+        """Discard current transient semantic state without moving authority."""
+        generation = self._require_current_portable_evidence()
+        if (
+            self.semantic_fragment_staged_generation != generation
+            and self.semantic_fragment_validated_generation != generation
+        ):
+            return False
+        published = self.semantic_fragment_published_postvalidated_generation
+        self.semantic_fragment_staged_generation = published
+        self.semantic_fragment_validated_generation = published
+        self._observe_transition(
+            operation="semantic_fragment_aborted",
+            previous_generation=generation,
+            evidence_family="semantic_lowering",
+            outcome="aborted",
+            reason=str(reason),
+        )
+        return True
 
     def _observe_transition(
         self,
@@ -751,9 +998,9 @@ class NativePreanalysisSessionState:
         self,
         key: NativePreanalysisKey,
     ) -> tuple[BootstrapRouteBindingEvidence, ...]:
-        """Return bindings belonging to the currently bound PREOPT epoch."""
+        """Return bindings owned by the postvalidated normalization epoch."""
         current = self._resolver_evidence_for(key)
-        bound_generation = self.bound_preopt_generation
+        bound_generation = self.normalization_published_postvalidated_generation
         if bound_generation is None:
             return ()
         bindings = {
@@ -969,7 +1216,11 @@ class NativePreanalysisSessionState:
         its own controlled redo.
         """
         previous_generation = int(self.evidence_generation)
-        if self.bound_preopt_generation is None and self.evidence_generation > 0:
+        if (
+            self.normalization_published_postvalidated_generation is None
+            and self.evidence_generation > 0
+        ):
+            self.portable_evidence_ready_generation = self.evidence_generation
             self._observe_transition(
                 operation="evidence_coalesced",
                 previous_generation=previous_generation,
@@ -981,6 +1232,7 @@ class NativePreanalysisSessionState:
             return
         restart_pending = self.pending_generated_restart_generation is not None
         self.evidence_generation += 1
+        self.portable_evidence_ready_generation = self.evidence_generation
         self.redo_generation = None
         self.pending_generated_restart_generation = (
             self.evidence_generation if restart_pending else None
@@ -1183,9 +1435,6 @@ class NativePreanalysisSessionState:
         )
         return True
 
-    def needs_preopt_binding(self) -> bool:
-        return self.bound_preopt_generation != self.evidence_generation
-
     def needs_bootstrap_route_binding(self) -> bool:
         """Whether a current portable route still lacks a live PREOPT bind."""
         return any(
@@ -1193,21 +1442,6 @@ class NativePreanalysisSessionState:
             and self.rebound_bootstrap_generations.get(key) != self.evidence_generation
             for key in self.bootstrap_routes
         )
-
-    def mark_preopt_bound(self) -> bool:
-        """Record the current generation's exact-once PREOPT bind."""
-        if not self.needs_preopt_binding():
-            return False
-        previous_generation = int(self.evidence_generation)
-        self.bound_preopt_generation = self.evidence_generation
-        self._observe_transition(
-            operation="preopt_bound",
-            previous_generation=previous_generation,
-            evidence_family="preopt_binding",
-            reason="PREOPT bound the current evidence generation",
-        )
-        return True
-
 
 @runtime_checkable
 class ResolverEvidenceAttachment(Protocol):

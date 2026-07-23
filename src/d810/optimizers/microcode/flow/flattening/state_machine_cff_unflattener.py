@@ -202,18 +202,19 @@ logger = logging.getLogger("D810.unflat", logging.DEBUG)
 def _unflatten_recovery_epoch_generation(
     *,
     current_evidence_generation: int,
-    bound_preopt_generation: int | None,
+    normalized_evidence_generation: int | None,
 ) -> int:
     """Select the evidence epoch actually represented by the live MBA.
 
     Recovery can discover and merge newer portable facts while operating on an
-    MBA generated from an older PREOPT evidence generation.  Those newer facts
-    do not describe a new live recovery epoch until PREOPT binds them.  Using
-    the session's current generation here would let recovery reopen its own
-    one-shot gate after every fact merge and repeatedly mutate stale microcode.
+    MBA generated from an older normalization generation. Those newer facts do
+    not describe a new live recovery epoch until normalization publication is
+    postvalidated. Using the session's current generation here would let
+    recovery reopen its own one-shot gate after every fact merge and repeatedly
+    mutate stale microcode.
     """
-    if bound_preopt_generation is not None:
-        return int(bound_preopt_generation)
+    if normalized_evidence_generation is not None:
+        return int(normalized_evidence_generation)
     return int(current_evidence_generation)
 
 
@@ -224,7 +225,7 @@ def _should_defer_unbound_materialized_preopt(
     return bool(
         isinstance(state, ResolverSessionState)
         and is_computed_goto_materialized(state)
-        and state.native_preanalysis.needs_preopt_binding()
+        and state.native_preanalysis.needs_normalization_publication()
     )
 
 
@@ -1208,10 +1209,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     decision=decision,
                     reason=reason,
                     payload={
-                        "bound_preopt_generation": (
+                        "normalization_published_postvalidated_generation": (
                             None
                             if native_preanalysis is None
-                            else native_preanalysis.bound_preopt_generation
+                            else native_preanalysis.normalization_published_postvalidated_generation
                         ),
                         "evidence_generation": (
                             0
@@ -1735,13 +1736,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if isinstance(resolver_state, ResolverSessionState)
             else 0
         )
-        bound_preopt_generation = (
-            resolver_state.native_preanalysis.bound_preopt_generation
+        normalized_evidence_generation = (
+            resolver_state.native_preanalysis.normalization_published_postvalidated_generation
             if isinstance(resolver_state, ResolverSessionState)
             else None
         )
         stable_preopt_epoch = bool(
-            has_imported_identity or bound_preopt_generation is not None
+            has_imported_identity or normalized_evidence_generation is not None
         )
         recovery_epoch_phase = (
             2 if has_imported_identity else (1 if stable_preopt_epoch else 0)
@@ -1750,7 +1751,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             mba,
             evidence_generation=_unflatten_recovery_epoch_generation(
                 current_evidence_generation=current_evidence_generation,
-                bound_preopt_generation=bound_preopt_generation,
+                normalized_evidence_generation=normalized_evidence_generation,
             ),
             stable_preopt_epoch=stable_preopt_epoch,
             imported_identity_ready=has_imported_identity,

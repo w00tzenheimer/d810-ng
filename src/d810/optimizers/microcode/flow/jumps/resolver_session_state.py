@@ -285,9 +285,11 @@ class ResolverSessionState:
         )
 
     def bound_bootstrap_routes(self) -> tuple[BootstrapRouteEvidence, ...]:
-        """Return routes rebound in the PREOPT generation owning the live MBA."""
+        """Return routes owned by the live MBA's normalized generation."""
         evidence = self.native_preanalysis
-        bound_generation = evidence.bound_preopt_generation
+        bound_generation = (
+            evidence.normalization_published_postvalidated_generation
+        )
         if bound_generation is None:
             return ()
         routes = {
@@ -334,7 +336,6 @@ def resolver_session_state(session: object) -> ResolverSessionState:
 __all__ = [
     "BootstrapRouteBindingEvidence",
     "BootstrapRouteEvidence",
-    "BootstrapRouteProofKind",
     "ReboundBootstrapRoute",
     "ResolverSessionState",
     "resolver_session_state",

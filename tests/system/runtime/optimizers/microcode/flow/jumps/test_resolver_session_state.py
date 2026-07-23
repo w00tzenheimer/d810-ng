@@ -54,6 +54,12 @@ from tests.native_preanalysis import make_native_key
 NATIVE_KEY = make_native_key()
 
 
+def _publish_normalization(state: NativePreanalysisSessionState) -> None:
+    assert state.mark_normalization_staged()
+    assert state.mark_normalization_validated()
+    assert state.mark_normalization_published_and_postvalidated()
+
+
 def _native_facts(
     transfers: tuple[MaterializedIndirectTransfer, ...] = (),
 ) -> NativePreanalysisFacts:
@@ -313,7 +319,9 @@ def test_generated_restart_is_staged_once_then_consumed_by_flowchart(
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(
             evidence_generation=2,
-            bound_preopt_generation=2,
+            normalization_staged_generation=2,
+            normalization_validated_generation=2,
+            normalization_published_postvalidated_generation=2,
         ),
         resolver_attachment=None,
         native_key=NATIVE_KEY,
@@ -363,7 +371,9 @@ def test_replaying_identical_conditional_bridge_is_an_evidence_noop() -> None:
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(
             evidence_generation=4,
-            bound_preopt_generation=4,
+            normalization_staged_generation=4,
+            normalization_validated_generation=4,
+            normalization_published_postvalidated_generation=4,
         ),
         resolver_attachment=None,
         native_key=NATIVE_KEY,
@@ -402,7 +412,9 @@ def test_weaker_conditional_bridge_refresh_cannot_erase_arm_state_evidence() -> 
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(
             evidence_generation=4,
-            bound_preopt_generation=4,
+            normalization_staged_generation=4,
+            normalization_validated_generation=4,
+            normalization_published_postvalidated_generation=4,
         ),
         resolver_attachment=None,
         native_key=NATIVE_KEY,
@@ -450,7 +462,9 @@ def test_weaker_conditional_bridge_refresh_cannot_inherit_states_across_sources(
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(
             evidence_generation=4,
-            bound_preopt_generation=4,
+            normalization_staged_generation=4,
+            normalization_validated_generation=4,
+            normalization_published_postvalidated_generation=4,
         ),
         resolver_attachment=None,
         native_key=NATIVE_KEY,
@@ -504,7 +518,9 @@ def test_calls_ignores_obsolete_mba_after_generated_restart_is_staged(
     session = SimpleNamespace(
         native_preanalysis=NativePreanalysisSessionState(
             evidence_generation=4,
-            bound_preopt_generation=4,
+            normalization_staged_generation=4,
+            normalization_validated_generation=4,
+            normalization_published_postvalidated_generation=4,
         ),
         resolver_attachment=None,
         native_key=NATIVE_KEY,
@@ -591,7 +607,7 @@ def test_bootstrap_route_is_published_only_after_current_preopt_rebind() -> None
         binding,
     )
 
-    assert state.native_preanalysis.mark_preopt_bound()
+    _publish_normalization(state.native_preanalysis)
     assert state.bound_bootstrap_routes() == (route,)
     assert state.native_preanalysis.bound_bootstrap_route_bindings(
         state.native_key
@@ -899,12 +915,12 @@ def test_preopt_route_consumption_uses_the_injected_mutation_gateway(
         decision=decision,
     )
     assert queued == []
-    assert session.native_preanalysis.bound_preopt_generation is None
+    assert session.native_preanalysis.normalization_published_postvalidated_generation is None
     state.preopt_union_import_active = False
-    # The union importer binds the evidence generation before the later
-    # bootstrap handler gets its turn.  Route rebinding is independently
-    # pending and must still run in that same PREOPT callback.
-    assert session.native_preanalysis.mark_preopt_bound()
+    # A validated normalization publisher advances authority before the later
+    # bootstrap handler gets its turn. Route rebinding remains independently
+    # pending in that same PREOPT callback.
+    _publish_normalization(session.native_preanalysis)
 
     rebind_live_preopt_routes(
         function_ea=0x401000,
@@ -914,7 +930,7 @@ def test_preopt_route_consumption_uses_the_injected_mutation_gateway(
 
     assert queued == [(7, 9)]
     assert decision["microcode_modified"] is True
-    assert session.native_preanalysis.bound_preopt_generation == 1
+    assert session.native_preanalysis.normalization_published_postvalidated_generation == 1
     assert session.native_preanalysis.pending_rebound_bootstrap_routes() == (route,)
 
 
@@ -1010,7 +1026,10 @@ def test_preopt_route_consumption_materializes_a_zero_way_goto(monkeypatch) -> N
 
     assert queued == [(29, 42)]
     assert decision["microcode_modified"] is True
-    assert session.native_preanalysis.bound_preopt_generation == 1
+    assert (
+        session.native_preanalysis.normalization_published_postvalidated_generation
+        is None
+    )
 
 
 def test_preopt_routes_static_conditional_taken_arm_through_gateway(
@@ -1135,7 +1154,10 @@ def test_preopt_routes_static_conditional_taken_arm_through_gateway(
 
     assert queued == [(7, 9, 8)]
     assert decision["microcode_modified"] is True
-    assert session.native_preanalysis.bound_preopt_generation == 1
+    assert (
+        session.native_preanalysis.normalization_published_postvalidated_generation
+        is None
+    )
 
 
 def test_preopt_materializes_zero_way_static_conditional_through_gateway(
@@ -1267,7 +1289,11 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
 
     assert queued == [(7, predicate_ea, 9, 11)]
     assert decision["microcode_modified"] is True
-    assert session.native_preanalysis.bound_preopt_generation == 1
+    assert (
+        session.native_preanalysis.normalization_published_postvalidated_generation
+        is None
+    )
+    _publish_normalization(state.native_preanalysis)
 
     state.native_preanalysis.set_preopt_union_preparation(
         state.native_key,
@@ -1292,7 +1318,7 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
     )
 
     assert queued == [(7, predicate_ea, 9, 11)]
-    assert session.native_preanalysis.bound_preopt_generation == 1
+    assert session.native_preanalysis.normalization_published_postvalidated_generation == 1
 
     rebind_live_preopt_routes(
         function_ea=0x40D200,
@@ -1305,7 +1331,7 @@ def test_preopt_materializes_zero_way_static_conditional_through_gateway(
     )
 
     assert queued == [(7, predicate_ea, 9, 11)]
-    assert session.native_preanalysis.bound_preopt_generation == 2
+    assert session.native_preanalysis.normalization_published_postvalidated_generation == 1
 
 
 def test_prepared_union_applies_only_the_external_entry_bridge_port(
@@ -1437,8 +1463,8 @@ def test_prepared_union_applies_only_the_external_entry_bridge_port(
     assert ports[0].source_owner is DetachedSnippetBoundaryPortOwner.LIVE
     assert decision["microcode_modified"] is True
     assert (
-        session.native_preanalysis.bound_preopt_generation
-        == state.evidence_generation
+        session.native_preanalysis.normalization_published_postvalidated_generation
+        is None
     )
 
 
@@ -1468,7 +1494,7 @@ def test_owned_preopt_union_does_not_recapture_mutated_entry_bridge(
             conditional_tail_ea=0x40A5AB,
         ),
     )
-    assert state.native_preanalysis.mark_preopt_bound()
+    _publish_normalization(state.native_preanalysis)
     state.preopt_union_imported_mbas.add((function_ea, 77, 0))
     state.bind_current_imported_instruction_origins(77, ())
     captures: list[object] = []
@@ -1487,7 +1513,7 @@ def test_owned_preopt_union_does_not_recapture_mutated_entry_bridge(
 
     assert captures == []
     assert state.evidence_generation == 1
-    assert state.native_preanalysis.bound_preopt_generation == 1
+    assert state.native_preanalysis.normalization_published_postvalidated_generation == 1
 
 
 def test_materialization_and_transfer_accumulation_are_session_owned() -> None:
@@ -1879,7 +1905,7 @@ def test_calls_done_refreshes_completed_preopt_union_before_requesting_redo(
     state.native_preanalysis.facts = _native_facts((choice,))
     state.materialized = True
     state.native_preanalysis.evidence_generation = 1
-    state.native_preanalysis.bound_preopt_generation = 1
+    state.native_preanalysis.normalization_published_postvalidated_generation = 1
     redo: list[tuple[str, dict[str, object]]] = []
 
     monkeypatch.setattr(
@@ -1955,7 +1981,7 @@ def test_calls_done_stages_restart_when_preopt_union_refresh_abstains(
     state.native_preanalysis.facts = _native_facts((existing,))
     state.materialized = True
     state.native_preanalysis.evidence_generation = 1
-    state.native_preanalysis.bound_preopt_generation = 1
+    state.native_preanalysis.normalization_published_postvalidated_generation = 1
     redo: list[tuple[str, dict[str, object]]] = []
 
     monkeypatch.setattr(
@@ -2033,7 +2059,7 @@ def test_calls_done_retains_changed_evidence_during_active_materialization(
     )
     state.native_preanalysis.facts = _native_facts((existing,))
     state.native_preanalysis.evidence_generation = 1
-    state.native_preanalysis.bound_preopt_generation = 1
+    state.native_preanalysis.normalization_published_postvalidated_generation = 1
     state.begin_materialization(object())
     redo: list[tuple[str, dict[str, object]]] = []
 
