@@ -419,6 +419,68 @@ class TestNativeSemanticCfgAdapter:
             (block.start_ea, block.end_ea) for block in owners
         ) == ((resolver_entry_ea, stale_end_ea),)
 
+    def test_discovered_successor_splits_stale_flowchart_owner(
+        self,
+        monkeypatch,
+    ) -> None:
+        function_ea = 0x401000
+        stale_entry_ea = 0x401010
+        discovered_entry_ea = 0x401020
+        stale_end_ea = 0x401030
+        facts = {
+            function_ea: NativeFlowBlockFact(
+                start_ea=function_ea,
+                end_ea=stale_entry_ea,
+                successor_eas=(discovered_entry_ea,),
+                direct_branch_target_ea=discovered_entry_ea,
+            ),
+            stale_entry_ea: NativeFlowBlockFact(
+                start_ea=stale_entry_ea,
+                end_ea=stale_end_ea,
+                is_return_tail=True,
+                terminal_instruction_ea=stale_end_ea - 1,
+            ),
+        }
+        decoded = {
+            stale_entry_ea: NativeFlowBlockFact(
+                start_ea=stale_entry_ea,
+                end_ea=discovered_entry_ea,
+                successor_eas=(discovered_entry_ea,),
+            ),
+            discovered_entry_ea: NativeFlowBlockFact(
+                start_ea=discovered_entry_ea,
+                end_ea=stale_end_ea,
+                is_return_tail=True,
+                terminal_instruction_ea=stale_end_ea - 1,
+            ),
+        }
+        monkeypatch.setattr(
+            native_backend,
+            "_flowchart_facts",
+            lambda *_args, **_kwargs: facts,
+        )
+        monkeypatch.setattr(
+            native_backend,
+            "_decode_missing_flow_block",
+            lambda *_args, start_ea, **_kwargs: decoded[int(start_ea)],
+        )
+
+        result = build_native_semantic_cfg(
+            SimpleNamespace(start_ea=function_ea),
+            live_native_eas=(),
+            seed_eas=(function_ea, stale_entry_ea),
+            resolver_target_eas_by_source={},
+        )
+
+        owners = tuple(
+            block
+            for block in result.cfg.blocks_by_ea.values()
+            if block.start_ea <= discovered_entry_ea < block.end_ea
+        )
+        assert tuple(
+            (block.start_ea, block.end_ea) for block in owners
+        ) == ((discovered_entry_ea, stale_end_ea),)
+
     def test_non_code_seed_abstains_with_exact_native_ea(
         self,
         ida_database,
