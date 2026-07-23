@@ -895,7 +895,10 @@ def test_preopt_native_body_rejects_unowned_topology_before_staging(
 
     with pytest.raises(
         detached_handler_island.SemanticFragmentBackendRejected,
-        match="topology",
+        match=(
+            "topology.*block='imported-nonterminal'@0x3600.*"
+            "operations=0.*expected_operations=1"
+        ),
     ):
         detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
             mba=destination,
