@@ -266,19 +266,11 @@ def _chain_block_serials(
         )
         if chain is None:
             return ()
-        return tuple(int(chain.at(index)) for index in range(int(chain.size())))
+        return tuple(
+            dict.fromkeys(int(chain.at(index)) for index in range(int(chain.size())))
+        )
     except (AttributeError, IndexError, RuntimeError, TypeError, ValueError):
         return ()
-
-
-def _dedupe_sites(sites):
-    seen = set()
-    result = []
-    for site in sites:
-        if site not in seen:
-            seen.add(site)
-            result.append(site)
-    return result
 
 
 def _find_reaching_defs_for_exact_use(
@@ -328,7 +320,7 @@ def _find_reaching_defs_for_exact_use(
             if has_definition:
                 results.append(_definition_site(definition_block_serial, instruction))
                 break
-    return _dedupe_sites(results)
+    return results
 
 
 def _find_uses_reached_by_exact_definition(
@@ -366,7 +358,7 @@ def _find_uses_reached_by_exact_definition(
             definition_is_last = False
             break
     if not definition_is_last:
-        return _dedupe_sites(results)
+        return results
 
     for use_block_serial in _chain_block_serials(
         mba,
@@ -394,7 +386,7 @@ def _find_uses_reached_by_exact_definition(
                 results.append(_use_site(use_block_serial, instruction))
             if has_definition:
                 break
-    return _dedupe_sites(results)
+    return results
 
 
 def find_reaching_defs_for_reg_use(
