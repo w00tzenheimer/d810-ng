@@ -1267,6 +1267,45 @@ def test_normalization_rejects_when_original_route_corridor_is_not_closed() -> N
         plan_frontend_computed_branch_normalization(graph, evidence)
 
 
+def test_normalization_ids_distinguish_same_range_topology_and_instruction_blocks() -> (
+    None
+):
+    graph = _graph(faithful=False)
+    blocks = dict(graph.blocks)
+    blocks[2] = _block(
+        2,
+        0x1200,
+        (4, 5),
+        (1,),
+        (_insn(0x1200, InsnKind.COND_JUMP, target=4),),
+    )
+    blocks[4] = _block(4, 0x1400, (), (2,), ())
+    blocks[5] = _block(
+        5,
+        0x1400,
+        (),
+        (2,),
+        (_insn(0x1400, InsnKind.RET),),
+    )
+    graph = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
+
+    plan = plan_frontend_computed_branch_normalization(graph, _evidence())
+
+    assert plan is not None
+    same_anchor_blocks = tuple(
+        block for block in plan.blocks if block.semantic_anchor_ea == 0x1400
+    )
+    assert len(same_anchor_blocks) == 2
+    assert len({block.block_id for block in same_anchor_blocks}) == 2
+    assert len(
+        {
+            block.stable_identity.exact_instruction_eas
+            for block in same_anchor_blocks
+            if block.stable_identity is not None
+        }
+    ) == 2
+
+
 def test_normalization_abstains_when_live_graph_already_preserves_both_arms() -> None:
     assert (
         plan_frontend_computed_branch_normalization(
