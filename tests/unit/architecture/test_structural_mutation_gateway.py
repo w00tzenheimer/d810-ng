@@ -58,18 +58,6 @@ GATEWAY_REQUIRED_ENTRYPOINTS = {
             "materialize_detached_handler_island",
         }
     ),
-    "optimizers/microcode/flow/jumps/materialized_computed_goto_island.py": (
-        frozenset(
-            {
-                "_apply_residual_state_route_bridges",
-                "_apply_detached_snippet_terminal_routes",
-                "_apply_live_resolver_cut_counterparts",
-                "_materialize_missing_detached_snippets",
-                "_materialize_live_handler_replacements",
-                "_apply_conditional_bridge_plans",
-            }
-        )
-    ),
 }
 GATEWAYLESS_NONSTRUCTURAL_ENTRYPOINTS = {
     "hexrays/mutation/detached_handler_island.py": frozenset(

@@ -8,8 +8,9 @@ from enum import Enum
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).parents[3]
 RESOLVER_STATE_PATH = (
-    Path(__file__).parents[3]
+    REPO_ROOT
     / "src"
     / "d810"
     / "optimizers"
@@ -19,14 +20,14 @@ RESOLVER_STATE_PATH = (
     / "resolver_session_state.py"
 )
 LIFECYCLE_PATH = (
-    Path(__file__).parents[3]
+    REPO_ROOT
     / "src"
     / "d810"
     / "manager"
     / "decompilation_lifecycle.py"
 )
 COMPUTED_GOTO_RESOLVER_PATH = (
-    Path(__file__).parents[3]
+    REPO_ROOT
     / "src"
     / "d810"
     / "optimizers"
@@ -36,7 +37,7 @@ COMPUTED_GOTO_RESOLVER_PATH = (
     / "computed_goto_resolver.py"
 )
 MATERIALIZED_COMPUTED_GOTO_ISLAND_PATH = (
-    Path(__file__).parents[3]
+    REPO_ROOT
     / "src"
     / "d810"
     / "optimizers"
@@ -45,7 +46,25 @@ MATERIALIZED_COMPUTED_GOTO_ISLAND_PATH = (
     / "jumps"
     / "materialized_computed_goto_island.py"
 )
-MANAGER_PATH = Path(__file__).parents[3] / "src" / "d810" / "manager" / "manager.py"
+MANAGER_PATH = REPO_ROOT / "src" / "d810" / "manager" / "manager.py"
+LEGACY_ISLAND_REFERENCE_PATHS = (
+    REPO_ROOT / "src" / "d810" / "conf" / "default_unflattening_ollvm.json",
+    REPO_ROOT
+    / "src"
+    / "d810"
+    / "conf"
+    / "default_unflattening_ollvm_config_v2_canary.json",
+    REPO_ROOT / "src" / "d810" / "core" / "config_v2_defaults.py",
+    REPO_ROOT / "src" / "d810" / "passes" / "legacy_flow_rules.py",
+    REPO_ROOT / "tools" / "scripts" / "rhad_investigation" / "README.md",
+)
+LEGACY_PREOPT_PROBE_PATH = (
+    REPO_ROOT
+    / "tools"
+    / "scripts"
+    / "rhad_investigation"
+    / "probe_preopt_snippet_import.py"
+)
 
 
 def _referenced_identifiers(tree: ast.AST) -> set[str]:
@@ -331,12 +350,12 @@ def test_computed_goto_resolver_has_no_direct_final_state_route_authority() -> N
         }
     )
 
-    island_tree = ast.parse(
-        MATERIALIZED_COMPUTED_GOTO_ISLAND_PATH.read_text(encoding="utf-8"),
-        filename=str(MATERIALIZED_COMPUTED_GOTO_ISLAND_PATH),
-    )
-    island_functions = {
-        node.name for node in island_tree.body if isinstance(node, ast.FunctionDef)
-    }
-    assert "_restore_preopt_terminal_return_carriers" not in island_functions
-    assert "rebind_live_preopt_routes" not in _referenced_identifiers(island_tree)
+
+def test_legacy_materialized_island_lowering_is_removed() -> None:
+    assert not MATERIALIZED_COMPUTED_GOTO_ISLAND_PATH.exists()
+    assert not LEGACY_PREOPT_PROBE_PATH.exists()
+    for path in LEGACY_ISLAND_REFERENCE_PATHS:
+        text = path.read_text(encoding="utf-8")
+        assert "MaterializedComputedGotoIslandRule" not in text
+        assert "materialized-computed-goto-island" not in text
+        assert "probe_preopt_snippet_import.py" not in text
