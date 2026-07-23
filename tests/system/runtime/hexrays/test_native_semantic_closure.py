@@ -430,9 +430,7 @@ class TestNativeSemanticCfgAdapter:
         facts = {
             function_ea: NativeFlowBlockFact(
                 start_ea=function_ea,
-                end_ea=stale_entry_ea,
-                successor_eas=(discovered_entry_ea,),
-                direct_branch_target_ea=discovered_entry_ea,
+                end_ea=function_ea,
             ),
             stale_entry_ea: NativeFlowBlockFact(
                 start_ea=stale_entry_ea,
@@ -442,6 +440,12 @@ class TestNativeSemanticCfgAdapter:
             ),
         }
         decoded = {
+            function_ea: NativeFlowBlockFact(
+                start_ea=function_ea,
+                end_ea=stale_entry_ea,
+                successor_eas=(discovered_entry_ea,),
+                direct_branch_target_ea=discovered_entry_ea,
+            ),
             stale_entry_ea: NativeFlowBlockFact(
                 start_ea=stale_entry_ea,
                 end_ea=discovered_entry_ea,
