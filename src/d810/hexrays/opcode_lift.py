@@ -155,6 +155,18 @@ def branch_predicate_from_opcode(opcode: int) -> PredicateKind | None:
     return _lookup(int(opcode), _BRANCH_PREDICATES)
 
 
+def branch_opcode_for_predicate(predicate: PredicateKind) -> int | None:
+    """Return the Hex-Rays branch opcode for one portable predicate."""
+    if not isinstance(predicate, PredicateKind):
+        raise TypeError("branch opcode lookup requires a PredicateKind")
+    for name, candidate in _BRANCH_PREDICATES:
+        if candidate is not predicate:
+            continue
+        value = opcode_value(name)
+        return None if value is None else int(value)
+    return None
+
+
 def set_predicate_from_opcode(opcode: int) -> PredicateKind | None:
     return _lookup(int(opcode), _SET_PREDICATES)
 
