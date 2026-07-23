@@ -214,6 +214,36 @@ DIRECT_EVIDENCE_MUTATIONS = frozenset(
     }
 )
 
+LEGACY_FINAL_ROUTE_FUNCTIONS = frozenset(
+    {
+        "_build_residual_state_route_evidence",
+        "_choose_dispatch_patch_region",
+        "_entry_bridge_ready",
+        "_exact_register_state_write_sites",
+        "_materialize_residual_entry_bridge",
+        "_materialize_residual_fragment_from_mba",
+        "_materialize_residual_state_routes",
+        "_materialize_residual_state_routes_from_mba",
+        "_native_dispatch_branch_site",
+        "_native_equality_state_target_rows",
+        "_native_post_state_write_indirect_site",
+        "_native_predicate_reaches_route_site",
+        "_native_register_immediate_write_matches",
+        "_native_register_immediate_write_near_block",
+        "_native_residual_route_patch_site",
+        "_partition_residual_route_branches",
+        "_plan_all_residual_state_route_patches",
+        "_plan_exact_state_write_route_patches",
+        "_plan_misrouted_exact_state_route_patches",
+        "_plan_residual_state_route_patches",
+        "_plan_unseen_residual_state_route_patches",
+        "_residual_patch_site_is_path_local",
+        "_residual_predicate_inherited_states",
+        "_select_register_indirect_patch_region",
+        "_unique_equality_state_targets",
+    }
+)
+
 
 def _resolver_state_class() -> ast.ClassDef:
     tree = ast.parse(
@@ -346,6 +376,7 @@ def test_computed_goto_resolver_has_no_direct_final_state_route_authority() -> N
         node.name for node in resolver_tree.body if isinstance(node, ast.FunctionDef)
     }
     assert "rebind_live_preopt_routes" not in resolver_functions
+    assert resolver_functions.isdisjoint(LEGACY_FINAL_ROUTE_FUNCTIONS)
     assert _referenced_identifiers(resolver_tree).isdisjoint(
         {
             "DeferredGraphModifier",
@@ -356,6 +387,35 @@ def test_computed_goto_resolver_has_no_direct_final_state_route_authority() -> N
             "queue_materialize_zero_way_goto",
             "queue_terminal_goto_change",
         }
+    )
+    calls_done = _function(resolver_tree, "_on_calls_done_preanalysis")
+    assert _referenced_identifiers(calls_done).isdisjoint(
+        {
+            "_entry_bridge_ready",
+            "_materialize_residual_entry_bridge",
+            "_materialize_residual_state_routes_from_mba",
+            "entry_bridge_materialized",
+            "state_route_rounds",
+        }
+    )
+
+    resolver_state_tree = ast.parse(
+        RESOLVER_STATE_PATH.read_text(encoding="utf-8"),
+        filename=str(RESOLVER_STATE_PATH),
+    )
+    materialization_state = next(
+        node
+        for node in resolver_state_tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "ResolverMaterializationState"
+    )
+    materialization_fields = {
+        node.target.id
+        for node in materialization_state.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    assert materialization_fields.isdisjoint(
+        {"entry_bridge_materialized", "state_route_rounds"}
     )
 
 

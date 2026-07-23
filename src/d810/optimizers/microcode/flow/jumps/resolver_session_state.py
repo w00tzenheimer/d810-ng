@@ -49,8 +49,6 @@ class ResolverMaterializationState:
 
     resolution: object
     rounds: int = 0
-    entry_bridge_materialized: bool = False
-    state_route_rounds: int = 0
 
 
 @dataclass(slots=True)

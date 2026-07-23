@@ -1126,12 +1126,6 @@ def test_calls_done_uses_serial_free_native_discovery_as_fallback(monkeypatch) -
         "recover_conditional_handler_bridge_transfers_from_mba",
         lambda transfers, mba, imported_predicate_eas: (),
     )
-    monkeypatch.setattr(resolver, "_entry_bridge_ready", lambda **_kwargs: False)
-    monkeypatch.setattr(
-        resolver,
-        "_materialize_residual_state_routes_from_mba",
-        lambda resolution, transfers, mba: (0, ()),
-    )
     monkeypatch.setattr(
         resolver,
         "discover_static_native_bootstrap_routes",
@@ -1387,12 +1381,6 @@ def test_calls_done_retains_changed_evidence_during_active_materialization(
         resolver,
         "discover_static_native_bootstrap_routes",
         lambda _function_ea, _state: False,
-    )
-    monkeypatch.setattr(resolver, "_entry_bridge_ready", lambda **_kwargs: False)
-    monkeypatch.setattr(
-        resolver,
-        "_materialize_residual_state_routes_from_mba",
-        lambda _resolution, _transfers, _mba: (0, ()),
     )
     def refresh_preopt(_state, _mba):
         if preopt_refresh_outcome == "raise":
