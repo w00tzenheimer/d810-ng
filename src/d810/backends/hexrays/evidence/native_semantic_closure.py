@@ -375,6 +375,11 @@ def build_native_semantic_cfg(
         normalized_resolver_cut_eas,
         normalized_target_eas_by_source,
     )
+    semantic_entry_eas.update(
+        int(successor_ea)
+        for fact in facts_by_start_ea.values()
+        for successor_ea in traversable_native_successor_eas(fact)
+    )
     abstentions = []
     pending = list(seeds)
     visited = set()
