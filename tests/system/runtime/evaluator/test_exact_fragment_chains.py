@@ -9,7 +9,7 @@ import pytest
 
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
-from d810.evaluator.hexrays_microcode.chains import (  # noqa: E402
+from d810.hexrays.ir.exact_data_flow import (  # noqa: E402
     DefSite,
     UseSite,
     find_reaching_defs_for_reg_use,
@@ -285,3 +285,18 @@ def test_definition_query_preserves_duplicate_physical_use_anchors() -> None:
         UseSite(0, 0x1004, ida_hexrays.m_mov),
         UseSite(0, 0x1004, ida_hexrays.m_mov),
     ]
+
+
+def test_reaching_definition_query_abstains_on_duplicate_definition_ea() -> None:
+    block = _Block(
+        0,
+        (
+            _Instruction(0x1000, destination=_reg()),
+            _Instruction(0x1000, destination=_reg()),
+            _Instruction(0x1004, source=_reg()),
+        ),
+    )
+    chains = _GraphChains({0: _BlockChains(register_targets=(0,))})
+    mba = _Mba((block,), ud=chains, du=chains)
+
+    assert find_reaching_defs_for_reg_use(mba, 0, 0x1004, 10, 4) == []
