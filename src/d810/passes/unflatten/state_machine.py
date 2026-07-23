@@ -57,6 +57,10 @@ from d810.analyses.control_flow.router_resolver import (
     select_router,
 )
 from d810.analyses.control_flow.semantic_transition import resolve_state_transitions
+from d810.analyses.control_flow.semantic_route_evidence import (
+    CanonicalSemanticEvidence,
+    bind_canonical_semantic_evidence,
+)
 from d810.analyses.control_flow.transition_builder import (
     transition_result_from_resolutions,
 )
@@ -68,6 +72,9 @@ from d810.capabilities.branch_witness import BranchWitnessCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
 from d810.capabilities.machine_engines import MachineRecoveryEnginesCapability
+from d810.capabilities.semantic_routes import (
+    CanonicalSemanticEvidenceCapability,
+)
 from d810.analyses.data_flow.concolic import EmulationCapability
 from d810.core import logging
 from d810.core.observability_preanalysis import observe_state_dispatcher_rows
@@ -75,6 +82,8 @@ from d810.core.observability_preanalysis import observe_state_dispatcher_rows
 logger = logging.getLogger("D810.passes.unflatten.state_machine")
 
 LOWER_STATE_MACHINE_PLAN_METADATA = "lower_state_machine_plan_metadata"
+CANONICAL_SEMANTIC_EVIDENCE = "canonical_semantic_evidence"
+BOUND_CANONICAL_SEMANTIC_EVIDENCE = "bound_canonical_semantic_evidence"
 
 
 def _count_valrange_confirmable(valrange, dispatch_map, state_var_stkoff) -> int:
@@ -561,6 +570,40 @@ class RecoverStateTransitions(PipelinePass):
             self.name: resolutions,
             "transition_result": transition_result,
         }
+        semantic_provider = context.capabilities.optional(
+            CanonicalSemanticEvidenceCapability
+        )
+        if semantic_provider is not None:
+            semantic_evidence = semantic_provider.evidence_for(
+                int(context.graph.func_ea)
+            )
+            if semantic_evidence is not None:
+                if not isinstance(
+                    semantic_evidence,
+                    CanonicalSemanticEvidence,
+                ):
+                    raise TypeError(
+                        "canonical semantic capability returned non-portable evidence"
+                    )
+                bound_semantic_evidence = bind_canonical_semantic_evidence(
+                    context.graph,
+                    semantic_evidence,
+                )
+                _publish(
+                    context,
+                    CANONICAL_SEMANTIC_EVIDENCE,
+                    semantic_evidence,
+                )
+                analysis_outputs[CANONICAL_SEMANTIC_EVIDENCE] = semantic_evidence
+                if bound_semantic_evidence is not None:
+                    _publish(
+                        context,
+                        BOUND_CANONICAL_SEMANTIC_EVIDENCE,
+                        bound_semantic_evidence,
+                    )
+                    analysis_outputs[BOUND_CANONICAL_SEMANTIC_EVIDENCE] = (
+                        bound_semantic_evidence
+                    )
         if valrange is not None and dispatch_map is not None:
             confirmable_count = _count_valrange_confirmable(
                 valrange,

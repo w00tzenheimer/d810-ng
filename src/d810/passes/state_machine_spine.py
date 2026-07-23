@@ -26,6 +26,8 @@ from d810.passes.pass_pipeline import (
 from d810.passes.registry import PassRegistry
 from d810.ir.maturity import IRMaturity
 from d810.passes.unflatten.state_machine import (
+    BOUND_CANONICAL_SEMANTIC_EVIDENCE,
+    CANONICAL_SEMANTIC_EVIDENCE,
     CleanupResidualDispatcher,
     LowerStateMachine,
     PlanSemanticRegions,
@@ -61,6 +63,8 @@ TRANSITION_ANALYSES = AnalysisContract(
             "recover_state_transitions",
             "transition_result",
             "valrange_confirmable_count",
+            CANONICAL_SEMANTIC_EVIDENCE,
+            BOUND_CANONICAL_SEMANTIC_EVIDENCE,
         }
     ),
 )
