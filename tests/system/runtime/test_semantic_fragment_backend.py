@@ -2279,11 +2279,13 @@ def test_native_body_origin_binding_translates_operations_and_projection(
 )
 @pytest.mark.parametrize("empty_topology_duplicate", (False, True))
 @pytest.mark.parametrize("split_predicate_microblock", (False, True))
+@pytest.mark.parametrize("template_provenance_ea", (0x500000, 0x4FFF00))
 def test_cached_preopt_body_materializes_through_the_fragment_transaction(
     monkeypatch,
     destination_maturity,
     empty_topology_duplicate,
     split_predicate_microblock,
+    template_provenance_ea,
 ) -> None:
     def create_with_live_placeholder(**kwargs):
         created = _create_fake_standalone_block(**kwargs)
@@ -2316,7 +2318,7 @@ def test_cached_preopt_body_materializes_through_the_fragment_transaction(
     producer_instruction.d.writes_ccflags = True
     template = dhi.DetachedSnippetTemplate(
         function_ea=int(gateway.function_ea),
-        target_ea=0x500000,
+        target_ea=template_provenance_ea,
         maturity=int(ida_hexrays.MMAT_PREOPTIMIZED),
         root_source_serial=0,
         blocks=(
@@ -2375,7 +2377,7 @@ def test_cached_preopt_body_materializes_through_the_fragment_transaction(
     monkeypatch.setattr(
         dhi,
         "_PREOPT_UNION_SNIPPET_TEMPLATES",
-        {(int(gateway.function_ea), 0x500000): template},
+        {(int(gateway.function_ea), template_provenance_ea): template},
     )
     monkeypatch.setattr(dhi.ida_hexrays, "minsn_t", deepcopy)
     monkeypatch.setattr(dm, "create_standalone_block", create_with_live_placeholder)
