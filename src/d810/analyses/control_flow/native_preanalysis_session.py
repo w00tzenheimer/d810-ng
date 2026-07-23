@@ -8,8 +8,6 @@ become the authority for evidence generation or restart decisions.
 
 from __future__ import annotations
 
-import os
-import traceback
 from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import Enum
 
@@ -1819,17 +1817,6 @@ class NativePreanalysisSessionState:
         transfers: tuple[MaterializedIndirectTransfer, ...],
     ) -> bool:
         """Merge portable transfers, refreshing compatible predicate snapshots."""
-        trace_merge = os.environ.get("RHAD_TRANSFER_TRACE_SESSION_STATE") == "1"
-        if trace_merge and transfers:
-            caller = " > ".join(
-                frame.name for frame in traceback.extract_stack(limit=6)[:-1]
-            )
-            logger.info(
-                "RESOLVER_TRANSFER_MERGE generation=%d count=%d caller=%s",
-                self.evidence_generation,
-                len(transfers),
-                caller,
-            )
         current = () if self.facts is None else self.facts.transfers
         merged = list(current)
         for transfer in transfers:
@@ -1863,35 +1850,11 @@ class NativePreanalysisSessionState:
                             merged.append(transfer)
                         continue
                     first_index = compatible_indices[0]
-                    if trace_merge:
-                        previous = merged[first_index]
-                        changed_fields = tuple(
-                            item.name
-                            for item in fields(MaterializedIndirectTransfer)
-                            if getattr(previous, item.name)
-                            != getattr(combined, item.name)
-                        )
-                        logger.info(
-                            "RESOLVER_TRANSFER_REPLACE generation=%d "
-                            "source=0x%X before=%s after=%s changed_fields=%s",
-                            self.evidence_generation,
-                            int(combined.source_jmp_ea),
-                            previous.resolver_kind,
-                            combined.resolver_kind,
-                            changed_fields,
-                        )
                     merged[first_index] = combined
                     for duplicate_index in reversed(compatible_indices[1:]):
                         del merged[duplicate_index]
                     continue
             if transfer not in merged:
-                if trace_merge:
-                    logger.info(
-                        "RESOLVER_TRANSFER_APPEND generation=%d source=0x%X kind=%s",
-                        self.evidence_generation,
-                        int(transfer.source_jmp_ea),
-                        transfer.resolver_kind,
-                    )
                 merged.append(transfer)
         normalized = tuple(merged)
         if normalized == current:

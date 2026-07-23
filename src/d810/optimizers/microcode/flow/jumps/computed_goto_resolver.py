@@ -226,7 +226,7 @@ class _NativeStateRouteDeliverySite(NamedTuple):
 
 
 class _DecodedNativeFlowInstruction(NamedTuple):
-    """IDA-free native facts consumed by the Rhad flow-route state machine."""
+    """IDA-free native facts consumed by immediate state-route recovery."""
 
     ea: int
     end_ea: int
