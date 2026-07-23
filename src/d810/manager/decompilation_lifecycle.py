@@ -217,12 +217,12 @@ class DecompilationLifecycleCoordinator:
         state = session.native_preanalysis
         return state.merge_facts(key, facts)
 
-    def mark_preopt_bound(
+    def _native_state_for_evidence_epoch(
         self,
         key: NativePreanalysisKey,
         evidence_epoch: int,
-    ) -> bool:
-        """Bind PREOPT exactly once to the current portable evidence epoch."""
+    ) -> NativePreanalysisSessionState:
+        """Return the active authority after exact portable-epoch validation."""
         session = self.get(key)
         if session is None:
             raise KeyError("native preanalysis session is not active")
@@ -230,9 +230,98 @@ class DecompilationLifecycleCoordinator:
         requested = int(evidence_epoch)
         if requested != current:
             raise ValueError(
-                f"PREOPT evidence epoch mismatch: current={current} requested={requested}"
+                "lifecycle evidence epoch mismatch: "
+                f"current={current} requested={requested}"
             )
-        return session.native_preanalysis.mark_preopt_bound()
+        return session.native_preanalysis
+
+    def mark_normalization_staged(
+        self,
+        key: NativePreanalysisKey,
+        evidence_epoch: int,
+    ) -> bool:
+        """Record detached normalization construction for the exact epoch."""
+        return self._native_state_for_evidence_epoch(
+            key,
+            evidence_epoch,
+        ).mark_normalization_staged()
+
+    def mark_normalization_validated(
+        self,
+        key: NativePreanalysisKey,
+        evidence_epoch: int,
+    ) -> bool:
+        """Record normalization validation for the exact staged epoch."""
+        return self._native_state_for_evidence_epoch(
+            key,
+            evidence_epoch,
+        ).mark_normalization_validated()
+
+    def mark_normalization_published_and_postvalidated(
+        self,
+        key: NativePreanalysisKey,
+        evidence_epoch: int,
+    ) -> bool:
+        """Advance normalized authority only after publication postvalidation."""
+        return self._native_state_for_evidence_epoch(
+            key,
+            evidence_epoch,
+        ).mark_normalization_published_and_postvalidated()
+
+    def mark_canonical_semantic_plan_ready(
+        self,
+        key: NativePreanalysisKey,
+        evidence_epoch: int,
+    ) -> bool:
+        """Record canonical semantic planning for the exact normalized epoch."""
+        return self._native_state_for_evidence_epoch(
+            key,
+            evidence_epoch,
+        ).mark_canonical_semantic_plan_ready()
+
+    def mark_semantic_fragment_staged(
+        self,
+        key: NativePreanalysisKey,
+        evidence_epoch: int,
+    ) -> bool:
+        """Record detached semantic-fragment construction for the exact epoch."""
+        return self._native_state_for_evidence_epoch(
+            key,
+            evidence_epoch,
+        ).mark_semantic_fragment_staged()
+
+    def mark_semantic_fragment_validated(
+        self,
+        key: NativePreanalysisKey,
+        evidence_epoch: int,
+    ) -> bool:
+        """Record semantic-fragment validation for the exact staged epoch."""
+        return self._native_state_for_evidence_epoch(
+            key,
+            evidence_epoch,
+        ).mark_semantic_fragment_validated()
+
+    def mark_semantic_fragment_published_and_postvalidated(
+        self,
+        key: NativePreanalysisKey,
+        evidence_epoch: int,
+    ) -> bool:
+        """Advance semantic authority only after publication postvalidation."""
+        return self._native_state_for_evidence_epoch(
+            key,
+            evidence_epoch,
+        ).mark_semantic_fragment_published_and_postvalidated()
+
+    def mark_receipt_committed(
+        self,
+        key: NativePreanalysisKey,
+        evidence_epoch: int,
+    ) -> bool:
+        """Record committed semantic receipt for the exact published epoch."""
+        return self._native_state_for_evidence_epoch(
+            key,
+            evidence_epoch,
+        ).mark_receipt_committed()
 
     def finish(self, key: NativePreanalysisKey) -> None:
         """Finish the innermost exact-key owner and release all live state."""

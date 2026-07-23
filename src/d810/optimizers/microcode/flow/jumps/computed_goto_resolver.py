@@ -15933,22 +15933,6 @@ def rebind_live_preopt_routes(
     )
     if not union_owns_current_mba:
         _capture_preopt_entry_bridge_evidence(state, mba)
-    if (
-        not state.native_preanalysis.needs_preopt_binding()
-        and not state.native_preanalysis.needs_bootstrap_route_binding()
-        and not state.native_preanalysis.needs_state_write_route_binding()
-    ):
-        logger.debug(
-            "PREOPT bootstrap abstain: func=0x%X reason=no_pending_binding "
-            "evidence_generation=%d bound_generation=%s bootstrap_routes=%d "
-            "state_write_routes=%d",
-            int(function_ea),
-            int(state.evidence_generation),
-            state.native_preanalysis.bound_preopt_generation,
-            len(state.native_preanalysis.bootstrap_routes),
-            len(state.portable_evidence.state_write_routes),
-        )
-        return
     index = state.identity_index
     gateway = decision.get("mutation_gateway")
     if index is None or gateway is None:
@@ -16522,8 +16506,6 @@ def rebind_live_preopt_routes(
         and not entry_bridge_ports
         and entry_consumer_pending is None
     ):
-        if union_imported and not state.native_preanalysis.bootstrap_routes:
-            state.native_preanalysis.mark_preopt_bound()
         return
     pending_source_serials = [
         *(int(route.source.serial) for route in pending_routes),
@@ -16827,7 +16809,6 @@ def rebind_live_preopt_routes(
     ):
         if state_write_unbound == 0:
             state.native_preanalysis.mark_state_write_routes_bound()
-        state.native_preanalysis.mark_preopt_bound()
 
 
 def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) -> None:

@@ -173,10 +173,10 @@ def test_materialized_mutation_waits_for_current_preopt_evidence_generation() ->
 
     assert _should_defer_unbound_materialized_preopt(state)
 
-    native.bound_preopt_generation = 1
+    native.normalization_published_postvalidated_generation = 1
     assert not _should_defer_unbound_materialized_preopt(state)
 
-    native.bound_preopt_generation = None
+    native.normalization_published_postvalidated_generation = None
     state.materialized = False
     assert not _should_defer_unbound_materialized_preopt(state)
 
@@ -1437,7 +1437,7 @@ def test_recovery_gate_reports_session_profile_and_identity_phase() -> None:
         report_fact_consumers=lambda records: reported.extend(records) or len(records)
     )
     native = NativePreanalysisSessionState(evidence_generation=7)
-    native.bound_preopt_generation = 7
+    native.normalization_published_postvalidated_generation = 7
     resolver_state = ResolverSessionState(
         native_preanalysis=native,
         native_key=NATIVE_KEY,
@@ -1465,7 +1465,7 @@ def test_recovery_gate_reports_session_profile_and_identity_phase() -> None:
     assert record.decision == "accepted"
     assert record.reason == "recovery_round_granted"
     assert record.payload == {
-        "bound_preopt_generation": 7,
+        "normalization_published_postvalidated_generation": 7,
         "evidence_generation": 7,
         "imported_identity_ready": True,
         "indirect_dispatcher_materialized": True,
@@ -1498,7 +1498,7 @@ def test_unbound_materialized_preopt_deferral_is_persisted() -> None:
     assert record.decision == "declined"
     assert record.reason == "preopt_evidence_generation_unbound"
     assert record.payload["evidence_generation"] == 9
-    assert record.payload["bound_preopt_generation"] is None
+    assert record.payload["normalization_published_postvalidated_generation"] is None
     assert record.payload["recovery_epoch_phase"] == 0
 
 
@@ -1594,7 +1594,7 @@ def test_import_epoch_resets_round_budget_when_mba_pointer_is_reused() -> None:
     assert (_EA, _MAT) not in rule._unflat_round_count
 
 
-def test_preopt_bound_epoch_ignores_mba_address_churn_from_own_mutations() -> None:
+def test_normalized_epoch_ignores_mba_address_churn_from_own_mutations() -> None:
     class RecordingPassManager:
         def __init__(self) -> None:
             self.reset_eas: list[int] = []
@@ -1678,14 +1678,14 @@ def test_recovery_epoch_uses_generation_bound_into_preopt_without_import() -> No
     assert (
         _unflatten_recovery_epoch_generation(
             current_evidence_generation=7,
-            bound_preopt_generation=3,
+            normalized_evidence_generation=3,
         )
         == 3
     )
     assert (
         _unflatten_recovery_epoch_generation(
             current_evidence_generation=7,
-            bound_preopt_generation=None,
+            normalized_evidence_generation=None,
         )
         == 7
     )

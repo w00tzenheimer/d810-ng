@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 
@@ -38,6 +38,165 @@ from tests.native_preanalysis import make_native_key
 NATIVE_KEY = make_native_key()
 
 
+def _publish_normalization(state: NativePreanalysisSessionState) -> None:
+    assert state.mark_normalization_staged()
+    assert state.mark_normalization_validated()
+    assert state.mark_normalization_published_and_postvalidated()
+
+
+def test_legacy_preopt_binding_authority_is_removed() -> None:
+    field_names = {item.name for item in fields(NativePreanalysisSessionState)}
+    state = NativePreanalysisSessionState()
+
+    assert "bound_preopt_generation" not in field_names
+    assert not hasattr(state, "needs_preopt_binding")
+    assert not hasattr(state, "mark_preopt_bound")
+
+
+def test_lifecycle_rejects_incoherent_generation_snapshots() -> None:
+    with pytest.raises(ValueError, match="normalization lifecycle generation order"):
+        NativePreanalysisSessionState(
+            evidence_generation=1,
+            normalization_published_postvalidated_generation=1,
+        )
+
+    with pytest.raises(ValueError, match="semantic lifecycle generation order"):
+        NativePreanalysisSessionState(
+            evidence_generation=1,
+            portable_evidence_ready_generation=1,
+            normalization_staged_generation=1,
+            normalization_validated_generation=1,
+            normalization_published_postvalidated_generation=1,
+            receipt_committed_generation=1,
+        )
+
+    with pytest.raises(ValueError, match="cannot exceed portable evidence"):
+        NativePreanalysisSessionState(
+            evidence_generation=1,
+            portable_evidence_ready_generation=2,
+        )
+
+
+def test_lifecycle_tracks_normalization_and_semantic_generations_independently() -> (
+    None
+):
+    state = NativePreanalysisSessionState()
+
+    state.mark_evidence_changed(
+        evidence_family="test_evidence",
+        reason="portable evidence became ready",
+    )
+
+    assert state.portable_evidence_ready_generation == 1
+    assert state.needs_normalization_publication()
+    with pytest.raises(
+        RuntimeError,
+        match="normalization validation requires the current staged generation",
+    ):
+        state.mark_normalization_validated()
+
+    assert state.mark_normalization_staged()
+    assert state.mark_normalization_validated()
+    assert state.mark_normalization_published_and_postvalidated()
+    assert not state.needs_normalization_publication()
+    assert state.normalization_staged_generation == 1
+    assert state.normalization_validated_generation == 1
+    assert state.normalization_published_postvalidated_generation == 1
+
+    # A faithful PREOPT normalization is not state-machine lowering authority.
+    assert state.canonical_semantic_plan_generation is None
+    assert state.semantic_fragment_staged_generation is None
+    assert state.semantic_fragment_validated_generation is None
+    assert state.semantic_fragment_published_postvalidated_generation is None
+    assert state.receipt_committed_generation is None
+
+    with pytest.raises(
+        RuntimeError,
+        match="semantic fragment staging requires the current canonical plan",
+    ):
+        state.mark_semantic_fragment_staged()
+
+    assert state.mark_canonical_semantic_plan_ready()
+    assert state.mark_semantic_fragment_staged()
+    assert state.mark_semantic_fragment_validated()
+    assert state.mark_semantic_fragment_published_and_postvalidated()
+    assert state.mark_receipt_committed()
+    assert state.canonical_semantic_plan_generation == 1
+    assert state.semantic_fragment_staged_generation == 1
+    assert state.semantic_fragment_validated_generation == 1
+    assert state.semantic_fragment_published_postvalidated_generation == 1
+    assert state.receipt_committed_generation == 1
+
+
+def test_normalization_abort_preserves_previous_published_authority() -> None:
+    observed = []
+    state = NativePreanalysisSessionState(event_observer=observed.append)
+    state.mark_evidence_changed(
+        evidence_family="test_evidence",
+        reason="first portable generation",
+    )
+    state.mark_normalization_staged()
+    state.mark_normalization_validated()
+    state.mark_normalization_published_and_postvalidated()
+
+    state.mark_evidence_changed(
+        evidence_family="test_evidence",
+        reason="second portable generation",
+    )
+    assert state.evidence_generation == 2
+    state.mark_normalization_staged()
+    state.mark_normalization_validated()
+    assert state.abort_normalization(reason="postpublication validation failed")
+
+    assert state.portable_evidence_ready_generation == 2
+    assert state.normalization_staged_generation == 1
+    assert state.normalization_validated_generation == 1
+    assert state.normalization_published_postvalidated_generation == 1
+    assert state.needs_normalization_publication()
+    assert observed[-1].operation == "normalization_aborted"
+    assert observed[-1].outcome == "aborted"
+    with pytest.raises(
+        RuntimeError,
+        match="normalization publication requires the current validated generation",
+    ):
+        state.mark_normalization_published_and_postvalidated()
+
+
+def test_semantic_abort_preserves_previous_receipt_authority() -> None:
+    state = NativePreanalysisSessionState()
+    state.mark_evidence_changed(
+        evidence_family="test_evidence",
+        reason="first portable generation",
+    )
+    state.mark_normalization_staged()
+    state.mark_normalization_validated()
+    state.mark_normalization_published_and_postvalidated()
+    state.mark_canonical_semantic_plan_ready()
+    state.mark_semantic_fragment_staged()
+    state.mark_semantic_fragment_validated()
+    state.mark_semantic_fragment_published_and_postvalidated()
+    state.mark_receipt_committed()
+
+    state.mark_evidence_changed(
+        evidence_family="test_evidence",
+        reason="second portable generation",
+    )
+    state.mark_normalization_staged()
+    state.mark_normalization_validated()
+    state.mark_normalization_published_and_postvalidated()
+    state.mark_canonical_semantic_plan_ready()
+    state.mark_semantic_fragment_staged()
+    state.mark_semantic_fragment_validated()
+    assert state.abort_semantic_fragment(reason="published graph drifted")
+
+    assert state.normalization_published_postvalidated_generation == 2
+    assert state.canonical_semantic_plan_generation == 2
+    assert state.semantic_fragment_staged_generation == 1
+    assert state.semantic_fragment_validated_generation == 1
+    assert state.semantic_fragment_published_postvalidated_generation == 1
+    assert state.receipt_committed_generation == 1
+
+
 def test_changed_route_evidence_advances_once_and_binds_once() -> None:
     source = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
@@ -61,13 +220,13 @@ def test_changed_route_evidence_advances_once_and_binds_once() -> None:
     assert state.evidence_generation == 1
     assert state.request_controlled_redo()
     assert not state.request_controlled_redo()
-    assert state.needs_preopt_binding()
-    state.mark_preopt_bound()
-    assert not state.needs_preopt_binding()
-    assert state.bound_preopt_generation == 1
+    assert state.needs_normalization_publication()
+    _publish_normalization(state)
+    assert not state.needs_normalization_publication()
+    assert state.normalization_published_postvalidated_generation == 1
 
 
-def test_evidence_observer_sees_generation_and_preopt_bind_transitions() -> None:
+def test_evidence_observer_sees_normalization_lifecycle_transitions() -> None:
     observed = []
     state = NativePreanalysisSessionState(event_observer=observed.append)
 
@@ -75,14 +234,16 @@ def test_evidence_observer_sees_generation_and_preopt_bind_transitions() -> None
         evidence_family="test_evidence",
         reason="test evidence changed",
     )
-    state.mark_preopt_bound()
+    _publish_normalization(state)
 
     assert [
         (row.operation, row.previous_generation, row.resulting_generation)
         for row in observed
     ] == [
         ("evidence_changed", 0, 1),
-        ("preopt_bound", 1, 1),
+        ("normalization_staged", 0, 1),
+        ("normalization_validated", 0, 1),
+        ("normalization_published_postvalidated", 0, 1),
     ]
 
 
@@ -90,7 +251,9 @@ def test_evidence_observer_sees_generated_restart_request_and_consumption() -> N
     observed = []
     state = NativePreanalysisSessionState(
         evidence_generation=2,
-        bound_preopt_generation=1,
+        normalization_staged_generation=1,
+        normalization_validated_generation=1,
+        normalization_published_postvalidated_generation=1,
         event_observer=observed.append,
     )
 
@@ -221,7 +384,7 @@ def test_state_write_delivery_route_rejects_mismatched_native_key() -> None:
         )
 
 
-def test_first_pass_native_evidence_coalesces_until_preopt_binds() -> None:
+def test_first_pass_native_evidence_coalesces_until_normalization_publishes() -> None:
     source = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x401020, 0x401021),), native_key=NATIVE_KEY
     )
@@ -247,7 +410,7 @@ def test_first_pass_native_evidence_coalesces_until_preopt_binds() -> None:
     )
     assert state.evidence_generation == 1
 
-    assert state.mark_preopt_bound()
+    _publish_normalization(state)
     state.mark_evidence_changed(
         evidence_family="test_evidence",
         reason="test evidence changed",
@@ -304,7 +467,7 @@ def test_lifecycle_owns_serial_free_bootstrap_binding_evidence() -> None:
     )
 
     assert state.record_bootstrap_route_binding(NATIVE_KEY, binding)
-    assert state.mark_preopt_bound()
+    _publish_normalization(state)
     assert state.bound_bootstrap_route_bindings(NATIVE_KEY) == (binding,)
 
 

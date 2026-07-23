@@ -94,7 +94,7 @@ def test_lifecycle_events_are_session_ordered_and_snapshot_correlation_is_explic
         LifecycleEventObserved(
             session_id="session-1",
             func_ea=0x40C8B0,
-            event_kind="preopt_bound",
+            event_kind="normalization_published_postvalidated",
             snapshot=snapshot,
             evidence_generation=3,
             mba_generation_before=8,
@@ -122,7 +122,7 @@ def test_lifecycle_events_are_session_ordered_and_snapshot_correlation_is_explic
     assert rows == [
         (1, "session_active", None, None, None, None),
         (2, "evidence_published", None, 3, 8, 8),
-        (3, "preopt_bound", 1, 3, 8, 9),
+        (3, "normalization_published_postvalidated", 1, 3, 8, 9),
         (4, "calls_consumed", None, 4, 9, 9),
     ]
 
