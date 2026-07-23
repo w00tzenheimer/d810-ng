@@ -7,6 +7,12 @@ from dataclasses import dataclass, field
 import ida_hexrays
 
 from d810.core.typing import TYPE_CHECKING
+from d810.hexrays.ir.exact_data_flow import (
+    find_reaching_defs_for_reg_use,
+    find_reaching_defs_for_stkvar_use,
+    find_uses_reached_by_reg_definition,
+    find_uses_reached_by_stkvar_definition,
+)
 from d810.hexrays.ir.logical_block_proxy import (
     LogicalBlockProxy,
     LogicalBlockVersion,
@@ -21,6 +27,7 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
 )
 from d810.ir.flowgraph import BlockKind
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.storage_identity import StorageIdentityKind
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
@@ -30,6 +37,7 @@ from d810.transforms.fragment_validation import (
     FragmentBindingState,
     FragmentValidationPostcondition,
     PublishedFragmentObservation,
+    ProjectedDataFlowRelation,
     ProjectedFallthroughHelper,
     ProjectedFragment,
     ProjectedFragmentBlock,
@@ -331,6 +339,227 @@ def _unowned_endpoint(modifier: DeferredGraphModifier, serial: int) -> str:
     return "unowned@unknown-ea"
 
 
+def _query_reaching_definitions(
+    modifier: DeferredGraphModifier,
+    site,
+    live_block,
+):
+    storage = site.storage_identity
+    if storage is None:
+        raise SemanticFragmentBackendRejected(
+            f"data-flow use {site.site_id!r} has no portable storage identity"
+        )
+    if storage.kind is StorageIdentityKind.REGISTER:
+        return find_reaching_defs_for_reg_use(
+            modifier.mba,
+            int(live_block.serial),
+            int(site.instruction_ea),
+            int(storage.offset),
+            int(site.width),
+        )
+    if storage.kind is StorageIdentityKind.STACK:
+        return find_reaching_defs_for_stkvar_use(
+            modifier.mba,
+            int(live_block.serial),
+            int(site.instruction_ea),
+            int(storage.offset),
+            int(site.width),
+        )
+    raise SemanticFragmentBackendRejected(
+        f"data-flow use {site.site_id!r} has unsupported storage namespace "
+        f"{storage.kind.name.lower()}"
+    )
+
+
+def _query_reached_uses(
+    modifier: DeferredGraphModifier,
+    site,
+    live_block,
+):
+    storage = site.storage_identity
+    if storage is None:
+        raise SemanticFragmentBackendRejected(
+            f"data-flow definition {site.site_id!r} has no portable storage identity"
+        )
+    if storage.kind is StorageIdentityKind.REGISTER:
+        return find_uses_reached_by_reg_definition(
+            modifier.mba,
+            int(live_block.serial),
+            int(site.instruction_ea),
+            int(storage.offset),
+            int(site.width),
+        )
+    if storage.kind is StorageIdentityKind.STACK:
+        return find_uses_reached_by_stkvar_definition(
+            modifier.mba,
+            int(live_block.serial),
+            int(site.instruction_ea),
+            int(storage.offset),
+            int(site.width),
+        )
+    raise SemanticFragmentBackendRejected(
+        f"data-flow definition {site.site_id!r} has unsupported storage namespace "
+        f"{storage.kind.name.lower()}"
+    )
+
+
+def _require_unambiguous_observed_anchors(
+    modifier: DeferredGraphModifier,
+    observations,
+    ids_by_serial: dict[int, str],
+    *,
+    role: str,
+) -> None:
+    seen: set[tuple[int, int]] = set()
+    for observation in observations:
+        coordinate = (int(observation.block_serial), int(observation.ins_ea))
+        if coordinate not in seen:
+            seen.add(coordinate)
+            continue
+        endpoint = ids_by_serial.get(coordinate[0])
+        if endpoint is None:
+            endpoint = _unowned_endpoint(modifier, coordinate[0])
+        raise SemanticFragmentBackendRejected(
+            f"data-flow {role} observation is ambiguous at "
+            f"{endpoint}@0x{coordinate[1]:X}"
+        )
+
+
+def _observed_site_id(
+    modifier: DeferredGraphModifier,
+    observation,
+    candidates,
+    ids_by_serial: dict[int, str],
+    *,
+    storage,
+    width: int,
+    role: str,
+) -> str:
+    block_serial = int(observation.block_serial)
+    instruction_ea = int(observation.ins_ea)
+    block_id = ids_by_serial.get(block_serial)
+    matches = tuple(
+        site
+        for site in candidates
+        if block_id == site.block_id
+        and instruction_ea == int(site.instruction_ea)
+        and storage == site.storage_identity
+        and int(width) == int(site.width)
+    )
+    endpoint = (
+        block_id if block_id is not None else _unowned_endpoint(modifier, block_serial)
+    )
+    if len(matches) > 1:
+        raise SemanticFragmentBackendRejected(
+            f"planned data-flow {role} is ambiguous at {endpoint}@0x{instruction_ea:X}"
+        )
+    if matches:
+        return matches[0].site_id
+    return f"unplanned-{role}:{storage.key}:{endpoint}@0x{instruction_ea:X}"
+
+
+def _project_data_flow_relations(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    live_by_id: dict[str, object],
+    ids_by_serial: dict[int, str],
+) -> tuple[ProjectedDataFlowRelation, ...]:
+    definitions = tuple(
+        obligation.definition for obligation in plan.data_flow_obligations
+    )
+    uses = tuple(
+        use for obligation in plan.data_flow_obligations for use in obligation.uses
+    )
+    relations: set[ProjectedDataFlowRelation] = set()
+    for obligation in plan.data_flow_obligations:
+        definition = obligation.definition
+        storage = definition.storage_identity
+        if storage is None:
+            raise SemanticFragmentBackendRejected(
+                f"data-flow definition {definition.site_id!r} is unbound"
+            )
+        definition_block = live_by_id.get(definition.block_id)
+        if definition_block is None:
+            raise SemanticFragmentBackendRejected(
+                f"data-flow definition {definition.site_id!r} has no live block"
+            )
+        reached_uses = tuple(
+            _query_reached_uses(modifier, definition, definition_block)
+        )
+        _require_unambiguous_observed_anchors(
+            modifier,
+            reached_uses,
+            ids_by_serial,
+            role="use",
+        )
+        for observed_use in reached_uses:
+            use_site_id = _observed_site_id(
+                modifier,
+                observed_use,
+                uses,
+                ids_by_serial,
+                storage=storage,
+                width=definition.width,
+                role="use",
+            )
+            relations.add(
+                ProjectedDataFlowRelation(
+                    value_id=definition.value_id,
+                    definition_site_id=definition.site_id,
+                    use_site_id=use_site_id,
+                    use_def_observed=False,
+                    def_use_observed=True,
+                )
+            )
+
+        for use in obligation.uses:
+            use_block = live_by_id.get(use.block_id)
+            if use_block is None:
+                raise SemanticFragmentBackendRejected(
+                    f"data-flow use {use.site_id!r} has no live block"
+                )
+            reaching_definitions = tuple(
+                _query_reaching_definitions(modifier, use, use_block)
+            )
+            _require_unambiguous_observed_anchors(
+                modifier,
+                reaching_definitions,
+                ids_by_serial,
+                role="definition",
+            )
+            for observed_definition in reaching_definitions:
+                definition_site_id = _observed_site_id(
+                    modifier,
+                    observed_definition,
+                    definitions,
+                    ids_by_serial,
+                    storage=storage,
+                    width=use.width,
+                    role="definition",
+                )
+                relations.add(
+                    ProjectedDataFlowRelation(
+                        value_id=definition.value_id,
+                        definition_site_id=definition_site_id,
+                        use_site_id=use.site_id,
+                        use_def_observed=True,
+                        def_use_observed=False,
+                    )
+                )
+    return tuple(
+        sorted(
+            relations,
+            key=lambda relation: (
+                relation.value_id,
+                relation.definition_site_id,
+                relation.use_site_id,
+                relation.use_def_observed,
+                relation.def_use_observed,
+            ),
+        )
+    )
+
+
 def _project_fragment(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
@@ -468,12 +697,19 @@ def _project_fragment(
         )
         for binding in state.bindings.values()
     )
+    data_flow_relations = _project_data_flow_relations(
+        modifier,
+        plan,
+        live_by_id,
+        ids_by_serial,
+    )
     return ProjectedFragment(
         entry_block_id=entry_ids[0],
         blocks=projected_blocks,
         identity_bindings=projected_bindings,
         fallthrough_helpers=tuple(state.fallthrough_helpers),
         root_fallthrough_helpers=tuple(state.root_fallthrough_helpers),
+        data_flow_relations=data_flow_relations,
     )
 
 
@@ -862,9 +1098,9 @@ def stage_semantic_fragment(
         raise TypeError("semantic fragment backend requires a FragmentPlan")
     if modifier._semantic_fragment_state is not None:
         raise RuntimeError("a semantic fragment is already staged")
-    if plan.data_flow_obligations or plan.flag_corridors or plan.value_range_assumptions:
+    if plan.flag_corridors or plan.value_range_assumptions:
         raise SemanticFragmentBackendRejected(
-            "live semantic proof projection is required for data-flow plans"
+            "live flag-corridor and range projection is not implemented"
         )
 
     state = SemanticFragmentBackendState(

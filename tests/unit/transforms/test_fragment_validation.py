@@ -282,6 +282,8 @@ def _projection(plan: FragmentPlan | None = None) -> ProjectedFragment:
                 value_id="flags:choice",
                 definition_site_id="flags.def",
                 use_site_id="flags.use",
+                use_def_observed=True,
+                def_use_observed=True,
             ),
         ),
         value_ranges=(
@@ -630,6 +632,27 @@ def test_range_wider_than_required_assumption_is_rejected() -> None:
         _plan(),
         projection,
     )
+
+
+def test_data_flow_requires_independent_ud_and_du_observations() -> None:
+    projection = _projection()
+    relation = projection.data_flow_relations[0]
+
+    only_use_def = replace(
+        projection,
+        data_flow_relations=(replace(relation, def_use_observed=False),),
+    )
+    only_def_use = replace(
+        projection,
+        data_flow_relations=(replace(relation, use_def_observed=False),),
+    )
+
+    assert _failed_codes(_plan(), only_use_def) == {
+        FragmentValidationPostcondition.DEF_USE_INTEGRITY,
+    }
+    assert _failed_codes(_plan(), only_def_use) == {
+        FragmentValidationPostcondition.USE_DEF_INTEGRITY,
+    }
 
 
 def test_identity_owner_and_replacement_lineage_drift_are_rejected() -> None:
