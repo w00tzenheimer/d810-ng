@@ -18,6 +18,7 @@ from d810.transforms.fragment_plan import (
     FragmentFlagCorridor,
     FragmentOperation,
     FragmentPlan,
+    FragmentPublicationPurpose,
     FragmentRangeAssumption,
     FragmentRangeObservation,
     FragmentValueSite,
@@ -105,6 +106,7 @@ def _plan() -> FragmentPlan:
     return FragmentPlan(
         plan_id="semantic-fragment",
         atomic_group_id="condition@0x1004",
+        publication_purpose=FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING,
         native_key=NATIVE_KEY,
         blocks=(entry, original, replacement, true_target, false_target, dispatcher),
         roots=("replacement",),

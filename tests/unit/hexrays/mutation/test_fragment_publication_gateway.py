@@ -33,6 +33,7 @@ from d810.transforms.fragment_plan import (
     FragmentEdge,
     FragmentOperation,
     FragmentPlan,
+    FragmentPublicationPurpose,
 )
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
@@ -84,6 +85,7 @@ def _plan() -> FragmentPlan:
     return FragmentPlan(
         plan_id="gateway-fragment",
         atomic_group_id="route@0x401000",
+        publication_purpose=FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING,
         native_key=NATIVE_KEY,
         blocks=(
             _block("entry", FragmentBlockRole.EXTERNAL, 0x400000),
