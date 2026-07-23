@@ -515,9 +515,7 @@ def _plan_with_imported_terminal(
     return replace(
         plan,
         plan_id="runtime-imported-native-body",
-        blocks=tuple(
-            block for block in plan.blocks if block.block_id != "target"
-        )
+        blocks=tuple(block for block in plan.blocks if block.block_id != "target")
         + (imported,),
         operations=(
             replace(
@@ -562,6 +560,119 @@ class _RecordingNativeBodyMaterializer:
         )
         for block_id in native_body.block_ids:
             context.stage_block(block_id)
+
+
+class _OriginBoundConditionalNativeBodyMaterializer:
+    def __init__(self, *, live_ea: int, native_ea: int) -> None:
+        self.live_ea = int(live_ea)
+        self.native_ea = int(native_ea)
+
+    def stage_native_body(
+        self,
+        *,
+        context,
+        native_body: FragmentNativeBody,
+    ) -> None:
+        assert len(native_body.block_ids) == 1
+        block_id = native_body.block_ids[0]
+        block = context.stage_block(block_id)
+        conditional = _Instruction(ida_hexrays.m_jz, self.live_ea)
+        block.insert_into_block(conditional, block.tail)
+        context.bind_instruction_origin(
+            block_id=block_id,
+            live_ea=self.live_ea,
+            native_ea=self.native_ea,
+        )
+
+
+class _UnboundNativeBodyMaterializer:
+    def stage_native_body(
+        self,
+        *,
+        context,
+        native_body: FragmentNativeBody,
+    ) -> None:
+        assert len(native_body.block_ids) == 1
+        block = context.stage_block(native_body.block_ids[0])
+        block.insert_into_block(
+            _Instruction(ida_hexrays.m_nop, 0xF10000),
+            block.tail,
+        )
+
+
+def _plan_with_imported_conditional(
+    gateway,
+    *,
+    entry: int,
+    original: int,
+    target: int,
+    dispatcher: int,
+    predicate_native_ea: int,
+) -> FragmentPlan:
+    plan = _plan(
+        gateway,
+        entry=entry,
+        original=original,
+        target=target,
+        dispatcher=dispatcher,
+    )
+    native_range = NativeEaInterval(0x500000, 0x500010)
+    imported_identity = StableBlockIdentity.from_intervals(
+        (native_range,),
+        native_key=gateway.native_key,
+        exact_instruction_eas=(0x500000, int(predicate_native_ea)),
+    )
+    imported = FragmentBlock(
+        block_id="imported-conditional",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x500000,
+        stable_identity=imported_identity,
+        native_body_id="native-body",
+    )
+    direct_route = plan.operations[0]
+    return replace(
+        plan,
+        plan_id="runtime-imported-native-conditional",
+        blocks=plan.blocks + (imported,),
+        prohibited_dispatcher_blocks=(),
+        operations=(
+            replace(
+                direct_route,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=imported.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="imported-conditional-route",
+                source_block_id=imported.block_id,
+                predicate_anchor_ea=int(predicate_native_ea),
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        target_block_id="target",
+                    ),
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                        target_block_id="dispatcher",
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id="native-body",
+                block_ids=(imported.block_id,),
+                entry_block_ids=(imported.block_id,),
+                terminal_block_ids=(),
+                native_ranges=(native_range,),
+                proof_ids=("proof:native-body",),
+            ),
+        ),
+    )
 
 
 def _with_data_flow(
@@ -908,7 +1019,10 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
     )
     imported_proxy = imported_runtime.proxy
     assert imported_proxy.resolve() is None
-    assert imported_proxy.resolve(transaction_id=transaction_id) is imported_runtime.version
+    assert (
+        imported_proxy.resolve(transaction_id=transaction_id)
+        is imported_runtime.version
+    )
     assert gateway.active
     assert gateway.receipts == ()
 
@@ -918,6 +1032,96 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
     assert mba.qty == 5
     assert gateway.active is False
     assert gateway.receipts == ()
+
+
+def test_native_body_origin_binding_translates_operations_and_projection(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    predicate_native_ea = 0x500004
+    predicate_live_ea = 0xF10004
+    materializer = _OriginBoundConditionalNativeBodyMaterializer(
+        live_ea=predicate_live_ea,
+        native_ea=predicate_native_ea,
+    )
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=gateway,
+        semantic_native_body_materializer=materializer,
+    )
+    plan = _plan_with_imported_conditional(
+        gateway,
+        entry=0,
+        original=1,
+        target=2,
+        dispatcher=3,
+        predicate_native_ea=predicate_native_ea,
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    imported = projection.block("imported-conditional")
+    assert imported.instruction_eas == (predicate_native_ea,)
+    assert set(imported.successors) == {
+        "target",
+        "fallthrough-helper:imported-conditional-route",
+    }
+    assert gateway.receipts == ()
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime imported origin binding cleanup")
+
+
+def test_native_body_rejects_an_unbound_materialized_instruction(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=gateway,
+        semantic_native_body_materializer=_UnboundNativeBodyMaterializer(),
+    )
+    plan = _plan_with_imported_terminal(
+        gateway,
+        entry=0,
+        original=1,
+        target=2,
+        dispatcher=3,
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="unbound live instruction",
+    ):
+        modifier._stage_semantic_fragment(plan)
+
+    assert mba.qty == 5
+    assert gateway.active
+    assert gateway.receipts == ()
+    gateway.abort(reason="runtime unbound imported instruction cleanup")
 
 
 def test_gateway_publishes_native_body_in_one_balanced_receipt(monkeypatch) -> None:
@@ -1415,11 +1619,7 @@ def _install_range_value_query(monkeypatch) -> None:
             (
                 int(instruction.ea),
                 int(ida_hexrays.VR_EXACT)
-                | int(
-                    ida_hexrays.VR_AT_END
-                    if at_end
-                    else ida_hexrays.VR_AT_START
-                ),
+                | int(ida_hexrays.VR_AT_END if at_end else ida_hexrays.VR_AT_START),
             )
         )
         if not block.valrange_bounds:
@@ -1514,14 +1714,12 @@ def test_gateway_validates_live_value_range_atomically(
     assert receipt.postpublication_validation.passed
     assert any(
         outcome.passed
-        and outcome.postcondition
-        is FragmentValidationPostcondition.VALUE_RANGE_PROVEN
+        and outcome.postcondition is FragmentValidationPostcondition.VALUE_RANGE_PROVEN
         for outcome in receipt.prepublication_validation.outcomes
     )
     assert any(
         outcome.passed
-        and outcome.postcondition
-        is FragmentValidationPostcondition.VALUE_RANGE_PROVEN
+        and outcome.postcondition is FragmentValidationPostcondition.VALUE_RANGE_PROVEN
         for outcome in receipt.postpublication_validation.outcomes
     )
     assert gateway.active is False

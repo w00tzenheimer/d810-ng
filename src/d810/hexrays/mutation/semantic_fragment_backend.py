@@ -65,6 +65,15 @@ if TYPE_CHECKING:
 _BADADDR = 0xFFFFFFFFFFFFFFFF
 
 
+def _iter_block_instructions(block):
+    instruction = block.head
+    while instruction is not None:
+        yield instruction
+        if instruction is block.tail:
+            break
+        instruction = instruction.next
+
+
 class SemanticFragmentBackendRejected(RuntimeError):
     """The live backend cannot realize a plan without guessing."""
 
@@ -118,11 +127,12 @@ class SemanticFragmentBackendState:
     atomic_group_id: str
     bindings: dict[str, SemanticFragmentRuntimeBinding] = field(default_factory=dict)
     staged_block_ids: list[str] = field(default_factory=list)
-    fallthrough_helpers: list[ProjectedFallthroughHelper] = field(
-        default_factory=list
-    )
+    fallthrough_helpers: list[ProjectedFallthroughHelper] = field(default_factory=list)
     root_fallthrough_helpers: list[ProjectedRootFallthroughHelper] = field(
         default_factory=list
+    )
+    instruction_origins_by_block_id: dict[str, dict[int, int]] = field(
+        default_factory=dict
     )
     projection: ProjectedFragment | None = None
 
@@ -133,6 +143,24 @@ class SemanticFragmentBackendState:
             raise SemanticFragmentBackendRejected(
                 f"fragment block {block_id!r} has no live logical binding"
             ) from exc
+
+    def live_instruction_ea(self, block_id: str, native_ea: int) -> int:
+        """Resolve one portable native anchor to its transaction-local live EA."""
+        native_ea = int(native_ea)
+        matches = tuple(
+            live_ea
+            for live_ea, candidate_native_ea in self.instruction_origins_by_block_id.get(
+                str(block_id),
+                {},
+            ).items()
+            if int(candidate_native_ea) == native_ea
+        )
+        if len(matches) > 1:
+            raise SemanticFragmentBackendRejected(
+                f"fragment instruction origin is ambiguous at "
+                f"{block_id}@0x{native_ea:X}"
+            )
+        return native_ea if not matches else int(matches[0])
 
 
 @runtime_checkable
@@ -177,8 +205,7 @@ class SemanticNativeBodyStagingContext:
         block = self.plan.block(block_id)
         if (
             block.role is not FragmentBlockRole.IMPORTED
-            or block.materialization
-            is not FragmentBlockMaterialization.IMPORT_NATIVE
+            or block.materialization is not FragmentBlockMaterialization.IMPORT_NATIVE
             or block.native_body_id != self.native_body.body_id
             or block.stable_identity is None
         ):
@@ -192,8 +219,7 @@ class SemanticNativeBodyStagingContext:
             stable_identity=block.stable_identity,
         )
         if (
-            version.handle.provenance
-            is not BlockHandleProvenance.IMPORTED_NATIVE
+            version.handle.provenance is not BlockHandleProvenance.IMPORTED_NATIVE
             or version.handle.stable_identity != block.stable_identity
         ):
             raise SemanticFragmentBackendRejected(
@@ -224,6 +250,58 @@ class SemanticNativeBodyStagingContext:
         self._staged_block_ids.append(block_id)
         return _live_block_for_binding(self._modifier, binding)
 
+    def bind_instruction_origin(
+        self,
+        *,
+        block_id: str,
+        live_ea: int,
+        native_ea: int,
+    ) -> None:
+        """Bind one verifier-safe live instruction EA to its portable native origin."""
+        block_id = str(block_id)
+        live_ea = int(live_ea)
+        native_ea = int(native_ea)
+        if block_id not in self._staged_block_ids:
+            raise SemanticFragmentBackendRejected(
+                f"native body instruction origin references unstaged block {block_id!r}"
+            )
+        block = self.plan.block(block_id)
+        identity = block.stable_identity
+        if (
+            identity is None
+            or live_ea < 0
+            or live_ea >= _BADADDR
+            or native_ea < 0
+            or native_ea >= _BADADDR
+            or not identity.native_ranges.contains(native_ea)
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"native body instruction origin is outside {block_id!r}"
+            )
+        live_block = _live_block_for_binding(
+            self._modifier,
+            self.state.binding(block_id),
+        )
+        matching_instructions = tuple(
+            instruction
+            for instruction in _iter_block_instructions(live_block)
+            if int(getattr(instruction, "ea", -1) or -1) == live_ea
+        )
+        if len(matching_instructions) != 1:
+            raise SemanticFragmentBackendRejected(
+                f"native body live instruction is ambiguous at {block_id}@0x{live_ea:X}"
+            )
+        origins = self.state.instruction_origins_by_block_id.setdefault(
+            block_id,
+            {},
+        )
+        if live_ea in origins or native_ea in origins.values():
+            raise SemanticFragmentBackendRejected(
+                f"native body instruction origin was bound more than once at "
+                f"{block_id}@0x{native_ea:X}"
+            )
+        origins[live_ea] = native_ea
+
     def validate_complete(self) -> None:
         """Reject partial bodies or materializers that changed publication authority."""
         if tuple(self._staged_block_ids) != self.native_body.block_ids:
@@ -232,6 +310,27 @@ class SemanticNativeBodyStagingContext:
                 f"{tuple(self._staged_block_ids)!r}, expected "
                 f"{self.native_body.block_ids!r}"
             )
+        for block_id in self._staged_block_ids:
+            live_block = _live_block_for_binding(
+                self._modifier,
+                self.state.binding(block_id),
+            )
+            live_eas = tuple(
+                int(getattr(instruction, "ea", -1) or -1)
+                for instruction in _iter_block_instructions(live_block)
+            )
+            bound_live_eas = set(
+                self.state.instruction_origins_by_block_id.get(block_id, {})
+            )
+            if (
+                len(set(live_eas)) != len(live_eas)
+                or any(live_ea < 0 or live_ea >= _BADADDR for live_ea in live_eas)
+                or set(live_eas) != bound_live_eas
+            ):
+                raise SemanticFragmentBackendRejected(
+                    f"native body {self.native_body.body_id!r} has an "
+                    f"unbound live instruction in {block_id!r}"
+                )
         gateway = _gateway(self._modifier)
         if gateway.active_batch_id != self.transaction_id:
             raise SemanticFragmentBackendRejected(
@@ -415,7 +514,14 @@ def _realize_operations(
                     )
                     for edge in operation.edges
                 ),
-                predicate_anchor_ea=operation.predicate_anchor_ea,
+                predicate_anchor_ea=(
+                    None
+                    if operation.predicate_anchor_ea is None
+                    else state.live_instruction_ea(
+                        operation.source_block_id,
+                        operation.predicate_anchor_ea,
+                    )
+                ),
                 description=f"fragment operation {operation.operation_id}",
             )
         )
@@ -476,16 +582,17 @@ def _block_kind(block_type: int) -> BlockKind:
     }.get(int(block_type), BlockKind.UNKNOWN)
 
 
-def _instruction_eas(block) -> tuple[int, ...]:
+def _instruction_eas(
+    block,
+    instruction_origins: dict[int, int] | None = None,
+) -> tuple[int, ...]:
+    instruction_origins = instruction_origins or {}
     result: list[int] = []
-    instruction = block.head
-    while instruction is not None:
-        ea = int(getattr(instruction, "ea", -1) or -1)
+    for instruction in _iter_block_instructions(block):
+        live_ea = int(getattr(instruction, "ea", -1) or -1)
+        ea = int(instruction_origins.get(live_ea, live_ea))
         if 0 <= ea < _BADADDR and ea not in result:
             result.append(ea)
-        if instruction is block.tail:
-            break
-        instruction = instruction.next
     return tuple(result)
 
 
@@ -583,8 +690,7 @@ def _project_value_ranges(
                 storage,
                 site.width,
                 at_end=(
-                    assumption.observation
-                    is FragmentRangeObservation.AFTER_INSTRUCTION
+                    assumption.observation is FragmentRangeObservation.AFTER_INSTRUCTION
                 ),
                 required_lo=assumption.lo,
                 required_hi=assumption.hi,
@@ -891,7 +997,10 @@ def _project_fragment(
         ]
         kinds[block_id] = _block_kind(int(block.type))
         physical_positions[block_id] = int(block.serial)
-        instruction_eas[block_id] = _instruction_eas(block)
+        instruction_eas[block_id] = _instruction_eas(
+            block,
+            state.instruction_origins_by_block_id.get(block_id),
+        )
     flag_write_eas = _project_flag_writes(plan, live_by_id)
 
     if simulate_root_publication:
@@ -942,9 +1051,7 @@ def _project_fragment(
                 ]
 
     entry_ids = tuple(
-        block_id
-        for block_id, block in live_by_id.items()
-        if int(block.serial) == 0
+        block_id for block_id, block in live_by_id.items() if int(block.serial) == 0
     )
     if len(entry_ids) != 1:
         raise SemanticFragmentBackendRejected(
@@ -1066,10 +1173,7 @@ def _incoming_root_edge_role(predecessor, original) -> SemanticEdgeRole:
         raise SemanticFragmentBackendRejected(
             "root predecessor does not target its declared original"
         )
-    if (
-        predecessor.nextb is None
-        or int(predecessor.nextb.serial) != original_serial
-    ):
+    if predecessor.nextb is None or int(predecessor.nextb.serial) != original_serial:
         raise SemanticFragmentBackendRejected(
             "root predecessor physical fallthrough is not adjacent"
         )
@@ -1089,10 +1193,7 @@ def plan_semantic_fragment_root_inventory(
     live_by_id = {}
     ids_by_serial: dict[int, str] = {}
     for block in plan.blocks:
-        if (
-            block.materialization
-            is not FragmentBlockMaterialization.REUSE_PUBLISHED
-        ):
+        if block.materialization is not FragmentBlockMaterialization.REUSE_PUBLISHED:
             continue
         if block.stable_identity is None:
             continue
@@ -1136,9 +1237,7 @@ def plan_semantic_fragment_root_inventory(
             role = _incoming_root_edge_role(predecessor, original)
             items.append(
                 SemanticFragmentRootInventoryItem(
-                    edge_id=(
-                        f"{root_block_id}:{predecessor_block_id}:{role.value}"
-                    ),
+                    edge_id=(f"{root_block_id}:{predecessor_block_id}:{role.value}"),
                     root_block_id=root_block_id,
                     predecessor_block_id=predecessor_block_id,
                     role=role,
@@ -1266,9 +1365,7 @@ def prepare_semantic_fragment_root_publication(
                     raise SemanticFragmentBackendRejected(
                         "conditional root fallthrough lacks one reserved helper"
                     )
-                publication_helper = state.binding(
-                    matching_helpers[0].helper_block_id
-                )
+                publication_helper = state.binding(matching_helpers[0].helper_block_id)
             edge_id = f"{root_block_id}:{predecessor.block_id}:{role.value}"
             edges.append(
                 SemanticFragmentRootEdgeBinding(
@@ -1341,9 +1438,8 @@ def observe_published_semantic_fragment(
     published_roots = []
     for root_block_id in plan.roots:
         original_block_id = str(plan.block(root_block_id).replaces_block_id)
-        if (
-            not projection.block(original_block_id).predecessors
-            and bool(projection.block(root_block_id).predecessors)
+        if not projection.block(original_block_id).predecessors and bool(
+            projection.block(root_block_id).predecessors
         ):
             published_roots.append(root_block_id)
 
@@ -1437,10 +1533,7 @@ def discard_staged_semantic_fragment(
     if state.plan_id != plan.plan_id or state.atomic_group_id != plan.atomic_group_id:
         raise RuntimeError("staged semantic fragment does not match discard request")
     modifier._discard_detached_semantic_versions(
-        tuple(
-            state.binding(block_id).version
-            for block_id in state.staged_block_ids
-        )
+        tuple(state.binding(block_id).version for block_id in state.staged_block_ids)
     )
     modifier._semantic_fragment_state = None
 
