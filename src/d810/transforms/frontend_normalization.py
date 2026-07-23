@@ -111,9 +111,11 @@ def _bind_proof(
         )
         if block is None:
             return None
+        if corridor and int(corridor[-1].serial) == int(block.serial):
+            continue
+        if any(int(item.serial) == int(block.serial) for item in corridor):
+            return None
         corridor.append(block)
-    if len({block.serial for block in corridor}) != len(corridor):
-        return None
     return _BoundTransferProof(
         proof=proof,
         source=source,
