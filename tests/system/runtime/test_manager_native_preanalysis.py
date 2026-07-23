@@ -9,9 +9,14 @@ import pytest
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
+from d810.core.observability_events import MutationReceiptObserved
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.fragment_publication_lifecycle import (
     FragmentPublicationLifecycleAuthority,
+)
+from d810.hexrays.mutation.mba_mutation_events import (
+    MbaMutationAborted,
+    StructuralMutationKind,
 )
 from d810.manager.manager import (
     D810Manager,
@@ -129,6 +134,39 @@ def test_current_mba_mutation_gateway_uses_session_lifecycle_authority() -> None
     assert gateway.lifecycle_authority.evidence_generation == 2
     assert gateway.identity_index is index
     assert gateway.event_emitter is event_emitter
+
+
+def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
+    monkeypatch,
+) -> None:
+    observed: list[MutationReceiptObserved] = []
+    monkeypatch.setattr("d810.core.observability.emit", observed.append)
+
+    D810Manager._on_mutation_aborted(
+        MbaMutationAborted(
+            session_id="terminal-fragment-session",
+            function_ea=0x40A560,
+            maturity=1,
+            mba_generation=7,
+            evidence_generation=3,
+            mutation_batch_id="terminal-fragment-batch",
+            kind=StructuralMutationKind.FRAGMENT_PUBLICATION,
+            planned_operation_count=8,
+            applied_operation_count=8,
+            description="publish terminal semantic fragment",
+            reason=(
+                "postpublication semantic validation failed: "
+                "observable_return_carrier:return-value"
+            ),
+        )
+    )
+
+    assert len(observed) == 1
+    assert observed[0].mutation_batch_id == "terminal-fragment-batch"
+    assert observed[0].planned_operation_count == 8
+    assert observed[0].applied_operation_count == 8
+    assert observed[0].outcome == "aborted"
+    assert "observable_return_carrier:return-value" in observed[0].reason
 
 
 def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(

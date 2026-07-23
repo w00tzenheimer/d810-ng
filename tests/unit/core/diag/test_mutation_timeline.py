@@ -97,3 +97,97 @@ def test_plan_and_receipt_are_correlated_by_gateway_batch(diag_conn) -> None:
         (2, "mutation_plan", "batch-1"),
         (3, "mutation_receipt", "batch-1"),
     ]
+
+
+def test_terminal_effect_plan_and_aborted_receipt_preserve_applied_work(
+    diag_conn,
+) -> None:
+    items = (
+        MutationPlanItemObserved(
+            item_index=0,
+            mutation_kind="semantic_fragment_return_carrier_materialization",
+            source_serial=None,
+            source_anchor_ea=0x40C890,
+            source_identity_json='{"native_ranges":[]}',
+            target_serial=None,
+            target_anchor_ea=0x40C898,
+            target_identity_json='{"native_ranges":[]}',
+            disposition="planned",
+            reason="return-carrier:return-value",
+        ),
+        MutationPlanItemObserved(
+            item_index=1,
+            mutation_kind="semantic_fragment_terminal_return_materialization",
+            source_serial=None,
+            source_anchor_ea=0x40C8A0,
+            source_identity_json='{"native_ranges":[]}',
+            target_serial=None,
+            target_anchor_ea=None,
+            target_identity_json=None,
+            disposition="planned",
+            reason="terminal-return:function-return",
+        ),
+    )
+    emit(
+        MutationPlanObserved(
+            session_id="s1",
+            func_ea=0x40C8B0,
+            mutation_batch_id="terminal-batch",
+            mutation_kind="fragment_publication",
+            planned_operation_count=2,
+            mba_generation=8,
+            evidence_generation=3,
+            maturity="MMAT_PREOPT",
+            description="publish terminal fragment",
+            items=items,
+        )
+    )
+    emit(
+        MutationReceiptObserved(
+            session_id="s1",
+            func_ea=0x40C8B0,
+            mutation_batch_id="terminal-batch",
+            mutation_kind="fragment_publication",
+            pre_generation=8,
+            post_generation=8,
+            planned_operation_count=2,
+            applied_operation_count=2,
+            evidence_generation=3,
+            maturity="MMAT_PREOPT",
+            outcome="aborted",
+            description="publish terminal fragment",
+            reason=(
+                "postpublication semantic validation failed: "
+                "observable_return_carrier:return-value"
+            ),
+        )
+    )
+
+    assert diag_conn.execute(
+        "SELECT item_index,mutation_kind,source_anchor_ea_i64,"
+        "target_anchor_ea_i64 FROM mutation_plan_items "
+        "WHERE mutation_batch_id='terminal-batch' ORDER BY item_index"
+    ).fetchall() == [
+        (
+            0,
+            "semantic_fragment_return_carrier_materialization",
+            0x40C890,
+            0x40C898,
+        ),
+        (
+            1,
+            "semantic_fragment_terminal_return_materialization",
+            0x40C8A0,
+            None,
+        ),
+    ]
+    assert diag_conn.execute(
+        "SELECT planned_operation_count,applied_operation_count,outcome,reason "
+        "FROM mutation_receipts WHERE mutation_batch_id='terminal-batch'"
+    ).fetchone() == (
+        2,
+        2,
+        "aborted",
+        "postpublication semantic validation failed: "
+        "observable_return_carrier:return-value",
+    )

@@ -191,6 +191,7 @@ class MbaMutationAborted:
     mutation_batch_id: str
     kind: StructuralMutationKind
     planned_operation_count: int
+    applied_operation_count: int
     description: str
     reason: str
     discarded_version_ids: tuple[LogicalBlockVersionId, ...] = ()
@@ -256,6 +257,14 @@ class MbaMutationGateway:
         repr=False,
     )
     _active_root_publication_confirmed: bool = field(default=False, init=False)
+    _active_fragment_effect_requirements: dict[
+        tuple[str, str], MbaMutationPlanItem
+    ] = field(default_factory=dict, init=False, repr=False)
+    _applied_fragment_effects: set[tuple[str, str]] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.generation = int(self.generation)
@@ -307,6 +316,8 @@ class MbaMutationGateway:
         self._active_prepublication_validation = None
         self._active_postpublication_validation = None
         self._active_root_publication_confirmed = False
+        self._active_fragment_effect_requirements.clear()
+        self._applied_fragment_effects.clear()
 
     def new_transaction(self) -> MbaMutationGateway:
         """Return a fresh batch controller over this current-MBA index.
@@ -455,6 +466,34 @@ class MbaMutationGateway:
                         ),
                     )
                 )
+        for carrier in plan.return_carriers:
+            block = plan.block(carrier.block_id)
+            items.append(
+                MbaMutationPlanItem(
+                    item_index=len(items),
+                    mutation_kind=(
+                        "semantic_fragment_return_carrier_materialization"
+                    ),
+                    source_anchor_ea=int(carrier.state_write_ea),
+                    source_identity=block.stable_identity,
+                    target_anchor_ea=int(carrier.carrier_ea),
+                    target_identity=block.stable_identity,
+                    reason=f"return-carrier:{carrier.carrier_id}",
+                )
+            )
+        for terminal_return in plan.terminal_returns:
+            block = plan.block(terminal_return.block_id)
+            items.append(
+                MbaMutationPlanItem(
+                    item_index=len(items),
+                    mutation_kind=(
+                        "semantic_fragment_terminal_return_materialization"
+                    ),
+                    source_anchor_ea=int(terminal_return.instruction_ea),
+                    source_identity=block.stable_identity,
+                    reason=f"terminal-return:{terminal_return.return_id}",
+                )
+            )
         for operation in plan.operations:
             source = plan.block(operation.source_block_id)
             if operation.roles.intersection(
@@ -541,6 +580,20 @@ class MbaMutationGateway:
             planned_operation_count=len(items),
             plan_items=items,
         )
+        effect_kinds = {
+            "semantic_fragment_return_carrier_materialization",
+            "semantic_fragment_terminal_return_materialization",
+        }
+        requirements = {
+            (item.mutation_kind, item.reason): item
+            for item in items
+            if item.mutation_kind in effect_kinds
+        }
+        if len(requirements) != len(plan.return_carriers) + len(
+            plan.terminal_returns
+        ):
+            raise ValueError("semantic-fragment effect inventory is ambiguous")
+        self._active_fragment_effect_requirements.update(requirements)
 
     def _record_fragment_semantic_validation(
         self,
@@ -867,6 +920,69 @@ class MbaMutationGateway:
         self._record_handle(target)
         self._operation_count += 1
 
+    def _record_semantic_fragment_effect(
+        self,
+        *,
+        mutation_kind: str,
+        reason: str,
+        block: MbaBlockHandle,
+    ) -> None:
+        self._require_active()
+        if self._active_kind is not StructuralMutationKind.FRAGMENT_PUBLICATION:
+            raise RuntimeError(
+                "semantic-fragment effects require a fragment publication batch"
+            )
+        key = (str(mutation_kind), str(reason))
+        item = self._active_fragment_effect_requirements.get(key)
+        if item is None:
+            raise ValueError(
+                f"semantic-fragment effect is absent from the plan inventory: {key!r}"
+            )
+        if key in self._applied_fragment_effects:
+            raise RuntimeError(
+                f"semantic-fragment effect was recorded more than once: {key!r}"
+            )
+        identity = block.stable_identity
+        expected_identities = {
+            candidate
+            for candidate in (item.source_identity, item.target_identity)
+            if candidate is not None
+        }
+        if identity is None or identity not in expected_identities:
+            raise ValueError(
+                "semantic-fragment effect block identity does not match its "
+                "EA-anchored plan item"
+            )
+        self._applied_fragment_effects.add(key)
+        self._record_handle(block)
+        self._operation_count += 1
+
+    def record_semantic_fragment_return_carrier(
+        self,
+        *,
+        carrier_id: str,
+        block: MbaBlockHandle,
+    ) -> None:
+        """Acknowledge one live-observed return carrier from the active plan."""
+        self._record_semantic_fragment_effect(
+            mutation_kind="semantic_fragment_return_carrier_materialization",
+            reason=f"return-carrier:{carrier_id}",
+            block=block,
+        )
+
+    def record_semantic_fragment_terminal_return(
+        self,
+        *,
+        return_id: str,
+        block: MbaBlockHandle,
+    ) -> None:
+        """Acknowledge one live-observed terminal return from the active plan."""
+        self._record_semantic_fragment_effect(
+            mutation_kind="semantic_fragment_terminal_return_materialization",
+            reason=f"terminal-return:{return_id}",
+            block=block,
+        )
+
     def record_remove(self, handle: MbaBlockHandle) -> None:
         self._require_active()
         self.identity_index.mark_removed(
@@ -1063,6 +1179,7 @@ class MbaMutationGateway:
                     mutation_batch_id=aborted_batch_id,
                     kind=self._active_kind,
                     planned_operation_count=int(self._planned_operation_count),
+                    applied_operation_count=int(self._operation_count),
                     description=self._active_description,
                     reason=str(reason),
                     discarded_version_ids=discarded_version_ids,

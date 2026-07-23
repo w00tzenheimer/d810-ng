@@ -1013,7 +1013,7 @@ class D810Manager:
                 pre_generation=int(event.mba_generation),
                 post_generation=int(event.mba_generation),
                 planned_operation_count=int(event.planned_operation_count),
-                applied_operation_count=0,
+                applied_operation_count=int(event.applied_operation_count),
                 evidence_generation=int(event.evidence_generation),
                 maturity=mmat_label(int(event.maturity)),
                 outcome="aborted",
