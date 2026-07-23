@@ -1402,6 +1402,18 @@ def _unique_block_native_ea(block: object) -> int | None:
     )
 
 
+def _capture_block_native_entry_ea(
+    block: object,
+    exact_owned_entry_eas: Collection[int],
+    ranges: tuple[tuple[int, int], ...],
+) -> int | None:
+    """Keep an exact owned entry even when PREOPT elides its first instruction."""
+    block_start = int(block.start)
+    if block_start in exact_owned_entry_eas and _ea_in_ranges(block_start, ranges):
+        return block_start
+    return _unique_block_native_ea(block)
+
+
 def _anchored_template_root_serial(
     included: dict[int, object],
     root_serial: int,
@@ -1680,9 +1692,12 @@ def _split_semantic_target_entry_blocks(
         target_matches = tuple(
             block
             for block in blocks
-            if any(
-                int(instruction.ea) == target_ea
-                for instruction in block.instructions
+            if (
+                int(block.native_entry_ea) == target_ea
+                or any(
+                    int(instruction.ea) == target_ea
+                    for instruction in block.instructions
+                )
             )
         )
         if len(source_matches) != 1 or len(target_matches) != 1:
@@ -1818,10 +1833,6 @@ def _split_semantic_target_entry_blocks(
             block
             for block in result
             if int(block.native_entry_ea) == target_ea
-            and any(
-                int(instruction.ea) == target_ea
-                for instruction in block.instructions
-            )
         )
         if len(source_matches) != 1 or len(target_matches) != 1:
             logger.info(
@@ -2266,11 +2277,19 @@ def _capture_detached_snippet_template(
     additional_owned_entries = {
         int(ea) for ea in additional_owned_block_entry_eas or ()
     }
+    exact_owned_entries = {
+        *(owned_entries or ()),
+        *additional_owned_entries,
+    }
     terminal_return_entries = {int(ea) for ea in terminal_return_entry_eas}
     included: dict[int, object] = {}
     for serial in range(int(mba.qty)):
         block = mba.get_mblock(serial)
-        native_entry = _unique_block_native_ea(block)
+        native_entry = _capture_block_native_entry_ea(
+            block,
+            exact_owned_entries,
+            normalized_ranges,
+        )
         if (
             native_entry is not None
             and owned_entries is not None
@@ -2498,7 +2517,11 @@ def _capture_detached_snippet_template(
                 int(candidate_serial)
                 for candidate_serial, candidate in included.items()
                 if (
-                    _unique_block_native_ea(candidate)
+                    _capture_block_native_entry_ea(
+                        candidate,
+                        exact_owned_entries,
+                        normalized_ranges,
+                    )
                     == int(proven_internal_target_ea)
                     or int(proven_internal_target_ea)
                     in _block_native_eas(candidate)
@@ -2529,7 +2552,11 @@ def _capture_detached_snippet_template(
             captured_resolver_internal_successor_eas[int(block.tail.ea)] = int(
                 proven_internal_target_ea
             )
-        native_entry = _unique_block_native_ea(block)
+        native_entry = _capture_block_native_entry_ea(
+            block,
+            exact_owned_entries,
+            normalized_ranges,
+        )
         if (
             native_entry is None
             and block.head is None
