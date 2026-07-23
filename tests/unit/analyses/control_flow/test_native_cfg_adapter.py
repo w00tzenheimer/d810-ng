@@ -1,6 +1,7 @@
 from d810.analyses.control_flow.native_cfg_adapter import (
     NativeFlowBlockFact,
     build_native_cfg_from_flow_facts,
+    can_decode_native_call_continuation,
     can_decode_proven_native_successor,
     has_native_semantic_boundary,
     is_native_direct_control_operand,
@@ -225,6 +226,41 @@ def test_native_decode_guards_are_semantic_and_function_bounded() -> None:
         is_call=False,
         is_basic_block_end=True,
         has_stop_feature=False,
+    )
+
+
+def test_call_continuation_accepts_ownerless_resolver_scoped_ida_flow() -> None:
+    assert can_decode_native_call_continuation(
+        function_contains=False,
+        ida_marks_flow=True,
+        is_direct_call=False,
+        is_code=True,
+        owner_func_ea=None,
+        requested_func_ea=0x5000,
+    )
+    assert can_decode_native_call_continuation(
+        function_contains=True,
+        ida_marks_flow=False,
+        is_direct_call=False,
+        is_code=True,
+        owner_func_ea=0x5000,
+        requested_func_ea=0x5000,
+    )
+    assert not can_decode_native_call_continuation(
+        function_contains=True,
+        ida_marks_flow=False,
+        is_direct_call=True,
+        is_code=True,
+        owner_func_ea=0x5000,
+        requested_func_ea=0x5000,
+    )
+    assert not can_decode_native_call_continuation(
+        function_contains=False,
+        ida_marks_flow=True,
+        is_direct_call=False,
+        is_code=True,
+        owner_func_ea=0x6000,
+        requested_func_ea=0x5000,
     )
 
 
