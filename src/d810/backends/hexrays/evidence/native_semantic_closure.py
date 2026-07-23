@@ -207,9 +207,9 @@ def _decode_missing_flow_block(
                     force_stop=True,
                 )
             successors = (direct_target_ea,)
-            if ida_funcs.func_contains(function, next_ea) and (
-                is_conditional_jump
-                or ida_bytes.is_flow(ida_bytes.get_full_flags(next_ea))
+            if is_conditional_jump or (
+                ida_funcs.func_contains(function, next_ea)
+                and ida_bytes.is_flow(ida_bytes.get_full_flags(next_ea))
             ):
                 successors += (next_ea,)
             return NativeFlowBlockFact(
@@ -218,6 +218,7 @@ def _decode_missing_flow_block(
                 successor_eas=successors,
                 direct_branch_target_ea=direct_target_ea,
                 is_conditional_jump_tail=is_conditional_jump,
+                terminal_instruction_ea=current_ea,
             )
 
         if next_ea in semantic_entry_eas:
