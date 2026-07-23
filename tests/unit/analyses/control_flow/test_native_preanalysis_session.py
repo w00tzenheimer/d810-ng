@@ -536,7 +536,7 @@ def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() 
 
 
 def test_canonical_semantic_evidence_groups_terminal_carrier_with_its_route() -> None:
-    source_identity = StableBlockIdentity.from_intervals(
+    capture_identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x40C7E5, 0x40C7F4),),
         native_key=NATIVE_KEY,
         exact_instruction_eas=(0x40C7E5, 0x40C7EA, 0x40C7F0),
@@ -554,7 +554,7 @@ def test_canonical_semantic_evidence_groups_terminal_carrier_with_its_route() ->
     )
     carrier = TerminalReturnCarrierEvidence(
         request=request,
-        capture_identity=source_identity,
+        capture_identity=capture_identity,
         terminal_identity=terminal_identity,
         state_write_ea=0x40C7E5,
         carrier_ea=0x40C7EA,
@@ -571,8 +571,14 @@ def test_canonical_semantic_evidence_groups_terminal_carrier_with_its_route() ->
         corridor_instruction_eas=(0x40C7E5, 0x40C7EA),
     )
     route = PortableStateWriteRouteEvidence(
-        write_identity=source_identity,
-        delivery_identity=source_identity,
+        write_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40C7E5, 0x40C7E6),),
+            native_key=NATIVE_KEY,
+        ),
+        delivery_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40C7F0, 0x40C7F1),),
+            native_key=NATIVE_KEY,
+        ),
         source_write_ea=0x40C7E5,
         delivery_ea=0x40C7F0,
         delivery_region_start_ea=0x40C7E5,
@@ -580,7 +586,10 @@ def test_canonical_semantic_evidence_groups_terminal_carrier_with_its_route() ->
         corridor_instruction_eas=(0x40C7E5, 0x40C7EA, 0x40C7F0),
         state_var_reg=20,
         state_constant=0x19A7218A,
-        target_identity=terminal_identity,
+        target_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40C898, 0x40C899),),
+            native_key=NATIVE_KEY,
+        ),
         target_ea=0x40C898,
     )
     state = NativePreanalysisSessionState()
