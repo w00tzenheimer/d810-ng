@@ -8,6 +8,10 @@ import pytest
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    SemanticCarrierProof,
+    SemanticCorridorPoint,
+    SemanticPredicateKind,
+    SemanticPredicateProof,
     SemanticRouteDestination,
     SemanticRouteEvidenceRejected,
     SemanticRouteProof,
@@ -18,7 +22,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 )
 from d810.capabilities.semantic_routes import CanonicalSemanticEvidenceCapability
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from tests.native_preanalysis import make_native_key
@@ -66,6 +70,66 @@ def _proof() -> SemanticRouteProof:
     )
 
 
+def _storage_choice_proof() -> SemanticRouteProof:
+    source = _identity(0x1100)
+    producer = _identity(0x1080)
+    return SemanticRouteProof(
+        proof_id="state-choice@0x1100",
+        atomic_group_id="canonical-semantic:g3",
+        proof_kind=SemanticRouteProofKind.STATE_CHOICE,
+        shape=SemanticRouteShape.CONDITIONAL,
+        source_identity=source,
+        source_anchor_ea=0x1100,
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                state_constant=0xAABBCCDD,
+                target_identity=_identity(0x1200),
+                target_anchor_ea=0x1200,
+            ),
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                state_constant=0x11223344,
+                target_identity=_identity(0x1300),
+                target_anchor_ea=0x1300,
+            ),
+        ),
+        predicate=SemanticPredicateProof(
+            kind=SemanticPredicateKind.STORAGE_EQUALS,
+            origin=SemanticCorridorPoint(producer, 0x1080),
+            consumer=SemanticCorridorPoint(source, 0x1100),
+            corridor=(
+                SemanticCorridorPoint(producer, 0x1080),
+                SemanticCorridorPoint(source, 0x1100),
+            ),
+            storage_identity=StorageIdentity(
+                StorageIdentityKind.STACK,
+                0x40,
+            ),
+            width=4,
+            compare_constant=0,
+        ),
+        carriers=(
+            SemanticCarrierProof(
+                carrier_id="entry-state-choice",
+                definition=SemanticCorridorPoint(producer, 0x1088),
+                consumers=(SemanticCorridorPoint(source, 0x1100),),
+                corridor=(
+                    SemanticCorridorPoint(producer, 0x1088),
+                    SemanticCorridorPoint(source, 0x1100),
+                ),
+                storage_identity=StorageIdentity(
+                    StorageIdentityKind.STACK,
+                    0x48,
+                ),
+                width=4,
+                state_values=(0xAABBCCDD, 0x11223344),
+                permitted_write_eas=frozenset({0x1088}),
+            ),
+        ),
+    )
+
+
 def _evidence(*proofs: SemanticRouteProof) -> CanonicalSemanticEvidence:
     return CanonicalSemanticEvidence(
         native_key=NATIVE_KEY,
@@ -81,6 +145,7 @@ def _block(
     *,
     succs: tuple[int, ...],
     preds: tuple[int, ...],
+    insn_eas: tuple[int, ...] = (),
 ) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
@@ -89,7 +154,9 @@ def _block(
         preds=preds,
         flags=0,
         start_ea=ea,
-        insn_snapshots=(),
+        insn_snapshots=tuple(
+            InsnSnapshot(opcode=0, ea=insn_ea, operands=()) for insn_ea in insn_eas
+        ),
     )
 
 
@@ -137,8 +204,101 @@ def test_conditional_proof_requires_both_semantic_arms() -> None:
             proof,
             proof_kind=SemanticRouteProofKind.STATE_CHOICE,
             shape=SemanticRouteShape.CONDITIONAL,
-            predicate_anchor_ea=0x1100,
+            predicate=SemanticPredicateProof(
+                kind=SemanticPredicateKind.PRESERVE_LIVE,
+                origin=SemanticCorridorPoint(_identity(0x1100), 0x1100),
+                consumer=SemanticCorridorPoint(_identity(0x1100), 0x1100),
+                corridor=(SemanticCorridorPoint(_identity(0x1100), 0x1100),),
+                true_is_taken=True,
+            ),
             state_write=None,
+        )
+
+
+def test_storage_predicate_requires_carrier_and_complete_corridors() -> None:
+    source = _identity(0x1100)
+    producer = _identity(0x1080)
+    target_a = _identity(0x1200)
+    target_b = _identity(0x1300)
+    predicate_storage = StorageIdentity(StorageIdentityKind.STACK, 0x40)
+    carrier_storage = StorageIdentity(StorageIdentityKind.STACK, 0x48)
+    predicate = SemanticPredicateProof(
+        kind=SemanticPredicateKind.STORAGE_EQUALS,
+        origin=SemanticCorridorPoint(producer, 0x1080),
+        consumer=SemanticCorridorPoint(source, 0x1100),
+        corridor=(
+            SemanticCorridorPoint(producer, 0x1080),
+            SemanticCorridorPoint(source, 0x1100),
+        ),
+        storage_identity=predicate_storage,
+        width=4,
+        compare_constant=0,
+    )
+    carrier = SemanticCarrierProof(
+        carrier_id="entry-state-choice",
+        definition=SemanticCorridorPoint(producer, 0x1088),
+        consumers=(SemanticCorridorPoint(source, 0x1100),),
+        corridor=(
+            SemanticCorridorPoint(producer, 0x1088),
+            SemanticCorridorPoint(source, 0x1100),
+        ),
+        storage_identity=carrier_storage,
+        width=4,
+        state_values=(0xAABBCCDD, 0x11223344),
+        permitted_write_eas=frozenset({0x1088}),
+    )
+    proof = SemanticRouteProof(
+        proof_id="state-choice@0x1100",
+        atomic_group_id="canonical-semantic:g3",
+        proof_kind=SemanticRouteProofKind.STATE_CHOICE,
+        shape=SemanticRouteShape.CONDITIONAL,
+        source_identity=source,
+        source_anchor_ea=0x1100,
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                state_constant=0xAABBCCDD,
+                target_identity=target_a,
+                target_anchor_ea=0x1200,
+            ),
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                state_constant=0x11223344,
+                target_identity=target_b,
+                target_anchor_ea=0x1300,
+            ),
+        ),
+        predicate=predicate,
+        carriers=(carrier,),
+    )
+
+    assert proof.predicate == predicate
+    assert proof.carriers == (carrier,)
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="storage predicate requires one carrier proof",
+    ):
+        replace(proof, carriers=())
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="corridor must end at its consumer",
+    ):
+        replace(
+            predicate,
+            corridor=(SemanticCorridorPoint(producer, 0x1080),),
+        )
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="carrier state values must match destination states",
+    ):
+        replace(
+            proof,
+            carriers=(
+                replace(
+                    carrier,
+                    state_values=(0xAABBCCDD, 0x55667788),
+                ),
+            ),
         )
 
 
@@ -158,6 +318,60 @@ def test_atomic_group_binding_abstains_instead_of_partially_binding() -> None:
     assert bound.routes[0].source.anchor_ea == 0x1100
     assert bound.routes[0].destinations[0].block.serial == 2
     assert bound.routes[0].destinations[0].block.anchor_ea == 0x1200
+
+
+def test_conditional_corridors_bind_all_or_abstain() -> None:
+    proof = _storage_choice_proof()
+    graph = FlowGraph(
+        blocks={
+            0: _block(0, 0x1000, succs=(1,), preds=()),
+            1: _block(
+                1,
+                0x1080,
+                succs=(2,),
+                preds=(0,),
+                insn_eas=(0x1080, 0x1088),
+            ),
+            2: _block(2, 0x1100, succs=(3, 4), preds=(1,)),
+            3: _block(3, 0x1200, succs=(), preds=(2,)),
+            4: _block(4, 0x1300, succs=(), preds=(2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    bound = bind_canonical_semantic_evidence(
+        graph,
+        _evidence(proof),
+    )
+
+    assert bound is not None
+    assert bound.routes[0].predicate is not None
+    assert tuple(
+        (block.serial, block.anchor_ea) for block in bound.routes[0].predicate.corridor
+    ) == ((1, 0x1080), (2, 0x1100))
+    assert tuple(
+        (block.serial, block.anchor_ea)
+        for block in bound.routes[0].carriers[0].corridor
+    ) == ((1, 0x1088), (2, 0x1100))
+
+    graph_without_producer = FlowGraph(
+        blocks={
+            0: _block(0, 0x1000, succs=(2,), preds=()),
+            2: _block(2, 0x1100, succs=(3, 4), preds=(0,)),
+            3: _block(3, 0x1200, succs=(), preds=(2,)),
+            4: _block(4, 0x1300, succs=(), preds=(2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    assert (
+        bind_canonical_semantic_evidence(
+            graph_without_producer,
+            _evidence(proof),
+        )
+        is None
+    )
 
 
 def test_semantic_evidence_capability_is_structural() -> None:
