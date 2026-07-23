@@ -59,7 +59,7 @@ def test_terminal_return_carrier_is_portable_exact_evidence() -> None:
         TerminalReturnCarrierSourceKind,
     ) = _carrier_types()
     capture_identity = _identity(0x401000, 0x401010, 0x401000, 0x401005)
-    terminal_identity = _identity(0x402000, 0x402010, 0x402000)
+    terminal_identity = _identity(0x402000, 0x402010, 0x402000, 0x402008)
     source = TerminalReturnCarrierSource(
         kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
         width=4,
@@ -75,6 +75,7 @@ def test_terminal_return_carrier_is_portable_exact_evidence() -> None:
         terminal_identity=terminal_identity,
         state_write_ea=0x401000,
         carrier_ea=0x401005,
+        terminal_return_ea=0x402008,
         operation=ValueOpKind.MOVE,
         source=source,
         return_width=4,
@@ -94,6 +95,7 @@ def test_terminal_return_carrier_is_portable_exact_evidence() -> None:
         "state_constant": "0x19A7218A",
         "state_write_ea": "0x401000",
         "carrier_ea": "0x401005",
+        "terminal_return_ea": "0x402008",
         "operation": "move",
         "source_kind": "storage_value",
         "source_width": 4,
@@ -128,6 +130,7 @@ def test_terminal_return_carrier_uses_stable_stack_identity_for_extension() -> N
         terminal_identity=_identity(0x402000, 0x402010, 0x402000),
         state_write_ea=0x401000,
         carrier_ea=0x401005,
+        terminal_return_ea=0x402000,
         operation=ValueOpKind.ZEXT,
         source=source,
         return_width=4,
@@ -158,6 +161,7 @@ def test_terminal_return_carrier_rejects_unowned_exact_anchor() -> None:
             terminal_identity=_identity(0x402000, 0x402010, 0x402000),
             state_write_ea=0x401000,
             carrier_ea=0x401005,
+            terminal_return_ea=0x402000,
             operation=ValueOpKind.MOVE,
             source=TerminalReturnCarrierSource(
                 kind=TerminalReturnCarrierSourceKind.CONSTANT,
@@ -187,6 +191,7 @@ def test_terminal_return_carrier_rejects_anchor_without_exact_identity() -> None
             terminal_identity=_identity(0x402000, 0x402010, 0x402000),
             state_write_ea=0x401000,
             carrier_ea=0x401005,
+            terminal_return_ea=0x402000,
             operation=ValueOpKind.MOVE,
             source=TerminalReturnCarrierSource(
                 kind=TerminalReturnCarrierSourceKind.CONSTANT,
@@ -216,6 +221,7 @@ def test_terminal_return_carrier_rejects_non_materializable_operation() -> None:
             terminal_identity=_identity(0x402000, 0x402010, 0x402000),
             state_write_ea=0x401000,
             carrier_ea=0x401005,
+            terminal_return_ea=0x402000,
             operation=ValueOpKind.ADD,
             source=TerminalReturnCarrierSource(
                 kind=TerminalReturnCarrierSourceKind.CONSTANT,

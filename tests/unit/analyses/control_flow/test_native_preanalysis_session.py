@@ -423,6 +423,7 @@ def test_lifecycle_owns_portable_terminal_return_carrier_semantics() -> None:
         terminal_identity=terminal_identity,
         state_write_ea=0x40C7E5,
         carrier_ea=0x40C7EA,
+        terminal_return_ea=0x40C898,
         operation=ValueOpKind.MOVE,
         source=TerminalReturnCarrierSource(
             kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
@@ -562,6 +563,7 @@ def test_canonical_semantic_evidence_groups_terminal_carrier_with_its_route() ->
         terminal_identity=terminal_identity,
         state_write_ea=0x40C7E5,
         carrier_ea=0x40C7EA,
+        terminal_return_ea=0x40C898,
         operation=ValueOpKind.MOVE,
         source=TerminalReturnCarrierSource(
             kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
@@ -619,6 +621,7 @@ def test_canonical_semantic_evidence_groups_terminal_carrier_with_its_route() ->
         carrier,
         request=replace(request, terminal_target_ea=0x40D000),
         terminal_identity=unmatched_terminal,
+        terminal_return_ea=0x40D000,
     )
     rejected = NativePreanalysisSessionState()
     assert rejected.merge_state_write_routes(NATIVE_KEY, (route,))

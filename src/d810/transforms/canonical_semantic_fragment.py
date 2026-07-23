@@ -402,9 +402,7 @@ def build_canonical_semantic_fragment_plan(
                     FragmentTerminalReturn(
                         return_id=return_id,
                         block_id=terminal_block_id,
-                        instruction_ea=(
-                            terminal_carrier.request.terminal_target_ea
-                        ),
+                        instruction_ea=terminal_carrier.terminal_return_ea,
                         return_width=terminal_carrier.return_width,
                     )
                 )

@@ -3336,12 +3336,12 @@ def _is_materialized_dispatch_instruction(mnem: str) -> bool:
     return name == "jmp" or name in _SV_JCC_MNEMS
 
 
-def _native_target_is_return_epilogue(
+def _native_return_epilogue_instruction_ea(
     target_ea: int,
     *,
     max_instructions: int = 8,
-) -> bool:
-    """Prove a short x86 frame-teardown corridor ending in ``ret``.
+) -> int | None:
+    """Return the exact ``ret`` EA for one proven native epilogue corridor.
 
     Hex-Rays can expose a resolver-proven function epilogue as ``BLT_XTRN``
     after disconnecting its native tail from the MBA.  This bounded recognizer
@@ -3359,10 +3359,10 @@ def _native_target_is_return_epilogue(
     for _ in range(int(max_instructions)):
         length = int(ida_ua.decode_insn(insn, ea))
         if length <= 0:
-            return False
+            return None
         mnemonic = (idaapi.print_insn_mnem(ea) or "").lower()
         if mnemonic in {"ret", "retn", "retf"}:
-            return saw_teardown
+            return ea if saw_teardown else None
         if mnemonic == "leave":
             saw_teardown = True
         elif mnemonic == "pop" and insn.ops[0].type == idaapi.o_reg:
@@ -3374,7 +3374,7 @@ def _native_target_is_return_epilogue(
                 or insn.ops[1].type not in {idaapi.o_displ, idaapi.o_phrase}
                 or _SV_REG_NAMES.get(insn.ops[1].reg) != "ebp"
             ):
-                return False
+                return None
             saw_teardown = True
         elif mnemonic == "mov":
             is_stack_return_value_load = (
@@ -3393,7 +3393,7 @@ def _native_target_is_return_epilogue(
                 or _sv_reg_name(insn.ops[0]) != "esp"
                 or _sv_reg_name(insn.ops[1]) != "ebp"
             ):
-                return False
+                return None
             saw_teardown = True
         elif mnemonic == "add":
             if (
@@ -3401,12 +3401,27 @@ def _native_target_is_return_epilogue(
                 or _sv_reg_name(insn.ops[0]) != "esp"
                 or insn.ops[1].type != idaapi.o_imm
             ):
-                return False
+                return None
             saw_teardown = True
         elif mnemonic != "nop":
-            return False
+            return None
         ea += length
-    return False
+    return None
+
+
+def _native_target_is_return_epilogue(
+    target_ea: int,
+    *,
+    max_instructions: int = 8,
+) -> bool:
+    """Return whether a native target owns one bounded return epilogue."""
+    return (
+        _native_return_epilogue_instruction_ea(
+            int(target_ea),
+            max_instructions=int(max_instructions),
+        )
+        is not None
+    )
 
 
 def _corridor_memory_spaces_may_alias(left: str, right: str) -> bool:
@@ -8164,6 +8179,8 @@ def _live_mba_native_eas(
 def _terminal_return_carrier_capture_identities(
     state: ResolverSessionState,
     request: TerminalReturnCarrierRequest,
+    *,
+    terminal_return_ea: int,
 ) -> tuple[StableBlockIdentity, StableBlockIdentity] | None:
     """Bind one carrier request to its unique exact state-route anchors."""
     routes = tuple(
@@ -8198,11 +8215,13 @@ def _terminal_return_carrier_capture_identities(
         exact_instruction_eas=capture_exact_eas,
     )
     terminal_ea = int(request.terminal_target_ea)
+    exact_return_ea = int(terminal_return_ea)
     terminal_exact_eas = tuple(
         sorted(
             {
                 *route.target_identity.exact_instruction_eas,
                 terminal_ea,
+                exact_return_ea,
             }
         )
     )
@@ -8210,6 +8229,7 @@ def _terminal_return_carrier_capture_identities(
         (
             *route.target_identity.native_ranges.intervals,
             NativeEaInterval(terminal_ea, terminal_ea + 1),
+            NativeEaInterval(exact_return_ea, exact_return_ea + 1),
         ),
         native_key=state.native_key,
         exact_instruction_eas=terminal_exact_eas,
@@ -8237,7 +8257,22 @@ def _capture_terminal_return_carrier_requests(
     for request in requests:
         if request in existing_requests:
             continue
-        identities = _terminal_return_carrier_capture_identities(state, request)
+        terminal_return_ea = _native_return_epilogue_instruction_ea(
+            int(request.terminal_target_ea)
+        )
+        if terminal_return_ea is None:
+            logger.info(
+                "terminal return-carrier capture abstained: source=0x%X "
+                "target=0x%X reason=target_not_epilogue",
+                int(request.source_handler_ea),
+                int(request.terminal_target_ea),
+            )
+            continue
+        identities = _terminal_return_carrier_capture_identities(
+            state,
+            request,
+            terminal_return_ea=int(terminal_return_ea),
+        )
         if identities is None:
             logger.info(
                 "terminal return-carrier capture abstained: source=0x%X "
@@ -8247,14 +8282,6 @@ def _capture_terminal_return_carrier_requests(
             )
             continue
         capture_identity, terminal_identity = identities
-        if not _native_target_is_return_epilogue(int(request.terminal_target_ea)):
-            logger.info(
-                "terminal return-carrier capture abstained: source=0x%X "
-                "target=0x%X reason=target_not_epilogue",
-                int(request.source_handler_ea),
-                int(request.terminal_target_ea),
-            )
-            continue
         source_end_ea = _block_end(int(request.source_handler_ea))
         if int(source_end_ea) <= int(request.source_handler_ea):
             continue
@@ -8292,6 +8319,7 @@ def _capture_terminal_return_carrier_requests(
                 snippet,
                 capture_identity=capture_identity,
                 terminal_identity=terminal_identity,
+                terminal_return_ea=int(terminal_return_ea),
             )
         )
         if evidence is None:
@@ -8351,20 +8379,25 @@ def _capture_preopt_union_terminal_return_carriers(
     state_var_reg = unique_materialized_state_register(transfers)
     if state_var_reg is None:
         return 0
-    terminal_target_eas = tuple(
-        sorted(
-            {
-                int(transfer.target_eas[0])
-                for transfer in transfers
-                if transfer.resolver_kind == "static_handler_entry_route"
-                and transfer.selector_state_var_reg is not None
-                and int(transfer.selector_state_var_reg) == int(state_var_reg)
-                and transfer.selector_state_constant is not None
-                and len(transfer.target_eas) == 1
-                and _native_target_is_return_epilogue(int(transfer.target_eas[0]))
-            }
+    terminal_return_eas_by_target: dict[int, int] = {}
+    for transfer in transfers:
+        if (
+            transfer.resolver_kind != "static_handler_entry_route"
+            or transfer.selector_state_var_reg is None
+            or int(transfer.selector_state_var_reg) != int(state_var_reg)
+            or transfer.selector_state_constant is None
+            or len(transfer.target_eas) != 1
+        ):
+            continue
+        terminal_target_ea = int(transfer.target_eas[0])
+        terminal_return_ea = _native_return_epilogue_instruction_ea(
+            terminal_target_ea
         )
-    )
+        if terminal_return_ea is not None:
+            terminal_return_eas_by_target[terminal_target_ea] = int(
+                terminal_return_ea
+            )
+    terminal_target_eas = tuple(sorted(terminal_return_eas_by_target))
     if not terminal_target_eas:
         return 0
 
@@ -8394,7 +8427,16 @@ def _capture_preopt_union_terminal_return_carriers(
 
     captured = []
     for request in requests:
-        identities = _terminal_return_carrier_capture_identities(state, request)
+        terminal_return_ea = terminal_return_eas_by_target.get(
+            int(request.terminal_target_ea)
+        )
+        if terminal_return_ea is None:
+            continue
+        identities = _terminal_return_carrier_capture_identities(
+            state,
+            request,
+            terminal_return_ea=int(terminal_return_ea),
+        )
         if identities is None:
             continue
         capture_identity, terminal_identity = identities
@@ -8404,6 +8446,7 @@ def _capture_preopt_union_terminal_return_carriers(
             mba,
             capture_identity=capture_identity,
             terminal_identity=terminal_identity,
+            terminal_return_ea=int(terminal_return_ea),
         )
         if evidence is not None:
             captured.append(evidence)

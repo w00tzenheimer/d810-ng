@@ -108,6 +108,7 @@ class TerminalReturnCarrierEvidence:
     terminal_identity: StableBlockIdentity
     state_write_ea: int
     carrier_ea: int
+    terminal_return_ea: int
     operation: ValueOpKind
     source: TerminalReturnCarrierSource
     return_width: int
@@ -171,6 +172,10 @@ class TerminalReturnCarrierEvidence:
             self.carrier_ea,
             "terminal carrier anchor",
         )
+        terminal_return_ea = _native_ea(
+            self.terminal_return_ea,
+            "terminal return instruction",
+        )
         if not self.capture_identity.native_ranges.contains(state_write_ea):
             raise TerminalReturnCarrierEvidenceRejected(
                 "state-write anchor is outside its capture identity"
@@ -190,6 +195,20 @@ class TerminalReturnCarrierEvidence:
         if carrier_ea == state_write_ea:
             raise TerminalReturnCarrierEvidenceRejected(
                 "terminal state write and carrier require distinct anchors"
+            )
+        if not self.terminal_identity.native_ranges.contains(
+            terminal_return_ea
+        ):
+            raise TerminalReturnCarrierEvidenceRejected(
+                "terminal return instruction is outside its terminal identity"
+            )
+        if (
+            terminal_return_ea
+            not in self.terminal_identity.exact_instruction_eas
+        ):
+            raise TerminalReturnCarrierEvidenceRejected(
+                "terminal return instruction is not an exact instruction "
+                "in its terminal identity"
             )
 
         if self.operation not in {
@@ -244,6 +263,7 @@ class TerminalReturnCarrierEvidence:
 
         object.__setattr__(self, "state_write_ea", state_write_ea)
         object.__setattr__(self, "carrier_ea", carrier_ea)
+        object.__setattr__(self, "terminal_return_ea", terminal_return_ea)
         object.__setattr__(self, "return_width", return_width)
         object.__setattr__(self, "corridor_instruction_eas", corridor)
 
@@ -262,6 +282,7 @@ class TerminalReturnCarrierEvidence:
             "state_constant": f"0x{int(self.request.state_constant):X}",
             "state_write_ea": f"0x{self.state_write_ea:X}",
             "carrier_ea": f"0x{self.carrier_ea:X}",
+            "terminal_return_ea": f"0x{self.terminal_return_ea:X}",
             "operation": self.operation.value,
             "source_kind": self.source.kind.value,
             "source_width": self.source.width,
