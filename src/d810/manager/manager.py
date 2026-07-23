@@ -356,7 +356,7 @@ class D810Manager:
             try:
                 prepared_carriers = prepare_terminal_return_carrier_evidence(state)
                 prepared_snippets = prepare_detached_handler_snippets(state)
-                # Snippet preparation materializes the portable transfer
+                # Snippet preparation publishes the portable transfer
                 # inventory that identifies the state selector.  Bootstrap
                 # discovery must consume that completed inventory; running it
                 # earlier always abstains with no selectors, while the later

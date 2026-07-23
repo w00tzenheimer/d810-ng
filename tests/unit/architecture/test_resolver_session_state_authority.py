@@ -152,10 +152,6 @@ RESOLVER_SESSION_FIELD_INVENTORY = {
         FieldLifetime.TRANSIENT_MATERIALIZATION,
         "one-shot import control flag",
     ),
-    "pending_prepatch_materialization": FieldInventory(
-        FieldLifetime.TRANSIENT_MATERIALIZATION,
-        "resolution awaiting the next bounded materialization step",
-    ),
     "preopt_union_imported_mbas": FieldInventory(
         FieldLifetime.CALLBACK_LOCAL,
         "live MBA identity and generation guards",
@@ -429,6 +425,22 @@ def test_computed_goto_resolver_has_no_direct_final_state_route_authority() -> N
     }
     assert materialization_fields.isdisjoint(
         {"entry_bridge_materialized", "state_route_rounds"}
+    )
+
+
+def test_static_frontend_capture_has_no_pending_native_delivery_authority() -> None:
+    assert "pending_prepatch_materialization" not in _resolver_state_fields()
+    resolver_tree = ast.parse(
+        COMPUTED_GOTO_RESOLVER_PATH.read_text(encoding="utf-8"),
+        filename=str(COMPUTED_GOTO_RESOLVER_PATH),
+    )
+    preparer = _function(resolver_tree, "prepare_detached_handler_snippets")
+    assert _referenced_identifiers(preparer).isdisjoint(
+        {
+            "materialize_computed_gotos",
+            "deliver_by_byte_patch",
+            "decompile",
+        }
     )
 
 

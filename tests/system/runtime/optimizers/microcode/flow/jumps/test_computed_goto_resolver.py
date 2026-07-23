@@ -5116,7 +5116,7 @@ def test_materialized_profile_is_published_during_staged_preanalysis():
     assert is_computed_goto_materialized(state)
 
 
-def test_flowchart_stages_static_resolution_until_between_decompile_capture(
+def test_flowchart_publishes_static_resolution_without_pending_byte_delivery(
     monkeypatch,
 ) -> None:
     function_ea = 0x401000
@@ -5159,13 +5159,13 @@ def test_flowchart_stages_static_resolution_until_between_decompile_capture(
         decision=decision,
     )
 
-    assert state.pending_prepatch_materialization is resolution
     assert state.portable_evidence.computed_goto_resolution is resolution
     assert state.materialization is not None
+    assert not hasattr(state, "pending_prepatch_materialization")
     assert decision == {"session": session}
 
 
-def test_manager_preanalysis_stages_static_resolution_before_byte_delivery(
+def test_manager_preanalysis_publishes_static_resolution_without_byte_delivery(
     monkeypatch,
 ) -> None:
     function_ea = 0x401000
@@ -5211,7 +5211,7 @@ def test_manager_preanalysis_stages_static_resolution_before_byte_delivery(
     )
     assert state.portable_evidence.computed_goto_resolution is resolution
     assert state.materialization is not None
-    assert state.pending_prepatch_materialization is resolution
+    assert not hasattr(state, "pending_prepatch_materialization")
 
 
 def test_function_context_register_values_abstain_on_conflicting_or_unknown_values():
@@ -10338,23 +10338,33 @@ def test_prepare_detached_snippets_consumes_pending_preopt_reimport(
     assert not state.pending_preopt_reimport
 
 
-def test_staged_delivery_prepares_union_from_prepatch_live_mba_before_retry(
+def test_static_prepatch_capture_defers_all_publication_to_frontend_fragment(
     monkeypatch,
 ) -> None:
     function_ea = 0x1000
     live_mba = object()
+    plan = _PatchPlan(
+        jmp_ea=0x1010,
+        block_entry=0x1000,
+        patch_start=0x1008,
+        patch_bytes=b"\x90",
+        region_end=0x1012,
+        insn_heads=(0x1008,),
+        new_block_eas=(),
+        target_eas=(0x1020,),
+    )
     resolution = ComputedGotoResolution(
         function_ea=function_ea,
-        jmp_targets={},
+        jmp_targets={plan.jmp_ea: plan.target_eas},
         reachable_eas=(function_ea,),
         arch="x86",
-        executed_insns=0,
+        executed_insns=1,
         seeds_run=0,
+        patch_plans=(plan,),
     )
     _session, state = _resolver_session(resolution)
     state.begin_materialization(resolution)
-    state.pending_prepatch_materialization = resolution
-    prepared_from: list[object] = []
+    captured: list[tuple[object, object, object]] = []
     monkeypatch.setattr(
         computed_goto_resolver,
         "_static_prepatch_union_source_transfers",
@@ -10363,19 +10373,22 @@ def test_staged_delivery_prepares_union_from_prepatch_live_mba_before_retry(
     monkeypatch.setattr(
         computed_goto_resolver,
         "_capture_prepatch_preopt_union_source",
-        lambda _state, _resolution, _transfers: True,
+        lambda _state, _resolution, _transfers: (
+            captured.append((_state, _resolution, _transfers)) or True
+        ),
     )
     monkeypatch.setattr(
         computed_goto_resolver,
         "materialize_computed_gotos",
-        lambda _resolution, *, state: 1,
+        lambda *_args, **_kwargs: pytest.fail(
+            "static discovery must not patch native bytes"
+        ),
     )
     monkeypatch.setattr(
         computed_goto_resolver,
         "prepare_preopt_union_closure",
-        lambda _state, *, live_mba: (
-            prepared_from.append(live_mba)
-            or SimpleNamespace(prepared=True, published=True)
+        lambda *_args, **_kwargs: pytest.fail(
+            "live union publication belongs to the frontend fragment"
         ),
     )
     monkeypatch.setattr(
@@ -10391,7 +10404,7 @@ def test_staged_delivery_prepares_union_from_prepatch_live_mba_before_retry(
         )
         == 1
     )
-    assert prepared_from == [live_mba]
+    assert captured == [(state, resolution, ())]
 
 
 @pytest.mark.parametrize("union_behavior", ("abstain", "raise"))
