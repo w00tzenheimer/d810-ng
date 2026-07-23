@@ -481,7 +481,7 @@ class NativePreanalysisSessionState:
         )
         return True
 
-    def mark_normalization_staged(self) -> bool:
+    def _fragment_publication_mark_normalization_staged(self) -> bool:
         """Record construction of a detached normalization fragment."""
         return self._mark_lifecycle_generation(
             attribute="normalization_staged_generation",
@@ -489,7 +489,7 @@ class NativePreanalysisSessionState:
             evidence_family="frontend_normalization",
         )
 
-    def mark_normalization_validated(self) -> bool:
+    def _fragment_publication_mark_normalization_validated(self) -> bool:
         """Record successful validation of the staged normalization fragment."""
         return self._mark_lifecycle_generation(
             attribute="normalization_validated_generation",
@@ -501,7 +501,9 @@ class NativePreanalysisSessionState:
             ),
         )
 
-    def mark_normalization_published_and_postvalidated(self) -> bool:
+    def _fragment_publication_mark_normalization_published_and_postvalidated(
+        self,
+    ) -> bool:
         """Advance normalization authority only after publication postvalidation."""
         return self._mark_lifecycle_generation(
             attribute="normalization_published_postvalidated_generation",
@@ -513,7 +515,7 @@ class NativePreanalysisSessionState:
             ),
         )
 
-    def abort_normalization(self, *, reason: str) -> bool:
+    def _fragment_publication_abort_normalization(self, *, reason: str) -> bool:
         """Discard current transient normalization state without moving authority."""
         generation = self._require_current_portable_evidence()
         if (
@@ -554,7 +556,7 @@ class NativePreanalysisSessionState:
             ),
         )
 
-    def mark_semantic_fragment_staged(self) -> bool:
+    def _fragment_publication_mark_semantic_fragment_staged(self) -> bool:
         """Record detached construction of the current canonical semantic plan."""
         return self._mark_lifecycle_generation(
             attribute="semantic_fragment_staged_generation",
@@ -566,7 +568,7 @@ class NativePreanalysisSessionState:
             ),
         )
 
-    def mark_semantic_fragment_validated(self) -> bool:
+    def _fragment_publication_mark_semantic_fragment_validated(self) -> bool:
         """Record successful validation of the staged semantic fragment."""
         return self._mark_lifecycle_generation(
             attribute="semantic_fragment_validated_generation",
@@ -578,7 +580,9 @@ class NativePreanalysisSessionState:
             ),
         )
 
-    def mark_semantic_fragment_published_and_postvalidated(self) -> bool:
+    def _fragment_publication_mark_semantic_fragment_published_and_postvalidated(
+        self,
+    ) -> bool:
         """Advance semantic authority only after publication postvalidation."""
         return self._mark_lifecycle_generation(
             attribute="semantic_fragment_published_postvalidated_generation",
@@ -590,7 +594,7 @@ class NativePreanalysisSessionState:
             ),
         )
 
-    def mark_receipt_committed(self) -> bool:
+    def _fragment_publication_mark_receipt_committed(self) -> bool:
         """Record the receipt only after semantic publication postvalidation."""
         return self._mark_lifecycle_generation(
             attribute="receipt_committed_generation",
@@ -604,7 +608,7 @@ class NativePreanalysisSessionState:
             ),
         )
 
-    def abort_semantic_fragment(self, *, reason: str) -> bool:
+    def _fragment_publication_abort_semantic_fragment(self, *, reason: str) -> bool:
         """Discard current transient semantic state without moving authority."""
         generation = self._require_current_portable_evidence()
         if (
@@ -1445,31 +1449,6 @@ class NativePreanalysisSessionState:
 
 
 @runtime_checkable
-class FragmentPublicationLifecycleAuthority(Protocol):
-    """Generation authority driven only by validated fragment publication."""
-
-    evidence_generation: int
-
-    def mark_normalization_staged(self) -> bool: ...
-
-    def mark_normalization_validated(self) -> bool: ...
-
-    def mark_normalization_published_and_postvalidated(self) -> bool: ...
-
-    def abort_normalization(self, *, reason: str) -> bool: ...
-
-    def mark_semantic_fragment_staged(self) -> bool: ...
-
-    def mark_semantic_fragment_validated(self) -> bool: ...
-
-    def mark_semantic_fragment_published_and_postvalidated(self) -> bool: ...
-
-    def mark_receipt_committed(self) -> bool: ...
-
-    def abort_semantic_fragment(self, *, reason: str) -> bool: ...
-
-
-@runtime_checkable
 class ResolverEvidenceAttachment(Protocol):
     """Lower-layer view of a resolver attachment bound to lifecycle evidence."""
 
@@ -1527,7 +1506,6 @@ __all__ = [
     "CallResultCarrier",
     "ComputedGotoPatchPlan",
     "ComputedGotoResolution",
-    "FragmentPublicationLifecycleAuthority",
     "NativePreanalysisFacts",
     "NativePreanalysisSessionState",
     "PreoptUnionPreparationResult",

@@ -214,10 +214,10 @@ def test_native_fact_session_api_is_idempotent_and_generation_aware() -> None:
     assert coordinator.merge_facts(NATIVE_KEY, _native_facts()) is False
     state = session.native_preanalysis
     assert state.evidence_generation == 1
-    assert state.mark_normalization_staged() is True
-    assert state.mark_normalization_validated() is True
-    assert state.mark_normalization_published_and_postvalidated() is True
-    assert state.mark_normalization_published_and_postvalidated() is False
+    assert state._fragment_publication_mark_normalization_staged() is True
+    assert state._fragment_publication_mark_normalization_validated() is True
+    assert state._fragment_publication_mark_normalization_published_and_postvalidated() is True
+    assert state._fragment_publication_mark_normalization_published_and_postvalidated() is False
     assert state.canonical_semantic_plan_generation is None
 
     changed = _native_facts(blocks=(NativeBlock(0x401000, 0x401010),))
@@ -234,18 +234,18 @@ def test_coordinator_owns_canonical_semantic_publication_lifecycle() -> None:
     )
     assert coordinator.merge_facts(NATIVE_KEY, _native_facts())
     state = session.native_preanalysis
-    assert state.mark_normalization_staged()
-    assert state.mark_normalization_validated()
-    assert state.mark_normalization_published_and_postvalidated()
+    assert state._fragment_publication_mark_normalization_staged()
+    assert state._fragment_publication_mark_normalization_validated()
+    assert state._fragment_publication_mark_normalization_published_and_postvalidated()
 
     with pytest.raises(ValueError, match="lifecycle evidence epoch mismatch"):
         coordinator.mark_canonical_semantic_plan_ready(NATIVE_KEY, 2)
 
     assert coordinator.mark_canonical_semantic_plan_ready(NATIVE_KEY, 1)
-    assert state.mark_semantic_fragment_staged()
-    assert state.mark_semantic_fragment_validated()
-    assert state.mark_semantic_fragment_published_and_postvalidated()
-    assert state.mark_receipt_committed()
+    assert state._fragment_publication_mark_semantic_fragment_staged()
+    assert state._fragment_publication_mark_semantic_fragment_validated()
+    assert state._fragment_publication_mark_semantic_fragment_published_and_postvalidated()
+    assert state._fragment_publication_mark_receipt_committed()
     assert state.receipt_committed_generation == 1
 
 

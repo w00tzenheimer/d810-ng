@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import uuid
 
-from d810.analyses.control_flow.native_preanalysis_session import (
+from d810.hexrays.mutation.fragment_publication_lifecycle import (
     FragmentPublicationLifecycleAuthority,
 )
 from d810.core.events import EventEmitter
@@ -56,6 +56,7 @@ class MbaMutationReceipt:
     kind: StructuralMutationKind
     pre_generation: int
     post_generation: int
+    evidence_generation: int
     affected_identities: tuple[StableBlockIdentity, ...]
     operation_count: int = 0
     planned_operation_count: int = 0
@@ -70,8 +71,11 @@ class MbaMutationReceipt:
     def __post_init__(self) -> None:
         pre_generation = int(self.pre_generation)
         post_generation = int(self.post_generation)
+        evidence_generation = int(self.evidence_generation)
         if pre_generation < 0 or post_generation != pre_generation + 1:
             raise ValueError("a mutation receipt must advance exactly one generation")
+        if evidence_generation < 0:
+            raise ValueError("a mutation receipt requires a non-negative evidence generation")
         if int(self.operation_count) < 0:
             raise ValueError("a mutation receipt cannot have negative operations")
         if not str(self.mutation_batch_id):
@@ -80,6 +84,7 @@ class MbaMutationReceipt:
             raise ValueError("applied operations cannot exceed the planned count")
         object.__setattr__(self, "pre_generation", pre_generation)
         object.__setattr__(self, "post_generation", post_generation)
+        object.__setattr__(self, "evidence_generation", evidence_generation)
         object.__setattr__(self, "operation_count", int(self.operation_count))
         object.__setattr__(
             self,
@@ -967,6 +972,7 @@ class MbaMutationGateway:
             kind=self._active_kind,
             pre_generation=pre_generation,
             post_generation=post_generation,
+            evidence_generation=int(self.identity_index.evidence_generation),
             affected_identities=tuple(self._affected_identities),
             operation_count=self._operation_count,
             planned_operation_count=(

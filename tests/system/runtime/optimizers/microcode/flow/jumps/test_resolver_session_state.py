@@ -55,9 +55,9 @@ NATIVE_KEY = make_native_key()
 
 
 def _publish_normalization(state: NativePreanalysisSessionState) -> None:
-    assert state.mark_normalization_staged()
-    assert state.mark_normalization_validated()
-    assert state.mark_normalization_published_and_postvalidated()
+    assert state._fragment_publication_mark_normalization_staged()
+    assert state._fragment_publication_mark_normalization_validated()
+    assert state._fragment_publication_mark_normalization_published_and_postvalidated()
 
 
 def _native_facts(

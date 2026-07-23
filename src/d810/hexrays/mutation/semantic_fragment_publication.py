@@ -8,13 +8,10 @@ portable validation phases succeed.
 
 from __future__ import annotations
 
-from d810.analyses.control_flow.native_preanalysis_session import (
+from d810.hexrays.mutation.fragment_publication_lifecycle import (
     FragmentPublicationLifecycleAuthority,
 )
-from d810.transforms.fragment_plan import (
-    FragmentPlan,
-    FragmentPublicationPurpose,
-)
+from d810.transforms.fragment_plan import FragmentPlan
 from d810.transforms.fragment_validation import (
     FragmentValidationResult,
     ProjectedFragment,
@@ -87,45 +84,34 @@ def _require_lifecycle_authority(
 
 def _mark_lifecycle_staged(
     authority: FragmentPublicationLifecycleAuthority,
-    purpose: FragmentPublicationPurpose,
+    plan: FragmentPlan,
 ) -> None:
-    if purpose is FragmentPublicationPurpose.FRONTEND_NORMALIZATION:
-        authority.mark_normalization_staged()
-    else:
-        authority.mark_semantic_fragment_staged()
+    authority.record_fragment_staged(plan)
 
 
 def _mark_lifecycle_validated(
     authority: FragmentPublicationLifecycleAuthority,
-    purpose: FragmentPublicationPurpose,
+    plan: FragmentPlan,
+    validation: FragmentValidationResult,
 ) -> None:
-    if purpose is FragmentPublicationPurpose.FRONTEND_NORMALIZATION:
-        authority.mark_normalization_validated()
-    else:
-        authority.mark_semantic_fragment_validated()
+    authority.record_fragment_validated(plan, validation)
 
 
 def _abort_lifecycle(
     authority: FragmentPublicationLifecycleAuthority,
-    purpose: FragmentPublicationPurpose,
+    plan: FragmentPlan,
     *,
     reason: str,
 ) -> None:
-    if purpose is FragmentPublicationPurpose.FRONTEND_NORMALIZATION:
-        authority.abort_normalization(reason=reason)
-    else:
-        authority.abort_semantic_fragment(reason=reason)
+    authority.abort_fragment_publication(plan, reason=reason)
 
 
 def _commit_lifecycle(
     authority: FragmentPublicationLifecycleAuthority,
-    purpose: FragmentPublicationPurpose,
+    plan: FragmentPlan,
+    receipt: object,
 ) -> None:
-    if purpose is FragmentPublicationPurpose.FRONTEND_NORMALIZATION:
-        authority.mark_normalization_published_and_postvalidated()
-        return
-    authority.mark_semantic_fragment_published_and_postvalidated()
-    authority.mark_receipt_committed()
+    authority.commit_fragment_publication(plan, receipt)
 
 
 def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPlan):
@@ -155,7 +141,7 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             raise TypeError("semantic-fragment backend returned an invalid projection")
         _mark_lifecycle_staged(
             lifecycle_authority,
-            plan.publication_purpose,
+            plan,
         )
         lifecycle_staged = True
         prepublication = validate_fragment_projection(plan, projection)
@@ -166,7 +152,8 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             )
         _mark_lifecycle_validated(
             lifecycle_authority,
-            plan.publication_purpose,
+            plan,
+            prepublication,
         )
 
         rollback_token = backend._prepare_semantic_fragment_root_publication(
@@ -228,7 +215,7 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             try:
                 _abort_lifecycle(
                     lifecycle_authority,
-                    plan.publication_purpose,
+                    plan,
                     reason=reason,
                 )
             except Exception as exc:
@@ -242,7 +229,8 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
         raise
     _commit_lifecycle(
         lifecycle_authority,
-        plan.publication_purpose,
+        plan,
+        receipt,
     )
     backend._complete_semantic_fragment_publication(plan)
     return receipt
