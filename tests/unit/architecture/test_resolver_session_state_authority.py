@@ -125,6 +125,7 @@ MOVED_PORTABLE_FIELDS = frozenset(
         "portable_state_routes",
         "portable_dispatcher_region_identity",
         "terminal_return_carrier_requests",
+        "terminal_return_carriers",
         "call_result_carriers",
         "call_abi_proofs",
         "preopt_union_preparation",
@@ -143,6 +144,7 @@ DIRECT_EVIDENCE_MUTATIONS = frozenset(
         "merge_portable_dispatcher_region_identity",
         "merge_portable_state_routes",
         "merge_terminal_return_carrier_requests",
+        "merge_terminal_return_carriers",
         "request_controlled_redo",
         "request_generated_restart",
     }

@@ -26,6 +26,12 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteProofKind,
     SemanticRouteShape,
 )
+from d810.analyses.control_flow.terminal_return_carrier_evidence import (
+    TerminalReturnCarrierEvidence,
+    TerminalReturnCarrierEvidenceRejected,
+    TerminalReturnCarrierSource,
+    TerminalReturnCarrierSourceKind,
+)
 from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteBindingEvidence,
     BootstrapRouteEvidence,
@@ -49,7 +55,8 @@ from d810.analyses.control_flow.native_semantic_closure import (
 from d810.core.native_preanalysis_key import NativePreanalysisKeyMismatch
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
-from d810.ir.storage_identity import StorageIdentityKind
+from d810.ir.expressions import ValueOpKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from tests.native_preanalysis import make_native_key
 
 NATIVE_KEY = make_native_key()
@@ -391,6 +398,72 @@ def test_lifecycle_owns_native_state_write_delivery_routes() -> None:
     assert observed[-1].reason == "native state-write route evidence changed"
 
 
+def test_lifecycle_owns_portable_terminal_return_carrier_semantics() -> None:
+    capture_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C7E5, 0x40C7F4),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C7E5, 0x40C7EA),
+    )
+    terminal_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C898, 0x40C8A0),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C898,),
+    )
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=0x40C7E5,
+        terminal_target_ea=0x40C898,
+        state_var_reg=20,
+        state_constant=0x19A7218A,
+    )
+    carrier = TerminalReturnCarrierEvidence(
+        request=request,
+        capture_identity=capture_identity,
+        terminal_identity=terminal_identity,
+        state_write_ea=0x40C7E5,
+        carrier_ea=0x40C7EA,
+        operation=ValueOpKind.MOVE,
+        source=TerminalReturnCarrierSource(
+            kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
+            width=4,
+            storage_identity=StorageIdentity(
+                StorageIdentityKind.GLOBAL,
+                0x48B8A4,
+            ),
+        ),
+        return_width=4,
+        corridor_instruction_eas=(0x40C7E5, 0x40C7EA),
+    )
+    state = NativePreanalysisSessionState()
+
+    assert state.merge_terminal_return_carriers(NATIVE_KEY, (carrier,))
+    assert not state.merge_terminal_return_carriers(NATIVE_KEY, (carrier,))
+    assert state.resolver_evidence is not None
+    assert state.resolver_evidence.terminal_return_carriers == (carrier,)
+
+    conflicting = replace(
+        carrier,
+        capture_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40C7E5, 0x40C7F4),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(0x40C7E5, 0x40C7EB),
+        ),
+        carrier_ea=0x40C7EB,
+        corridor_instruction_eas=(0x40C7E5, 0x40C7EB),
+    )
+    with pytest.raises(
+        TerminalReturnCarrierEvidenceRejected,
+        match="conflicting terminal carrier evidence",
+    ):
+        state.merge_terminal_return_carriers(NATIVE_KEY, (conflicting,))
+
+    other_key = make_native_key(profile_fingerprint="sha256:other-profile")
+    with pytest.raises(NativePreanalysisKeyMismatch):
+        NativePreanalysisSessionState().merge_terminal_return_carriers(
+            other_key,
+            (carrier,),
+        )
+
+
 def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() -> (
     None
 ):
@@ -460,6 +533,85 @@ def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() 
     assert dict(proof.diagnostic_provenance) == {
         "provider_proof_kind": "reference_style_immediate_flow_route"
     }
+
+
+def test_canonical_semantic_evidence_groups_terminal_carrier_with_its_route() -> None:
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C7E5, 0x40C7F4),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C7E5, 0x40C7EA, 0x40C7F0),
+    )
+    terminal_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C898, 0x40C8A0),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C898,),
+    )
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=0x40C7E5,
+        terminal_target_ea=0x40C898,
+        state_var_reg=20,
+        state_constant=0x19A7218A,
+    )
+    carrier = TerminalReturnCarrierEvidence(
+        request=request,
+        capture_identity=source_identity,
+        terminal_identity=terminal_identity,
+        state_write_ea=0x40C7E5,
+        carrier_ea=0x40C7EA,
+        operation=ValueOpKind.MOVE,
+        source=TerminalReturnCarrierSource(
+            kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
+            width=4,
+            storage_identity=StorageIdentity(
+                StorageIdentityKind.GLOBAL,
+                0x48B8A4,
+            ),
+        ),
+        return_width=4,
+        corridor_instruction_eas=(0x40C7E5, 0x40C7EA),
+    )
+    route = PortableStateWriteRouteEvidence(
+        write_identity=source_identity,
+        delivery_identity=source_identity,
+        source_write_ea=0x40C7E5,
+        delivery_ea=0x40C7F0,
+        delivery_region_start_ea=0x40C7E5,
+        delivery_region_end_ea=0x40C7F4,
+        corridor_instruction_eas=(0x40C7E5, 0x40C7EA, 0x40C7F0),
+        state_var_reg=20,
+        state_constant=0x19A7218A,
+        target_identity=terminal_identity,
+        target_ea=0x40C898,
+    )
+    state = NativePreanalysisSessionState()
+    assert state.merge_state_write_routes(NATIVE_KEY, (route,))
+    assert state.merge_terminal_return_carriers(NATIVE_KEY, (carrier,))
+    _publish_normalization(state)
+
+    evidence = state.canonical_semantic_evidence_for(NATIVE_KEY)
+
+    assert evidence is not None
+    assert len(evidence.route_proofs) == 1
+    proof = evidence.route_proofs[0]
+    assert proof.proof_kind is SemanticRouteProofKind.TERMINAL_RETURN
+    assert proof.destinations[0].terminal
+    assert proof.terminal_return_carrier == carrier
+
+    unmatched_terminal = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D000, 0x40D008),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40D000,),
+    )
+    unmatched = replace(
+        carrier,
+        request=replace(request, terminal_target_ea=0x40D000),
+        terminal_identity=unmatched_terminal,
+    )
+    rejected = NativePreanalysisSessionState()
+    assert rejected.merge_state_write_routes(NATIVE_KEY, (route,))
+    assert rejected.merge_terminal_return_carriers(NATIVE_KEY, (unmatched,))
+    _publish_normalization(rejected)
+    assert rejected.canonical_semantic_evidence_for(NATIVE_KEY) is None
 
 
 def test_canonical_semantic_evidence_projects_complete_entry_consumer() -> None:

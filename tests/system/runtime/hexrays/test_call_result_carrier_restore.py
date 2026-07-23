@@ -15,7 +15,13 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     CallResultCarrier,
     NativePreanalysisSessionState,
 )
+from d810.analyses.control_flow.terminal_return_carrier_evidence import (
+    TerminalReturnCarrierSourceKind,
+)
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.expressions import ValueOpKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from tests.native_preanalysis import make_native_key
 from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
@@ -571,6 +577,7 @@ def _terminal_return_carrier_snippet(
     *,
     source_ea: int = 0x40C7E5,
     carrier_ea: int = 0x40C7EA,
+    carrier_source_size: int = 4,
 ) -> _MBA:
     return_mreg = int(ida_hexrays.reg2mreg(0))
     state_write = _Instruction(
@@ -582,7 +589,11 @@ def _terminal_return_carrier_snippet(
     carrier = _Instruction(
         ida_hexrays.m_mov,
         carrier_ea,
-        left=_Operand(ida_hexrays.mop_v, target_ea=0x48B8A4),
+        left=_Operand(
+            ida_hexrays.mop_v,
+            target_ea=0x48B8A4,
+            size=carrier_source_size,
+        ),
         dest=_Operand(ida_hexrays.mop_r, register=return_mreg),
     )
     branch = _Instruction(ida_hexrays.m_jnz, 0x40C7F0)
@@ -608,6 +619,162 @@ def _terminal_return_live_mba(*, state: int = 0x19A7218A) -> tuple[_MBA, _Block]
     )
     block = _Block(0, 0x40C7E5, (state_write,), (1,))
     return _MBA((block,)), block
+
+
+def test_captures_terminal_return_carrier_as_portable_evidence() -> None:
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        TerminalReturnCarrierRequest,
+    )
+    from d810.hexrays.mutation import detached_handler_island
+
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=0x40C7E5,
+        terminal_target_ea=0x40C898,
+        state_var_reg=20,
+        state_constant=0x19A7218A,
+    )
+    capture_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C7E5, 0x40C7F4),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C7E5, 0x40C7EA),
+    )
+    terminal_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C898, 0x40C8A0),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C898,),
+    )
+
+    evidence = detached_handler_island.capture_terminal_return_carrier_evidence(
+        0x40A560,
+        request,
+        _terminal_return_carrier_snippet(),
+        capture_identity=capture_identity,
+        terminal_identity=terminal_identity,
+    )
+
+    assert evidence is not None
+    assert evidence.operation is ValueOpKind.MOVE
+    assert evidence.source.kind is TerminalReturnCarrierSourceKind.STORAGE_VALUE
+    assert evidence.source.storage_identity == StorageIdentity(
+        StorageIdentityKind.GLOBAL,
+        0x48B8A4,
+    )
+    assert evidence.state_write_ea == 0x40C7E5
+    assert evidence.carrier_ea == 0x40C7EA
+    assert evidence.corridor_instruction_eas == (0x40C7E5, 0x40C7EA)
+
+
+def test_portable_terminal_carrier_capture_abstains_on_invalid_source() -> None:
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        TerminalReturnCarrierRequest,
+    )
+    from d810.hexrays.mutation import detached_handler_island
+
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=0x40C7E5,
+        terminal_target_ea=0x40C898,
+        state_var_reg=20,
+        state_constant=0x19A7218A,
+    )
+
+    assert (
+        detached_handler_island.capture_terminal_return_carrier_evidence(
+            0x40A560,
+            request,
+            _terminal_return_carrier_snippet(carrier_source_size=0),
+            capture_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(0x40C7E5, 0x40C7F4),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=(0x40C7E5, 0x40C7EA),
+            ),
+            terminal_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(0x40C898, 0x40C8A0),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=(0x40C898,),
+            ),
+        )
+        is None
+    )
+
+
+def test_captures_stack_terminal_carrier_through_stable_frame_identity(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        TerminalReturnCarrierRequest,
+    )
+    from d810.hexrays.mutation import detached_handler_island
+
+    source_ea = 0x40CC1C
+    carrier_ea = 0x40CC30
+    terminal_ea = 0x40CD8C
+    state = 0x69225E4
+    stable_ida_stkoff = 0x1010
+    state_write = _Instruction(
+        ida_hexrays.m_mov,
+        source_ea,
+        left=_Operand(ida_hexrays.mop_n, value=state),
+        dest=_Operand(ida_hexrays.mop_r, register=20),
+    )
+    carrier = _Instruction(
+        ida_hexrays.m_xdu,
+        carrier_ea,
+        left=_Operand(ida_hexrays.mop_S, stack_offset=0x44, size=1),
+        dest=_Operand(
+            ida_hexrays.mop_r,
+            register=int(ida_hexrays.reg2mreg(0)),
+            size=4,
+        ),
+    )
+    snippet = _MBA(
+        (
+            _Block(
+                0,
+                source_ea,
+                (state_write, carrier, _Instruction(ida_hexrays.m_jnz, 0x40CC34)),
+                (1,),
+            ),
+        ),
+        entry_ea=0x40C8B0,
+    )
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=source_ea,
+        terminal_target_ea=terminal_ea,
+        state_var_reg=20,
+        state_constant=state,
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_native_instruction_stack_frame_offsets",
+        lambda _function_ea, instruction_ea: (
+            (stable_ida_stkoff,) if int(instruction_ea) == carrier_ea else ()
+        ),
+    )
+
+    evidence = detached_handler_island.capture_terminal_return_carrier_evidence(
+        0x40C8B0,
+        request,
+        snippet,
+        capture_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(source_ea, 0x40CC38),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(source_ea, carrier_ea),
+        ),
+        terminal_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(terminal_ea, terminal_ea + 8),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(terminal_ea,),
+        ),
+    )
+
+    assert evidence is not None
+    assert evidence.operation is ValueOpKind.ZEXT
+    assert evidence.source.storage_identity == StorageIdentity(
+        StorageIdentityKind.STACK,
+        stable_ida_stkoff,
+    )
+    assert evidence.source.width == 1
+    assert evidence.return_width == 4
 
 
 def test_replays_exact_early_maturity_return_carrier_into_terminal_state_handler(

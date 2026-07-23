@@ -9,7 +9,10 @@ from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import StableBlockIdentity
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.semantic_edge import SemanticEdgeRole
-from d810.ir.storage_identity import StorageIdentity
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+from d810.analyses.control_flow.terminal_return_carrier_evidence import (
+    TerminalReturnCarrierEvidence,
+)
 
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
@@ -389,6 +392,7 @@ class SemanticRouteProof:
     state_write: SemanticStateWriteProof | None = None
     predicate: SemanticPredicateProof | None = None
     carriers: tuple[SemanticCarrierProof, ...] = ()
+    terminal_return_carrier: TerminalReturnCarrierEvidence | None = None
     diagnostic_provenance: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
@@ -455,6 +459,17 @@ class SemanticRouteProof:
             raise SemanticRouteEvidenceRejected(
                 "semantic route carrier belongs to another native key"
             )
+        terminal_return_carrier = self.terminal_return_carrier
+        if terminal_return_carrier is not None:
+            if not isinstance(
+                terminal_return_carrier,
+                TerminalReturnCarrierEvidence,
+            ):
+                raise TypeError("semantic terminal-return carrier has the wrong type")
+            if terminal_return_carrier.native_key != native_key:
+                raise SemanticRouteEvidenceRejected(
+                    "semantic terminal-return carrier belongs to another native key"
+                )
         if self.shape is SemanticRouteShape.DIRECT:
             if roles != (SemanticEdgeRole.DIRECT,):
                 raise SemanticRouteEvidenceRejected(
@@ -556,11 +571,39 @@ class SemanticRouteProof:
                 raise SemanticRouteEvidenceRejected(
                     "state assignment destination state constant must match its write"
                 )
-        if self.proof_kind is SemanticRouteProofKind.TERMINAL_RETURN and not all(
-            destination.terminal for destination in destinations
-        ):
+        if self.proof_kind is SemanticRouteProofKind.TERMINAL_RETURN:
+            if (
+                self.shape is not SemanticRouteShape.DIRECT
+                or len(destinations) != 1
+                or not destinations[0].terminal
+                or terminal_return_carrier is None
+                or state_write is None
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "terminal-return route requires one terminal destination, "
+                    "state write, and return carrier"
+                )
+            request = terminal_return_carrier.request
+            destination = destinations[0]
+            if (
+                destination.target_identity.native_ranges
+                != terminal_return_carrier.terminal_identity.native_ranges
+                or destination.target_anchor_ea != int(request.terminal_target_ea)
+                or destination.state_constant != int(request.state_constant)
+                or state_write.instruction_ea != terminal_return_carrier.state_write_ea
+                or state_write.state_constant != int(request.state_constant)
+                or state_write.state_variable
+                != StorageIdentity(
+                    StorageIdentityKind.REGISTER,
+                    int(request.state_var_reg),
+                )
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "terminal-return carrier must match its route, target, and state write"
+                )
+        elif terminal_return_carrier is not None:
             raise SemanticRouteEvidenceRejected(
-                "terminal-return route requires terminal destinations"
+                "only a terminal-return route may carry return semantics"
             )
 
         provenance: list[tuple[str, str]] = []
