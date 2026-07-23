@@ -1967,9 +1967,21 @@ def prepare_semantic_fragment_root_publication(
         original = state.binding(original_block_id)
         original_live = _live_block_for_binding(modifier, original)
         replacement_live = _live_block_for_binding(modifier, replacement)
-        if tuple(int(value) for value in replacement_live.predset):
+        replacement_predecessors = tuple(
+            _binding_for_live_serial(
+                modifier,
+                state,
+                int(predecessor_serial),
+            )
+            for predecessor_serial in replacement_live.predset
+        )
+        if any(
+            predecessor.state is FragmentBindingState.PUBLISHED
+            for predecessor in replacement_predecessors
+        ):
             raise SemanticFragmentBackendRejected(
-                f"replacement root {root_block_id!r} is already published"
+                f"replacement root {root_block_id!r} is already exposed "
+                "to published authority"
             )
         predecessor_serials = tuple(int(value) for value in original_live.predset)
         if not predecessor_serials:
