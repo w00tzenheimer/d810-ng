@@ -1296,6 +1296,106 @@ def test_lifecycle_projects_complete_native_patch_ledger_as_frontend_evidence() 
     assert direct_proof.endpoints[0].anchor_ea == true_target_ea
 
 
+def test_frontend_evidence_owns_patch_corridor_and_ledger_target() -> None:
+    producer_ea = 0x1005
+    patch_start = 0x1010
+    predicate_ea = patch_start
+    branch_ea = 0x1016
+    true_target_ea = 0x2000
+    false_target_ea = 0x3000
+    cfg = NativeCfg(
+        {
+            false_target_ea: NativeBlock(
+                start_ea=false_target_ea,
+                end_ea=0x3010,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+        }
+    )
+    closure = NativeSemanticClosure(
+        included_block_eas=(false_target_ea,),
+        native_ranges=(NativeRange(false_target_ea, 0x3010),),
+        proven_internal_edges=(),
+        abstentions=(),
+        seed_provenance=(),
+    )
+    conditional = ComputedGotoPatchPlan(
+        jmp_ea=0x1018,
+        block_entry=0x1000,
+        patch_start=patch_start,
+        patch_bytes=b"\x90" * 0x10,
+        region_end=0x1020,
+        insn_heads=(patch_start, predicate_ea, branch_ea),
+        new_block_eas=(predicate_ea, branch_ea),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        condition_producer_ea=producer_ea,
+    )
+    downstream = ComputedGotoPatchPlan(
+        jmp_ea=0x2008,
+        block_entry=true_target_ea,
+        patch_start=true_target_ea,
+        patch_bytes=b"\x90" * 0x10,
+        region_end=0x2010,
+        insn_heads=(true_target_ea,),
+        new_block_eas=(true_target_ea,),
+        target_eas=(false_target_ea,),
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x401000,
+        jmp_targets={
+            conditional.jmp_ea: conditional.target_eas,
+            downstream.jmp_ea: downstream.target_eas,
+        },
+        reachable_eas=(0x401000,),
+        arch="x86",
+        executed_insns=17,
+        seeds_run=0,
+        patch_plans=(conditional, downstream),
+    )
+    state = NativePreanalysisSessionState()
+    assert state.set_computed_goto_resolution(NATIVE_KEY, resolution)
+    assert state.merge_native_facts(
+        NATIVE_KEY,
+        native_cfg=cfg,
+        semantic_closure=closure,
+        boundary_ports=DetachedSnippetBoundaryPorts((), ()),
+    )
+
+    evidence = state.frontend_normalization_evidence_for(NATIVE_KEY)
+
+    assert evidence is not None
+    proofs = {proof.proof_id: proof for proof in evidence.transfer_proofs}
+    conditional_proof = proofs["native-indirect-transfer@0x1018"]
+    downstream_proof = proofs["native-indirect-transfer@0x2008"]
+    assert conditional_proof.source_anchor_ea == predicate_ea
+    assert tuple(
+        (
+            identity.native_ranges.intervals[0].start_ea,
+            identity.native_ranges.intervals[0].end_ea,
+        )
+        for identity in conditional_proof.flag_corridor
+    ) == ((0x1000, patch_start), (patch_start, 0x1020))
+    assert conditional_proof.source_identity == conditional_proof.flag_corridor[-1]
+    assert conditional_proof.source_identity.exact_instruction_eas == frozenset(
+        {predicate_ea}
+    )
+    taken_endpoint = next(
+        endpoint
+        for endpoint in conditional_proof.endpoints
+        if endpoint.role is SemanticEdgeRole.CONDITIONAL_TAKEN
+    )
+    assert taken_endpoint.identity.exact_instruction_eas == frozenset(
+        {true_target_ea}
+    )
+    assert taken_endpoint.identity.native_ranges.intervals == (
+        NativeEaInterval(true_target_ea, true_target_ea + 1),
+    )
+    assert downstream_proof.source_anchor_ea == true_target_ea
+
+
 def test_frontend_evidence_rejects_the_whole_ledger_without_a_flag_producer() -> (
     None
 ):
