@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from d810.analyses.control_flow.native_semantic_closure import (
+    NativeCfg,
     NativeRange,
     NativeSemanticClosure,
 )
@@ -272,6 +273,7 @@ class FrontendNormalizationEvidence:
     atomic_group_id: str
     transfer_proofs: tuple[NativeIndirectTransferProof, ...]
     semantic_closure: NativeSemanticClosure | None = None
+    native_cfg: NativeCfg | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.native_key, NativePreanalysisKey):
@@ -321,6 +323,20 @@ class FrontendNormalizationEvidence:
             NativeSemanticClosure,
         ):
             raise TypeError("frontend evidence semantic closure is not portable")
+        if self.native_cfg is not None and not isinstance(self.native_cfg, NativeCfg):
+            raise TypeError("frontend evidence native CFG is not portable")
+        if (self.semantic_closure is None) != (self.native_cfg is None):
+            raise FrontendNormalizationEvidenceRejected(
+                "frontend semantic closure and native CFG must be published together"
+            )
+        if self.semantic_closure is not None and self.native_cfg is not None:
+            missing_blocks = set(self.semantic_closure.included_block_eas) - set(
+                self.native_cfg.blocks_by_ea
+            )
+            if missing_blocks:
+                raise FrontendNormalizationEvidenceRejected(
+                    "frontend native CFG is missing semantic closure blocks"
+                )
 
         object.__setattr__(self, "generation", generation)
         object.__setattr__(self, "atomic_group_id", atomic_group_id)
@@ -376,6 +392,7 @@ class DetachedSemanticClosureImportRequest:
     native_ranges: tuple[NativeRange, ...]
     proof_ids: tuple[str, ...]
     semantic_closure: NativeSemanticClosure
+    native_cfg: NativeCfg
 
     def __post_init__(self) -> None:
         if not isinstance(self.native_key, NativePreanalysisKey):
@@ -419,6 +436,8 @@ class DetachedSemanticClosureImportRequest:
             )
         if not isinstance(self.semantic_closure, NativeSemanticClosure):
             raise TypeError("detached import requires a native semantic closure")
+        if not isinstance(self.native_cfg, NativeCfg):
+            raise TypeError("detached import requires a portable native CFG")
         if native_ranges != tuple(self.semantic_closure.native_ranges):
             raise FrontendNormalizationEvidenceRejected(
                 "detached import ranges must equal its proven semantic closure"
@@ -432,6 +451,12 @@ class DetachedSemanticClosureImportRequest:
         ):
             raise FrontendNormalizationEvidenceRejected(
                 "detached import entry is outside its proven closure"
+            )
+        if set(self.semantic_closure.included_block_eas) - set(
+            self.native_cfg.blocks_by_ea
+        ):
+            raise FrontendNormalizationEvidenceRejected(
+                "detached import native CFG is missing closure blocks"
             )
         object.__setattr__(self, "generation", generation)
         object.__setattr__(self, "atomic_group_id", atomic_group_id)
@@ -473,9 +498,10 @@ def plan_detached_semantic_closure_import(
     if not missing_entries:
         return None
     closure = evidence.semantic_closure
-    if closure is None:
+    native_cfg = evidence.native_cfg
+    if closure is None or native_cfg is None:
         raise FrontendNormalizationEvidenceRejected(
-            "missing native targets require a proven semantic closure"
+            "missing native targets require a proven semantic closure and native CFG"
         )
     return DetachedSemanticClosureImportRequest(
         native_key=evidence.native_key,
@@ -485,6 +511,7 @@ def plan_detached_semantic_closure_import(
         native_ranges=tuple(closure.native_ranges),
         proof_ids=tuple(proof_ids),
         semantic_closure=closure,
+        native_cfg=native_cfg,
     )
 
 

@@ -5,13 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.frontend_normalization import (
+    DetachedSemanticClosureImportRequest,
     FrontendNormalizationEvidence,
     NativeIndirectTransferProof,
     NativeTransferEndpoint,
     NativeTransferShape,
+    plan_detached_semantic_closure_import,
     unique_block_for_native_anchor,
 )
+from d810.analyses.control_flow.native_semantic_closure import (
+    NativeBlock,
+    NativeEdgeKind,
+    NativeTerminalKind,
+)
 from d810.ir.block_identity import (
+    NativeEaInterval,
     StableBlockIdentity,
     stable_block_identity_from_snapshot,
 )
@@ -23,6 +31,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlockRole,
     FragmentEdge,
     FragmentFlagCorridor,
+    FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
     FragmentPublicationPurpose,
@@ -34,7 +43,10 @@ from d810.transforms.fragment_plan import (
 class _BoundTransferProof:
     proof: NativeIndirectTransferProof
     source: BlockSnapshot
-    endpoints: tuple[tuple[NativeTransferEndpoint, BlockSnapshot], ...]
+    endpoints: tuple[
+        tuple[NativeTransferEndpoint, BlockSnapshot | None],
+        ...,
+    ]
     corridor: tuple[BlockSnapshot, ...]
 
 
@@ -76,15 +88,13 @@ def _bind_proof(
     )
     if source is None:
         return None
-    endpoints: list[tuple[NativeTransferEndpoint, BlockSnapshot]] = []
+    endpoints: list[tuple[NativeTransferEndpoint, BlockSnapshot | None]] = []
     for endpoint in proof.endpoints:
         target = unique_block_for_native_anchor(
             graph,
             endpoint.identity,
             endpoint.anchor_ea,
         )
-        if target is None:
-            return None
         endpoints.append((endpoint, target))
 
     corridor: list[BlockSnapshot] = []
@@ -116,11 +126,15 @@ def _proof_is_faithful(binding: _BoundTransferProof) -> bool:
     proof = binding.proof
     if proof.shape is NativeTransferShape.DIRECT:
         target = binding.endpoints[0][1]
+        if target is None:
+            return False
         return (
             binding.source.kind is BlockKind.ONE_WAY
             and binding.source.succs == (int(target.serial),)
         )
 
+    if any(target is None for _endpoint, target in binding.endpoints):
+        return False
     target_by_role = {
         endpoint.role: block for endpoint, block in binding.endpoints
     }
@@ -163,6 +177,52 @@ def _graph_identities(
     return identities
 
 
+def _native_block_identity(
+    native_block: NativeBlock,
+    evidence: FrontendNormalizationEvidence,
+) -> StableBlockIdentity:
+    return StableBlockIdentity.from_intervals(
+        (
+            NativeEaInterval(
+                int(native_block.start_ea),
+                int(native_block.end_ea),
+            ),
+        ),
+        native_key=evidence.native_key,
+        exact_instruction_eas=(int(native_block.start_ea),),
+    )
+
+
+def _request_native_block(
+    request: DetachedSemanticClosureImportRequest,
+    anchor_ea: int,
+) -> NativeBlock | None:
+    matches = tuple(
+        native_block
+        for entry_ea in request.semantic_closure.included_block_eas
+        for native_block in (request.native_cfg.blocks_by_ea.get(int(entry_ea)),)
+        if native_block is not None
+        and int(native_block.start_ea) <= int(anchor_ea) < int(native_block.end_ea)
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
+def _live_block_at_native_ea(
+    graph: FlowGraph,
+    ea: int,
+) -> BlockSnapshot | None:
+    matches = tuple(
+        block
+        for block in graph.blocks.values()
+        if int(ea)
+        in {
+            int(block.start_ea),
+            *(int(instruction.ea) for instruction in block.insn_snapshots),
+        }
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
 def plan_frontend_computed_branch_normalization(
     graph: FlowGraph,
     evidence: FrontendNormalizationEvidence,
@@ -175,6 +235,7 @@ def plan_frontend_computed_branch_normalization(
             "frontend branch normalization requires portable normalization evidence"
         )
 
+    import_request = plan_detached_semantic_closure_import(graph, evidence)
     bindings: list[_BoundTransferProof] = []
     for proof in evidence.transfer_proofs:
         binding = _bind_proof(graph, proof)
@@ -208,6 +269,44 @@ def plan_frontend_computed_branch_normalization(
 
     def published_id(serial: int) -> str:
         return replacement_ids.get(int(serial), base_ids[int(serial)])
+
+    body_id = f"native-body:{evidence.atomic_group_id}"
+    imported_native_blocks: dict[int, NativeBlock] = {}
+    imported_identities: dict[int, StableBlockIdentity] = {}
+    imported_ids: dict[int, str] = {}
+    if import_request is not None:
+        for entry_ea in import_request.semantic_closure.included_block_eas:
+            native_block = import_request.native_cfg.blocks_by_ea[int(entry_ea)]
+            identity = _native_block_identity(native_block, evidence)
+            if (
+                unique_block_for_native_anchor(
+                    graph,
+                    identity,
+                    int(native_block.start_ea),
+                )
+                is not None
+            ):
+                continue
+            imported_native_blocks[int(entry_ea)] = native_block
+            imported_identities[int(entry_ea)] = identity
+            imported_ids[int(entry_ea)] = (
+                f"native[{_identity_token(identity)}]:imported"
+            )
+        if not imported_native_blocks:
+            return None
+
+    def imported_id_for_anchor(anchor_ea: int) -> str | None:
+        if import_request is None:
+            return None
+        native_block = _request_native_block(import_request, int(anchor_ea))
+        if native_block is None:
+            return None
+        return imported_ids.get(int(native_block.start_ea))
+
+    for binding in bindings:
+        for endpoint, target in binding.endpoints:
+            if target is None and imported_id_for_anchor(endpoint.anchor_ea) is None:
+                return None
 
     blocks: list[FragmentBlock] = []
     for block in sorted(graph.blocks.values(), key=lambda item: int(item.serial)):
@@ -249,6 +348,18 @@ def plan_frontend_computed_branch_normalization(
                 stable_identity=identity,
             )
         )
+    for entry_ea, native_block in sorted(imported_native_blocks.items()):
+        identity = imported_identities[entry_ea]
+        blocks.append(
+            FragmentBlock(
+                block_id=imported_ids[entry_ea],
+                role=FragmentBlockRole.IMPORTED,
+                materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+                semantic_anchor_ea=int(native_block.start_ea),
+                stable_identity=identity,
+                native_body_id=body_id,
+            )
+        )
 
     operations: list[FragmentOperation] = []
     flag_corridors: list[FragmentFlagCorridor] = []
@@ -263,7 +374,11 @@ def plan_frontend_computed_branch_normalization(
                 edges=tuple(
                     FragmentEdge(
                         role=endpoint.role,
-                        target_block_id=published_id(target.serial),
+                        target_block_id=(
+                            published_id(target.serial)
+                            if target is not None
+                            else str(imported_id_for_anchor(endpoint.anchor_ea))
+                        ),
                     )
                     for endpoint, target in binding.endpoints
                 ),
@@ -296,6 +411,138 @@ def plan_frontend_computed_branch_normalization(
             )
         )
 
+    native_bodies: tuple[FragmentNativeBody, ...] = ()
+    if import_request is not None:
+        terminal_block_ids: list[str] = []
+
+        def target_block_id(target_ea: int) -> str | None:
+            imported_target_id = imported_id_for_anchor(int(target_ea))
+            if imported_target_id is not None:
+                return imported_target_id
+            live_target = _live_block_at_native_ea(graph, int(target_ea))
+            return (
+                None
+                if live_target is None
+                else published_id(int(live_target.serial))
+            )
+
+        for entry_ea, native_block in sorted(imported_native_blocks.items()):
+            source_block_id = imported_ids[entry_ea]
+            control_edges = tuple(
+                edge
+                for edge in native_block.outgoing_edges
+                if edge.kind is not NativeEdgeKind.CALL
+            )
+            if not control_edges:
+                if native_block.terminal is NativeTerminalKind.NONE:
+                    return None
+                terminal_block_ids.append(source_block_id)
+                continue
+
+            operation_id = f"native-body-edge@0x{entry_ea:X}"
+            if len(control_edges) == 1:
+                edge = control_edges[0]
+                if edge.target_ea is None or edge.kind not in {
+                    NativeEdgeKind.DIRECT_JUMP,
+                    NativeEdgeKind.FALLTHROUGH,
+                    NativeEdgeKind.INDIRECT,
+                }:
+                    return None
+                if (
+                    edge.kind is NativeEdgeKind.INDIRECT
+                    and not edge.resolver_proven
+                ):
+                    return None
+                target_id = target_block_id(int(edge.target_ea))
+                if target_id is None:
+                    return None
+                operations.append(
+                    FragmentOperation(
+                        operation_id=operation_id,
+                        source_block_id=source_block_id,
+                        edges=(
+                            FragmentEdge(
+                                role=SemanticEdgeRole.DIRECT,
+                                target_block_id=target_id,
+                            ),
+                        ),
+                    )
+                )
+                continue
+
+            edge_by_kind = {edge.kind: edge for edge in control_edges}
+            if (
+                len(control_edges) != 2
+                or set(edge_by_kind)
+                != {
+                    NativeEdgeKind.CONDITIONAL_TRUE,
+                    NativeEdgeKind.CONDITIONAL_FALSE,
+                }
+            ):
+                return None
+            true_edge = edge_by_kind[NativeEdgeKind.CONDITIONAL_TRUE]
+            false_edge = edge_by_kind[NativeEdgeKind.CONDITIONAL_FALSE]
+            predicate_anchors = {
+                edge.source_instruction_ea for edge in (true_edge, false_edge)
+            }
+            if (
+                true_edge.target_ea is None
+                or false_edge.target_ea is None
+                or None in predicate_anchors
+                or len(predicate_anchors) != 1
+            ):
+                return None
+            true_target_id = target_block_id(int(true_edge.target_ea))
+            false_target_id = target_block_id(int(false_edge.target_ea))
+            if (
+                true_target_id is None
+                or false_target_id is None
+                or true_target_id == false_target_id
+            ):
+                return None
+            operations.append(
+                FragmentOperation(
+                    operation_id=operation_id,
+                    source_block_id=source_block_id,
+                    predicate_anchor_ea=int(next(iter(predicate_anchors))),
+                    edges=(
+                        FragmentEdge(
+                            role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                            target_block_id=true_target_id,
+                        ),
+                        FragmentEdge(
+                            role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                            target_block_id=false_target_id,
+                        ),
+                    ),
+                )
+            )
+        entry_block_ids = tuple(
+            str(imported_id_for_anchor(entry_ea))
+            for entry_ea in import_request.required_entry_eas
+        )
+        if any(block_id == "None" for block_id in entry_block_ids):
+            return None
+        native_bodies = (
+            FragmentNativeBody(
+                body_id=body_id,
+                block_ids=tuple(
+                    imported_ids[entry_ea]
+                    for entry_ea in sorted(imported_native_blocks)
+                ),
+                entry_block_ids=entry_block_ids,
+                terminal_block_ids=tuple(terminal_block_ids),
+                native_ranges=tuple(
+                    NativeEaInterval(
+                        int(native_range.start_ea),
+                        int(native_range.end_ea),
+                    )
+                    for native_range in import_request.native_ranges
+                ),
+                proof_ids=import_request.proof_ids,
+            ),
+        )
+
     roots = tuple(
         replacement_ids[int(binding.source.serial)] for binding in bindings
     )
@@ -315,6 +562,7 @@ def plan_frontend_computed_branch_normalization(
         owned_originals=owned_originals,
         prohibited_dispatcher_blocks=(),
         operations=tuple(operations),
+        native_bodies=native_bodies,
         flag_corridors=tuple(flag_corridors),
     )
 

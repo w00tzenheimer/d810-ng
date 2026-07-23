@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from d810.core.native_preanalysis_key import NativePreanalysisKey
-from d810.ir.block_identity import StableBlockIdentity
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity
 
@@ -32,6 +32,7 @@ class FragmentBlockRole(str, Enum):
     REPLACEMENT = "replacement"
     EXTERNAL = "external"
     SYNTHETIC = "synthetic"
+    IMPORTED = "imported"
 
 
 class FragmentBlockMaterialization(str, Enum):
@@ -40,6 +41,7 @@ class FragmentBlockMaterialization(str, Enum):
     REUSE_PUBLISHED = "reuse_published"
     CLONE_PUBLISHED = "clone_published"
     CREATE_EMPTY = "create_empty"
+    IMPORT_NATIVE = "import_native"
 
 
 class FragmentPublicationPurpose(str, Enum):
@@ -91,6 +93,7 @@ class FragmentBlock:
     semantic_anchor_ea: int
     stable_identity: StableBlockIdentity | None = None
     replaces_block_id: str | None = None
+    native_body_id: str | None = None
 
     def __post_init__(self) -> None:
         block_id = _require_identifier(self.block_id, "fragment block id")
@@ -108,6 +111,7 @@ class FragmentBlock:
             FragmentBlockRole.REPLACEMENT: FragmentBlockMaterialization.CLONE_PUBLISHED,
             FragmentBlockRole.EXTERNAL: FragmentBlockMaterialization.REUSE_PUBLISHED,
             FragmentBlockRole.SYNTHETIC: FragmentBlockMaterialization.CREATE_EMPTY,
+            FragmentBlockRole.IMPORTED: FragmentBlockMaterialization.IMPORT_NATIVE,
         }[self.role]
         if self.materialization is not required_materialization:
             requirement = {
@@ -115,6 +119,7 @@ class FragmentBlock:
                 FragmentBlockRole.REPLACEMENT: "replacement fragment block must clone its published original",
                 FragmentBlockRole.EXTERNAL: "external fragment block must reuse published authority",
                 FragmentBlockRole.SYNTHETIC: "synthetic fragment block must create an empty staged block",
+                FragmentBlockRole.IMPORTED: "imported fragment block must materialize native body",
             }[self.role]
             raise FragmentPlanRejected(requirement)
 
@@ -151,9 +156,102 @@ class FragmentBlock:
                 "only a replacement fragment block may name a replaced block"
             )
 
+        native_body_id = self.native_body_id
+        if self.role is FragmentBlockRole.IMPORTED:
+            if native_body_id is None:
+                raise FragmentPlanRejected(
+                    "imported fragment block requires a native body id"
+                )
+            native_body_id = _require_identifier(
+                native_body_id,
+                "fragment native body id",
+            )
+        elif native_body_id is not None:
+            raise FragmentPlanRejected(
+                "only an imported fragment block may name a native body"
+            )
+
         object.__setattr__(self, "block_id", block_id)
         object.__setattr__(self, "semantic_anchor_ea", semantic_anchor_ea)
         object.__setattr__(self, "replaces_block_id", replaces_block_id)
+        object.__setattr__(self, "native_body_id", native_body_id)
+
+
+@dataclass(frozen=True, slots=True)
+class FragmentNativeBody:
+    """One closed native body staged without publishing any live root."""
+
+    body_id: str
+    block_ids: tuple[str, ...]
+    entry_block_ids: tuple[str, ...]
+    terminal_block_ids: tuple[str, ...]
+    native_ranges: tuple[NativeEaInterval, ...]
+    proof_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        body_id = _require_identifier(self.body_id, "fragment native body id")
+
+        def identifiers(values: tuple[str, ...], description: str) -> tuple[str, ...]:
+            normalized = tuple(
+                _require_identifier(value, description) for value in values
+            )
+            if len(set(normalized)) != len(normalized):
+                raise FragmentPlanRejected(
+                    f"fragment native body contains duplicate {description}s"
+                )
+            return normalized
+
+        block_ids = identifiers(self.block_ids, "block id")
+        entry_block_ids = identifiers(self.entry_block_ids, "entry block id")
+        terminal_block_ids = identifiers(
+            self.terminal_block_ids,
+            "terminal block id",
+        )
+        proof_ids = identifiers(self.proof_ids, "proof id")
+        if not block_ids or not entry_block_ids or not proof_ids:
+            raise FragmentPlanRejected(
+                "fragment native body requires blocks, entries, and proofs"
+            )
+        if not set(entry_block_ids).issubset(block_ids):
+            raise FragmentPlanRejected(
+                "fragment native body entries must belong to the body"
+            )
+        if not set(terminal_block_ids).issubset(block_ids):
+            raise FragmentPlanRejected(
+                "fragment native body terminals must belong to the body"
+            )
+        native_ranges = tuple(self.native_ranges)
+        if not native_ranges or any(
+            not isinstance(native_range, NativeEaInterval)
+            for native_range in native_ranges
+        ):
+            raise FragmentPlanRejected(
+                "fragment native body requires native EA ranges"
+            )
+        if tuple(
+            sorted(
+                native_ranges,
+                key=lambda native_range: (
+                    native_range.start_ea,
+                    native_range.end_ea,
+                ),
+            )
+        ) != native_ranges:
+            raise FragmentPlanRejected(
+                "fragment native body ranges must be ordered"
+            )
+        for previous, current in zip(native_ranges, native_ranges[1:]):
+            if current.start_ea < previous.end_ea:
+                raise FragmentPlanRejected(
+                    "fragment native body ranges must not overlap"
+                )
+
+        object.__setattr__(self, "body_id", body_id)
+        object.__setattr__(self, "block_ids", block_ids)
+        object.__setattr__(self, "entry_block_ids", entry_block_ids)
+        object.__setattr__(self, "terminal_block_ids", terminal_block_ids)
+        object.__setattr__(self, "native_ranges", native_ranges)
+        object.__setattr__(self, "proof_ids", proof_ids)
 
 
 @dataclass(frozen=True, slots=True)
@@ -474,6 +572,7 @@ class FragmentPlan:
     owned_originals: tuple[str, ...]
     prohibited_dispatcher_blocks: tuple[str, ...]
     operations: tuple[FragmentOperation, ...]
+    native_bodies: tuple[FragmentNativeBody, ...] = ()
     data_flow_obligations: tuple[FragmentDataFlowObligation, ...] = ()
     flag_corridors: tuple[FragmentFlagCorridor, ...] = ()
     value_range_assumptions: tuple[FragmentRangeAssumption, ...] = ()
@@ -561,6 +660,67 @@ class FragmentPlan:
                     f"original {original.block_id!r}"
                 )
 
+        native_bodies = tuple(self.native_bodies)
+        if any(
+            not isinstance(native_body, FragmentNativeBody)
+            for native_body in native_bodies
+        ):
+            raise TypeError("fragment plan contains an invalid native body")
+        self._require_unique_ids(
+            (native_body.body_id for native_body in native_bodies),
+            "fragment native body",
+        )
+        native_body_by_id = {
+            native_body.body_id: native_body for native_body in native_bodies
+        }
+        imported_block_ids = {
+            block.block_id
+            for block in blocks
+            if block.role is FragmentBlockRole.IMPORTED
+        }
+        claimed_imported_block_ids: set[str] = set()
+        for native_body in native_bodies:
+            for block_id in native_body.block_ids:
+                block = block_by_id.get(block_id)
+                if block is None or block.role is not FragmentBlockRole.IMPORTED:
+                    raise FragmentPlanRejected(
+                        f"native body {native_body.body_id!r} contains a "
+                        "non-imported block"
+                    )
+                if block.native_body_id != native_body.body_id:
+                    raise FragmentPlanRejected(
+                        f"imported block {block_id!r} names a different native body"
+                    )
+                if block_id in claimed_imported_block_ids:
+                    raise FragmentPlanRejected(
+                        f"imported block {block_id!r} belongs to multiple native bodies"
+                    )
+                claimed_imported_block_ids.add(block_id)
+                identity = block.stable_identity
+                if identity is None or any(
+                    not any(
+                        body_range.start_ea <= interval.start_ea
+                        and interval.end_ea <= body_range.end_ea
+                        for body_range in native_body.native_ranges
+                    )
+                    for interval in identity.native_ranges.intervals
+                ):
+                    raise FragmentPlanRejected(
+                        f"imported block {block_id!r} lies outside its native body"
+                    )
+        if claimed_imported_block_ids != imported_block_ids:
+            raise FragmentPlanRejected(
+                "every imported fragment block must belong to one native body"
+            )
+        for block in blocks:
+            if (
+                block.role is FragmentBlockRole.IMPORTED
+                and block.native_body_id not in native_body_by_id
+            ):
+                raise FragmentPlanRejected(
+                    f"imported block {block.block_id!r} has an unknown native body"
+                )
+
         operations = tuple(self.operations)
         if not operations or any(
             not isinstance(operation, FragmentOperation) for operation in operations
@@ -583,10 +743,11 @@ class FragmentPlan:
             if source.role not in {
                 FragmentBlockRole.REPLACEMENT,
                 FragmentBlockRole.SYNTHETIC,
+                FragmentBlockRole.IMPORTED,
             }:
                 raise FragmentPlanRejected(
                     f"fragment operation {operation.operation_id!r} must execute on "
-                    "a staged replacement or synthetic block"
+                    "a staged replacement, synthetic, or imported block"
                 )
             if operation.predicate_anchor_ea is not None:
                 identity = source.stable_identity
@@ -603,6 +764,26 @@ class FragmentPlan:
                         f"fragment operation {operation.operation_id!r} has unknown "
                         f"target block {edge.target_block_id!r}"
                     )
+        operation_source_ids = {
+            operation.source_block_id for operation in operations
+        }
+        for native_body in native_bodies:
+            terminal_ids = set(native_body.terminal_block_ids)
+            if terminal_ids & operation_source_ids:
+                raise FragmentPlanRejected(
+                    f"native body {native_body.body_id!r} terminal block "
+                    "cannot also own an operation"
+                )
+            missing_topology = (
+                set(native_body.block_ids)
+                - terminal_ids
+                - operation_source_ids
+            )
+            if missing_topology:
+                raise FragmentPlanRejected(
+                    f"native body {native_body.body_id!r} lacks topology for "
+                    f"{sorted(missing_topology)}"
+                )
 
         data_flow_obligations = tuple(self.data_flow_obligations)
         if any(
@@ -683,6 +864,7 @@ class FragmentPlan:
             prohibited_dispatcher_blocks,
         )
         object.__setattr__(self, "operations", operations)
+        object.__setattr__(self, "native_bodies", native_bodies)
         object.__setattr__(
             self,
             "data_flow_obligations",
@@ -759,6 +941,7 @@ __all__ = [
     "FragmentDataFlowRole",
     "FragmentEdge",
     "FragmentFlagCorridor",
+    "FragmentNativeBody",
     "FragmentOperation",
     "FragmentPlan",
     "FragmentPlanRejected",
