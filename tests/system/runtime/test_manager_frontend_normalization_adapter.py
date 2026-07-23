@@ -1,0 +1,170 @@
+"""Runtime-layer PREOPT adapter for manager-owned normalization."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
+from d810.manager.decompilation_lifecycle import DecompilationSessionContext
+from d810.manager.frontend_normalization import FrontendNormalizationRunResult
+from d810.manager import hexrays_frontend_normalization as live_normalization
+from tests.native_preanalysis import make_native_key
+
+
+NATIVE_KEY = make_native_key(function_rva=0x1000)
+GRAPH = FlowGraph(
+    blocks={
+        0: BlockSnapshot(
+            serial=0,
+            block_type=0,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
+        )
+    },
+    entry_serial=0,
+    func_ea=0x1000,
+)
+
+
+def _session() -> DecompilationSessionContext:
+    return DecompilationSessionContext(
+        function_ea=0x1000,
+        database_identity="test",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+
+
+def test_live_adapter_reports_only_receipt_backed_pipeline_result(
+    monkeypatch,
+) -> None:
+    session = _session()
+    session.native_preanalysis.evidence_generation = 3
+    session.native_preanalysis.portable_evidence_ready_generation = 3
+    mba = object()
+    gateway = object()
+    source = SimpleNamespace(
+        flow_graph=GRAPH,
+        func_ea=0x1000,
+        live_source=mba,
+    )
+    backend = object()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        live_normalization,
+        "_lift_live_function",
+        lambda live_mba: source if live_mba is mba else None,
+    )
+
+    def new_backend(**kwargs):
+        captured["backend_args"] = kwargs
+        return backend
+
+    monkeypatch.setattr(live_normalization, "_new_live_backend", new_backend)
+
+    def run_pipeline(**kwargs):
+        captured["pipeline_args"] = kwargs
+        return FrontendNormalizationRunResult(
+            graph=GRAPH,
+            microcode_modified=True,
+            published_generation=3,
+        )
+
+    monkeypatch.setattr(
+        live_normalization,
+        "run_frontend_normalization_pipeline",
+        run_pipeline,
+    )
+    decision = {
+        "session": session,
+        "identity_index": object(),
+        "mutation_gateway": gateway,
+    }
+
+    live_normalization.run_live_frontend_normalization(
+        function_ea=0x1000,
+        mba=mba,
+        decision=decision,
+    )
+
+    assert captured["backend_args"] == {
+        "mba": mba,
+        "function_ea": 0x1000,
+        "mutation_gateway": gateway,
+    }
+    pipeline_args = captured["pipeline_args"]
+    assert pipeline_args["source"] is source
+    assert pipeline_args["backend"] is backend
+    assert pipeline_args["lifecycle_state"] is session.native_preanalysis
+    assert pipeline_args["native_key"] == NATIVE_KEY
+    assert decision["microcode_modified"] is True
+    assert decision["details"] == {
+        "frontend_normalization": {
+            "authority": "fragment_receipt",
+            "published_generation": 3,
+        }
+    }
+
+
+def test_live_adapter_abstains_without_manager_injected_gateway(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        live_normalization,
+        "_lift_live_function",
+        lambda _mba: (_ for _ in ()).throw(AssertionError("must not lift")),
+    )
+    decision = {"session": _session()}
+
+    live_normalization.run_live_frontend_normalization(
+        function_ea=0x1000,
+        mba=object(),
+        decision=decision,
+    )
+
+    assert "microcode_modified" not in decision
+    assert "details" not in decision
+
+
+def test_live_adapter_does_not_claim_a_pipeline_noop(monkeypatch) -> None:
+    session = _session()
+    source = SimpleNamespace(
+        flow_graph=GRAPH,
+        func_ea=0x1000,
+        live_source=object(),
+    )
+    monkeypatch.setattr(
+        live_normalization,
+        "_lift_live_function",
+        lambda _mba: source,
+    )
+    monkeypatch.setattr(
+        live_normalization,
+        "_new_live_backend",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        live_normalization,
+        "run_frontend_normalization_pipeline",
+        lambda **_kwargs: FrontendNormalizationRunResult(
+            graph=GRAPH,
+            microcode_modified=False,
+            published_generation=None,
+        ),
+    )
+    decision = {
+        "session": session,
+        "mutation_gateway": object(),
+    }
+
+    live_normalization.run_live_frontend_normalization(
+        function_ea=0x1000,
+        mba=source.live_source,
+        decision=decision,
+    )
+
+    assert "microcode_modified" not in decision
+    assert "details" not in decision

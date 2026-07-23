@@ -167,10 +167,6 @@ from d810.hexrays.preanalysis.calls_done_preanalysis import (
     register_calls_done_preanalysis_handler,
     unregister_calls_done_preanalysis_handler,
 )
-from d810.hexrays.preanalysis.preopt_preanalysis import (
-    register_preopt_preanalysis_handler,
-    unregister_preopt_preanalysis_handler,
-)
 from d810.hexrays.preanalysis.callinfo_preanalysis import (
     register_callinfo_preanalysis_handler,
     unregister_callinfo_preanalysis_handler,
@@ -465,7 +461,6 @@ logger = getLogger("D810.hexrays.preanalysis.computed_goto")
 
 _HANDLER_NAME = "computed_goto_resolver"
 _CALLS_HANDLER_NAME = "computed_goto_resolver.calls_done"
-_PREOPT_HANDLER_NAME = "computed_goto_resolver.preopt_bootstrap"
 _CALLINFO_HANDLER_NAME = "computed_goto_resolver.callinfo"
 _STKPNTS_HANDLER_NAME = "computed_goto_resolver.stkpnts"
 #: Cap on emulated instructions for one corridor trace (a flattened state machine
@@ -17129,10 +17124,6 @@ def _on_calls_done_preanalysis(
 def install() -> None:
     """Register the computed-goto resolver on the flowchart preanalysis seam."""
     register_flowchart_preanalysis_handler(_HANDLER_NAME, _on_flowchart_preanalysis)
-    register_preopt_preanalysis_handler(
-        _PREOPT_HANDLER_NAME,
-        rebind_live_preopt_routes,
-    )
     register_calls_done_preanalysis_handler(
         _CALLS_HANDLER_NAME,
         _on_calls_done_preanalysis,
@@ -17149,7 +17140,6 @@ def install() -> None:
 
 def uninstall() -> None:
     unregister_flowchart_preanalysis_handler(_HANDLER_NAME)
-    unregister_preopt_preanalysis_handler(_PREOPT_HANDLER_NAME)
     unregister_calls_done_preanalysis_handler(_CALLS_HANDLER_NAME)
     unregister_callinfo_preanalysis_handler(_CALLINFO_HANDLER_NAME)
     unregister_stkpnts_preanalysis_handler(_STKPNTS_HANDLER_NAME)

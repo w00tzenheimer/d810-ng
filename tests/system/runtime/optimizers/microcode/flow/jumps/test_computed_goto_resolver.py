@@ -13447,3 +13447,33 @@ def test_prepare_detached_snippets_union_failure_has_no_fallback(
         == 0
     )
     assert events == ["union_abstain"]
+def test_install_does_not_register_resolver_owned_preopt_mutation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "register_flowchart_preanalysis_handler",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "register_calls_done_preanalysis_handler",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "register_callinfo_preanalysis_handler",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "register_stkpnts_preanalysis_handler",
+        lambda *_args: None,
+    )
+
+    computed_goto_resolver.install()
+
+    assert not hasattr(
+        computed_goto_resolver,
+        "register_preopt_preanalysis_handler",
+    )

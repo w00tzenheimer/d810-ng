@@ -542,14 +542,11 @@ def test_rule_has_no_legacy_importer_configuration_surface() -> None:
     )
 
 
-def test_configure_defaults_to_preopt_only_callbacks(monkeypatch) -> None:
+def test_configure_does_not_install_adapter_owned_preopt_mutation(
+    monkeypatch,
+) -> None:
     registered: list[str] = []
     unregistered: list[str] = []
-    monkeypatch.setattr(
-        island,
-        "register_preopt_preanalysis_handler",
-        lambda name, _handler: registered.append(name),
-    )
     monkeypatch.setattr(
         island,
         "register_locopt_preanalysis_handler",
@@ -575,7 +572,8 @@ def test_configure_defaults_to_preopt_only_callbacks(monkeypatch) -> None:
     rule = island.MaterializedComputedGotoIslandRule()
     rule.configure({})
 
-    assert registered == [island._PREOPT_HANDLER_NAME]
+    assert registered == []
+    assert not hasattr(island, "register_preopt_preanalysis_handler")
     assert unregistered == [
         island._CALLS_HANDLER_NAME,
         island._LOCOPT_HANDLER_NAME,

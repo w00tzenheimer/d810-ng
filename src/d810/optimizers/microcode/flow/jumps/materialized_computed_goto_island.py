@@ -82,10 +82,6 @@ from d810.hexrays.preanalysis.locopt_preanalysis import (
     register_locopt_preanalysis_handler,
     unregister_locopt_preanalysis_handler,
 )
-from d810.hexrays.preanalysis.preopt_preanalysis import (
-    register_preopt_preanalysis_handler,
-    unregister_preopt_preanalysis_handler,
-)
 from d810.optimizers.microcode.flow.handler import (
     FlowOptimizationRule,
     FlowRulePriority,
@@ -104,7 +100,6 @@ from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
 logger = getLogger("D810.optimizer.materialized_computed_goto_island")
 _CALLS_HANDLER_NAME = "materialized_computed_goto_island.calls_done"
 _LOCOPT_HANDLER_NAME = "materialized_computed_goto_island.locopt"
-_PREOPT_HANDLER_NAME = "materialized_computed_goto_island.preopt"
 _PROJECT_CLEANUP_NAME = "materialized_computed_goto_island"
 
 
@@ -231,7 +226,6 @@ def _capture_calls_done_templates(
 def _disable_calls_done_capture() -> None:
     unregister_calls_done_preanalysis_handler(_CALLS_HANDLER_NAME)
     unregister_locopt_preanalysis_handler(_LOCOPT_HANDLER_NAME)
-    unregister_preopt_preanalysis_handler(_PREOPT_HANDLER_NAME)
     clear_detached_handler_call_templates()
     clear_terminal_return_carrier_templates()
 
@@ -1964,10 +1958,6 @@ class MaterializedComputedGotoIslandRule(FlowOptimizationRule):
         unregister_calls_done_preanalysis_handler(_CALLS_HANDLER_NAME)
         unregister_locopt_preanalysis_handler(_LOCOPT_HANDLER_NAME)
         clear_detached_handler_call_templates()
-        register_preopt_preanalysis_handler(
-            _PREOPT_HANDLER_NAME,
-            _restore_preopt_terminal_return_carriers,
-        )
         register_project_reload_cleanup(
             _PROJECT_CLEANUP_NAME,
             _disable_calls_done_capture,
