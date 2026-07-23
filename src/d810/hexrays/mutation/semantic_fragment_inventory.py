@@ -24,6 +24,7 @@ class SemanticFragmentRootInventoryItem:
     original_block_id: str
     predecessor_block_id: str
     role: SemanticEdgeRole
+    requires_helper: bool
 
     def __post_init__(self) -> None:
         if not all(
@@ -38,13 +39,8 @@ class SemanticFragmentRootInventoryItem:
             raise ValueError("root inventory item requires complete block identity")
         if not isinstance(self.role, SemanticEdgeRole):
             raise TypeError("root inventory item requires a semantic edge role")
-
-    @property
-    def requires_helper(self) -> bool:
-        return self.role in {
-            SemanticEdgeRole.CALL_FALLTHROUGH,
-            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
-        }
+        if not isinstance(self.requires_helper, bool):
+            raise TypeError("root inventory helper requirement must be boolean")
 
 
 @dataclass(frozen=True, slots=True)

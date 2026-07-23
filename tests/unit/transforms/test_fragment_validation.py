@@ -40,6 +40,7 @@ from d810.transforms.fragment_validation import (
     ProjectedIdentityBinding,
     ProjectedRangeFact,
     ProjectedRootFallthroughHelper,
+    ProjectedTerminalEffectDiagnostic,
     validate_fragment_projection,
     validate_published_fragment_observation,
 )
@@ -619,6 +620,41 @@ def test_terminal_projection_rejects_missing_carrier_as_atomic_route_failure() -
         FragmentValidationPostcondition.RETURN_CARRIER_INTEGRITY,
         FragmentValidationPostcondition.TERMINAL_ROUTE_ATOMICITY,
     }.issubset({outcome.postcondition for outcome in failures})
+    carrier_failure = next(
+        outcome
+        for outcome in failures
+        if outcome.postcondition
+        is FragmentValidationPostcondition.RETURN_CARRIER_INTEGRITY
+    )
+    assert "observed_count=0" in carrier_failure.reason
+    assert "corridor_present=1" in carrier_failure.reason
+
+
+def test_terminal_projection_reports_live_carrier_observation_failure() -> None:
+    plan = _terminal_plan()
+    carrier = plan.return_carriers[0]
+    projection = replace(
+        _terminal_projection(plan),
+        return_carriers=(),
+        terminal_effect_diagnostics=(
+            ProjectedTerminalEffectDiagnostic(
+                effect_id=carrier.carrier_id,
+                reason="destination_register=4 expected=0",
+            ),
+        ),
+    )
+
+    result = validate_fragment_projection(plan, projection)
+    carrier_failure = next(
+        outcome
+        for outcome in result.failures
+        if outcome.postcondition
+        is FragmentValidationPostcondition.RETURN_CARRIER_INTEGRITY
+    )
+
+    assert "live_observation=destination_register=4 expected=0" in (
+        carrier_failure.reason
+    )
 
 
 def test_terminal_projection_rejects_nonterminal_return_block() -> None:
@@ -643,9 +679,18 @@ def test_terminal_projection_rejects_nonterminal_return_block() -> None:
         FragmentValidationPostcondition.TERMINAL_RETURN_INTEGRITY,
         FragmentValidationPostcondition.TERMINAL_ROUTE_ATOMICITY,
     }.issubset({outcome.postcondition for outcome in failures})
+    return_failure = next(
+        outcome
+        for outcome in failures
+        if outcome.postcondition
+        is FragmentValidationPostcondition.TERMINAL_RETURN_INTEGRITY
+    )
+    assert "observed_count=1" in return_failure.reason
+    assert "kind=one_way" in return_failure.reason
+    assert "successor_count=1" in return_failure.reason
 
 
-def test_terminal_projection_accepts_stop_block_derived_from_m_ret() -> None:
+def test_terminal_projection_rejects_nonempty_special_stop_block() -> None:
     plan = _terminal_plan()
     projection = _terminal_projection(plan)
     projection = _replace_blocks(
@@ -658,7 +703,9 @@ def test_terminal_projection_accepts_stop_block_derived_from_m_ret() -> None:
 
     result = validate_fragment_projection(plan, projection)
 
-    assert result.passed, result.failures
+    assert FragmentValidationPostcondition.TERMINAL_RETURN_INTEGRITY in {
+        outcome.postcondition for outcome in result.failures
+    }
 
 
 def test_valid_projection_proves_every_required_postcondition() -> None:

@@ -1688,7 +1688,7 @@ def test_backend_materializes_and_observes_terminal_effects_from_live_mba(
         0x500004,
     )
     assert projection.block("imported-return").instruction_eas == (0x500100,)
-    assert projection.block("imported-return").kind is BlockKind.STOP
+    assert projection.block("imported-return").kind is BlockKind.ZERO_WAY
 
     state = modifier._semantic_fragment_state
     assert state is not None
@@ -1721,7 +1721,7 @@ def test_backend_materializes_and_observes_terminal_effects_from_live_mba(
     )
     assert terminal_block.tail is not None
     assert int(terminal_block.tail.opcode) == int(ida_hexrays.m_ret)
-    assert int(terminal_block.type) == int(ida_hexrays.BLT_STOP)
+    assert int(terminal_block.type) == int(ida_hexrays.BLT_0WAY)
     assert tuple(terminal_block.succset) == ()
 
     carrier_instruction.opcode = int(ida_hexrays.m_xdu)
@@ -3373,6 +3373,64 @@ def test_gateway_publishes_direct_fragment_root_from_entry() -> None:
     assert state.semantic_fragment_validated_generation == 1
     assert state.semantic_fragment_published_postvalidated_generation == 1
     assert state.receipt_committed_generation == 1
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
+
+
+def test_gateway_publishes_implicit_entry_root_through_adjacent_helper(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    entry.end = entry.start
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    entry.succset.push_back(original.serial)
+    original.predset.push_back(entry.serial)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    monkeypatch.setattr(
+        dm,
+        "insert_goto_instruction",
+        _insert_fake_goto_instruction,
+    )
+    plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
+    original_handle = gateway.identity_index.handle_for_serial(1)
+    assert original_handle is not None
+    proxy = gateway.identity_index.logical_proxy_for_handle(original_handle)
+    assert proxy is not None
+
+    receipt = gateway.publish_semantic_fragment(modifier, plan)
+
+    promoted = proxy.resolve()
+    assert promoted is not None
+    promoted_binding = gateway.identity_index.resolve_logical_version(promoted)
+    assert promoted_binding is not None
+    replacement = mba.get_mblock(promoted_binding.serial)
+    helper = entry.nextb
+    assert replacement is not None
+    assert helper is not None
+    assert int(helper.serial) == int(entry.serial) + 1
+    assert tuple(entry.succset) == (helper.serial,)
+    assert tuple(helper.predset) == (entry.serial,)
+    assert tuple(helper.succset) == (replacement.serial,)
+    assert helper.tail is not None
+    assert int(helper.tail.opcode) == int(ida_hexrays.m_goto)
+    assert int(helper.tail.l.b) == int(replacement.serial)
+    assert int(helper.start) == int(mba.entry_ea)
+    assert int(helper.end) == int(mba.entry_ea) + 1
+    assert int(helper.flags) & int(ida_hexrays.MBL_KEEP)
+    assert int(helper.flags) & int(ida_hexrays.MBL_FAKE)
+    assert tuple(original.predset) == ()
+    assert tuple(replacement.predset) == (helper.serial,)
+    assert receipt.root_publication_confirmed
+    assert receipt.prepublication_validation.passed
+    assert receipt.postpublication_validation.passed
+    assert receipt.operation_count == 4
+    assert receipt.planned_operation_count == 4
     assert gateway.active is False
     assert modifier._semantic_fragment_state is None
 
