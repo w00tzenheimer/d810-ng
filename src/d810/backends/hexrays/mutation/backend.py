@@ -1,4 +1,4 @@
-"""Hex-Rays mutation backend — the unflatten ``MutationBackend.apply`` boundary.
+"""Hex-Rays mutation and semantic-fragment publication backend.
 
 The ONLY place a unflatten ``PatchPlan`` becomes live ``mba`` edits. ``apply`` lowers the plan through the
 existing ``IDAIRTranslator`` (PatchPlan -> DeferredGraphModifier queue) and then RE-LIFTS the
@@ -6,8 +6,9 @@ post-apply ``mba`` to a fresh ``FlowGraph`` snapshot — the new snapshot identi
 invalidation epoch (Hex-Rays re-runs its own optimizer during/after apply, so the re-lift captures
 the vendor's re-optimization, per unflatten / the LLVM AnalysisManager invalidation model).
 
-Structurally satisfies the ``MutationBackend`` protocol (``passes.pass_pipeline``) without importing
-it (upward edge); duck-typing suffices.
+``publish_fragment`` uses a fresh receipt-backed gateway transaction and
+re-lifts only after semantic postvalidation commits. The class structurally
+satisfies both portable backend protocols without importing either upward.
 """
 from __future__ import annotations
 
@@ -17,8 +18,9 @@ from d810.analyses.control_flow.graph_checks import (
 )
 from d810.analyses.control_flow.edit_simulation import simulate_edits
 from d810.core.logging import getLogger
-from d810.core.typing import TYPE_CHECKING
+from d810.core.typing import Callable, TYPE_CHECKING
 from d810.ir.flowgraph import FlowGraph
+from d810.transforms.fragment_plan import FragmentPlan
 from d810.transforms.plan import PatchPlan
 from d810.transforms.edit_simulator import patch_plan_to_simulated_edits
 
@@ -38,6 +40,7 @@ class HexRaysMutationBackend:
         *,
         mutation_gateway: "MbaMutationGateway",
         translator: "IDAIRTranslator | None" = None,
+        fragment_backend_factory: Callable[[object, object], object] | None = None,
     ) -> None:
         if translator is None:
             from d810.hexrays.mutation.ir_translator import IDAIRTranslator
@@ -45,6 +48,20 @@ class HexRaysMutationBackend:
             translator = IDAIRTranslator()
         self._translator = translator
         self._mutation_gateway = mutation_gateway
+        self._fragment_backend_factory = (
+            fragment_backend_factory
+            if fragment_backend_factory is not None
+            else self._new_fragment_backend
+        )
+
+    @staticmethod
+    def _new_fragment_backend(live_source: object, gateway: object) -> object:
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+        return DeferredGraphModifier(
+            live_source,
+            mutation_gateway=gateway,
+        )
 
     def capabilities(self) -> frozenset[str]:
         # "emulation" advertises the concolic block-emulator the unflatten entry registers as
@@ -96,4 +113,17 @@ class HexRaysMutationBackend:
             live_source,
             mutation_gateway=self._mutation_gateway,
         )
+        return self._translator.lift(live_source)
+
+    def publish_fragment(
+        self,
+        fragment_plan: FragmentPlan,
+        live_source: object,
+        safety_policy: object = None,
+    ) -> FlowGraph:
+        """Publish one complete fragment through an independent gateway batch."""
+        del safety_policy
+        gateway = self._mutation_gateway.new_transaction()
+        fragment_backend = self._fragment_backend_factory(live_source, gateway)
+        gateway.publish_semantic_fragment(fragment_backend, fragment_plan)
         return self._translator.lift(live_source)

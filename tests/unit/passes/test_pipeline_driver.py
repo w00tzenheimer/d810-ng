@@ -16,7 +16,6 @@ from d810.passes.pass_pipeline import (
     AnalysisContract,
     BackendRoute,
     FactRequirement,
-    FunctionPipelineContext,
     PipelineConfigError,
     PassContract,
     PassInvalidates,
@@ -56,8 +55,20 @@ from d810.families.state_machine_cff import ApproovFamily
 from d810.families.state_machine_cff import TigressFamily
 from d810.families.registry import select_family, registered_families
 from d810.capabilities.dispatcher import RouterKind, TableProvenance
+from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.ir.maturity import IRMaturity
+from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.transforms.fragment_plan import (
+    FragmentBlock,
+    FragmentBlockMaterialization,
+    FragmentBlockRole,
+    FragmentEdge,
+    FragmentOperation,
+    FragmentPlan,
+    FragmentPublicationPurpose,
+)
 
 # A real 1-block FlowGraph so the (now real) recover_dispatcher pass can run over it.
 _GRAPH = FlowGraph(
@@ -99,6 +110,7 @@ class _Backend:
     def __init__(self, caps=("live_mba",)):
         self._caps = frozenset(caps)
         self.applied = 0
+        self.published_fragments = []
         self.safety_policies = []
 
     def capabilities(self):
@@ -108,6 +120,10 @@ class _Backend:
         self.applied += 1
         self.safety_policies.append(safety_policy)
         return "G1"  # fresh snapshot identity
+
+    def publish_fragment(self, plan, live_source, safety_policy):
+        self.published_fragments.append((plan, live_source, safety_policy))
+        return "GF1"
 
 
 class _RecordingScheduler:
@@ -174,6 +190,74 @@ class _MutatingPass:
         return PassResult(
             rewrite_plan=PatchPlan(planner_modifications=(object(),))
         )
+
+
+def _fragment_identity(start_ea: int) -> StableBlockIdentity:
+    native_key = NativePreanalysisKey(
+        input_identity="pipeline-driver",
+        processor="metapc",
+        bitness=64,
+        function_rva=0x1000,
+        function_fingerprint="pipeline-driver",
+        profile_fingerprint="pipeline-driver-profile",
+        sdk_fingerprint="pipeline-driver-sdk",
+    )
+    return StableBlockIdentity.from_intervals(
+        (NativeEaInterval(start_ea, start_ea + 0x10),),
+        native_key=native_key,
+        exact_instruction_eas=(start_ea,),
+    )
+
+
+def _fragment_plan() -> FragmentPlan:
+    original_identity = _fragment_identity(0x401000)
+    target_identity = _fragment_identity(0x402000)
+    native_key = original_identity.native_key
+    return FragmentPlan(
+        plan_id="pipeline-fragment",
+        atomic_group_id="pipeline-fragment@0x401000",
+        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+        native_key=native_key,
+        blocks=(
+            FragmentBlock(
+                block_id="original",
+                role=FragmentBlockRole.ORIGINAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=0x401000,
+                stable_identity=original_identity,
+            ),
+            FragmentBlock(
+                block_id="replacement",
+                role=FragmentBlockRole.REPLACEMENT,
+                materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+                semantic_anchor_ea=0x401000,
+                stable_identity=original_identity,
+                replaces_block_id="original",
+            ),
+            FragmentBlock(
+                block_id="target",
+                role=FragmentBlockRole.EXTERNAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=0x402000,
+                stable_identity=target_identity,
+            ),
+        ),
+        roots=("replacement",),
+        owned_originals=("original",),
+        prohibited_dispatcher_blocks=(),
+        operations=(
+            FragmentOperation(
+                operation_id="normalize-direct",
+                source_block_id="replacement",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="target",
+                    ),
+                ),
+            ),
+        ),
+    )
 
 
 def _recording_pass(name: str, calls: list[str]):
@@ -2100,6 +2184,151 @@ def test_analysis_only_pass_with_rewrite_plan_fails_before_apply():
 
     assert backend.applied == 0
     assert facts.get_analysis("domtree") is None
+
+
+def test_analysis_only_pass_with_fragment_plan_fails_before_publication():
+    plan = _fragment_plan()
+
+    class _Analyzer:
+        name = "analyzer"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(fragment_plan=plan)
+
+    backend = _Backend()
+
+    with pytest.raises(BackendRouteError, match="analysis-only pass"):
+        _run_specs(
+            (
+                PassSpec(
+                    "analyzer",
+                    _Analyzer,
+                    no_caps,
+                    default,
+                    backend_route=BackendRoute.ANALYSIS_ONLY,
+                ),
+            ),
+            backend=backend,
+        )
+
+    assert backend.applied == 0
+    assert backend.published_fragments == []
+
+
+def test_mutation_backend_pass_cannot_publish_fragment_plan():
+    plan = _fragment_plan()
+
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(fragment_plan=plan)
+
+    backend = _Backend()
+
+    with pytest.raises(BackendRouteError, match="mutation-backend pass"):
+        _run_specs((PassSpec("mutator", _Mutator, no_caps, default),), backend=backend)
+
+    assert backend.applied == 0
+    assert backend.published_fragments == []
+
+
+def test_fragment_publication_pass_cannot_emit_patch_plan():
+    backend = _Backend()
+
+    with pytest.raises(BackendRouteError, match="fragment-publication pass"):
+        _run_specs(
+            (
+                PassSpec(
+                    "fragment_mutator",
+                    _MutatingPass,
+                    no_caps,
+                    default,
+                    backend_route=BackendRoute.FRAGMENT_PUBLICATION,
+                ),
+            ),
+            backend=backend,
+        )
+
+    assert backend.applied == 0
+    assert backend.published_fragments == []
+
+
+def test_fragment_publication_pass_routes_plan_and_invalidates_graph():
+    plan = _fragment_plan()
+
+    class _FragmentPass:
+        name = "fragment_mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(fragment_plan=plan)
+
+    backend, facts = _Backend(), _Facts()
+
+    out = _run_specs(
+        (
+            PassSpec(
+                "fragment_mutator",
+                _FragmentPass,
+                no_caps,
+                default,
+                backend_route=BackendRoute.FRAGMENT_PUBLICATION,
+            ),
+        ),
+        backend=backend,
+        facts=facts,
+    )
+
+    assert backend.applied == 0
+    assert backend.published_fragments == [(plan, "LIVE", SafetyPolicy())]
+    assert facts.invalidations == 1
+    assert out == "GF1"
+
+
+def test_failed_fragment_publication_does_not_publish_pass_outputs():
+    plan = _fragment_plan()
+    marker = object()
+
+    class _FragmentPass:
+        name = "fragment_mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(
+                fragment_plan=plan,
+                analysis_outputs={"normalization_result": marker},
+                evidence_outputs={"ir.branch_target": marker},
+            )
+
+    class _FailingBackend(_Backend):
+        def publish_fragment(self, plan, live_source, safety_policy):
+            raise RuntimeError("fragment rejected")
+
+    facts = AnalysisManager(_GRAPH)
+    with pytest.raises(RuntimeError, match="fragment rejected"):
+        _run_specs(
+            (
+                PassSpec(
+                    "fragment_mutator",
+                    _FragmentPass,
+                    no_caps,
+                    default,
+                    analyses=AnalysisContract(
+                        provided=frozenset({"normalization_result"}),
+                    ),
+                    backend_route=BackendRoute.FRAGMENT_PUBLICATION,
+                    contract=PassContract(
+                        outputs=PassOutputs(
+                            evidence=frozenset({"ir.branch_target"}),
+                        ),
+                    ),
+                ),
+            ),
+            backend=_FailingBackend(),
+            facts=facts,
+        )
+
+    assert facts.get_analysis("normalization_result") is None
+    assert facts.get_evidence("ir.branch_target") is None
 
 
 def test_mutation_backend_pass_with_rewrite_plan_still_applies():

@@ -13,6 +13,7 @@ from d810.transforms.plan import PatchPlan
 
 def test_defaults():
     assert pp.PassResult().rewrite_plan == PatchPlan()
+    assert pp.PassResult().fragment_plan is None
     assert pp.PassResult().run_later == ()
     assert pp.PassResult().analysis_outputs == {}
     assert pp.PassResult().evidence_outputs == {}
@@ -81,6 +82,14 @@ def test_mutation_backend_conformance():
             return SimpleNamespace()  # stands in for a FlowGraph
 
     assert isinstance(_FakeBackend(), pp.MutationBackend)
+
+
+def test_fragment_publication_backend_conformance():
+    class _FakeBackend:
+        def publish_fragment(self, fragment_plan, live_source, safety_policy):
+            return SimpleNamespace()  # stands in for a FlowGraph
+
+    assert isinstance(_FakeBackend(), pp.FragmentPublicationBackend)
 
 
 def test_function_source_conformance():
