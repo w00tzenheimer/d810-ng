@@ -69,11 +69,22 @@ from d810.ir.block_identity import (
     StableBlockIdentity,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind, inverted_predicate_kind
 from d810.ir.expressions import ValueOpKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 
 logger = getLogger("D810.mutation.detached_handler_island")
 _MISSING_BOUNDARY_PORT_SERIAL = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _ComputedBranchNormalizationPlan:
+    """Backend realization of one proof-owned computed branch."""
+
+    operation: FragmentOperation
+    cut_index: int
+    branch_opcode: int
+    producer_predicate_kind: PredicateKind
 
 
 def stable_mba_identity(mba: object) -> int:
@@ -1099,7 +1110,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         plan: object,
     ) -> tuple[
         dict[int, int],
-        dict[str, tuple[FragmentOperation, int]],
+        dict[str, _ComputedBranchNormalizationPlan],
     ]:
         stack_map = _stack_map_with_positive_identity_overrides(
             _destination_stack_map(self.mba, template),
@@ -1107,7 +1118,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
         computed_normalizations: dict[
             str,
-            tuple[FragmentOperation, int],
+            _ComputedBranchNormalizationPlan,
         ] = {}
         terminal_block_ids = set(native_body.terminal_block_ids)
         for block_id, template_block in matched.items():
@@ -1207,15 +1218,13 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 and not conditional_tail
                 and computed_normalization is not None
             ):
-                cut_index = self._preflight_computed_branch_normalization(
-                    template_block,
-                    native_body,
-                    operations[0],
-                    computed_normalization,
-                )
                 computed_normalizations[str(block_id)] = (
-                    operations[0],
-                    cut_index,
+                    self._preflight_computed_branch_normalization(
+                        template_block,
+                        native_body,
+                        operations[0],
+                        computed_normalization,
+                    )
                 )
             compatible_conditional = bool(
                 conditional_tail or str(block_id) in computed_normalizations
@@ -1256,8 +1265,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         native_body: FragmentNativeBody,
         operation: FragmentOperation,
         normalization: FragmentComputedBranchNormalization,
-    ) -> int:
-        """Validate one proof-owned unresolved suffix and return its cut index."""
+    ) -> _ComputedBranchNormalizationPlan:
+        """Validate one proof-owned unresolved suffix and choose its branch sense."""
         label = (
             f"operation={operation.operation_id!r} "
             f"source=0x{int(template_block.native_entry_ea):X} "
@@ -1276,8 +1285,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             (index, instruction)
             for index, instruction in enumerate(instructions)
             if int(instruction.ea) == int(normalization.condition_producer_ea)
-            and set_predicate_from_opcode(int(instruction.opcode))
-            is normalization.predicate_kind
+            and set_predicate_from_opcode(int(instruction.opcode)) is not None
         )
         if len(producer_candidates) != 1:
             observed_producers = tuple(
@@ -1303,6 +1311,27 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 f"observed_producers={observed_producers!r}"
             )
         producer_index, producer = producer_candidates[0]
+        producer_predicate_kind = set_predicate_from_opcode(
+            int(producer.opcode)
+        )
+        if producer_predicate_kind is None:
+            raise SemanticFragmentBackendRejected(
+                "PREOPT computed branch condition producer lost its predicate "
+                f"during preflight; {label}"
+            )
+        if producer_predicate_kind is normalization.predicate_kind:
+            branch_opcode = int(ida_hexrays.m_jnz)
+        elif (
+            inverted_predicate_kind(producer_predicate_kind)
+            is normalization.predicate_kind
+        ):
+            branch_opcode = int(ida_hexrays.m_jz)
+        else:
+            raise SemanticFragmentBackendRejected(
+                "PREOPT computed branch condition producer does not match or "
+                f"invert its portable predicate; {label} "
+                f"observed_producer_predicate={producer_predicate_kind.value}"
+            )
         if (
             int(producer.d.t)
             in {
@@ -1340,7 +1369,12 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 f"predicate, and unresolved-transfer anchors; {label} "
                 f"instructions={tuple((f'0x{int(instruction.ea):X}', int(instruction.opcode)) for instruction in instructions)!r}"
             )
-        return int(predicate_indexes[0])
+        return _ComputedBranchNormalizationPlan(
+            operation=operation,
+            cut_index=int(predicate_indexes[0]),
+            branch_opcode=branch_opcode,
+            producer_predicate_kind=producer_predicate_kind,
+        )
 
     def _prepare_native_body_instructions(
         self,
@@ -1350,7 +1384,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         stack_map: Mapping[int, int],
         computed_normalizations: Mapping[
             str,
-            tuple[FragmentOperation, int],
+            _ComputedBranchNormalizationPlan,
         ],
     ) -> dict[str, tuple[tuple[int, object], ...]]:
         """Clone, rebase, and normalize every body before staging any block."""
@@ -1360,7 +1394,9 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             captured_instructions = (
                 template_block.instructions
                 if normalization_entry is None
-                else template_block.instructions[: normalization_entry[1]]
+                else template_block.instructions[
+                    : normalization_entry.cut_index
+                ]
             )
             instructions: list[tuple[int, object]] = []
             for captured in captured_instructions:
@@ -1386,7 +1422,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     )
                 instructions.append((int(captured.ea), instruction))
             if normalization_entry is not None:
-                operation, _cut_index = normalization_entry
+                operation = normalization_entry.operation
                 normalization = operation.computed_branch_normalization
                 if normalization is None:
                     raise SemanticFragmentBackendRejected(
@@ -1398,7 +1434,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     for native_ea, instruction in instructions
                     if int(native_ea) == int(normalization.condition_producer_ea)
                     and set_predicate_from_opcode(int(instruction.opcode))
-                    is normalization.predicate_kind
+                    is normalization_entry.producer_predicate_kind
                 )
                 if len(producers) != 1:
                     raise SemanticFragmentBackendRejected(
@@ -1406,7 +1442,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     )
                 predicate_ea = int(operation.predicate_anchor_ea)
                 branch = ida_hexrays.minsn_t(predicate_ea)
-                branch.opcode = int(ida_hexrays.m_jnz)
+                branch.opcode = normalization_entry.branch_opcode
                 branch.l = ida_hexrays.mop_t()
                 branch.l.assign(producers[0].d)
                 branch.r = ida_hexrays.mop_t()

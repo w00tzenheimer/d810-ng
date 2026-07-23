@@ -47,6 +47,7 @@ __all__ = [
     "LiftedOpcode",
     "OperationKind",
     "PredicateKind",
+    "inverted_predicate_kind",
 ]
 
 
@@ -76,6 +77,33 @@ class PredicateKind(str, Enum):
     SLE = "sle"
     SLT = "slt"
     TRUTHY = "truthy"
+
+
+_INVERTED_PREDICATE_KINDS: Mapping[PredicateKind, PredicateKind] = (
+    MappingProxyType(
+        {
+            PredicateKind.EQ: PredicateKind.NE,
+            PredicateKind.NE: PredicateKind.EQ,
+            PredicateKind.UGE: PredicateKind.ULT,
+            PredicateKind.UGT: PredicateKind.ULE,
+            PredicateKind.ULE: PredicateKind.UGT,
+            PredicateKind.ULT: PredicateKind.UGE,
+            PredicateKind.SGE: PredicateKind.SLT,
+            PredicateKind.SGT: PredicateKind.SLE,
+            PredicateKind.SLE: PredicateKind.SGT,
+            PredicateKind.SLT: PredicateKind.SGE,
+        }
+    )
+)
+
+
+def inverted_predicate_kind(
+    predicate: PredicateKind,
+) -> PredicateKind | None:
+    """Return the exact logical complement of one portable comparison."""
+    if not isinstance(predicate, PredicateKind):
+        raise TypeError("predicate inversion requires a PredicateKind")
+    return _INVERTED_PREDICATE_KINDS.get(predicate)
 
 
 class ControlTransferKind(str, Enum):

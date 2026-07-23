@@ -16,7 +16,13 @@ from __future__ import annotations
 import pytest
 
 from d810.ir.expressions import ValueOpKind
-from d810.ir.semantics import CallKind, ControlTransferKind, LiftedOpcode, PredicateKind
+from d810.ir.semantics import (
+    CallKind,
+    ControlTransferKind,
+    LiftedOpcode,
+    PredicateKind,
+    inverted_predicate_kind,
+)
 
 
 class TestPredicateKind:
@@ -43,6 +49,31 @@ class TestPredicateKind:
         identity comparison (`is PredicateKind.EQ`) safely."""
         values = [member.value for member in PredicateKind]
         assert len(values) == len(set(values))
+
+    @pytest.mark.parametrize(
+        ("predicate", "expected"),
+        (
+            (PredicateKind.EQ, PredicateKind.NE),
+            (PredicateKind.NE, PredicateKind.EQ),
+            (PredicateKind.UGE, PredicateKind.ULT),
+            (PredicateKind.UGT, PredicateKind.ULE),
+            (PredicateKind.ULE, PredicateKind.UGT),
+            (PredicateKind.ULT, PredicateKind.UGE),
+            (PredicateKind.SGE, PredicateKind.SLT),
+            (PredicateKind.SGT, PredicateKind.SLE),
+            (PredicateKind.SLE, PredicateKind.SGT),
+            (PredicateKind.SLT, PredicateKind.SGE),
+        ),
+    )
+    def test_inverted_predicate_kind(
+        self,
+        predicate: PredicateKind,
+        expected: PredicateKind,
+    ) -> None:
+        assert inverted_predicate_kind(predicate) is expected
+
+    def test_truthy_has_no_portable_inverse(self) -> None:
+        assert inverted_predicate_kind(PredicateKind.TRUTHY) is None
 
 
 class TestControlTransferKind:

@@ -914,8 +914,18 @@ def test_preopt_native_body_rejects_unowned_topology_before_staging(
     assert destination.qty == 1
 
 
+@pytest.mark.parametrize(
+    ("semantic_predicate", "expected_branch_opcode"),
+    (
+        (PredicateKind.EQ, ida_hexrays.m_jnz),
+        (PredicateKind.NE, ida_hexrays.m_jz),
+        (PredicateKind.SLT, None),
+    ),
+)
 def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_staging(
     monkeypatch,
+    semantic_predicate,
+    expected_branch_opcode,
 ) -> None:
     _install_runtime_fakes(monkeypatch)
     function_ea = 0xB000
@@ -1013,7 +1023,7 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
                     predicate_anchor_ea=predicate_ea,
                     computed_branch_normalization=(
                         FragmentComputedBranchNormalization(
-                            predicate_kind=PredicateKind.EQ,
+                            predicate_kind=semantic_predicate,
                             condition_producer_ea=condition_producer_ea,
                             unresolved_transfer_ea=unresolved_transfer_ea,
                         )
@@ -1033,10 +1043,25 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
         ),
     )
 
-    detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
-        mba=destination,
-        function_ea=function_ea,
-    ).stage_native_body(
+    materializer = (
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+            mba=destination,
+            function_ea=function_ea,
+        )
+    )
+    if expected_branch_opcode is None:
+        with pytest.raises(
+            detached_handler_island.SemanticFragmentBackendRejected,
+            match="condition producer does not match",
+        ):
+            materializer.stage_native_body(
+                context=context,
+                native_body=native_body,
+            )
+        assert context.staged_block_ids == []
+        return
+
+    materializer.stage_native_body(
         context=context,
         native_body=native_body,
     )
@@ -1044,7 +1069,7 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
     staged = context.blocks[imported.block_id].instructions()
     assert tuple(int(instruction.opcode) for instruction in staged) == (
         int(ida_hexrays.m_setz),
-        int(ida_hexrays.m_jnz),
+        int(expected_branch_opcode),
     )
     branch = staged[-1]
     assert int(branch.l.t) == int(ida_hexrays.mop_r)
