@@ -22,6 +22,7 @@ from d810.analyses.control_flow.frontend_normalization import (
     NativeTransferShape,
 )
 from d810.analyses.control_flow.semantic_route_evidence import (
+    SemanticPredicateKind,
     SemanticRouteProofKind,
     SemanticRouteShape,
 )
@@ -459,6 +460,170 @@ def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() 
     assert dict(proof.diagnostic_provenance) == {
         "provider_proof_kind": "reference_style_immediate_flow_route"
     }
+
+
+def test_canonical_semantic_evidence_projects_complete_entry_consumer() -> None:
+    predicate_ea = 0x1008
+    store_ea = 0x1014
+    consumer_ea = 0x2000
+    true_target_ea = 0x3000
+    false_target_ea = 0x4000
+    true_state = 0xAABBCCDD
+    false_state = 0x11223344
+    cfg = NativeCfg(
+        {
+            0x1000: NativeBlock(
+                start_ea=0x1000,
+                end_ea=0x1010,
+            ),
+            0x1010: NativeBlock(
+                start_ea=0x1010,
+                end_ea=0x1020,
+            ),
+            consumer_ea: NativeBlock(
+                start_ea=consumer_ea,
+                end_ea=0x2020,
+            ),
+            true_target_ea: NativeBlock(
+                start_ea=true_target_ea,
+                end_ea=0x3010,
+            ),
+            false_target_ea: NativeBlock(
+                start_ea=false_target_ea,
+                end_ea=0x4010,
+            ),
+        }
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=predicate_ea,
+        source_block_ea=0x1000,
+        materialized_anchor_eas=(store_ea,),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=5,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        predicate_stack_ida_stkoff=0x30,
+        predicate_size=4,
+        predicate_true_state=true_state,
+        predicate_false_state=false_state,
+        predicate_true_is_taken=True,
+        state_carrier_store_ea=store_ea,
+        state_carrier_stack_displacement=0x40,
+        state_carrier_consumer_load_eas=(consumer_ea,),
+        state_carrier_ida_stkoff=0x40,
+        owned_native_ranges=((consumer_ea, 0x2020),),
+        resolver_kind="provider-specific-diagnostic-name",
+    )
+    state = NativePreanalysisSessionState()
+    assert state.merge_native_facts(
+        NATIVE_KEY,
+        native_cfg=cfg,
+        transfers=(transfer,),
+        boundary_ports=DetachedSnippetBoundaryPorts((), ()),
+    )
+    assert state.set_preopt_union_preparation(
+        NATIVE_KEY,
+        PreoptUnionPreparationResult(
+            function_ea=0x1000,
+            prepared=True,
+            published=True,
+            entry_consumer_routes=(transfer,),
+        ),
+    )
+    _publish_normalization(state)
+
+    evidence = state.canonical_semantic_evidence_for(NATIVE_KEY)
+
+    assert evidence is not None
+    assert len(evidence.route_proofs) == 1
+    proof = evidence.route_proofs[0]
+    assert proof.proof_kind is SemanticRouteProofKind.STATE_CHOICE
+    assert proof.shape is SemanticRouteShape.CONDITIONAL
+    assert proof.source_anchor_ea == consumer_ea
+    assert proof.predicate is not None
+    assert proof.predicate.kind is SemanticPredicateKind.STORAGE_EQUALS
+    assert proof.predicate.storage_identity.kind is StorageIdentityKind.STACK
+    assert proof.predicate.storage_identity.offset == 0x30
+    assert proof.predicate.width == 4
+    assert proof.predicate.compare_constant == 0
+    assert tuple(point.anchor_ea for point in proof.predicate.corridor) == (
+        predicate_ea,
+        store_ea,
+        consumer_ea,
+    )
+    assert len(proof.carriers) == 1
+    carrier = proof.carriers[0]
+    assert carrier.definition.anchor_ea == store_ea
+    assert tuple(point.anchor_ea for point in carrier.consumers) == (consumer_ea,)
+    assert carrier.storage_identity.kind is StorageIdentityKind.STACK
+    assert carrier.storage_identity.offset == 0x40
+    assert carrier.state_values == (true_state, false_state)
+    assert {
+        (destination.role, destination.state_constant, destination.target_anchor_ea)
+        for destination in proof.destinations
+    } == {
+        (
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+            false_state,
+            false_target_ea,
+        ),
+        (
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            true_state,
+            true_target_ea,
+        ),
+    }
+    assert dict(proof.diagnostic_provenance) == {
+        "provider_resolver_kind": "provider-specific-diagnostic-name"
+    }
+
+    incomplete = replace(transfer, predicate_stack_ida_stkoff=None)
+    rejected = NativePreanalysisSessionState()
+    assert rejected.merge_native_facts(
+        NATIVE_KEY,
+        native_cfg=cfg,
+        transfers=(incomplete,),
+        boundary_ports=DetachedSnippetBoundaryPorts((), ()),
+    )
+    assert rejected.set_preopt_union_preparation(
+        NATIVE_KEY,
+        PreoptUnionPreparationResult(
+            function_ea=0x1000,
+            prepared=True,
+            published=True,
+            entry_consumer_routes=(incomplete,),
+        ),
+    )
+    direct_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x5000, 0x5010),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x5000,),
+    )
+    direct_target_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x6000, 0x6010),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x6000,),
+    )
+    assert rejected.merge_state_write_routes(
+        NATIVE_KEY,
+        (
+            PortableStateWriteRouteEvidence(
+                write_identity=direct_identity,
+                delivery_identity=direct_identity,
+                source_write_ea=0x5000,
+                delivery_ea=0x5000,
+                delivery_region_start_ea=0x5000,
+                delivery_region_end_ea=0x5010,
+                corridor_instruction_eas=(0x5000,),
+                state_var_reg=20,
+                state_constant=0x12345678,
+                target_identity=direct_target_identity,
+                target_ea=0x6000,
+            ),
+        ),
+    )
+    _publish_normalization(rejected)
+    assert rejected.canonical_semantic_evidence_for(NATIVE_KEY) is None
 
 
 def test_state_write_delivery_route_rejects_mismatched_native_key() -> None:
