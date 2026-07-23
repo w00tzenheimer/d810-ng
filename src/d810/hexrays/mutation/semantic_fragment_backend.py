@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import ida_hexrays
 
-from d810.core.typing import TYPE_CHECKING
+from d810.core.typing import Protocol, TYPE_CHECKING, runtime_checkable
 from d810.hexrays.ir.exact_data_flow import (
     find_reaching_defs_for_reg_use,
     find_reaching_defs_for_stkvar_use,
@@ -33,12 +33,14 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventory,
     SemanticFragmentRootInventoryItem,
 )
+from d810.ir.block_identity import BlockHandleProvenance
 from d810.ir.flowgraph import BlockKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentityKind
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentNativeBody,
     FragmentPlan,
     FragmentRangeObservation,
 )
@@ -133,6 +135,118 @@ class SemanticFragmentBackendState:
             ) from exc
 
 
+@runtime_checkable
+class SemanticNativeBodyMaterializer(Protocol):
+    """Backend adapter that populates one gateway-owned native body staging context."""
+
+    def stage_native_body(
+        self,
+        *,
+        context: "SemanticNativeBodyStagingContext",
+        native_body: FragmentNativeBody,
+    ) -> None:
+        """Populate every block in ``native_body`` without publishing authority."""
+
+
+@dataclass(slots=True)
+class SemanticNativeBodyStagingContext:
+    """Gateway-owned staging surface for one closed imported native body."""
+
+    _modifier: DeferredGraphModifier
+    plan: FragmentPlan
+    native_body: FragmentNativeBody
+    reference_version: LogicalBlockVersion
+    state: SemanticFragmentBackendState
+    transaction_id: str
+    _receipt_count: int
+    _identity_generation: int
+    _staged_block_ids: list[str] = field(default_factory=list)
+
+    def stage_block(self, block_id: str):
+        """Create, bind, and return one unpublished imported-native block."""
+        block_id = str(block_id)
+        if block_id not in self.native_body.block_ids:
+            raise SemanticFragmentBackendRejected(
+                f"native body {self.native_body.body_id!r} does not own "
+                f"fragment block {block_id!r}"
+            )
+        if block_id in self._staged_block_ids:
+            raise SemanticFragmentBackendRejected(
+                f"native body block {block_id!r} was staged more than once"
+            )
+        block = self.plan.block(block_id)
+        if (
+            block.role is not FragmentBlockRole.IMPORTED
+            or block.materialization
+            is not FragmentBlockMaterialization.IMPORT_NATIVE
+            or block.native_body_id != self.native_body.body_id
+            or block.stable_identity is None
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"fragment block {block_id!r} is not an imported member of "
+                f"native body {self.native_body.body_id!r}"
+            )
+
+        version = self._modifier._stage_imported_native_semantic_block(
+            reference_version=self.reference_version,
+            stable_identity=block.stable_identity,
+        )
+        if (
+            version.handle.provenance
+            is not BlockHandleProvenance.IMPORTED_NATIVE
+            or version.handle.stable_identity != block.stable_identity
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"native body block {block_id!r} received the wrong logical identity"
+            )
+        gateway = _gateway(self._modifier)
+        proxy = gateway.identity_index.logical_proxy_for_handle(version.handle)
+        if proxy is None:
+            raise SemanticFragmentBackendRejected(
+                f"native body block {block_id!r} has no logical proxy"
+            )
+        if proxy.resolve() is not None:
+            raise SemanticFragmentBackendRejected(
+                f"native body block {block_id!r} exposed published authority"
+            )
+        if proxy.resolve(transaction_id=self.transaction_id) is not version:
+            raise SemanticFragmentBackendRejected(
+                f"native body block {block_id!r} lacks its staged logical version"
+            )
+        binding = SemanticFragmentRuntimeBinding(
+            block_id=block_id,
+            proxy=proxy,
+            version=version,
+            state=FragmentBindingState.STAGED,
+        )
+        self.state.bindings[block_id] = binding
+        self.state.staged_block_ids.append(block_id)
+        self._staged_block_ids.append(block_id)
+        return _live_block_for_binding(self._modifier, binding)
+
+    def validate_complete(self) -> None:
+        """Reject partial bodies or materializers that changed publication authority."""
+        if tuple(self._staged_block_ids) != self.native_body.block_ids:
+            raise SemanticFragmentBackendRejected(
+                f"native body {self.native_body.body_id!r} staged blocks "
+                f"{tuple(self._staged_block_ids)!r}, expected "
+                f"{self.native_body.block_ids!r}"
+            )
+        gateway = _gateway(self._modifier)
+        if gateway.active_batch_id != self.transaction_id:
+            raise SemanticFragmentBackendRejected(
+                "native body materializer changed the active fragment transaction"
+            )
+        if len(gateway.receipts) != self._receipt_count:
+            raise SemanticFragmentBackendRejected(
+                "native body materializer issued an independent mutation receipt"
+            )
+        if gateway.identity_index.generation != self._identity_generation:
+            raise SemanticFragmentBackendRejected(
+                "native body materializer changed published identity generation"
+            )
+
+
 def _gateway(modifier: DeferredGraphModifier):
     gateway = modifier._mutation_gateway
     if gateway is None or not gateway.active:
@@ -150,6 +264,44 @@ def _transaction_id(modifier: DeferredGraphModifier) -> str:
             "semantic fragment staging has no active transaction id"
         )
     return batch_id
+
+
+def _stage_native_bodies(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    *,
+    reference_version: LogicalBlockVersion,
+) -> None:
+    if not plan.native_bodies:
+        return
+    materializer = modifier._semantic_native_body_materializer
+    if materializer is None:
+        raise SemanticFragmentBackendRejected(
+            "fragment plan requires an imported native-body materializer"
+        )
+    if not isinstance(materializer, SemanticNativeBodyMaterializer):
+        raise TypeError(
+            "semantic native-body materializer does not satisfy its backend protocol"
+        )
+    gateway = _gateway(modifier)
+    transaction_id = _transaction_id(modifier)
+    for native_body in plan.native_bodies:
+        context = SemanticNativeBodyStagingContext(
+            _modifier=modifier,
+            plan=plan,
+            native_body=native_body,
+            reference_version=reference_version,
+            state=state,
+            transaction_id=transaction_id,
+            _receipt_count=len(gateway.receipts),
+            _identity_generation=gateway.identity_index.generation,
+        )
+        materializer.stage_native_body(
+            context=context,
+            native_body=native_body,
+        )
+        context.validate_complete()
 
 
 def _published_binding(
@@ -937,7 +1089,10 @@ def plan_semantic_fragment_root_inventory(
     live_by_id = {}
     ids_by_serial: dict[int, str] = {}
     for block in plan.blocks:
-        if block.role is FragmentBlockRole.REPLACEMENT:
+        if (
+            block.materialization
+            is not FragmentBlockMaterialization.REUSE_PUBLISHED
+        ):
             continue
         if block.stable_identity is None:
             continue
@@ -1247,6 +1402,12 @@ def stage_semantic_fragment(
             if block.role is FragmentBlockRole.REPLACEMENT:
                 _clone_replacement(modifier, state, block)
         reference_version = state.binding(plan.roots[0]).version
+        _stage_native_bodies(
+            modifier,
+            plan,
+            state,
+            reference_version=reference_version,
+        )
         for block in plan.blocks:
             if block.materialization is FragmentBlockMaterialization.CREATE_EMPTY:
                 _create_empty_block(
@@ -1289,6 +1450,8 @@ __all__ = [
     "SemanticFragmentBackendState",
     "SemanticFragmentRootEdgeBinding",
     "SemanticFragmentRootPublicationToken",
+    "SemanticNativeBodyMaterializer",
+    "SemanticNativeBodyStagingContext",
     "discard_staged_semantic_fragment",
     "observe_published_semantic_fragment",
     "plan_semantic_fragment_root_inventory",

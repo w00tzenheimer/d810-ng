@@ -440,6 +440,21 @@ class MbaMutationGateway:
                         reason=f"synthetic:{block.block_id}",
                     )
                 )
+            elif (
+                block.materialization
+                is FragmentBlockMaterialization.IMPORT_NATIVE
+            ):
+                items.append(
+                    MbaMutationPlanItem(
+                        item_index=len(items),
+                        mutation_kind="semantic_fragment_native_body_materialization",
+                        target_anchor_ea=int(block.semantic_anchor_ea),
+                        target_identity=block.stable_identity,
+                        reason=(
+                            f"native-body:{block.native_body_id}:{block.block_id}"
+                        ),
+                    )
+                )
         for operation in plan.operations:
             source = plan.block(operation.source_block_id)
             if SemanticEdgeRole.CONDITIONAL_FALLTHROUGH in operation.roles:
