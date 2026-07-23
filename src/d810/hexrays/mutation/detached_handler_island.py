@@ -44,7 +44,10 @@ from d810.analyses.control_flow.terminal_return_carrier_evidence import (
 from d810.core.logging import getLogger
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
-from d810.hexrays.opcode_lift import set_predicate_from_opcode
+from d810.hexrays.opcode_lift import (
+    set_predicate_from_opcode,
+    value_op_from_opcode,
+)
 from d810.hexrays.mutation.semantic_fragment_backend import (
     SemanticFragmentBackendRejected,
 )
@@ -83,8 +86,8 @@ class _ComputedBranchNormalizationPlan:
 
     operation: FragmentOperation
     cut_index: int
+    result_instruction_index: int
     branch_opcode: int
-    producer_predicate_kind: PredicateKind
 
 
 def stable_mba_identity(mba: object) -> int:
@@ -1281,72 +1284,6 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 f"ownership; {label}"
             )
         instructions = tuple(template_block.instructions)
-        producer_candidates = tuple(
-            (index, instruction)
-            for index, instruction in enumerate(instructions)
-            if int(instruction.ea) == int(normalization.condition_producer_ea)
-            and set_predicate_from_opcode(int(instruction.opcode)) is not None
-        )
-        if len(producer_candidates) != 1:
-            observed_producers = tuple(
-                (
-                    f"0x{int(instruction.ea):X}",
-                    int(instruction.opcode),
-                    (
-                        None
-                        if set_predicate_from_opcode(int(instruction.opcode))
-                        is None
-                        else set_predicate_from_opcode(
-                            int(instruction.opcode)
-                        ).value
-                    ),
-                )
-                for instruction in instructions
-                if int(instruction.ea)
-                == int(normalization.condition_producer_ea)
-            )
-            raise SemanticFragmentBackendRejected(
-                "PREOPT computed branch condition producer does not match its "
-                f"portable predicate; {label} "
-                f"observed_producers={observed_producers!r}"
-            )
-        producer_index, producer = producer_candidates[0]
-        producer_predicate_kind = set_predicate_from_opcode(
-            int(producer.opcode)
-        )
-        if producer_predicate_kind is None:
-            raise SemanticFragmentBackendRejected(
-                "PREOPT computed branch condition producer lost its predicate "
-                f"during preflight; {label}"
-            )
-        if producer_predicate_kind is normalization.predicate_kind:
-            branch_opcode = int(ida_hexrays.m_jnz)
-        elif (
-            inverted_predicate_kind(producer_predicate_kind)
-            is normalization.predicate_kind
-        ):
-            branch_opcode = int(ida_hexrays.m_jz)
-        else:
-            raise SemanticFragmentBackendRejected(
-                "PREOPT computed branch condition producer does not match or "
-                f"invert its portable predicate; {label} "
-                f"observed_producer_predicate={producer_predicate_kind.value}"
-            )
-        if (
-            int(producer.d.t)
-            in {
-                int(ida_hexrays.mop_z),
-                int(ida_hexrays.mop_b),
-                int(ida_hexrays.mop_l),
-            }
-            or int(producer.d.size) <= 0
-        ):
-            raise SemanticFragmentBackendRejected(
-                "PREOPT computed branch condition producer has no portable "
-                f"boolean result; {label} "
-                f"destination_type={int(producer.d.t)} "
-                f"destination_size={int(producer.d.size)}"
-            )
         predicate_indexes = tuple(
             index
             for index, instruction in enumerate(instructions)
@@ -1361,19 +1298,199 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         if (
             not predicate_indexes
             or transfer_indexes != (len(instructions) - 1,)
-            or not int(producer_index) < int(predicate_indexes[0])
-            <= int(transfer_indexes[0])
+            or int(predicate_indexes[0]) > int(transfer_indexes[0])
         ):
             raise SemanticFragmentBackendRejected(
-                "PREOPT computed branch suffix does not match its producer, "
-                f"predicate, and unresolved-transfer anchors; {label} "
+                "PREOPT computed branch suffix does not match its predicate "
+                f"and unresolved-transfer anchors; {label} "
                 f"instructions={tuple((f'0x{int(instruction.ea):X}', int(instruction.opcode)) for instruction in instructions)!r}"
             )
+        producer_candidates = tuple(
+            (index, instruction)
+            for index, instruction in enumerate(instructions)
+            if int(instruction.ea) == int(normalization.condition_producer_ea)
+            and set_predicate_from_opcode(int(instruction.opcode)) is not None
+        )
+        if len(producer_candidates) == 1:
+            producer_index, producer = producer_candidates[0]
+            producer_predicate_kind = set_predicate_from_opcode(
+                int(producer.opcode)
+            )
+            if producer_predicate_kind is normalization.predicate_kind:
+                branch_opcode = int(ida_hexrays.m_jnz)
+            elif (
+                producer_predicate_kind is not None
+                and inverted_predicate_kind(producer_predicate_kind)
+                is normalization.predicate_kind
+            ):
+                branch_opcode = int(ida_hexrays.m_jz)
+            else:
+                observed = (
+                    None
+                    if producer_predicate_kind is None
+                    else producer_predicate_kind.value
+                )
+                raise SemanticFragmentBackendRejected(
+                    "PREOPT computed branch condition producer does not match "
+                    f"or invert its portable predicate; {label} "
+                    f"observed_producer_predicate={observed}"
+                )
+            if (
+                not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
+                    producer
+                )
+                or not int(producer_index) < int(predicate_indexes[0])
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "PREOPT computed branch condition producer has no portable "
+                    f"boolean result before its predicate anchor; {label} "
+                    f"destination_type={int(producer.d.t)} "
+                    f"destination_size={int(producer.d.size)}"
+                )
+            return _ComputedBranchNormalizationPlan(
+                operation=operation,
+                cut_index=int(predicate_indexes[0]),
+                result_instruction_index=int(producer_index),
+                branch_opcode=branch_opcode,
+            )
+
+        signed_plan = (
+            PreoptUnionSemanticNativeBodyMaterializer._preflight_signed_flag_xor(
+                instructions=instructions,
+                predicate_indexes=predicate_indexes,
+                operation=operation,
+                normalization=normalization,
+            )
+        )
+        if signed_plan is not None:
+            return signed_plan
+
+        observed_producers = tuple(
+            (
+                f"0x{int(instruction.ea):X}",
+                int(instruction.opcode),
+                (
+                    None
+                    if value_op_from_opcode(int(instruction.opcode)) is None
+                    else value_op_from_opcode(int(instruction.opcode)).value
+                ),
+            )
+            for instruction in instructions
+            if int(instruction.ea) == int(normalization.condition_producer_ea)
+        )
+        observed_predicates = tuple(
+            (
+                f"0x{int(instructions[index].ea):X}",
+                int(instructions[index].opcode),
+                (
+                    None
+                    if value_op_from_opcode(int(instructions[index].opcode))
+                    is None
+                    else value_op_from_opcode(
+                        int(instructions[index].opcode)
+                    ).value
+                ),
+            )
+            for index in predicate_indexes
+        )
+        raise SemanticFragmentBackendRejected(
+            "PREOPT computed branch condition producer does not match its "
+            f"portable predicate; {label} "
+            f"observed_producers={observed_producers!r} "
+            f"observed_predicates={observed_predicates!r}"
+        )
+
+    @staticmethod
+    def _has_result_operand(instruction: object) -> bool:
+        return bool(
+            int(instruction.d.t)
+            not in {
+                int(ida_hexrays.mop_z),
+                int(ida_hexrays.mop_b),
+                int(ida_hexrays.mop_l),
+            }
+            and int(instruction.d.size) > 0
+        )
+
+    @staticmethod
+    def _preflight_signed_flag_xor(
+        *,
+        instructions: tuple[object, ...],
+        predicate_indexes: tuple[int, ...],
+        operation: FragmentOperation,
+        normalization: FragmentComputedBranchNormalization,
+    ) -> _ComputedBranchNormalizationPlan | None:
+        """Recognize one exact ``SF XOR OF`` signed predicate materialization."""
+        if (
+            normalization.predicate_kind
+            not in {PredicateKind.SLT, PredicateKind.SGE}
+            or len(predicate_indexes) != 1
+        ):
+            return None
+        producer_rows = tuple(
+            (index, instruction, value_op_from_opcode(int(instruction.opcode)))
+            for index, instruction in enumerate(instructions)
+            if int(instruction.ea) == int(normalization.condition_producer_ea)
+        )
+        producer_kinds = {row[2] for row in producer_rows}
+        predicate_index = int(predicate_indexes[0])
+        if (
+            len(producer_rows) != 2
+            or producer_kinds
+            != {ValueOpKind.OVERFLOW_FLAG, ValueOpKind.SIGN_BIT}
+            or tuple(row[0] for row in producer_rows)
+            != (predicate_index - 2, predicate_index - 1)
+            or not all(
+                PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
+                    row[1]
+                )
+                for row in producer_rows
+            )
+        ):
+            return None
+        predicate = instructions[predicate_index]
+        if (
+            value_op_from_opcode(int(predicate.opcode))
+            is not ValueOpKind.ZEXT
+            or int(predicate.l.t) != int(ida_hexrays.mop_d)
+            or value_op_from_opcode(int(predicate.l.d.opcode))
+            is not ValueOpKind.XOR
+            or not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
+                predicate
+            )
+        ):
+            return None
+        overflow = next(
+            row[1]
+            for row in producer_rows
+            if row[2] is ValueOpKind.OVERFLOW_FLAG
+        )
+        sign = next(
+            row[1] for row in producer_rows if row[2] is ValueOpKind.SIGN_BIT
+        )
+        xor = predicate.l.d
+        compare_flags = int(ida_hexrays.EQ_IGNSIZE)
+        if not (
+            (
+                xor.l.equal_mops(sign.d, compare_flags)
+                and xor.r.equal_mops(overflow.d, compare_flags)
+            )
+            or (
+                xor.l.equal_mops(overflow.d, compare_flags)
+                and xor.r.equal_mops(sign.d, compare_flags)
+            )
+        ):
+            return None
+        branch_opcode = (
+            int(ida_hexrays.m_jnz)
+            if normalization.predicate_kind is PredicateKind.SLT
+            else int(ida_hexrays.m_jz)
+        )
         return _ComputedBranchNormalizationPlan(
             operation=operation,
-            cut_index=int(predicate_indexes[0]),
+            cut_index=predicate_index + 1,
+            result_instruction_index=predicate_index,
             branch_opcode=branch_opcode,
-            producer_predicate_kind=producer_predicate_kind,
         )
 
     def _prepare_native_body_instructions(
@@ -1429,26 +1546,26 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                         "PREOPT computed branch normalization disappeared "
                         "during preparation"
                     )
-                producers = tuple(
-                    instruction
-                    for native_ea, instruction in instructions
-                    if int(native_ea) == int(normalization.condition_producer_ea)
-                    and set_predicate_from_opcode(int(instruction.opcode))
-                    is normalization_entry.producer_predicate_kind
-                )
-                if len(producers) != 1:
-                    raise SemanticFragmentBackendRejected(
-                        "PREOPT computed branch producer changed during rebase"
+                result_index = normalization_entry.result_instruction_index
+                if (
+                    not 0 <= int(result_index) < len(instructions)
+                    or not self._has_result_operand(
+                        instructions[int(result_index)][1]
                     )
+                ):
+                    raise SemanticFragmentBackendRejected(
+                        "PREOPT computed branch result changed during rebase"
+                    )
+                result = instructions[int(result_index)][1]
                 predicate_ea = int(operation.predicate_anchor_ea)
                 branch = ida_hexrays.minsn_t(predicate_ea)
                 branch.opcode = normalization_entry.branch_opcode
                 branch.l = ida_hexrays.mop_t()
-                branch.l.assign(producers[0].d)
+                branch.l.assign(result.d)
                 branch.r = ida_hexrays.mop_t()
                 branch.r.make_number(
                     0,
-                    int(producers[0].d.size),
+                    int(result.d.size),
                     predicate_ea,
                 )
                 branch.d = ida_hexrays.mop_t()
