@@ -7,6 +7,7 @@ from dataclasses import replace
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockKind
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
@@ -38,6 +39,7 @@ from tests.native_preanalysis import make_native_key
 
 
 NATIVE_KEY = make_native_key(function_rva=0x40A560)
+CONDITION_STORAGE = StorageIdentity(StorageIdentityKind.REGISTER, offset=0x10)
 
 
 def _identity(start_ea: int) -> StableBlockIdentity:
@@ -88,12 +90,16 @@ def _plan() -> FragmentPlan:
         block_id="replacement",
         value_id="flags:choice",
         instruction_ea=0x1000,
+        storage_identity=CONDITION_STORAGE,
+        width=1,
     )
     use = FragmentValueSite(
         site_id="flags.use",
         block_id="replacement",
         value_id="flags:choice",
         instruction_ea=0x1004,
+        storage_identity=CONDITION_STORAGE,
+        width=1,
     )
     return FragmentPlan(
         plan_id="semantic-fragment",
