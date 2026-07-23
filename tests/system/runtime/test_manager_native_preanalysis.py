@@ -10,7 +10,11 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
-from d810.manager.manager import D810Manager, _build_current_mba_identity_index
+from d810.manager.manager import (
+    D810Manager,
+    _build_current_mba_identity_index,
+    _new_current_mba_mutation_gateway,
+)
 from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     resolver_session_state,
@@ -88,6 +92,35 @@ def test_current_mba_identity_index_rejects_previous_mba_origins(monkeypatch) ->
     )
 
     assert captured["imported_instruction_origins"] == {}
+
+
+def test_current_mba_mutation_gateway_uses_session_lifecycle_authority() -> None:
+    native_preanalysis = NativePreanalysisSessionState(evidence_generation=2)
+    session = SimpleNamespace(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        identity_key="test-session",
+        function_ea=0x40A560,
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id=session.identity_key,
+        generation=7,
+        evidence_generation=2,
+        native_key=NATIVE_KEY,
+        bindings=(),
+    )
+    event_emitter = object()
+
+    gateway = _new_current_mba_mutation_gateway(
+        session=session,
+        identity_index=index,
+        maturity=3,
+        event_emitter=event_emitter,
+    )
+
+    assert gateway.lifecycle_authority is native_preanalysis
+    assert gateway.identity_index is index
+    assert gateway.event_emitter is event_emitter
 
 
 def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(

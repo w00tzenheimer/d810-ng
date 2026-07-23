@@ -185,6 +185,7 @@ def _new_current_mba_mutation_gateway(
         maturity=int(maturity),
         identity_index=identity_index,
         event_emitter=event_emitter,
+        lifecycle_authority=session.native_preanalysis,
     )
 
 

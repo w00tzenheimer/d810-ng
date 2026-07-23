@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativePreanalysisSessionState,
+)
 from d810.core.events import EventEmitter
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import (
@@ -48,6 +52,7 @@ from tests.native_preanalysis import make_native_key
 
 
 NATIVE_KEY = make_native_key(function_rva=0x40A560)
+_DEFAULT_LIFECYCLE = object()
 
 
 def _identity(start_ea: int) -> StableBlockIdentity:
@@ -123,7 +128,32 @@ def _plan() -> FragmentPlan:
     )
 
 
-def _gateway(plan: FragmentPlan):
+def _semantic_lifecycle() -> NativePreanalysisSessionState:
+    state = NativePreanalysisSessionState(evidence_generation=1)
+    state.mark_normalization_staged()
+    state.mark_normalization_validated()
+    state.mark_normalization_published_and_postvalidated()
+    state.mark_canonical_semantic_plan_ready()
+    return state
+
+
+def _gateway(
+    plan: FragmentPlan,
+    *,
+    lifecycle_authority: object = _DEFAULT_LIFECYCLE,
+):
+    if lifecycle_authority is _DEFAULT_LIFECYCLE:
+        lifecycle_authority = (
+            NativePreanalysisSessionState(evidence_generation=1)
+            if plan.publication_purpose
+            is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+            else _semantic_lifecycle()
+        )
+    evidence_generation = (
+        0
+        if lifecycle_authority is None
+        else int(lifecycle_authority.evidence_generation)
+    )
     serials = {
         "entry": 0,
         "original": 1,
@@ -133,6 +163,7 @@ def _gateway(plan: FragmentPlan):
     index = MbaBlockIdentityIndex.from_bindings(
         session_id="fragment-session",
         generation=5,
+        evidence_generation=evidence_generation,
         native_key=NATIVE_KEY,
         bindings=tuple(
             (plan.block(block_id).stable_identity, serial)
@@ -152,6 +183,7 @@ def _gateway(plan: FragmentPlan):
         maturity=1,
         identity_index=index,
         event_emitter=emitter,
+        lifecycle_authority=lifecycle_authority,
     )
     return gateway, committed, aborted
 
@@ -433,6 +465,135 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     assert proxy.resolve().handle is backend.replacement_handle
     assert len(committed) == 1
     assert aborted == []
+
+
+def test_gateway_advances_semantic_lifecycle_only_after_receipt_commit() -> None:
+    plan = _plan()
+    lifecycle = _semantic_lifecycle()
+    gateway, _committed, _aborted = _gateway(
+        plan,
+        lifecycle_authority=lifecycle,
+    )
+
+    gateway.publish_semantic_fragment(_FragmentBackend(gateway), plan)
+
+    assert lifecycle.semantic_fragment_staged_generation == 1
+    assert lifecycle.semantic_fragment_validated_generation == 1
+    assert lifecycle.semantic_fragment_published_postvalidated_generation == 1
+    assert lifecycle.receipt_committed_generation == 1
+    assert lifecycle.normalization_published_postvalidated_generation == 1
+
+
+def test_gateway_advances_only_normalization_for_normalization_plan() -> None:
+    plan = replace(
+        _plan(),
+        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+    )
+    lifecycle = NativePreanalysisSessionState(evidence_generation=1)
+    gateway, _committed, _aborted = _gateway(
+        plan,
+        lifecycle_authority=lifecycle,
+    )
+
+    gateway.publish_semantic_fragment(_FragmentBackend(gateway), plan)
+
+    assert lifecycle.normalization_staged_generation == 1
+    assert lifecycle.normalization_validated_generation == 1
+    assert lifecycle.normalization_published_postvalidated_generation == 1
+    assert lifecycle.canonical_semantic_plan_generation is None
+    assert lifecycle.semantic_fragment_staged_generation is None
+    assert lifecycle.receipt_committed_generation is None
+
+
+def test_postpublication_failure_aborts_transient_semantic_lifecycle() -> None:
+    plan = _plan()
+    lifecycle = _semantic_lifecycle()
+    gateway, _committed, _aborted = _gateway(
+        plan,
+        lifecycle_authority=lifecycle,
+    )
+
+    with pytest.raises(SemanticFragmentPublicationRejected):
+        gateway.publish_semantic_fragment(
+            _FragmentBackend(gateway, invalid_postobservation=True),
+            plan,
+        )
+
+    assert lifecycle.semantic_fragment_staged_generation is None
+    assert lifecycle.semantic_fragment_validated_generation is None
+    assert lifecycle.semantic_fragment_published_postvalidated_generation is None
+    assert lifecycle.receipt_committed_generation is None
+    assert lifecycle.canonical_semantic_plan_generation == 1
+
+
+def test_postpublication_failure_restores_prior_normalization_authority() -> None:
+    plan = replace(
+        _plan(),
+        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+    )
+    lifecycle = NativePreanalysisSessionState(
+        evidence_generation=2,
+        portable_evidence_ready_generation=2,
+        normalization_staged_generation=1,
+        normalization_validated_generation=1,
+        normalization_published_postvalidated_generation=1,
+    )
+    gateway, _committed, _aborted = _gateway(
+        plan,
+        lifecycle_authority=lifecycle,
+    )
+
+    with pytest.raises(SemanticFragmentPublicationRejected):
+        gateway.publish_semantic_fragment(
+            _FragmentBackend(gateway, invalid_postobservation=True),
+            plan,
+        )
+
+    assert lifecycle.normalization_staged_generation == 1
+    assert lifecycle.normalization_validated_generation == 1
+    assert lifecycle.normalization_published_postvalidated_generation == 1
+    assert lifecycle.evidence_generation == 2
+
+
+def test_receipt_event_precedes_committed_semantic_lifecycle_authority() -> None:
+    plan = _plan()
+    timeline: list[str] = []
+    lifecycle = _semantic_lifecycle()
+    lifecycle.event_observer = lambda transition: timeline.append(
+        transition.operation
+    )
+    gateway, _committed, _aborted = _gateway(
+        plan,
+        lifecycle_authority=lifecycle,
+    )
+    gateway.event_emitter.on(
+        MbaMutationCommitted,
+        lambda _event: timeline.append("mutation_receipt_committed"),
+    )
+
+    gateway.publish_semantic_fragment(_FragmentBackend(gateway), plan)
+
+    assert timeline == [
+        "semantic_fragment_staged",
+        "semantic_fragment_validated",
+        "mutation_receipt_committed",
+        "semantic_fragment_published_postvalidated",
+        "receipt_committed",
+    ]
+
+
+def test_fragment_publication_requires_lifecycle_authority() -> None:
+    plan = _plan()
+    gateway, _committed, _aborted = _gateway(
+        plan,
+        lifecycle_authority=None,
+    )
+    backend = _FragmentBackend(gateway)
+
+    with pytest.raises(TypeError, match="lifecycle authority"):
+        gateway.publish_semantic_fragment(backend, plan)
+
+    assert backend.calls == []
 
 
 def test_commit_observer_failure_cannot_trigger_postcommit_root_rollback() -> None:

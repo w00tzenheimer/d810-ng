@@ -1443,6 +1443,32 @@ class NativePreanalysisSessionState:
             for key in self.bootstrap_routes
         )
 
+
+@runtime_checkable
+class FragmentPublicationLifecycleAuthority(Protocol):
+    """Generation authority driven only by validated fragment publication."""
+
+    evidence_generation: int
+
+    def mark_normalization_staged(self) -> bool: ...
+
+    def mark_normalization_validated(self) -> bool: ...
+
+    def mark_normalization_published_and_postvalidated(self) -> bool: ...
+
+    def abort_normalization(self, *, reason: str) -> bool: ...
+
+    def mark_semantic_fragment_staged(self) -> bool: ...
+
+    def mark_semantic_fragment_validated(self) -> bool: ...
+
+    def mark_semantic_fragment_published_and_postvalidated(self) -> bool: ...
+
+    def mark_receipt_committed(self) -> bool: ...
+
+    def abort_semantic_fragment(self, *, reason: str) -> bool: ...
+
+
 @runtime_checkable
 class ResolverEvidenceAttachment(Protocol):
     """Lower-layer view of a resolver attachment bound to lifecycle evidence."""
@@ -1501,6 +1527,7 @@ __all__ = [
     "CallResultCarrier",
     "ComputedGotoPatchPlan",
     "ComputedGotoResolution",
+    "FragmentPublicationLifecycleAuthority",
     "NativePreanalysisFacts",
     "NativePreanalysisSessionState",
     "PreoptUnionPreparationResult",
