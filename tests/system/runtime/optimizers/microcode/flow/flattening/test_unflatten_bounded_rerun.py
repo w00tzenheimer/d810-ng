@@ -1345,7 +1345,12 @@ def test_complete_materialized_identity_evidence_reopens_the_family_gate(
         state_machine_cff_unflattener as unflat_mod,
     )
 
-    monkeypatch.setattr(unflat_mod, "select_family", lambda *_args, **_kwargs: None)
+    registered_family = SimpleNamespace(name="registered_standard_family")
+    monkeypatch.setattr(
+        unflat_mod,
+        "select_family",
+        lambda *_args, **_kwargs: registered_family,
+    )
     rule = StateMachineCffUnflattener.__new__(StateMachineCffUnflattener)
     backend = SimpleNamespace(capabilities=lambda: frozenset())
     mba = SimpleNamespace(entry_ea=_EA, maturity=ida_hexrays.MMAT_CALLS)
@@ -1376,7 +1381,7 @@ def test_complete_materialized_identity_evidence_reopens_the_family_gate(
             backend,
             materialized_evidence_ready=False,
         )
-        is None
+        is registered_family
     )
     assert (
         rule._select_family(
@@ -1386,7 +1391,7 @@ def test_complete_materialized_identity_evidence_reopens_the_family_gate(
             backend,
             materialized_evidence_ready=True,
         )
-        is None
+        is registered_family
     )
 
 
@@ -1968,8 +1973,13 @@ class TestUnflattenBoundedRerunGate:
         assert captured["prepared_analysis_seeds"] == expected_analysis_seeds
         assert captured["reset_func"] == _EA
 
-    def test_config_v2_mode_executes_configured_pass_specs(self, monkeypatch) -> None:
-        """Config-v2 mode runs configured specs while preserving rule-local options."""
+    @pytest.mark.parametrize("materialized_continuation", (False, True))
+    def test_config_v2_mode_executes_selected_semantic_pipeline(
+        self,
+        monkeypatch,
+        materialized_continuation,
+    ) -> None:
+        """Config-v2 preserves canonical fragment publication when selected."""
         from d810.hexrays.preanalysis import indirect_jump_labels
         from d810.optimizers.microcode.flow.flattening import (
             state_machine_cff_unflattener as unflat_mod,
@@ -2020,7 +2030,16 @@ class TestUnflattenBoundedRerunGate:
                 return self.facts
 
         captured: dict[str, object] = {}
-        family = _Family()
+        family = (
+            unflat_mod._MaterializedComputedGotoContinuationFamily()
+            if materialized_continuation
+            else _Family()
+        )
+        test_maturity = (
+            ida_hexrays.MMAT_CALLS
+            if materialized_continuation
+            else ida_hexrays.MMAT_GLBOPT1
+        )
         rule_config = {
             "min_state_constant": 16777216,
             "enable_transition_validator": True,
@@ -2104,22 +2123,34 @@ class TestUnflattenBoundedRerunGate:
             ),
             new_mba_mutation_gateway=lambda: object(),
         )
-        rule._union_maturities_cache = frozenset({ida_hexrays.MMAT_GLBOPT1})
+        rule._union_maturities_cache = frozenset({test_maturity})
 
         mba = SimpleNamespace(
             entry_ea=_EA,
-            maturity=ida_hexrays.MMAT_GLBOPT1,
+            maturity=test_maturity,
         )
         assert rule.optimize(SimpleNamespace(mba=mba, serial=0)) == 0
 
         pipeline_v2_specs = captured["pipeline_v2_specs"]
-        assert tuple(spec.pass_id for spec in pipeline_v2_specs) == (
-            "recover_dispatcher",
-            "recover_state_transitions",
-            "plan_semantic_regions",
-            "lower_state_machine",
-            "cleanup_residual_dispatcher",
+        expected_pass_ids = (
+            (
+                "recover_dispatcher",
+                "recover_state_transitions",
+                "plan_semantic_regions",
+                "lower_state_machine",
+            )
+            if materialized_continuation
+            else (
+                "recover_dispatcher",
+                "recover_state_transitions",
+                "plan_semantic_regions",
+                "lower_state_machine",
+                "cleanup_residual_dispatcher",
+            )
         )
+        assert tuple(spec.pass_id for spec in pipeline_v2_specs) == expected_pass_ids
+        if materialized_continuation:
+            assert pipeline_v2_specs[-1].backend_route.value == "fragment_publication"
         assert captured["project_config"] is rule_config
         assert "pipeline_v2_shadow_registry" not in captured
         assert captured["reset_func"] == _EA

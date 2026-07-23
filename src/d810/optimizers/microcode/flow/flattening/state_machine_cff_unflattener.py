@@ -1599,23 +1599,33 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
                 configured_pass_ids = tuple(spec.pass_id for spec in configured_specs)
                 self._last_config_v2_pass_ids = configured_pass_ids
-                native_specs = tuple(
+                configured_native_specs = tuple(
                     spec
                     for spec in configured_specs
                     if spec.pass_id in STATE_MACHINE_NATIVE_PASS_IDS
                 )
-                if not native_specs:
+                if not configured_native_specs:
                     logger.warning(
                         "unflat: config-v2 project activated the live unflattener "
                         "without native state-machine spine specs for func=0x%x",
                         int(mba.entry_ea),
                     )
                     return 0
+                native_specs = (
+                    semantic_evidence_state_machine_passes()
+                    if isinstance(
+                        family,
+                        _MaterializedComputedGotoContinuationFamily,
+                    )
+                    else configured_native_specs
+                )
                 if logger.debug_on:
                     logger.debug(
-                        "unflat: executing config-v2 pipeline for func=0x%x passes=%s",
+                        "unflat: executing config-v2 pipeline for func=0x%x "
+                        "configured_passes=%s effective_native_passes=%s",
                         int(mba.entry_ea),
                         list(configured_pass_ids),
+                        [spec.pass_id for spec in native_specs],
                     )
                 shadow_gate_kwargs = {
                     "pipeline_v2_specs": native_specs,
@@ -3159,6 +3169,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         materialized_evidence_ready: bool = False,
     ):
         """Poll the family registry (reduced-product bypass on opt-in). Returns family|None."""
+        if (
+            materialized_evidence_ready
+            and not self._uses_tigress_indirect_materialization(rule_config)
+        ):
+            logger.info(
+                "unflat: complete materialized identity evidence resumes "
+                "canonical pipeline for func=0x%x at %s",
+                int(mba.entry_ea),
+                maturity_to_string(int(mba.maturity)),
+            )
+            return _MaterializedComputedGotoContinuationFamily()
+
         # Route through the registered profiles (llr-ibpi): select_family polls the
         # StateMachineCffFamily registry (HodurFamily=equality-chain, ApproovFamily/
         # TigressFamily=switch/indirect) and returns the one whose detect claims this
@@ -3193,18 +3215,6 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     maturity_to_string(int(mba.maturity)),
                 )
             family = _ReducedProductBypassFamily()
-        if (
-            family is None
-            and materialized_evidence_ready
-            and not self._uses_tigress_indirect_materialization(rule_config)
-        ):
-            logger.info(
-                "unflat: complete materialized identity evidence resumes "
-                "canonical pipeline for func=0x%x at %s",
-                int(mba.entry_ea),
-                maturity_to_string(int(mba.maturity)),
-            )
-            family = _MaterializedComputedGotoContinuationFamily()
         return family
 
     def _family_defers(
