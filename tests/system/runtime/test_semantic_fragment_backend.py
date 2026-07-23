@@ -1558,10 +1558,11 @@ def test_gateway_publishes_direct_fragment_root_from_entry() -> None:
     assert receipt.planned_operation_count == 3
     lifecycle = gateway.lifecycle_authority
     assert lifecycle is not None
-    assert lifecycle.semantic_fragment_staged_generation == 1
-    assert lifecycle.semantic_fragment_validated_generation == 1
-    assert lifecycle.semantic_fragment_published_postvalidated_generation == 1
-    assert lifecycle.receipt_committed_generation == 1
+    state = lifecycle.state
+    assert state.semantic_fragment_staged_generation == 1
+    assert state.semantic_fragment_validated_generation == 1
+    assert state.semantic_fragment_published_postvalidated_generation == 1
+    assert state.receipt_committed_generation == 1
     assert gateway.active is False
     assert modifier._semantic_fragment_state is None
 

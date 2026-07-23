@@ -10,6 +10,9 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.hexrays.mutation.fragment_publication_lifecycle import (
+    FragmentPublicationLifecycleAuthority,
+)
 from d810.manager.manager import (
     D810Manager,
     _build_current_mba_identity_index,
@@ -118,7 +121,12 @@ def test_current_mba_mutation_gateway_uses_session_lifecycle_authority() -> None
         event_emitter=event_emitter,
     )
 
-    assert gateway.lifecycle_authority is native_preanalysis
+    assert isinstance(
+        gateway.lifecycle_authority,
+        FragmentPublicationLifecycleAuthority,
+    )
+    assert gateway.lifecycle_authority is not native_preanalysis
+    assert gateway.lifecycle_authority.evidence_generation == 2
     assert gateway.identity_index is index
     assert gateway.event_emitter is event_emitter
 

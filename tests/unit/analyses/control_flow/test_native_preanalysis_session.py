@@ -39,9 +39,31 @@ NATIVE_KEY = make_native_key()
 
 
 def _publish_normalization(state: NativePreanalysisSessionState) -> None:
-    assert state.mark_normalization_staged()
-    assert state.mark_normalization_validated()
-    assert state.mark_normalization_published_and_postvalidated()
+    assert state._fragment_publication_mark_normalization_staged()
+    assert state._fragment_publication_mark_normalization_validated()
+    assert state._fragment_publication_mark_normalization_published_and_postvalidated()
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    (
+        "mark_normalization_staged",
+        "mark_normalization_validated",
+        "mark_normalization_published_and_postvalidated",
+        "abort_normalization",
+        "mark_semantic_fragment_staged",
+        "mark_semantic_fragment_validated",
+        "mark_semantic_fragment_published_and_postvalidated",
+        "mark_receipt_committed",
+        "abort_semantic_fragment",
+    ),
+)
+def test_session_state_has_no_public_fragment_publication_transition(
+    method_name: str,
+) -> None:
+    state = NativePreanalysisSessionState()
+
+    assert not hasattr(state, method_name)
 
 
 def test_legacy_preopt_binding_authority_is_removed() -> None:
@@ -93,11 +115,11 @@ def test_lifecycle_tracks_normalization_and_semantic_generations_independently()
         RuntimeError,
         match="normalization validation requires the current staged generation",
     ):
-        state.mark_normalization_validated()
+        state._fragment_publication_mark_normalization_validated()
 
-    assert state.mark_normalization_staged()
-    assert state.mark_normalization_validated()
-    assert state.mark_normalization_published_and_postvalidated()
+    assert state._fragment_publication_mark_normalization_staged()
+    assert state._fragment_publication_mark_normalization_validated()
+    assert state._fragment_publication_mark_normalization_published_and_postvalidated()
     assert not state.needs_normalization_publication()
     assert state.normalization_staged_generation == 1
     assert state.normalization_validated_generation == 1
@@ -114,13 +136,13 @@ def test_lifecycle_tracks_normalization_and_semantic_generations_independently()
         RuntimeError,
         match="semantic fragment staging requires the current canonical plan",
     ):
-        state.mark_semantic_fragment_staged()
+        state._fragment_publication_mark_semantic_fragment_staged()
 
     assert state.mark_canonical_semantic_plan_ready()
-    assert state.mark_semantic_fragment_staged()
-    assert state.mark_semantic_fragment_validated()
-    assert state.mark_semantic_fragment_published_and_postvalidated()
-    assert state.mark_receipt_committed()
+    assert state._fragment_publication_mark_semantic_fragment_staged()
+    assert state._fragment_publication_mark_semantic_fragment_validated()
+    assert state._fragment_publication_mark_semantic_fragment_published_and_postvalidated()
+    assert state._fragment_publication_mark_receipt_committed()
     assert state.canonical_semantic_plan_generation == 1
     assert state.semantic_fragment_staged_generation == 1
     assert state.semantic_fragment_validated_generation == 1
@@ -135,18 +157,18 @@ def test_normalization_abort_preserves_previous_published_authority() -> None:
         evidence_family="test_evidence",
         reason="first portable generation",
     )
-    state.mark_normalization_staged()
-    state.mark_normalization_validated()
-    state.mark_normalization_published_and_postvalidated()
+    state._fragment_publication_mark_normalization_staged()
+    state._fragment_publication_mark_normalization_validated()
+    state._fragment_publication_mark_normalization_published_and_postvalidated()
 
     state.mark_evidence_changed(
         evidence_family="test_evidence",
         reason="second portable generation",
     )
     assert state.evidence_generation == 2
-    state.mark_normalization_staged()
-    state.mark_normalization_validated()
-    assert state.abort_normalization(reason="postpublication validation failed")
+    state._fragment_publication_mark_normalization_staged()
+    state._fragment_publication_mark_normalization_validated()
+    assert state._fragment_publication_abort_normalization(reason="postpublication validation failed")
 
     assert state.portable_evidence_ready_generation == 2
     assert state.normalization_staged_generation == 1
@@ -159,7 +181,7 @@ def test_normalization_abort_preserves_previous_published_authority() -> None:
         RuntimeError,
         match="normalization publication requires the current validated generation",
     ):
-        state.mark_normalization_published_and_postvalidated()
+        state._fragment_publication_mark_normalization_published_and_postvalidated()
 
 
 def test_semantic_abort_preserves_previous_receipt_authority() -> None:
@@ -168,26 +190,26 @@ def test_semantic_abort_preserves_previous_receipt_authority() -> None:
         evidence_family="test_evidence",
         reason="first portable generation",
     )
-    state.mark_normalization_staged()
-    state.mark_normalization_validated()
-    state.mark_normalization_published_and_postvalidated()
+    state._fragment_publication_mark_normalization_staged()
+    state._fragment_publication_mark_normalization_validated()
+    state._fragment_publication_mark_normalization_published_and_postvalidated()
     state.mark_canonical_semantic_plan_ready()
-    state.mark_semantic_fragment_staged()
-    state.mark_semantic_fragment_validated()
-    state.mark_semantic_fragment_published_and_postvalidated()
-    state.mark_receipt_committed()
+    state._fragment_publication_mark_semantic_fragment_staged()
+    state._fragment_publication_mark_semantic_fragment_validated()
+    state._fragment_publication_mark_semantic_fragment_published_and_postvalidated()
+    state._fragment_publication_mark_receipt_committed()
 
     state.mark_evidence_changed(
         evidence_family="test_evidence",
         reason="second portable generation",
     )
-    state.mark_normalization_staged()
-    state.mark_normalization_validated()
-    state.mark_normalization_published_and_postvalidated()
+    state._fragment_publication_mark_normalization_staged()
+    state._fragment_publication_mark_normalization_validated()
+    state._fragment_publication_mark_normalization_published_and_postvalidated()
     state.mark_canonical_semantic_plan_ready()
-    state.mark_semantic_fragment_staged()
-    state.mark_semantic_fragment_validated()
-    assert state.abort_semantic_fragment(reason="published graph drifted")
+    state._fragment_publication_mark_semantic_fragment_staged()
+    state._fragment_publication_mark_semantic_fragment_validated()
+    assert state._fragment_publication_abort_semantic_fragment(reason="published graph drifted")
 
     assert state.normalization_published_postvalidated_generation == 2
     assert state.canonical_semantic_plan_generation == 2

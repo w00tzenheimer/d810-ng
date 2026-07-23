@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from d810.analyses.control_flow.native_preanalysis_session import (
-    FragmentPublicationLifecycleAuthority,
     NativePreanalysisSessionState,
 )
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.hexrays.mutation.fragment_publication_lifecycle import (
+    FragmentPublicationLifecycleAuthority,
+)
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+from d810.manager.fragment_publication_lifecycle import (
+    SessionFragmentPublicationLifecycleAuthority,
+)
 from d810.transforms.fragment_plan import FragmentPublicationPurpose
 from tests.native_preanalysis import make_native_key
 
@@ -74,14 +79,18 @@ def make_fragment_publication_gateway(
         raise TypeError("fragment publication purpose must be typed")
     lifecycle = NativePreanalysisSessionState(evidence_generation=1)
     if publication_purpose is FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING:
-        lifecycle.mark_normalization_staged()
-        lifecycle.mark_normalization_validated()
-        lifecycle.mark_normalization_published_and_postvalidated()
+        lifecycle._fragment_publication_mark_normalization_staged()
+        lifecycle._fragment_publication_mark_normalization_validated()
+        lifecycle._fragment_publication_mark_normalization_published_and_postvalidated()
         lifecycle.mark_canonical_semantic_plan_ready()
+    authority = SessionFragmentPublicationLifecycleAuthority(
+        native_key=make_native_key(),
+        state=lifecycle,
+    )
     return _make_mutation_gateway(
         mba,
         generation=generation,
-        lifecycle_authority=lifecycle,
+        lifecycle_authority=authority,
     )
 
 

@@ -176,6 +176,9 @@ def _new_current_mba_mutation_gateway(
 ):
     """Construct one Hex-Rays transaction controller over the current index."""
     from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+    from d810.manager.fragment_publication_lifecycle import (
+        SessionFragmentPublicationLifecycleAuthority,
+    )
 
     return MbaMutationGateway(
         native_key=session.native_key,
@@ -185,7 +188,10 @@ def _new_current_mba_mutation_gateway(
         maturity=int(maturity),
         identity_index=identity_index,
         event_emitter=event_emitter,
-        lifecycle_authority=session.native_preanalysis,
+        lifecycle_authority=SessionFragmentPublicationLifecycleAuthority(
+            native_key=session.native_key,
+            state=session.native_preanalysis,
+        ),
     )
 
 
