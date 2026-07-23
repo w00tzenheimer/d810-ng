@@ -1198,9 +1198,18 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 )
                 or has_call_fallthrough != operation_has_call_fallthrough
             ):
+                semantic_anchor_ea = int(plan.block(block_id).semantic_anchor_ea)
                 raise SemanticFragmentBackendRejected(
                     "PREOPT native body topology is not owned by exactly one "
-                    "compatible FragmentPlan operation"
+                    "compatible FragmentPlan operation; "
+                    f"block={block_id!r}@0x{semantic_anchor_ea:X} "
+                    f"operations={len(operations)} "
+                    f"operation_ids={tuple(operation.operation_id for operation in operations)!r} "
+                    f"edge_counts={tuple(len(operation.edges) for operation in operations)!r} "
+                    f"expected_operations={expected_operations} "
+                    f"conditional_tail={conditional_tail} "
+                    f"template_call_fallthrough={has_call_fallthrough} "
+                    f"plan_call_fallthrough={operation_has_call_fallthrough}"
                 )
         return stack_map
 
