@@ -591,7 +591,7 @@ def test_gateway_stages_inserted_replacement_as_one_logical_operation() -> None:
         native_key=NATIVE_KEY,
     )
     gateway.begin_batch(
-        StructuralMutationKind.FRAGMENT_PUBLICATION,
+        StructuralMutationKind.BLOCK_REPLACE,
         serial_quantity=4,
         planned_operation_count=1,
     )

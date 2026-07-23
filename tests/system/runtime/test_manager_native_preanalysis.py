@@ -11,6 +11,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 )
 from d810.core.observability_events import MutationReceiptObserved
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.hexrays.ir.logical_block_proxy import LogicalBlockVersionId
 from d810.hexrays.mutation.fragment_publication_lifecycle import (
     FragmentPublicationLifecycleAuthority,
 )
@@ -158,6 +159,16 @@ def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
                 "postpublication semantic validation failed: "
                 "observable_return_carrier:return-value"
             ),
+            discarded_version_ids=(
+                LogicalBlockVersionId("logical-terminal", 1),
+            ),
+            fragment_plan_id="terminal-fragment",
+            fragment_atomic_group_id="terminal-group",
+            fragment_staged=True,
+            root_publication_attempted=True,
+            root_publication_succeeded=True,
+            rollback_attempted=True,
+            rollback_succeeded=True,
         )
     )
 
@@ -167,6 +178,19 @@ def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
     assert observed[0].applied_operation_count == 8
     assert observed[0].outcome == "aborted"
     assert "observable_return_carrier:return-value" in observed[0].reason
+    assert observed[0].fragment_plan_id == "terminal-fragment"
+    assert observed[0].fragment_atomic_group_id == "terminal-group"
+    assert observed[0].fragment_staged
+    assert observed[0].root_publication_succeeded
+    assert observed[0].rollback_succeeded
+    assert [
+        (
+            transition.proxy_token,
+            transition.from_state,
+            transition.to_state,
+        )
+        for transition in observed[0].version_transitions
+    ] == [("logical-terminal", "staged", "aborted")]
 
 
 def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(

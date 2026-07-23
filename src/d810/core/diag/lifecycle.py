@@ -276,6 +276,42 @@ def persist_mutation_plan(
                 item.reason,
             ),
         )
+    if event.fragment_plan_id:
+        conn.execute(
+            "INSERT INTO semantic_fragment_transactions "
+            "(mutation_batch_id,plan_event_id,receipt_event_id,plan_id,"
+            "atomic_group_id,plan_json,outcome,fragment_staged,"
+            "root_publication_attempted,root_publication_succeeded,"
+            "rollback_attempted,rollback_succeeded,reason) "
+            "VALUES (?,?,NULL,?,?,?,NULL,NULL,NULL,NULL,NULL,NULL,'')",
+            (
+                event.mutation_batch_id,
+                event_id,
+                event.fragment_plan_id,
+                event.fragment_atomic_group_id,
+                event.fragment_plan_json,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO semantic_fragment_transaction_events "
+            "(event_id,mutation_batch_id,event_index,event_kind,outcome,"
+            "detail_json) VALUES (?,?,?,?,?,?)",
+            (
+                event_id,
+                event.mutation_batch_id,
+                0,
+                "plan_recorded",
+                "planned",
+                json.dumps(
+                    {
+                        "plan_id": event.fragment_plan_id,
+                        "atomic_group_id": event.fragment_atomic_group_id,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
     return event_id
 
 
@@ -295,6 +331,19 @@ def persist_mutation_receipt(
             (event.session_id,),
         )
         return None
+    if event.fragment_plan_id:
+        transaction = conn.execute(
+            "SELECT plan_id,atomic_group_id FROM semantic_fragment_transactions "
+            "WHERE mutation_batch_id=?",
+            (event.mutation_batch_id,),
+        ).fetchone()
+        if transaction != (
+            event.fragment_plan_id,
+            event.fragment_atomic_group_id,
+        ):
+            raise ValueError(
+                "semantic-fragment receipt does not match its persisted plan"
+            )
     event_id = persist_lifecycle_event(
         conn,
         LifecycleEventObserved(
@@ -333,6 +382,134 @@ def persist_mutation_receipt(
             "INSERT INTO mutation_receipt_identities VALUES (?,?,?,?,?)",
             (event_id, index, identity_json, _anchor_hex(anchor), int(anchor)),
         )
+    if event.fragment_plan_id:
+        conn.execute(
+            "UPDATE semantic_fragment_transactions SET "
+            "receipt_event_id=?,outcome=?,fragment_staged=?,"
+            "root_publication_attempted=?,root_publication_succeeded=?,"
+            "rollback_attempted=?,rollback_succeeded=?,reason=? "
+            "WHERE mutation_batch_id=?",
+            (
+                event_id,
+                event.outcome,
+                int(event.fragment_staged),
+                int(event.root_publication_attempted),
+                int(event.root_publication_succeeded),
+                int(event.rollback_attempted),
+                (
+                    None
+                    if event.rollback_succeeded is None
+                    else int(event.rollback_succeeded)
+                ),
+                event.reason,
+                event.mutation_batch_id,
+            ),
+        )
+        for outcome_index, outcome in enumerate(event.validation_outcomes):
+            conn.execute(
+                "INSERT INTO semantic_fragment_validation_outcomes "
+                "(event_id,mutation_batch_id,outcome_index,phase,"
+                "postcondition,subject_id,passed,reason,block_ids_json) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    event_id,
+                    event.mutation_batch_id,
+                    outcome_index,
+                    outcome.phase,
+                    outcome.postcondition,
+                    outcome.subject_id,
+                    int(outcome.passed),
+                    outcome.reason,
+                    json.dumps(
+                        list(outcome.block_ids),
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
+        for transition_index, transition in enumerate(event.version_transitions):
+            conn.execute(
+                "INSERT INTO logical_block_version_transitions "
+                "(event_id,mutation_batch_id,transition_index,proxy_token,"
+                "from_version,from_state,to_version,to_state) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    event_id,
+                    event.mutation_batch_id,
+                    transition_index,
+                    transition.proxy_token,
+                    transition.from_version,
+                    transition.from_state,
+                    transition.to_version,
+                    transition.to_state,
+                ),
+            )
+
+        transaction_events: list[tuple[str, str, dict[str, object]]] = [
+            (
+                "fragment_staged",
+                "completed" if event.fragment_staged else "failed",
+                {},
+            ),
+        ]
+        for phase in ("prepublication", "postpublication"):
+            outcomes = tuple(
+                outcome
+                for outcome in event.validation_outcomes
+                if outcome.phase == phase
+            )
+            if outcomes:
+                transaction_events.append(
+                    (
+                        f"{phase}_validation",
+                        (
+                            "passed"
+                            if all(outcome.passed for outcome in outcomes)
+                            else "failed"
+                        ),
+                        {"outcome_count": len(outcomes)},
+                    )
+                )
+            if phase == "prepublication" and event.root_publication_attempted:
+                transaction_events.append(
+                    (
+                        "root_publication",
+                        (
+                            "published"
+                            if event.root_publication_succeeded
+                            else "failed"
+                        ),
+                        {},
+                    )
+                )
+        if event.rollback_attempted:
+            transaction_events.append(
+                (
+                    "rollback",
+                    "succeeded" if event.rollback_succeeded else "failed",
+                    {},
+                )
+            )
+        transaction_events.append(
+            ("receipt", event.outcome, {"reason": event.reason})
+        )
+        for event_index, (
+            event_kind,
+            outcome,
+            detail,
+        ) in enumerate(transaction_events, start=1):
+            conn.execute(
+                "INSERT INTO semantic_fragment_transaction_events "
+                "(event_id,mutation_batch_id,event_index,event_kind,outcome,"
+                "detail_json) VALUES (?,?,?,?,?,?)",
+                (
+                    event_id,
+                    event.mutation_batch_id,
+                    event_index,
+                    event_kind,
+                    outcome,
+                    json.dumps(detail, sort_keys=True, separators=(",", ":")),
+                ),
+            )
     return event_id
 
 

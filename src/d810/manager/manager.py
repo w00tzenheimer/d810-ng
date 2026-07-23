@@ -961,7 +961,82 @@ class D810Manager:
                 maturity=mmat_label(int(event.maturity)),
                 description=event.description,
                 items=tuple(items),
+                fragment_plan_id=event.fragment_plan_id,
+                fragment_atomic_group_id=event.fragment_atomic_group_id,
+                fragment_plan_json=event.fragment_plan_json,
             )
+        )
+
+    @staticmethod
+    def _fragment_validation_observations(*results):
+        from d810.core.observability_events import (
+            FragmentValidationOutcomeObserved,
+        )
+
+        observations = []
+        for phase, result in results:
+            if result is None:
+                continue
+            observations.extend(
+                FragmentValidationOutcomeObserved(
+                    phase=phase,
+                    postcondition=outcome.postcondition.value,
+                    subject_id=outcome.subject_id,
+                    passed=outcome.passed,
+                    reason=outcome.reason,
+                    block_ids=outcome.block_ids,
+                )
+                for outcome in result.outcomes
+            )
+        return tuple(observations)
+
+    @staticmethod
+    def _committed_version_transition_observations(transitions):
+        from d810.core.observability_events import (
+            LogicalBlockVersionTransitionObserved,
+        )
+
+        observations = []
+        for transition in transitions:
+            retired = transition.retired_version_id
+            if retired is not None:
+                observations.append(
+                    LogicalBlockVersionTransitionObserved(
+                        proxy_token=retired.proxy_token,
+                        from_version=retired.version,
+                        from_state="published",
+                        to_version=retired.version,
+                        to_state="retired",
+                    )
+                )
+            promoted = transition.promoted_version_id
+            if promoted is not None:
+                observations.append(
+                    LogicalBlockVersionTransitionObserved(
+                        proxy_token=promoted.proxy_token,
+                        from_version=promoted.version,
+                        from_state="staged",
+                        to_version=promoted.version,
+                        to_state="published",
+                    )
+                )
+        return tuple(observations)
+
+    @staticmethod
+    def _aborted_version_transition_observations(version_ids):
+        from d810.core.observability_events import (
+            LogicalBlockVersionTransitionObserved,
+        )
+
+        return tuple(
+            LogicalBlockVersionTransitionObserved(
+                proxy_token=version_id.proxy_token,
+                from_version=version_id.version,
+                from_state="staged",
+                to_version=version_id.version,
+                to_state="aborted",
+            )
+            for version_id in version_ids
         )
 
     @staticmethod
@@ -995,6 +1070,30 @@ class D810Manager:
                     D810Manager._stable_identity_anchor(identity)
                     for identity in identities
                 ),
+                fragment_plan_id=receipt.fragment_plan_id,
+                fragment_atomic_group_id=receipt.fragment_atomic_group_id,
+                fragment_staged=bool(receipt.fragment_plan_id),
+                root_publication_attempted=receipt.root_publication_confirmed,
+                root_publication_succeeded=receipt.root_publication_confirmed,
+                rollback_attempted=False,
+                rollback_succeeded=None,
+                validation_outcomes=(
+                    D810Manager._fragment_validation_observations(
+                        (
+                            "prepublication",
+                            receipt.prepublication_validation,
+                        ),
+                        (
+                            "postpublication",
+                            receipt.postpublication_validation,
+                        ),
+                    )
+                ),
+                version_transitions=(
+                    D810Manager._committed_version_transition_observations(
+                        receipt.version_transitions
+                    )
+                ),
             )
         )
 
@@ -1019,6 +1118,30 @@ class D810Manager:
                 outcome="aborted",
                 description=event.description,
                 reason=event.reason,
+                fragment_plan_id=event.fragment_plan_id,
+                fragment_atomic_group_id=event.fragment_atomic_group_id,
+                fragment_staged=event.fragment_staged,
+                root_publication_attempted=event.root_publication_attempted,
+                root_publication_succeeded=event.root_publication_succeeded,
+                rollback_attempted=event.rollback_attempted,
+                rollback_succeeded=event.rollback_succeeded,
+                validation_outcomes=(
+                    D810Manager._fragment_validation_observations(
+                        (
+                            "prepublication",
+                            event.prepublication_validation,
+                        ),
+                        (
+                            "postpublication",
+                            event.postpublication_validation,
+                        ),
+                    )
+                ),
+                version_transitions=(
+                    D810Manager._aborted_version_transition_observations(
+                        event.discarded_version_ids
+                    )
+                ),
             )
         )
 

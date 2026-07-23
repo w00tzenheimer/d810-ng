@@ -25,7 +25,7 @@ def _write_version(path: str, version: int | None) -> None:
     conn.close()
 
 
-@pytest.mark.parametrize("version", [None, 1, 3])
+@pytest.mark.parametrize("version", [None, 1, 2, 4])
 def test_reader_rejects_noncurrent_schema_without_mutating_file(
     tmp_path, version: int | None
 ) -> None:

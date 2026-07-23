@@ -267,6 +267,124 @@ class MutationReceiptIdentity(BaseModel):
         primary_key = CompositeKey("event", "identity_index")
 
 
+class SemanticFragmentTransaction(BaseModel):
+    mutation_batch_id = TextField(primary_key=True)
+    plan_event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="plan_event_id",
+        index=False,
+        null=False,
+    )
+    receipt_event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="receipt_event_id",
+        index=False,
+        null=True,
+    )
+    plan_id = TextField()
+    atomic_group_id = TextField()
+    plan_json = TextField()
+    outcome = TextField(null=True)
+    fragment_staged = IntegerField(
+        null=True,
+        constraints=[Check("fragment_staged IN (0,1)")],
+    )
+    root_publication_attempted = IntegerField(
+        null=True,
+        constraints=[Check("root_publication_attempted IN (0,1)")],
+    )
+    root_publication_succeeded = IntegerField(
+        null=True,
+        constraints=[Check("root_publication_succeeded IN (0,1)")],
+    )
+    rollback_attempted = IntegerField(
+        null=True,
+        constraints=[Check("rollback_attempted IN (0,1)")],
+    )
+    rollback_succeeded = IntegerField(
+        null=True,
+        constraints=[Check("rollback_succeeded IN (0,1)")],
+    )
+    reason = TextField(default="")
+
+    class Meta:
+        table_name = "semantic_fragment_transactions"
+        indexes = ((("plan_id", "atomic_group_id"), False),)
+
+
+class SemanticFragmentValidationOutcome(BaseModel):
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        index=False,
+        null=False,
+    )
+    mutation_batch_id = TextField()
+    outcome_index = IntegerField()
+    phase = TextField(
+        constraints=[
+            Check("phase IN ('prepublication','postpublication')")
+        ]
+    )
+    postcondition = TextField()
+    subject_id = TextField()
+    passed = IntegerField(constraints=[Check("passed IN (0,1)")])
+    reason = TextField()
+    block_ids_json = TextField()
+
+    class Meta:
+        table_name = "semantic_fragment_validation_outcomes"
+        primary_key = CompositeKey("event", "outcome_index")
+        indexes = (
+            (("mutation_batch_id", "phase", "postcondition"), False),
+        )
+
+
+class LogicalBlockVersionTransitionRecord(BaseModel):
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        index=False,
+        null=False,
+    )
+    mutation_batch_id = TextField()
+    transition_index = IntegerField()
+    proxy_token = TextField()
+    from_version = IntegerField()
+    from_state = TextField()
+    to_version = IntegerField()
+    to_state = TextField()
+
+    class Meta:
+        table_name = "logical_block_version_transitions"
+        primary_key = CompositeKey("event", "transition_index")
+        indexes = ((("mutation_batch_id", "proxy_token"), False),)
+
+
+class SemanticFragmentTransactionEvent(BaseModel):
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        index=False,
+        null=False,
+    )
+    mutation_batch_id = TextField()
+    event_index = IntegerField()
+    event_kind = TextField()
+    outcome = TextField()
+    detail_json = TextField()
+
+    class Meta:
+        table_name = "semantic_fragment_transaction_events"
+        primary_key = CompositeKey("mutation_batch_id", "event_index")
+        indexes = ((("event",), False),)
+
+
 class SnapshotMaturity(BaseModel):
     snapshot = ForeignKeyField(
         Snapshot,
@@ -1085,6 +1203,10 @@ MODELS = (
     MutationPlanItem,
     MutationReceipt,
     MutationReceiptIdentity,
+    SemanticFragmentTransaction,
+    SemanticFragmentValidationOutcome,
+    LogicalBlockVersionTransitionRecord,
+    SemanticFragmentTransactionEvent,
     SnapshotMaturity,
     # Layer 1
     Block,
