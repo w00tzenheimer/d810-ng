@@ -209,21 +209,29 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
         receipt = gateway.commit()
     except Exception as original_error:
         recovery_error: Exception | None = None
+        recovery_succeeded = True
         if root_attempted:
             try:
                 backend._rollback_semantic_fragment_roots(plan, rollback_token)
                 backend._rebuild_semantic_fragment_chains(plan)
-                gateway._record_fragment_rollback(plan, succeeded=True)
             except Exception as exc:
                 recovery_error = exc
-                try:
-                    gateway._record_fragment_rollback(plan, succeeded=False)
-                except Exception:
-                    pass
+                recovery_succeeded = False
         if stage_attempted:
             try:
                 backend._discard_staged_semantic_fragment(plan)
             except Exception as exc:
+                recovery_succeeded = False
+                if recovery_error is None:
+                    recovery_error = exc
+        if root_attempted or stage_attempted:
+            try:
+                gateway._record_fragment_rollback(
+                    plan,
+                    succeeded=recovery_succeeded,
+                )
+            except Exception as exc:
+                recovery_succeeded = False
                 if recovery_error is None:
                     recovery_error = exc
         reason = str(original_error)
