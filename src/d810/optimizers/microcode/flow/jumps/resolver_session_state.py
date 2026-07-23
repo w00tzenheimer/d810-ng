@@ -71,7 +71,6 @@ class ResolverSessionState:
     snippet_capture_profile_ea: int | None = None
     preopt_union_import_active: bool = False
     pending_preopt_reimport: bool = False
-    pending_prepatch_materialization: object | None = None
     preopt_union_imported_mbas: set[tuple[int, int, int]] = field(default_factory=set)
     preopt_union_mutated_mbas: set[tuple[int, int, int]] = field(default_factory=set)
     attempted_mbas: set[tuple[int, int, int, int]] = field(default_factory=set)
@@ -239,7 +238,6 @@ class ResolverSessionState:
         self.snippet_capture_profile_ea = None
         self.preopt_union_import_active = False
         self.pending_preopt_reimport = False
-        self.pending_prepatch_materialization = None
         self.preopt_union_imported_mbas.clear()
         self.preopt_union_mutated_mbas.clear()
         self.attempted_mbas.clear()

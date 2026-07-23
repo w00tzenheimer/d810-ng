@@ -8549,12 +8549,12 @@ def stage_computed_goto_preanalysis(
     state: ResolverSessionState,
     **kwargs: object,
 ) -> ComputedGotoResolution | None:
-    """Resolve computed-goto evidence while preserving static PREOPT input.
+    """Publish computed-goto evidence while preserving static PREOPT input.
 
-    Static x86 plans must retain the original native bytes until the
-    between-decompile preparer has captured their prepatch MBA.  Other
-    resolver profiles have no detached PREOPT source to preserve and can be
-    delivered immediately.
+    Static x86 plans retain the original native bytes permanently.  The
+    between-decompile preparer captures their portable closure and PREOPT body
+    template; the generic frontend-normalization fragment later owns all live
+    publication.  Other resolver profiles are migrated separately.
     """
     resolution = _resolve_computed_goto_resolution(function_ea, **kwargs)
     if resolution is None or not resolution.jmp_targets:
@@ -8562,9 +8562,9 @@ def stage_computed_goto_preanalysis(
 
     state.begin_materialization(resolution)
     if resolution.arch == "x86" and resolution.patch_plans:
-        state.pending_prepatch_materialization = resolution
         logger.info(
-            "computed-goto staged: func=0x%x sites=%d targets=%d reachable=%d arch=%s",
+            "computed-goto portable evidence staged: "
+            "func=0x%x sites=%d targets=%d reachable=%d arch=%s",
             int(function_ea),
             resolution.site_count,
             resolution.target_count,
@@ -11111,8 +11111,6 @@ def prepare_detached_handler_snippets(
     function-frame-normalized templates for the next top-level MBA.  PREOPT
     union semantic closure is the only production path.
     """
-    import ida_hexrays  # type: ignore[import-untyped]
-
     resolution = state.portable_evidence.computed_goto_resolution
     if (
         not isinstance(resolution, ComputedGotoResolution)
@@ -11136,65 +11134,32 @@ def prepare_detached_handler_snippets(
             key,
         )
         return 1
-    pending = state.pending_prepatch_materialization
-    if isinstance(pending, ComputedGotoResolution):
+    prepatch_source = state.portable_evidence.prepatch_preopt_union_source
+    if (
+        resolution.arch == "x86"
+        and resolution.patch_plans
+        and prepatch_source is None
+    ):
         source_captured = _capture_prepatch_preopt_union_source(
             state,
-            pending,
-            _static_prepatch_union_source_transfers(pending),
+            resolution,
+            _static_prepatch_union_source_transfers(resolution),
         )
-        materialized = materialize_computed_gotos(pending, state=state)
-        if materialized <= 0:
+        if not source_captured:
             logger.info(
-                "computed-goto staged delivery abstained: func=0x%X source_captured=%s",
+                "computed-goto portable frontend capture abstained: "
+                "func=0x%X source_captured=%s",
                 key,
                 source_captured,
             )
             return 0
-        state.pending_prepatch_materialization = None
         logger.info(
-            "computed-goto staged delivery materialized: func=0x%X "
-            "sites=%d source_captured=%s",
+            "computed-goto portable frontend evidence captured: func=0x%X "
+            "sites=%d evidence_generation=%d",
             key,
-            materialized,
-            source_captured,
+            resolution.site_count,
+            int(state.evidence_generation),
         )
-
-        if live_mba is not None:
-            try:
-                union_preparation = prepare_preopt_union_closure(
-                    state,
-                    live_mba=live_mba,
-                )
-            except Exception:
-                logger.warning(
-                    "PREOPT union preparation from prepatch live MBA failed "
-                    "open: func=0x%X",
-                    key,
-                    exc_info=True,
-                )
-            else:
-                if union_preparation.prepared and union_preparation.published:
-                    return 1
-
-        staged_cfunc = None
-        for attempt in range(2):
-            ida_hexrays.clear_cached_cfuncs()
-            staged_cfunc = ida_hexrays.decompile(key)
-            if staged_cfunc is not None:
-                break
-            logger.info(
-                "computed-goto staged live decompile retry: func=0x%X attempt=%d",
-                key,
-                attempt + 1,
-            )
-        if staged_cfunc is not None:
-            union_preparation = prepare_preopt_union_closure(
-                state,
-                live_mba=staged_cfunc.mba,
-            )
-            if union_preparation.prepared and union_preparation.published:
-                return 1
         return 1
     if live_mba is not None:
         try:
@@ -12108,9 +12073,9 @@ def _discover_static_native_bootstrap_routes(
 def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) -> None:
     """Flowchart-preanalysis seam handler.
 
-    Runs BEFORE Hex-Rays builds ``qflow_chart``: resolve the computed gotos,
-    materialise the handler edges, and request a Hex-Rays rebuild so the new
-    crefs are picked up. Fail-open: a failure here must never gate the decompile.
+    Runs BEFORE Hex-Rays builds ``qflow_chart``: publish portable computed-goto
+    evidence and request a rebuild only for later evidence generations.
+    Fail-open: a failure here must never gate the decompile.
     """
     key = int(function_ea)
     state = _resolver_state_from_decision(decision)
@@ -12128,7 +12093,13 @@ def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) 
         return
     try:
         if state.materialization is not None:
-            if state.pending_prepatch_materialization is not None:
+            resolution = state.portable_evidence.computed_goto_resolution
+            if (
+                isinstance(resolution, ComputedGotoResolution)
+                and resolution.arch == "x86"
+                and resolution.patch_plans
+                and state.portable_evidence.prepatch_preopt_union_source is None
+            ):
                 return
             if (
                 discover_static_native_bootstrap_routes(key, state)
@@ -12148,10 +12119,9 @@ def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) 
             return
         state.begin_materialization(resolution)
         if resolution.arch == "x86" and resolution.patch_plans:
-            state.pending_prepatch_materialization = resolution
             logger.info(
-                "computed-goto static delivery staged: func=0x%X "
-                "sites=%d targets=%d reason=prepatch_preopt_capture",
+                "computed-goto static evidence staged: func=0x%X "
+                "sites=%d targets=%d authority=frontend_fragment",
                 key,
                 resolution.site_count,
                 resolution.target_count,
