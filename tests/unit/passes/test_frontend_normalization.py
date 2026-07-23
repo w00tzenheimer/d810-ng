@@ -186,6 +186,28 @@ def _conditional_proof(
     )
 
 
+def _direct_proof(
+    *,
+    proof_id: str,
+    source_ea: int,
+    target_ea: int,
+) -> NativeIndirectTransferProof:
+    return NativeIndirectTransferProof(
+        proof_id=proof_id,
+        atomic_group_id="frontend-normalization:g7",
+        shape=NativeTransferShape.DIRECT,
+        source_identity=_identity(source_ea),
+        source_anchor_ea=source_ea,
+        endpoints=(
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.DIRECT,
+                identity=_identity(target_ea),
+                anchor_ea=target_ea,
+            ),
+        ),
+    )
+
+
 def _evidence(
     *,
     closure: NativeSemanticClosure | None = None,
@@ -440,6 +462,104 @@ def test_normalization_coalesces_adjacent_corridor_segments_in_one_live_block() 
     (corridor,) = plan.flag_corridors
     assert len(corridor.block_path) == 1
     assert corridor.producer.block_id == corridor.consumer.block_id
+
+
+def test_normalization_ignores_unreferenced_synthetic_blocks() -> None:
+    graph = _graph(faithful=False)
+    blocks = dict(graph.blocks)
+    blocks[4] = _block(
+        4,
+        0xFFFFFFFFFFFFFFFF,
+        (),
+        (),
+        (),
+    )
+
+    plan = plan_frontend_computed_branch_normalization(
+        FlowGraph(
+            blocks=blocks,
+            entry_serial=graph.entry_serial,
+            func_ea=graph.func_ea,
+        ),
+        _evidence(),
+    )
+
+    assert plan is not None
+    assert all(
+        block.semantic_anchor_ea != 0xFFFFFFFFFFFFFFFF for block in plan.blocks
+    )
+
+
+def test_normalization_publishes_only_owned_boundary_roots() -> None:
+    graph = FlowGraph(
+        blocks={
+            0: _block(
+                0,
+                0x1000,
+                (1,),
+                (),
+                (_insn(0x1000, InsnKind.GOTO, target=1),),
+            ),
+            1: _block(
+                1,
+                0x1100,
+                (2,),
+                (0,),
+                (_insn(0x1100, InsnKind.GOTO, target=2),),
+            ),
+            2: _block(
+                2,
+                0x1200,
+                (4,),
+                (1,),
+                (_insn(0x1200, InsnKind.GOTO, target=4),),
+            ),
+            3: _block(
+                3,
+                0x1300,
+                (),
+                (),
+                (_insn(0x1300, InsnKind.RET),),
+            ),
+            4: _block(
+                4,
+                0x1400,
+                (),
+                (2,),
+                (_insn(0x1400, InsnKind.RET),),
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    evidence = replace(
+        _evidence(),
+        transfer_proofs=(
+            _direct_proof(
+                proof_id="direct@0x1100",
+                source_ea=0x1100,
+                target_ea=0x1200,
+            ),
+            _direct_proof(
+                proof_id="direct@0x1200",
+                source_ea=0x1200,
+                target_ea=0x1300,
+            ),
+        ),
+    )
+
+    plan = plan_frontend_computed_branch_normalization(graph, evidence)
+
+    assert plan is not None
+    assert len(plan.owned_originals) == 2
+    assert {
+        plan.block(block_id).semantic_anchor_ea for block_id in plan.roots
+    } == {0x1100}
+    assert any(
+        block.role is FragmentBlockRole.EXTERNAL
+        and block.semantic_anchor_ea == 0x1000
+        for block in plan.blocks
+    )
 
 
 def test_normalization_abstains_when_live_graph_already_preserves_both_arms() -> None:
