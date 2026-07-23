@@ -836,6 +836,59 @@ def test_predecessor_successor_asymmetry_is_rejected() -> None:
     )
 
 
+def test_staged_block_with_opaque_endpoint_is_not_closed() -> None:
+    projection = _projection()
+    projection = _replace_blocks(
+        projection,
+        replace(
+            projection.block("replacement"),
+            successors=("condition.fallthrough", "unowned:blk77@0x1000"),
+        ),
+        replace(projection.block("true"), predecessors=()),
+    )
+
+    assert FragmentValidationPostcondition.GRAPH_CLOSURE in _failed_codes(
+        _plan(),
+        projection,
+    )
+
+
+def test_published_block_may_observe_opaque_boundary_edges() -> None:
+    projection = _projection()
+    projection = _replace_blocks(
+        projection,
+        replace(
+            projection.block("original"),
+            kind=BlockKind.ONE_WAY,
+            successors=("unowned:blk78@0x1010",),
+            predecessors=("unowned:blk79@0x0FF0",),
+        ),
+    )
+
+    result = validate_fragment_projection(_plan(), projection)
+
+    assert result.passed, result.failures
+
+
+def test_unreachable_published_conditional_keeps_same_ea_boundaries_distinct() -> None:
+    projection = _projection()
+    projection = _replace_blocks(
+        projection,
+        replace(
+            projection.block("original"),
+            kind=BlockKind.TWO_WAY,
+            successors=(
+                "unowned:blk80@0x1004",
+                "unowned:blk81@0x1004",
+            ),
+        ),
+    )
+
+    result = validate_fragment_projection(_plan(), projection)
+
+    assert result.passed, result.failures
+
+
 def test_nonadjacent_conditional_fallthrough_is_rejected() -> None:
     projection = _projection()
     projection = _replace_blocks(

@@ -559,17 +559,36 @@ def _site_present(
     return bool(block is not None and site.instruction_ea in block.instruction_eas)
 
 
+def _is_opaque_boundary_endpoint(block_id: str) -> bool:
+    return block_id.startswith(("unowned@", "unowned:"))
+
+
 def _validate_graph(
     projection: ProjectedFragment,
     blocks: dict[str, ProjectedFragmentBlock],
     outcomes: list[FragmentValidationOutcome],
 ) -> None:
     block_ids = tuple(block.block_id for block in projection.blocks)
+    binding_lists: dict[str, list[ProjectedIdentityBinding]] = {}
+    for binding in projection.identity_bindings:
+        binding_lists.setdefault(binding.block_id, []).append(binding)
+    binding_states = {
+        block_id: bindings[0].state
+        for block_id, bindings in binding_lists.items()
+        if len(bindings) == 1
+    }
+
+    def permits_opaque_boundary(block_id: str, endpoint: str) -> bool:
+        return (
+            binding_states.get(block_id) is FragmentBindingState.PUBLISHED
+            and _is_opaque_boundary_endpoint(endpoint)
+        )
+
     references_closed = (
         len(blocks) == len(projection.blocks)
         and projection.entry_block_id in blocks
         and all(
-            target in blocks
+            target in blocks or permits_opaque_boundary(block.block_id, target)
             for block in projection.blocks
             for target in (*block.successors, *block.predecessors)
         )
@@ -579,9 +598,9 @@ def _validate_graph(
         FragmentValidationPostcondition.GRAPH_CLOSURE,
         "projection",
         references_closed,
-        "all projected graph references are closed"
+        "all staged graph references are closed and published boundaries are explicit"
         if references_closed
-        else "projection has duplicate blocks, a missing entry, or an unknown edge endpoint",
+        else "projection has duplicate blocks, a missing entry, or an unowned staged edge endpoint",
         *block_ids,
     )
 
@@ -626,11 +645,15 @@ def _validate_graph(
     for block in projection.blocks:
         for successor in block.successors:
             target = blocks.get(successor)
+            if target is None and permits_opaque_boundary(block.block_id, successor):
+                continue
             if target is None or block.block_id not in target.predecessors:
                 symmetry_valid = False
                 asymmetric.update((block.block_id, successor))
         for predecessor in block.predecessors:
             source = blocks.get(predecessor)
+            if source is None and permits_opaque_boundary(block.block_id, predecessor):
+                continue
             if source is None or block.block_id not in source.successors:
                 symmetry_valid = False
                 asymmetric.update((predecessor, block.block_id))
@@ -646,11 +669,24 @@ def _validate_graph(
     )
 
     blocks_by_position = {
-        block.physical_position: block
-        for block in projection.blocks
+        block.physical_position: block for block in projection.blocks
     }
+    entry_reachable = _reachable(blocks, (projection.entry_block_id,))
     for block in projection.blocks:
         if block.kind is not BlockKind.TWO_WAY:
+            continue
+        if (
+            binding_states.get(block.block_id) is FragmentBindingState.PUBLISHED
+            and block.block_id not in entry_reachable
+        ):
+            _outcome(
+                outcomes,
+                FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
+                block.block_id,
+                True,
+                "unreachable published conditional is outside staged fallthrough topology",
+                block.block_id,
+            )
             continue
         adjacent = blocks_by_position.get(block.physical_position + 1)
         passed = bool(

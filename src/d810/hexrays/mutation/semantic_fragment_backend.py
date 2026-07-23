@@ -568,6 +568,15 @@ def _realize_operations(
 ) -> None:
     for operation in plan.operations:
         source = state.binding(operation.source_block_id)
+        direct_rewrite_anchor_ea = (
+            state.live_instruction_ea(
+                operation.source_block_id,
+                plan.block(operation.source_block_id).semantic_anchor_ea,
+            )
+            if len(operation.edges) == 1
+            and operation.edges[0].role is SemanticEdgeRole.DIRECT
+            else None
+        )
         helper_version = modifier._realize_semantic_edge_operation(
             LogicalSemanticEdgeOperation(
                 source=source.proxy,
@@ -586,6 +595,7 @@ def _realize_operations(
                         operation.predicate_anchor_ea,
                     )
                 ),
+                rewrite_anchor_ea=direct_rewrite_anchor_ea,
                 description=f"fragment operation {operation.operation_id}",
             )
         )
@@ -1387,7 +1397,7 @@ def _unowned_endpoint(modifier: DeferredGraphModifier, serial: int) -> str:
             int(getattr(getattr(block, "head", None), "ea", -1) or -1),
         ):
             if 0 <= candidate < _BADADDR:
-                return f"unowned@0x{candidate:X}"
+                return f"unowned:blk{int(serial)}@0x{candidate:X}"
     return "unowned@unknown-ea"
 
 
