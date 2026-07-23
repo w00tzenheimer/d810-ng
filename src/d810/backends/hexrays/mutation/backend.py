@@ -30,6 +30,9 @@ logger = getLogger(__name__)
 if TYPE_CHECKING:
     from d810.hexrays.mutation.ir_translator import IDAIRTranslator
     from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+    from d810.hexrays.mutation.semantic_fragment_backend import (
+        SemanticNativeBodyMaterializer,
+    )
 
 
 class HexRaysMutationBackend:
@@ -41,6 +44,9 @@ class HexRaysMutationBackend:
         mutation_gateway: "MbaMutationGateway",
         translator: "IDAIRTranslator | None" = None,
         fragment_backend_factory: Callable[[object, object], object] | None = None,
+        semantic_native_body_materializer: (
+            "SemanticNativeBodyMaterializer | None"
+        ) = None,
     ) -> None:
         if translator is None:
             from d810.hexrays.mutation.ir_translator import IDAIRTranslator
@@ -48,19 +54,22 @@ class HexRaysMutationBackend:
             translator = IDAIRTranslator()
         self._translator = translator
         self._mutation_gateway = mutation_gateway
+        self._semantic_native_body_materializer = semantic_native_body_materializer
         self._fragment_backend_factory = (
             fragment_backend_factory
             if fragment_backend_factory is not None
             else self._new_fragment_backend
         )
 
-    @staticmethod
-    def _new_fragment_backend(live_source: object, gateway: object) -> object:
+    def _new_fragment_backend(self, live_source: object, gateway: object) -> object:
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
         return DeferredGraphModifier(
             live_source,
             mutation_gateway=gateway,
+            semantic_native_body_materializer=(
+                self._semantic_native_body_materializer
+            ),
         )
 
     def capabilities(self) -> frozenset[str]:
