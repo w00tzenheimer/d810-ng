@@ -15,6 +15,7 @@ from enum import Enum
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.storage_identity import StorageIdentity
 
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
@@ -86,9 +87,7 @@ class FragmentBlock:
         if not isinstance(self.role, FragmentBlockRole):
             raise TypeError("fragment block requires a FragmentBlockRole")
         if not isinstance(self.materialization, FragmentBlockMaterialization):
-            raise TypeError(
-                "fragment block requires a FragmentBlockMaterialization"
-            )
+            raise TypeError("fragment block requires a FragmentBlockMaterialization")
 
         required_materialization = {
             FragmentBlockRole.ORIGINAL: FragmentBlockMaterialization.REUSE_PUBLISHED,
@@ -243,6 +242,8 @@ class FragmentValueSite:
     block_id: str
     value_id: str
     instruction_ea: int
+    storage_identity: StorageIdentity | None = None
+    width: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -268,6 +269,22 @@ class FragmentValueSite:
                 "fragment value site instruction",
             ),
         )
+        storage_identity = self.storage_identity
+        width = int(self.width)
+        if storage_identity is None:
+            if width != 0:
+                raise FragmentPlanRejected(
+                    "fragment value site without storage identity must have zero width"
+                )
+        elif not isinstance(storage_identity, StorageIdentity):
+            raise TypeError(
+                "fragment value site storage identity requires a StorageIdentity"
+            )
+        elif width <= 0:
+            raise FragmentPlanRejected(
+                "fragment value site with storage identity requires positive width"
+            )
+        object.__setattr__(self, "width", width)
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +305,10 @@ class FragmentDataFlowObligation:
             raise TypeError("fragment data-flow obligation requires a semantic role")
         if not isinstance(self.definition, FragmentValueSite):
             raise TypeError("fragment data-flow definition requires a value site")
+        if self.definition.storage_identity is None:
+            raise FragmentPlanRejected(
+                "fragment data-flow definition requires portable storage identity"
+            )
         uses = tuple(self.uses)
         if not uses or any(not isinstance(use, FragmentValueSite) for use in uses):
             raise FragmentPlanRejected(
@@ -300,6 +321,18 @@ class FragmentDataFlowObligation:
         if any(use.value_id != self.definition.value_id for use in uses):
             raise FragmentPlanRejected(
                 "fragment data-flow definition and uses must name one value"
+            )
+        if any(use.storage_identity is None for use in uses):
+            raise FragmentPlanRejected(
+                "fragment data-flow uses require portable storage identity"
+            )
+        if any(
+            use.storage_identity != self.definition.storage_identity
+            or use.width != self.definition.width
+            for use in uses
+        ):
+            raise FragmentPlanRejected(
+                "fragment data-flow definition and uses require one storage identity and width"
             )
         if any(use.site_id == self.definition.site_id for use in uses):
             raise FragmentPlanRejected(
@@ -378,6 +411,10 @@ class FragmentRangeAssumption:
         )
         if not isinstance(self.site, FragmentValueSite):
             raise TypeError("fragment range assumption requires a value site")
+        if self.site.storage_identity is None:
+            raise FragmentPlanRejected(
+                "fragment range assumption requires portable storage identity"
+            )
         lo = None if self.lo is None else int(self.lo)
         hi = None if self.hi is None else int(self.hi)
         if lo is None and hi is None:
@@ -541,11 +578,10 @@ class FragmentPlan:
             (obligation.obligation_id for obligation in data_flow_obligations),
             "fragment data-flow obligation",
         )
-        known_sites: set[FragmentValueSite] = set()
+        data_flow_sites: set[FragmentValueSite] = set()
         site_by_id: dict[str, FragmentValueSite] = {}
-        for obligation in data_flow_obligations:
-            sites = (obligation.definition, *obligation.uses)
-            self._require_sites_known(sites, block_by_id)
+
+        def register_sites(sites: tuple[FragmentValueSite, ...]) -> None:
             for site in sites:
                 prior = site_by_id.get(site.site_id)
                 if prior is not None and prior != site:
@@ -553,7 +589,12 @@ class FragmentPlan:
                         f"fragment value site id {site.site_id!r} is ambiguous"
                     )
                 site_by_id[site.site_id] = site
-            known_sites.update(sites)
+
+        for obligation in data_flow_obligations:
+            sites = (obligation.definition, *obligation.uses)
+            self._require_sites_known(sites, block_by_id)
+            register_sites(sites)
+            data_flow_sites.update(sites)
 
         flag_corridors = tuple(self.flag_corridors)
         if any(
@@ -566,18 +607,9 @@ class FragmentPlan:
             "fragment flag corridor",
         )
         for corridor in flag_corridors:
-            self._require_sites_known(
-                (corridor.producer, corridor.consumer),
-                block_by_id,
-            )
-            if (
-                corridor.producer not in known_sites
-                or corridor.consumer not in known_sites
-            ):
-                raise FragmentPlanRejected(
-                    f"fragment flag corridor {corridor.corridor_id!r} must protect "
-                    "declared data-flow sites"
-                )
+            sites = (corridor.producer, corridor.consumer)
+            self._require_sites_known(sites, block_by_id)
+            register_sites(sites)
             for block_id in corridor.block_path:
                 if block_id not in block_by_id:
                     raise FragmentPlanRejected(
@@ -597,7 +629,8 @@ class FragmentPlan:
         )
         for assumption in value_range_assumptions:
             self._require_sites_known((assumption.site,), block_by_id)
-            if assumption.site not in known_sites:
+            register_sites((assumption.site,))
+            if assumption.site not in data_flow_sites:
                 raise FragmentPlanRejected(
                     f"fragment range assumption {assumption.assumption_id!r} must "
                     "describe a declared data-flow site"

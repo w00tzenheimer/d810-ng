@@ -8,6 +8,7 @@ import pytest
 
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
@@ -26,6 +27,7 @@ from tests.native_preanalysis import make_native_key
 
 
 NATIVE_KEY = make_native_key(function_rva=0x40A560)
+CONDITION_STORAGE = StorageIdentity(StorageIdentityKind.REGISTER, offset=0x10)
 
 
 def _identity(start_ea: int, end_ea: int | None = None) -> StableBlockIdentity:
@@ -92,12 +94,16 @@ def _valid_plan() -> FragmentPlan:
         block_id=replacement.block_id,
         value_id="flags:consumer-choice",
         instruction_ea=0x40BECC,
+        storage_identity=CONDITION_STORAGE,
+        width=1,
     )
     condition_use = FragmentValueSite(
         site_id="condition.branch",
         block_id=replacement.block_id,
         value_id="flags:consumer-choice",
         instruction_ea=0x40BECD,
+        storage_identity=CONDITION_STORAGE,
+        width=1,
     )
     return FragmentPlan(
         plan_id="rhad-a560-consumer-route",
@@ -195,10 +201,7 @@ def test_fragment_plan_is_serial_free_and_groups_complete_conditional() -> None:
 def test_fragment_block_materialization_is_explicit_and_role_complete() -> None:
     plan = _valid_plan()
 
-    assert {
-        block.role: block.materialization
-        for block in plan.blocks
-    } == {
+    assert {block.role: block.materialization for block in plan.blocks} == {
         FragmentBlockRole.ORIGINAL: FragmentBlockMaterialization.REUSE_PUBLISHED,
         FragmentBlockRole.REPLACEMENT: FragmentBlockMaterialization.CLONE_PUBLISHED,
         FragmentBlockRole.EXTERNAL: FragmentBlockMaterialization.REUSE_PUBLISHED,
@@ -262,7 +265,9 @@ def test_fragment_plan_rejects_multiple_operations_for_one_source() -> None:
         edges=plan.operations[0].edges,
     )
 
-    with pytest.raises(FragmentPlanRejected, match="duplicate fragment operation source"):
+    with pytest.raises(
+        FragmentPlanRejected, match="duplicate fragment operation source"
+    ):
         FragmentPlan(
             plan_id=plan.plan_id,
             atomic_group_id=plan.atomic_group_id,
@@ -419,12 +424,16 @@ def test_fragment_plan_rejects_ambiguous_value_site_identity() -> None:
         block_id="handler.true",
         value_id="call:result",
         instruction_ea=0x40C100,
+        storage_identity=CONDITION_STORAGE,
+        width=1,
     )
     call_use = FragmentValueSite(
         site_id="call.use",
         block_id="handler.true",
         value_id="call:result",
         instruction_ea=0x40C101,
+        storage_identity=CONDITION_STORAGE,
+        width=1,
     )
 
     with pytest.raises(FragmentPlanRejected, match="value site id .* is ambiguous"):
@@ -449,3 +458,137 @@ def test_fragment_plan_rejects_ambiguous_value_site_identity() -> None:
             flag_corridors=plan.flag_corridors,
             value_range_assumptions=plan.value_range_assumptions,
         )
+
+
+def test_data_flow_and_ranges_require_portable_storage_identity() -> None:
+    definition = FragmentValueSite(
+        site_id="unbound.def",
+        block_id="replacement",
+        value_id="state",
+        instruction_ea=0x40BECC,
+    )
+    use = FragmentValueSite(
+        site_id="unbound.use",
+        block_id="replacement",
+        value_id="state",
+        instruction_ea=0x40BED0,
+    )
+
+    with pytest.raises(FragmentPlanRejected, match="storage identity"):
+        FragmentDataFlowObligation(
+            obligation_id="unbound-flow",
+            role=FragmentDataFlowRole.STATE_VALUE,
+            definition=definition,
+            uses=(use,),
+        )
+    with pytest.raises(FragmentPlanRejected, match="storage identity"):
+        FragmentRangeAssumption(
+            assumption_id="unbound-range",
+            site=definition,
+            lo=0,
+            hi=1,
+        )
+
+
+def test_data_flow_requires_one_portable_storage_identity_and_width() -> None:
+    definition = FragmentValueSite(
+        site_id="bound.def",
+        block_id="replacement",
+        value_id="state",
+        instruction_ea=0x40BECC,
+        storage_identity=CONDITION_STORAGE,
+        width=4,
+    )
+    mismatched_identity = FragmentValueSite(
+        site_id="identity.use",
+        block_id="replacement",
+        value_id="state",
+        instruction_ea=0x40BED0,
+        storage_identity=StorageIdentity(
+            StorageIdentityKind.REGISTER,
+            offset=0x20,
+        ),
+        width=4,
+    )
+    mismatched_width = FragmentValueSite(
+        site_id="width.use",
+        block_id="replacement",
+        value_id="state",
+        instruction_ea=0x40BED4,
+        storage_identity=CONDITION_STORAGE,
+        width=1,
+    )
+
+    with pytest.raises(FragmentPlanRejected, match="storage identity and width"):
+        FragmentDataFlowObligation(
+            obligation_id="identity-mismatch",
+            role=FragmentDataFlowRole.STATE_VALUE,
+            definition=definition,
+            uses=(mismatched_identity,),
+        )
+    with pytest.raises(FragmentPlanRejected, match="storage identity and width"):
+        FragmentDataFlowObligation(
+            obligation_id="width-mismatch",
+            role=FragmentDataFlowRole.STATE_VALUE,
+            definition=definition,
+            uses=(mismatched_width,),
+        )
+
+
+def test_value_site_storage_identity_and_width_are_coherent() -> None:
+    with pytest.raises(FragmentPlanRejected, match="zero width"):
+        FragmentValueSite(
+            site_id="width-without-storage",
+            block_id="replacement",
+            value_id="state",
+            instruction_ea=0x40BECC,
+            width=4,
+        )
+    with pytest.raises(FragmentPlanRejected, match="positive width"):
+        FragmentValueSite(
+            site_id="storage-without-width",
+            block_id="replacement",
+            value_id="state",
+            instruction_ea=0x40BECC,
+            storage_identity=CONDITION_STORAGE,
+        )
+
+
+def test_flag_corridor_sites_do_not_require_fake_storage_identity() -> None:
+    plan = _valid_plan()
+    producer = FragmentValueSite(
+        site_id="flags.producer",
+        block_id="predicate.replacement",
+        value_id="condition-codes:consumer-choice",
+        instruction_ea=0x40BECC,
+    )
+    consumer = FragmentValueSite(
+        site_id="flags.consumer",
+        block_id="predicate.replacement",
+        value_id="condition-codes:consumer-choice",
+        instruction_ea=0x40BECD,
+    )
+
+    rebuilt = FragmentPlan(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        native_key=plan.native_key,
+        blocks=plan.blocks,
+        roots=plan.roots,
+        owned_originals=plan.owned_originals,
+        prohibited_dispatcher_blocks=plan.prohibited_dispatcher_blocks,
+        operations=plan.operations,
+        data_flow_obligations=plan.data_flow_obligations,
+        flag_corridors=(
+            FragmentFlagCorridor(
+                corridor_id="condition-codes",
+                producer=producer,
+                consumer=consumer,
+                block_path=("predicate.replacement",),
+                permitted_flag_write_eas=frozenset({0x40BECC}),
+            ),
+        ),
+        value_range_assumptions=plan.value_range_assumptions,
+    )
+
+    assert rebuilt.flag_corridors[0].producer.storage_identity is None
