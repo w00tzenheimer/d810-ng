@@ -419,6 +419,29 @@ def test_normalization_plan_replaces_lost_branch_with_one_atomic_two_arm_operati
     assert plan.flag_corridors[0].consumer.instruction_ea == 0x1101
 
 
+def test_normalization_coalesces_adjacent_corridor_segments_in_one_live_block() -> (
+    None
+):
+    producer_identity = _identity(0x1100, 0x1101)
+    predicate_identity = _identity(0x1101, 0x1110)
+    proof = replace(
+        _conditional_proof(),
+        source_identity=predicate_identity,
+        flag_corridor=(producer_identity, predicate_identity),
+    )
+    evidence = replace(_evidence(), transfer_proofs=(proof,))
+
+    plan = plan_frontend_computed_branch_normalization(
+        _graph(faithful=False),
+        evidence,
+    )
+
+    assert plan is not None
+    (corridor,) = plan.flag_corridors
+    assert len(corridor.block_path) == 1
+    assert corridor.producer.block_id == corridor.consumer.block_id
+
+
 def test_normalization_abstains_when_live_graph_already_preserves_both_arms() -> None:
     assert (
         plan_frontend_computed_branch_normalization(
