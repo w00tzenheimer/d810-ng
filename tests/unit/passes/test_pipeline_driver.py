@@ -68,6 +68,7 @@ from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
     FragmentPublicationPurpose,
+    FragmentWorkItemScope,
 )
 
 # A real 1-block FlowGraph so the (now real) recover_dispatcher pass can run over it.
@@ -256,6 +257,11 @@ def _fragment_plan() -> FragmentPlan:
                     ),
                 ),
             ),
+        ),
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id="pipeline-fragment:complete",
+            selected_obligation_ids=("normalize-direct",),
+            remaining_obligation_ids=(),
         ),
     )
 

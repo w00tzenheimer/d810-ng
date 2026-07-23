@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from d810.analyses.control_flow.frontend_normalization import (
     DetachedSemanticClosureImportRequest,
@@ -38,6 +38,7 @@ from d810.transforms.fragment_plan import (
     FragmentPlan,
     FragmentPublicationPurpose,
     FragmentValueSite,
+    FragmentWorkItemScope,
 )
 
 
@@ -1009,11 +1010,13 @@ def plan_frontend_computed_branch_normalization(
     owned_originals = tuple(
         original_ids[int(binding.source.serial)] for binding in live_bindings
     )
+    plan_id = (
+        f"frontend-normalization:"
+        f"0x{evidence.native_key.function_rva:X}:g{evidence.generation}"
+    )
+    proof_ids = tuple(proof.proof_id for proof in evidence.transfer_proofs)
     return FragmentPlan(
-        plan_id=(
-            f"frontend-normalization:"
-            f"0x{evidence.native_key.function_rva:X}:g{evidence.generation}"
-        ),
+        plan_id=plan_id,
         atomic_group_id=evidence.atomic_group_id,
         publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
         native_key=evidence.native_key,
@@ -1022,9 +1025,269 @@ def plan_frontend_computed_branch_normalization(
         owned_originals=owned_originals,
         prohibited_dispatcher_blocks=(),
         operations=tuple(operations),
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id=f"{plan_id}:complete",
+            selected_obligation_ids=proof_ids,
+            remaining_obligation_ids=(),
+        ),
         native_bodies=native_bodies,
         flag_corridors=tuple(flag_corridors),
     )
 
 
-__all__ = ["plan_frontend_computed_branch_normalization"]
+def _merged_native_ranges(
+    plan: FragmentPlan,
+    block_ids: set[str],
+) -> tuple[NativeEaInterval, ...]:
+    intervals = sorted(
+        (
+            interval
+            for block_id in block_ids
+            for interval in plan.block(block_id).stable_identity.native_ranges.intervals
+        ),
+        key=lambda interval: (int(interval.start_ea), int(interval.end_ea)),
+    )
+    merged: list[NativeEaInterval] = []
+    for interval in intervals:
+        if not merged or int(interval.start_ea) > int(merged[-1].end_ea):
+            merged.append(interval)
+            continue
+        previous = merged[-1]
+        merged[-1] = NativeEaInterval(
+            int(previous.start_ea),
+            max(int(previous.end_ea), int(interval.end_ea)),
+        )
+    return tuple(merged)
+
+
+def _select_frontend_root_component(
+    plan: FragmentPlan,
+    evidence: FrontendNormalizationEvidence,
+) -> FragmentPlan:
+    """Return the first stable publication-root component and its obligations."""
+    if (
+        plan.publication_purpose
+        is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+    ):
+        raise TypeError("frontend work-item selection requires a normalization plan")
+    selected_root = min(
+        plan.roots,
+        key=lambda block_id: (
+            int(plan.block(block_id).semantic_anchor_ea),
+            str(block_id),
+        ),
+    )
+    operation_by_source = {
+        operation.source_block_id: operation for operation in plan.operations
+    }
+    selected_block_ids: set[str] = set()
+    selected_operation_ids: set[str] = set()
+    pending = [selected_root]
+    while pending:
+        block_id = pending.pop()
+        if block_id in selected_block_ids:
+            continue
+        selected_block_ids.add(block_id)
+        operation = operation_by_source.get(block_id)
+        if operation is None:
+            continue
+        selected_operation_ids.add(operation.operation_id)
+        pending.extend(edge.target_block_id for edge in operation.edges)
+
+    selected_flag_corridors = tuple(
+        corridor
+        for corridor in plan.flag_corridors
+        if corridor.consumer.block_id in selected_block_ids
+    )
+    dependency_block_ids = {
+        block_id
+        for corridor in selected_flag_corridors
+        for block_id in (
+            corridor.producer.block_id,
+            corridor.consumer.block_id,
+            *corridor.block_path,
+        )
+    }
+    while dependency_block_ids - selected_block_ids:
+        pending.extend(dependency_block_ids - selected_block_ids)
+        while pending:
+            block_id = pending.pop()
+            if block_id in selected_block_ids:
+                continue
+            selected_block_ids.add(block_id)
+            operation = operation_by_source.get(block_id)
+            if operation is None:
+                continue
+            selected_operation_ids.add(operation.operation_id)
+            pending.extend(edge.target_block_id for edge in operation.edges)
+        selected_flag_corridors = tuple(
+            corridor
+            for corridor in plan.flag_corridors
+            if corridor.consumer.block_id in selected_block_ids
+        )
+        dependency_block_ids = {
+            block_id
+            for corridor in selected_flag_corridors
+            for block_id in (
+                corridor.producer.block_id,
+                corridor.consumer.block_id,
+                *corridor.block_path,
+            )
+        }
+
+    selected_replacements = {
+        block_id
+        for block_id in selected_block_ids
+        if plan.block(block_id).role is FragmentBlockRole.REPLACEMENT
+    }
+    selected_originals = {
+        str(plan.block(block_id).replaces_block_id)
+        for block_id in selected_replacements
+    }
+    selected_block_ids.update(selected_originals)
+    selected_block_ids.update(
+        block.block_id
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.EXTERNAL
+    )
+
+    proof_ids = tuple(proof.proof_id for proof in evidence.transfer_proofs)
+    pending_proof_ids = tuple(
+        proof_id
+        for proof_id in proof_ids
+        if any(
+            operation.operation_id == proof_id for operation in plan.operations
+        )
+    )
+    selected_proof_ids = tuple(
+        proof_id
+        for proof_id in pending_proof_ids
+        if proof_id in selected_operation_ids
+    )
+    if not selected_proof_ids:
+        raise FrontendNormalizationEvidenceRejected(
+            "selected normalization root owns no portable proof obligation"
+        )
+    remaining_proof_ids = tuple(
+        proof_id
+        for proof_id in pending_proof_ids
+        if proof_id not in selected_proof_ids
+    )
+
+    selected_operations = tuple(
+        operation
+        for operation in plan.operations
+        if operation.operation_id in selected_operation_ids
+    )
+    selected_imported_ids = {
+        block_id
+        for block_id in selected_block_ids
+        if plan.block(block_id).role is FragmentBlockRole.IMPORTED
+    }
+    selected_native_bodies: tuple[FragmentNativeBody, ...] = ()
+    scoped_body_id: str | None = None
+    if selected_imported_ids:
+        if len(plan.native_bodies) != 1:
+            raise FrontendNormalizationEvidenceRejected(
+                "frontend work item requires exactly one portable native body"
+            )
+        native_body = plan.native_bodies[0]
+        scoped_body_id = (
+            f"{native_body.body_id}:root@"
+            f"0x{int(plan.block(selected_root).semantic_anchor_ea):X}"
+        )
+        imported_entry_ids = {
+            edge.target_block_id
+            for operation in selected_operations
+            if plan.block(operation.source_block_id).role
+            is not FragmentBlockRole.IMPORTED
+            for edge in operation.edges
+            if edge.target_block_id in selected_imported_ids
+        }
+        if not imported_entry_ids:
+            imported_entry_ids = set(native_body.entry_block_ids) & (
+                selected_imported_ids
+            )
+        if not imported_entry_ids:
+            raise FrontendNormalizationEvidenceRejected(
+                "selected native body has no publication boundary entry"
+            )
+        selected_native_bodies = (
+            FragmentNativeBody(
+                body_id=scoped_body_id,
+                block_ids=tuple(
+                    block_id
+                    for block_id in native_body.block_ids
+                    if block_id in selected_imported_ids
+                ),
+                entry_block_ids=tuple(
+                    block_id
+                    for block_id in native_body.block_ids
+                    if block_id in imported_entry_ids
+                ),
+                terminal_block_ids=tuple(
+                    block_id
+                    for block_id in native_body.terminal_block_ids
+                    if block_id in selected_imported_ids
+                ),
+                native_ranges=_merged_native_ranges(plan, selected_imported_ids),
+                proof_ids=tuple(
+                    proof_id
+                    for proof_id in native_body.proof_ids
+                    if proof_id in selected_proof_ids
+                ),
+            ),
+        )
+
+    selected_blocks = tuple(
+        replace(block, native_body_id=scoped_body_id)
+        if block.block_id in selected_imported_ids
+        else block
+        for block in plan.blocks
+        if block.block_id in selected_block_ids
+    )
+    root_anchor_ea = int(plan.block(selected_root).semantic_anchor_ea)
+    work_item_suffix = f"root@0x{root_anchor_ea:X}"
+    return FragmentPlan(
+        plan_id=f"{plan.plan_id}:{work_item_suffix}",
+        atomic_group_id=f"{plan.atomic_group_id}:{work_item_suffix}",
+        publication_purpose=plan.publication_purpose,
+        native_key=plan.native_key,
+        blocks=selected_blocks,
+        roots=tuple(root for root in plan.roots if root in selected_block_ids),
+        owned_originals=tuple(
+            original
+            for original in plan.owned_originals
+            if original in selected_originals
+        ),
+        prohibited_dispatcher_blocks=tuple(
+            block_id
+            for block_id in plan.prohibited_dispatcher_blocks
+            if block_id in selected_block_ids
+        ),
+        operations=selected_operations,
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id=f"{plan.plan_id}:{work_item_suffix}",
+            selected_obligation_ids=selected_proof_ids,
+            remaining_obligation_ids=remaining_proof_ids,
+        ),
+        native_bodies=selected_native_bodies,
+        flag_corridors=selected_flag_corridors,
+    )
+
+
+def plan_next_frontend_normalization_work_item(
+    graph: FlowGraph,
+    evidence: FrontendNormalizationEvidence,
+) -> FragmentPlan | None:
+    """Plan one connected normalization publication without claiming its siblings."""
+    complete_plan = plan_frontend_computed_branch_normalization(graph, evidence)
+    if complete_plan is None:
+        return None
+    return _select_frontend_root_component(complete_plan, evidence)
+
+
+__all__ = [
+    "plan_frontend_computed_branch_normalization",
+    "plan_next_frontend_normalization_work_item",
+]
