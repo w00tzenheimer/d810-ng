@@ -1236,6 +1236,61 @@ def test_preopt_union_capture_rebinds_resolver_proven_internal_successor(
     assert captured_source.external_successor_eas == (0,)
 
 
+def test_preopt_union_capture_preserves_owned_elided_target_entry(
+    monkeypatch,
+) -> None:
+    """An owned block start survives when its entry instruction was optimized out."""
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    source_ea = 0x40B7A4
+    resolver_ea = 0x40B7A8
+    target_ea = 0x40B940
+    first_surviving_ea = 0x40B942
+    synthetic_exit = 0xFFFFFFFFFFFFFFFF
+    source = _MBA(
+        (
+            _Block(
+                0,
+                source_ea,
+                (_Instruction(ida_hexrays.m_icall, resolver_ea),),
+                (2,),
+            ),
+            _Block(
+                1,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, first_surviving_ea),),
+            ),
+            _Block(2, synthetic_exit, ()),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    source.get_mblock(0).type = int(ida_hexrays.BLT_1WAY)
+
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        source_ea,
+        source,
+        (
+            (source_ea, resolver_ea + 1),
+            (target_ea, first_surviving_ea + 1),
+        ),
+        owned_block_entry_eas=(source_ea, target_ea),
+        resolver_proven_internal_successor_eas={resolver_ea: target_ea},
+    )
+    template = detached_handler_island._PREOPT_UNION_SNIPPET_TEMPLATES[
+        (function_ea, source_ea)
+    ]
+    captured_source = next(
+        block for block in template.blocks if block.native_entry_ea == source_ea
+    )
+    captured_target = next(
+        block for block in template.blocks if block.native_entry_ea == target_ea
+    )
+
+    assert captured_source.successor_serials == (captured_target.source_serial,)
+    assert captured_source.external_successor_eas == (0,)
+
+
 def test_preopt_union_capture_splits_embedded_resolver_proven_internal_successor(
     monkeypatch,
 ) -> None:
