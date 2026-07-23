@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from types import ModuleType
+
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
 from d810.transforms.plan import PatchConvertToGoto, PatchPlan, PatchRedirectGoto
@@ -172,3 +175,46 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
     assert result is cfg
     assert published == [("fragment", fragment_backend, plan)]
     assert translator.lift_count == 1
+
+
+def test_default_fragment_backend_receives_native_body_materializer(
+    monkeypatch,
+) -> None:
+    cfg = _make_cfg([(0, 1)], stop_serials=(1,))
+    translator = _FakeTranslator(cfg)
+    materializer = object()
+    constructed = []
+
+    class _Modifier:
+        def __init__(
+            self,
+            live_source,
+            *,
+            mutation_gateway,
+            semantic_native_body_materializer,
+        ) -> None:
+            constructed.append(
+                (
+                    live_source,
+                    mutation_gateway,
+                    semantic_native_body_materializer,
+                )
+            )
+
+    deferred_modifier = ModuleType("d810.hexrays.mutation.deferred_modifier")
+    deferred_modifier.DeferredGraphModifier = _Modifier
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.hexrays.mutation.deferred_modifier",
+        deferred_modifier,
+    )
+    backend = HexRaysMutationBackend(
+        mutation_gateway=MUTATION_GATEWAY,
+        translator=translator,
+        semantic_native_body_materializer=materializer,
+    )
+
+    fragment_backend = backend._new_fragment_backend("LIVE", MUTATION_GATEWAY)
+
+    assert isinstance(fragment_backend, _Modifier)
+    assert constructed == [("LIVE", MUTATION_GATEWAY, materializer)]
