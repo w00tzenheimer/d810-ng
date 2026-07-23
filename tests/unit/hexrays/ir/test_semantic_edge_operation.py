@@ -36,6 +36,7 @@ def test_semantic_edge_operation_contains_no_mba_serial_coordinate() -> None:
 def test_direct_edge_operation_has_one_explicit_role() -> None:
     operation = LogicalSemanticEdgeOperation(
         source=_proxy("source"),
+        rewrite_anchor_ea=0x40C12C,
         edges=(
             LogicalSemanticEdge(
                 role=SemanticEdgeRole.DIRECT,
@@ -45,6 +46,7 @@ def test_direct_edge_operation_has_one_explicit_role() -> None:
     )
 
     assert operation.roles == frozenset({SemanticEdgeRole.DIRECT})
+    assert operation.rewrite_anchor_ea == 0x40C12C
 
 
 def test_conditional_reconstruction_requires_both_roles_and_predicate() -> None:
@@ -136,3 +138,18 @@ def test_single_conditional_arm_is_a_redirect_not_a_reconstruction() -> None:
 
     assert operation.predicate_anchor_ea is None
     assert operation.edges[0].expected_target is expected
+
+
+def test_rewrite_anchor_belongs_only_to_direct_edge() -> None:
+    with pytest.raises(ValueError, match="only to a direct semantic edge"):
+        LogicalSemanticEdgeOperation(
+            source=_proxy("source"),
+            rewrite_anchor_ea=0x40C12C,
+            edges=(
+                LogicalSemanticEdge(
+                    role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                    expected_target=_proxy("old-taken"),
+                    target=_proxy("new-taken"),
+                ),
+            ),
+        )

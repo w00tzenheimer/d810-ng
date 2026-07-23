@@ -3006,14 +3006,32 @@ class DeferredGraphModifier:
                 raise SemanticEdgeOperationRejected(
                     "zero-way edge materialization cannot name an expected target"
                 )
-            if source.tail is not None and _is_redirectable_conditional_tail(source.tail):
-                raise SemanticEdgeOperationRejected(
-                    "zero-way conditional requires both semantic edge roles"
-                )
-            changed = self._apply_terminal_goto_change(
-                source,
-                int(target.serial),
+            tail = source.tail
+            replaces_existing_transfer = tail is not None and (
+                _is_redirectable_conditional_tail(tail)
+                or int(tail.opcode)
+                in {
+                    int(ida_hexrays.m_ijmp),
+                    int(ida_hexrays.m_call),
+                    int(ida_hexrays.m_icall),
+                }
             )
+            if replaces_existing_transfer:
+                if operation.rewrite_anchor_ea is None:
+                    raise SemanticEdgeOperationRejected(
+                        "zero-way transfer direct replacement requires an exact "
+                        "rewrite anchor"
+                    )
+                changed = self._apply_materialize_zero_way_goto(
+                    source,
+                    predicate_ea=int(operation.rewrite_anchor_ea),
+                    target_serial=int(target.serial),
+                )
+            else:
+                changed = self._apply_terminal_goto_change(
+                    source,
+                    int(target.serial),
+                )
         elif len(source_successors) == 1:
             if edge.expected_target is None:
                 raise SemanticEdgeOperationRejected(
@@ -10325,7 +10343,11 @@ class DeferredGraphModifier:
                 or (
                     ida_hexrays.is_mcode_jcond(int(blk.tail.opcode))
                     and getattr(blk.tail, "d", None) is not None
-                    and int(blk.tail.d.t) == int(ida_hexrays.mop_v)
+                    and int(blk.tail.d.t)
+                    in {
+                        int(ida_hexrays.mop_v),
+                        int(ida_hexrays.mop_b),
+                    }
                 )
             )
         ):

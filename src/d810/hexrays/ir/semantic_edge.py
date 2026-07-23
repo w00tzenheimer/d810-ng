@@ -45,6 +45,7 @@ class LogicalSemanticEdgeOperation:
     source: LogicalBlockProxy
     edges: tuple[LogicalSemanticEdge, ...]
     predicate_anchor_ea: int | None = None
+    rewrite_anchor_ea: int | None = None
     description: str = ""
 
     def __post_init__(self) -> None:
@@ -78,10 +79,22 @@ class LogicalSemanticEdgeOperation:
                 )
             if edges[0].target is edges[1].target:
                 raise ValueError("conditional reconstruction requires distinct targets")
-        elif self.predicate_anchor_ea is not None:
-            raise ValueError(
-                "a predicate anchor belongs only to conditional reconstruction"
-            )
+            if self.rewrite_anchor_ea is not None:
+                raise ValueError(
+                    "a rewrite anchor belongs only to a direct semantic edge"
+                )
+        else:
+            if self.predicate_anchor_ea is not None:
+                raise ValueError(
+                    "a predicate anchor belongs only to conditional reconstruction"
+                )
+            if (
+                self.rewrite_anchor_ea is not None
+                and edges[0].role is not SemanticEdgeRole.DIRECT
+            ):
+                raise ValueError(
+                    "a rewrite anchor belongs only to a direct semantic edge"
+                )
 
         if self.predicate_anchor_ea is not None:
             predicate_anchor_ea = int(self.predicate_anchor_ea)
@@ -91,6 +104,15 @@ class LogicalSemanticEdgeOperation:
                 self,
                 "predicate_anchor_ea",
                 predicate_anchor_ea,
+            )
+        if self.rewrite_anchor_ea is not None:
+            rewrite_anchor_ea = int(self.rewrite_anchor_ea)
+            if not 0 <= rewrite_anchor_ea < 0xFFFFFFFFFFFFFFFF:
+                raise ValueError("rewrite anchor must be a native EA")
+            object.__setattr__(
+                self,
+                "rewrite_anchor_ea",
+                rewrite_anchor_ea,
             )
         object.__setattr__(self, "edges", edges)
         object.__setattr__(self, "description", str(self.description))
