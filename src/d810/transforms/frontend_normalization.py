@@ -77,10 +77,14 @@ def _semantic_anchor(identity: StableBlockIdentity) -> int:
 
 
 def _identity_token(identity: StableBlockIdentity) -> str:
-    return ",".join(
+    native_ranges = ",".join(
         f"0x{interval.start_ea:X}-0x{interval.end_ea:X}"
         for interval in identity.native_ranges.intervals
     )
+    exact_instruction_eas = ",".join(
+        f"0x{ea:X}" for ea in sorted(identity.exact_instruction_eas)
+    )
+    return f"{native_ranges};exact={exact_instruction_eas or 'none'}"
 
 
 def _bind_corridor_block(
