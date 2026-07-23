@@ -27,6 +27,7 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventory,
     SemanticFragmentRootInventoryItem,
 )
+from d810.ir.expressions import ValueOpKind
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockKind
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -38,9 +39,15 @@ from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentEdge,
+    FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
     FragmentPublicationPurpose,
+    FragmentReturnCarrier,
+    FragmentReturnSource,
+    FragmentReturnSourceKind,
+    FragmentTerminalReturn,
+    FragmentTerminalRoute,
 )
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
@@ -126,6 +133,91 @@ def _plan() -> FragmentPlan:
                         target_block_id="target",
                     ),
                 ),
+            ),
+        ),
+    )
+
+
+def _plan_with_terminal_effects() -> FragmentPlan:
+    plan = _plan()
+    replacement_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x401000, 0x401004),
+    )
+    terminal_range = NativeEaInterval(0x404000, 0x404010)
+    terminal_identity = StableBlockIdentity.from_intervals(
+        (terminal_range,),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x404000,),
+    )
+    terminal = FragmentBlock(
+        block_id="terminal",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x404000,
+        stable_identity=terminal_identity,
+        native_body_id="terminal-body",
+    )
+    blocks = tuple(
+        replace(block, stable_identity=replacement_identity)
+        if block.block_id in {"original", "replacement"}
+        else block
+        for block in plan.blocks
+    ) + (terminal,)
+    operation = replace(
+        plan.operations[0],
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=terminal.block_id,
+            ),
+        ),
+    )
+    return replace(
+        plan,
+        blocks=blocks,
+        operations=(operation,),
+        return_carriers=(
+            FragmentReturnCarrier(
+                carrier_id="return-value",
+                block_id="replacement",
+                state_write_ea=0x401000,
+                carrier_ea=0x401004,
+                operation=ValueOpKind.MOVE,
+                source=FragmentReturnSource(
+                    kind=FragmentReturnSourceKind.CONSTANT,
+                    width=4,
+                    constant=7,
+                ),
+                return_width=4,
+                corridor_instruction_eas=(0x401000, 0x401004),
+            ),
+        ),
+        terminal_returns=(
+            FragmentTerminalReturn(
+                return_id="function-return",
+                block_id=terminal.block_id,
+                instruction_ea=0x404000,
+                return_width=4,
+            ),
+        ),
+        terminal_routes=(
+            FragmentTerminalRoute(
+                terminal_route_id="terminal-route",
+                operation_id=operation.operation_id,
+                carrier_id="return-value",
+                return_id="function-return",
+            ),
+        ),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id="terminal-body",
+                block_ids=(terminal.block_id,),
+                entry_block_ids=(terminal.block_id,),
+                terminal_block_ids=(terminal.block_id,),
+                native_ranges=(terminal_range,),
+                proof_ids=("proof:terminal-body",),
             ),
         ),
     )
@@ -504,6 +596,54 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     assert proxy.resolve().handle is backend.replacement_handle
     assert len(committed) == 1
     assert aborted == []
+
+
+def test_gateway_inventories_terminal_effects_as_first_class_fragment_items() -> None:
+    plan = _plan_with_terminal_effects()
+    gateway, _committed, aborted = _gateway(plan)
+    planned: list[MbaMutationPlanned] = []
+    gateway.event_emitter.on(MbaMutationPlanned, planned.append)
+    inventory = SemanticFragmentRootInventory(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        items=(
+            SemanticFragmentRootInventoryItem(
+                edge_id="replacement:entry:direct",
+                root_block_id="replacement",
+                predecessor_block_id="entry",
+                role=SemanticEdgeRole.DIRECT,
+            ),
+        ),
+    )
+
+    gateway._begin_semantic_fragment_batch(
+        SimpleNamespace(mba=SimpleNamespace(qty=4)),
+        plan,
+        inventory,
+    )
+
+    assert len(planned) == 1
+    assert planned[0].planned_operation_count == 6
+    assert tuple(item.mutation_kind for item in planned[0].items) == (
+        "semantic_fragment_replacement_materialization",
+        "semantic_fragment_native_body_materialization",
+        "semantic_fragment_return_carrier_materialization",
+        "semantic_fragment_terminal_return_materialization",
+        "semantic_fragment_direct",
+        "semantic_fragment_root_direct",
+    )
+    carrier_item = planned[0].items[2]
+    assert carrier_item.source_anchor_ea == 0x401000
+    assert carrier_item.target_anchor_ea == 0x401004
+    assert carrier_item.source_identity == plan.block("replacement").stable_identity
+    assert carrier_item.target_identity == plan.block("replacement").stable_identity
+    terminal_item = planned[0].items[3]
+    assert terminal_item.source_anchor_ea == 0x404000
+    assert terminal_item.source_identity == plan.block("terminal").stable_identity
+
+    gateway.abort(reason="terminal inventory unit-test cleanup")
+
+    assert len(aborted) == 1
 
 
 def test_gateway_advances_semantic_lifecycle_only_after_receipt_commit() -> None:

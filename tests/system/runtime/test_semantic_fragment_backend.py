@@ -11,9 +11,13 @@ import pytest
 
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
+from d810.core.events import EventEmitter  # noqa: E402
 from d810.hexrays.mutation import deferred_modifier as dm  # noqa: E402
 from d810.hexrays.mutation import detached_handler_island as dhi  # noqa: E402
 from d810.hexrays.mutation import semantic_fragment_backend as sfb  # noqa: E402
+from d810.hexrays.mutation.mba_mutation_events import (  # noqa: E402
+    MbaMutationAborted,
+)
 from d810.hexrays.ir.exact_data_flow import DefSite, UseSite  # noqa: E402
 from d810.hexrays.ir.exact_value_ranges import (  # noqa: E402
     ExactValueRangeProof,
@@ -1492,6 +1496,75 @@ def test_backend_materializes_and_observes_terminal_effects_from_live_mba(
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="runtime terminal-effect staging cleanup")
+
+
+def test_gateway_receipts_terminal_effects_in_atomic_publication_inventory(
+    monkeypatch,
+) -> None:
+    _mba, gateway, modifier, plan, _entry, _original = (
+        _terminal_effect_runtime_case(monkeypatch)
+    )
+
+    receipt = gateway.publish_semantic_fragment(modifier, plan)
+
+    assert receipt.prepublication_validation.passed
+    assert receipt.postpublication_validation.passed
+    assert receipt.operation_count == receipt.planned_operation_count == 8
+    assert gateway.receipts == (receipt,)
+
+
+def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_work(
+    monkeypatch,
+) -> None:
+    mba, gateway, modifier, plan, entry, original = _terminal_effect_runtime_case(
+        monkeypatch
+    )
+    emitter = EventEmitter()
+    aborted: list[MbaMutationAborted] = []
+    emitter.on(MbaMutationAborted, aborted.append)
+    gateway.event_emitter = emitter
+    observe_published = modifier._observe_published_semantic_fragment
+
+    def _observe_after_carrier_corruption(observed_plan):
+        state = modifier._semantic_fragment_state
+        assert state is not None
+        carrier_block = sfb._live_block_for_binding(
+            modifier,
+            state.binding("imported-carrier"),
+        )
+        carrier_live_ea = state.live_instruction_ea(
+            "imported-carrier",
+            0x500004,
+        )
+        carrier_instruction = next(
+            instruction
+            for instruction in sfb._iter_block_instructions(carrier_block)
+            if int(instruction.ea) == carrier_live_ea
+        )
+        carrier_instruction.opcode = int(ida_hexrays.m_xdu)
+        return observe_published(observed_plan)
+
+    monkeypatch.setattr(
+        modifier,
+        "_observe_published_semantic_fragment",
+        _observe_after_carrier_corruption,
+    )
+
+    with pytest.raises(
+        SemanticFragmentPublicationRejected,
+        match="postpublication.*observable_return_carrier:return-value",
+    ):
+        gateway.publish_semantic_fragment(modifier, plan)
+
+    assert mba.qty == 5
+    assert tuple(entry.succset) == (1,)
+    assert tuple(original.succset) == (3,)
+    assert gateway.receipts == ()
+    assert gateway.active is False
+    assert len(aborted) == 1
+    assert aborted[0].planned_operation_count == 8
+    assert aborted[0].applied_operation_count == 8
+    assert "observable_return_carrier:return-value" in aborted[0].reason
 
 
 @pytest.mark.parametrize(

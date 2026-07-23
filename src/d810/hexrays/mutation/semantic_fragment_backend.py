@@ -1161,14 +1161,23 @@ def _materialize_terminal_effects(
     plan: FragmentPlan,
     state: SemanticFragmentBackendState,
 ) -> None:
+    gateway = _gateway(modifier)
     for carrier in plan.return_carriers:
         _materialize_return_carrier(modifier, state, carrier)
+        gateway.record_semantic_fragment_return_carrier(
+            carrier_id=carrier.carrier_id,
+            block=state.binding(carrier.block_id).version.handle,
+        )
     for terminal_return in plan.terminal_returns:
         _materialize_terminal_return(
             modifier,
             plan,
             state,
             terminal_return,
+        )
+        gateway.record_semantic_fragment_terminal_return(
+            return_id=terminal_return.return_id,
+            block=state.binding(terminal_return.block_id).version.handle,
         )
 
 
