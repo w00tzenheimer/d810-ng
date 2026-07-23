@@ -691,6 +691,16 @@ class MbaMutationGateway:
         self._operation_count += 1
         return staged
 
+    def reserve_new_proxy(self, handle: MbaBlockHandle):
+        """Reserve a transaction-local owner before its physical insertion."""
+        self._require_active()
+        staged = self.identity_index.reserve_new_proxy(
+            transaction_id=str(self._active_batch_id),
+            handle=handle,
+        )
+        self._record_handle(handle)
+        return staged
+
     def record_insert(
         self,
         *,
@@ -709,6 +719,14 @@ class MbaMutationGateway:
         self._record_handle(created)
         self._operation_count += 1
         return created
+
+    def discard_reserved_insert(self, handle: MbaBlockHandle) -> None:
+        """Synchronize rollback after removing a reserved physical insertion."""
+        self._require_active()
+        self.identity_index.discard_reserved_insert(
+            transaction_id=str(self._active_batch_id),
+            handle=handle,
+        )
 
     def record_realized_serial(
         self, *, expected_serial: int, returned_serial: int

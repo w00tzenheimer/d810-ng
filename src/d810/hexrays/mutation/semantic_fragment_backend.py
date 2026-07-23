@@ -30,6 +30,7 @@ from d810.transforms.fragment_validation import (
     ProjectedFragment,
     ProjectedFragmentBlock,
     ProjectedIdentityBinding,
+    ProjectedRootFallthroughHelper,
     validate_fragment_projection,
 )
 
@@ -64,6 +65,7 @@ class SemanticFragmentRootEdgeBinding:
     original: SemanticFragmentRuntimeBinding
     replacement: SemanticFragmentRuntimeBinding
     role: SemanticEdgeRole
+    publication_helper: SemanticFragmentRuntimeBinding | None = None
 
 
 @dataclass(slots=True)
@@ -93,6 +95,9 @@ class SemanticFragmentBackendState:
     bindings: dict[str, SemanticFragmentRuntimeBinding] = field(default_factory=dict)
     staged_block_ids: list[str] = field(default_factory=list)
     fallthrough_helpers: list[ProjectedFallthroughHelper] = field(
+        default_factory=list
+    )
+    root_fallthrough_helpers: list[ProjectedRootFallthroughHelper] = field(
         default_factory=list
     )
     projection: ProjectedFragment | None = None
@@ -329,10 +334,19 @@ def _project_fragment(
     *,
     simulate_root_publication: bool = True,
 ) -> ProjectedFragment:
-    live_by_id = {
-        block_id: _live_block_for_binding(modifier, binding)
-        for block_id, binding in state.bindings.items()
+    root_helper_ids = {
+        helper.helper_block_id for helper in state.root_fallthrough_helpers
     }
+    live_by_id = {}
+    for block_id, binding in state.bindings.items():
+        live = _try_live_block_for_binding(modifier, binding)
+        if live is None:
+            if block_id not in root_helper_ids:
+                raise SemanticFragmentBackendRejected(
+                    f"fragment block {block_id!r} has no live physical version"
+                )
+            continue
+        live_by_id[block_id] = live
     ids_by_serial: dict[int, str] = {}
     for block_id, block in live_by_id.items():
         serial = int(block.serial)
@@ -344,6 +358,9 @@ def _project_fragment(
 
     successors: dict[str, list[str]] = {}
     predecessors: dict[str, list[str]] = {}
+    kinds: dict[str, BlockKind] = {}
+    physical_positions: dict[str, int] = {}
+    instruction_eas: dict[str, tuple[int, ...]] = {}
     for block_id, block in live_by_id.items():
         successors[block_id] = [
             ids_by_serial.get(
@@ -359,18 +376,53 @@ def _project_fragment(
             )
             for serial in block.predset
         ]
+        kinds[block_id] = _block_kind(int(block.type))
+        physical_positions[block_id] = int(block.serial)
+        instruction_eas[block_id] = _instruction_eas(block)
 
     if simulate_root_publication:
         for root_id in plan.roots:
             replacement = plan.block(root_id)
             original_id = str(replacement.replaces_block_id)
             for predecessor_id in tuple(predecessors[original_id]):
-                predecessors[original_id].remove(predecessor_id)
-                predecessors[root_id].append(predecessor_id)
                 if predecessor_id not in successors:
-                    continue
+                    raise SemanticFragmentBackendRejected(
+                        "root predecessor is outside the closed fragment projection"
+                    )
+                role = _incoming_root_edge_role(
+                    live_by_id[predecessor_id],
+                    live_by_id[original_id],
+                )
+                predecessors[original_id].remove(predecessor_id)
+                projected_target_id = root_id
+                if role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH:
+                    matching_helpers = tuple(
+                        helper
+                        for helper in state.root_fallthrough_helpers
+                        if helper.source_block_id == predecessor_id
+                        and helper.root_block_id == root_id
+                    )
+                    if len(matching_helpers) != 1:
+                        raise SemanticFragmentBackendRejected(
+                            "conditional root fallthrough lacks one reserved helper"
+                        )
+                    helper = matching_helpers[0]
+                    helper_id = helper.helper_block_id
+                    insertion_position = physical_positions[predecessor_id] + 1
+                    for block_id, position in tuple(physical_positions.items()):
+                        if position >= insertion_position:
+                            physical_positions[block_id] = position + 1
+                    kinds[helper_id] = BlockKind.ONE_WAY
+                    physical_positions[helper_id] = insertion_position
+                    instruction_eas[helper_id] = ()
+                    successors[helper_id] = [root_id]
+                    predecessors[helper_id] = [predecessor_id]
+                    predecessors[root_id].append(helper_id)
+                    projected_target_id = helper_id
+                else:
+                    predecessors[root_id].append(predecessor_id)
                 successors[predecessor_id] = [
-                    root_id if target_id == original_id else target_id
+                    projected_target_id if target_id == original_id else target_id
                     for target_id in successors[predecessor_id]
                 ]
 
@@ -387,14 +439,14 @@ def _project_fragment(
     projected_blocks = tuple(
         ProjectedFragmentBlock(
             block_id=block_id,
-            kind=_block_kind(int(block.type)),
+            kind=kinds[block_id],
             successors=tuple(successors[block_id]),
             predecessors=tuple(predecessors[block_id]),
-            physical_position=int(block.serial),
-            instruction_eas=_instruction_eas(block),
+            physical_position=physical_positions[block_id],
+            instruction_eas=instruction_eas[block_id],
             flag_write_eas=frozenset(),
         )
-        for block_id, block in live_by_id.items()
+        for block_id in successors
     )
     projected_bindings = tuple(
         ProjectedIdentityBinding(
@@ -417,7 +469,27 @@ def _project_fragment(
         blocks=projected_blocks,
         identity_bindings=projected_bindings,
         fallthrough_helpers=tuple(state.fallthrough_helpers),
+        root_fallthrough_helpers=tuple(state.root_fallthrough_helpers),
     )
+
+
+def _try_live_block_for_binding(
+    modifier: DeferredGraphModifier,
+    binding: SemanticFragmentRuntimeBinding,
+):
+    gateway = _gateway(modifier)
+    bound = gateway.identity_index.resolve_logical_version(
+        binding.version,
+        transaction_id=_transaction_id(modifier),
+    )
+    if bound is None:
+        return None
+    block = modifier.mba.get_mblock(int(bound.serial))
+    if block is None:
+        raise SemanticFragmentBackendRejected(
+            f"fragment block {binding.block_id!r} is absent from the live MBA"
+        )
+    return block
 
 
 def _binding_for_live_serial(
@@ -428,7 +500,10 @@ def _binding_for_live_serial(
     matches = tuple(
         binding
         for binding in state.bindings.values()
-        if int(_live_block_for_binding(modifier, binding).serial) == int(serial)
+        if (
+            (live := _try_live_block_for_binding(modifier, binding)) is not None
+            and int(live.serial) == int(serial)
+        )
     )
     if len(matches) != 1:
         raise SemanticFragmentBackendRejected(
@@ -477,6 +552,60 @@ def _incoming_root_edge_role(predecessor, original) -> SemanticEdgeRole:
     return SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
 
 
+def _reserve_root_fallthrough_helpers(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+) -> None:
+    candidates: list[tuple[str, str]] = []
+    for root_block_id in plan.roots:
+        original_block_id = str(plan.block(root_block_id).replaces_block_id)
+        original = state.binding(original_block_id)
+        original_live = _live_block_for_binding(modifier, original)
+        for predecessor_serial in tuple(int(value) for value in original_live.predset):
+            predecessor = _binding_for_live_serial(
+                modifier,
+                state,
+                predecessor_serial,
+            )
+            predecessor_live = _live_block_for_binding(modifier, predecessor)
+            if (
+                _incoming_root_edge_role(predecessor_live, original_live)
+                is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+            ):
+                candidates.append((predecessor.block_id, root_block_id))
+
+    gateway = _gateway(modifier)
+    for predecessor_block_id, root_block_id in candidates:
+        helper_block_id = (
+            f"root-fallthrough-helper:{predecessor_block_id}:{root_block_id}"
+        )
+        if helper_block_id in state.bindings:
+            raise SemanticFragmentBackendRejected(
+                f"root fallthrough helper id collision: {helper_block_id!r}"
+            )
+        handle = gateway.identity_index.create_synthetic_handle()
+        staged = gateway.reserve_new_proxy(handle)
+        proxy = gateway.identity_index.logical_proxy_for_handle(handle)
+        if proxy is None:
+            raise SemanticFragmentBackendRejected(
+                "reserved root fallthrough helper has no logical proxy"
+            )
+        state.bindings[helper_block_id] = SemanticFragmentRuntimeBinding(
+            block_id=helper_block_id,
+            proxy=proxy,
+            version=staged,
+            state=FragmentBindingState.STAGED,
+        )
+        state.root_fallthrough_helpers.append(
+            ProjectedRootFallthroughHelper(
+                helper_block_id=helper_block_id,
+                source_block_id=predecessor_block_id,
+                root_block_id=root_block_id,
+            )
+        )
+
+
 def prepare_semantic_fragment_root_publication(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
@@ -518,6 +647,21 @@ def prepare_semantic_fragment_root_publication(
                 )
             predecessor_live = _live_block_for_binding(modifier, predecessor)
             role = _incoming_root_edge_role(predecessor_live, original_live)
+            publication_helper = None
+            if role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH:
+                matching_helpers = tuple(
+                    helper
+                    for helper in state.root_fallthrough_helpers
+                    if helper.source_block_id == predecessor.block_id
+                    and helper.root_block_id == root_block_id
+                )
+                if len(matching_helpers) != 1:
+                    raise SemanticFragmentBackendRejected(
+                        "conditional root fallthrough lacks one reserved helper"
+                    )
+                publication_helper = state.binding(
+                    matching_helpers[0].helper_block_id
+                )
             edge_id = f"{root_block_id}:{predecessor.block_id}:{role.value}"
             edges.append(
                 SemanticFragmentRootEdgeBinding(
@@ -527,6 +671,7 @@ def prepare_semantic_fragment_root_publication(
                     original=original,
                     replacement=replacement,
                     role=role,
+                    publication_helper=publication_helper,
                 )
             )
     edge_ids = tuple(edge.edge_id for edge in edges)
@@ -541,6 +686,7 @@ def prepare_semantic_fragment_root_publication(
         not in {
             SemanticEdgeRole.DIRECT,
             SemanticEdgeRole.CONDITIONAL_TAKEN,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
         }
     )
     if unsupported:
@@ -649,6 +795,7 @@ def stage_semantic_fragment(
                     reference_version=reference_version,
                 )
         _realize_operations(modifier, plan, state)
+        _reserve_root_fallthrough_helpers(modifier, plan, state)
         projection = _project_fragment(modifier, plan, state)
         state.projection = projection
         return projection

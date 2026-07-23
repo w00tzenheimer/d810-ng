@@ -3684,6 +3684,152 @@ class DeferredGraphModifier:
                 "Hex-Rays rejected conditional taken root publication"
             )
 
+    def _publish_semantic_fragment_fallthrough_root(
+        self,
+        edge: SemanticFragmentRootEdgeBinding,
+    ) -> None:
+        helper_binding = edge.publication_helper
+        if helper_binding is None:
+            raise SemanticFragmentBackendRejected(
+                "conditional root fallthrough has no reserved helper"
+            )
+        predecessor = self._resolve_semantic_fragment_version(
+            edge.predecessor.version
+        )
+        original = self._resolve_semantic_fragment_version(edge.original.version)
+        replacement = self._resolve_semantic_fragment_version(
+            edge.replacement.version
+        )
+        taken, fallthrough = self._semantic_edge_conditional_arms(predecessor)
+        if (
+            int(fallthrough.serial) != int(original.serial)
+            or predecessor.nextb is None
+            or int(predecessor.nextb.serial) != int(original.serial)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "conditional fallthrough root authority changed after preflight"
+            )
+        if int(taken.serial) == int(replacement.serial):
+            raise SemanticFragmentBackendRejected(
+                "conditional root replacement equals its taken sibling"
+            )
+        gateway = self._mutation_gateway
+        if gateway is None:
+            raise SemanticFragmentBackendRejected(
+                "conditional root fallthrough has no mutation gateway"
+            )
+        if gateway.identity_index.resolve_logical_version(
+            helper_binding.version,
+            transaction_id=self._semantic_fragment_transaction_id(),
+        ) is not None:
+            raise SemanticFragmentBackendRejected(
+                "conditional root fallthrough helper is already materialized"
+            )
+        helper_serial = self._build_fallthrough_goto_helper(
+            predecessor,
+            replacement,
+            created_handle=helper_binding.version.handle,
+            target_handle=edge.replacement.version.handle,
+        )
+        if helper_serial is None:
+            raise SemanticFragmentBackendRejected(
+                "Hex-Rays could not materialize the root fallthrough helper"
+            )
+
+        predecessor = self._resolve_semantic_fragment_version(
+            edge.predecessor.version
+        )
+        original = self._resolve_semantic_fragment_version(edge.original.version)
+        replacement = self._resolve_semantic_fragment_version(
+            edge.replacement.version
+        )
+        helper = self._resolve_semantic_fragment_version(helper_binding.version)
+        taken, fallthrough = self._semantic_edge_conditional_arms(predecessor)
+        if (
+            int(fallthrough.serial) != int(original.serial)
+            or predecessor.nextb is None
+            or int(predecessor.nextb.serial) != int(helper.serial)
+            or int(helper.serial) != int(predecessor.serial) + 1
+            or tuple(int(value) for value in helper.succset)
+            != (int(replacement.serial),)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "root fallthrough topology changed during helper insertion"
+            )
+        predecessor.succset.clear()
+        predecessor.succset.push_back(int(helper.serial))
+        predecessor.succset.push_back(int(taken.serial))
+        original.predset._del(int(predecessor.serial))
+        if int(predecessor.serial) not in {
+            int(value) for value in helper.predset
+        }:
+            helper.predset.push_back(int(predecessor.serial))
+        self._semantic_edge_mark(
+            predecessor,
+            helper,
+            original,
+            replacement,
+            taken,
+        )
+
+    def _rollback_semantic_fragment_fallthrough_root(
+        self,
+        edge: SemanticFragmentRootEdgeBinding,
+    ) -> None:
+        helper_binding = edge.publication_helper
+        gateway = self._mutation_gateway
+        if helper_binding is None or gateway is None:
+            raise SemanticFragmentBackendRejected(
+                "conditional root fallthrough rollback lacks helper authority"
+            )
+        helper_bound = gateway.identity_index.resolve_logical_version(
+            helper_binding.version,
+            transaction_id=self._semantic_fragment_transaction_id(),
+        )
+        if helper_bound is None:
+            return
+        predecessor = self._resolve_semantic_fragment_version(
+            edge.predecessor.version
+        )
+        original = self._resolve_semantic_fragment_version(edge.original.version)
+        replacement = self._resolve_semantic_fragment_version(
+            edge.replacement.version
+        )
+        helper = self._resolve_semantic_fragment_version(helper_binding.version)
+        taken_serial = int(predecessor.tail.d.b)
+        taken = self.mba.get_mblock(taken_serial)
+        if taken is None:
+            raise SemanticFragmentBackendRejected(
+                "conditional root rollback lost its taken sibling"
+            )
+        successors = tuple(int(value) for value in predecessor.succset)
+        if int(helper.serial) in successors:
+            if int(original.serial) in successors or taken_serial not in successors:
+                raise SemanticFragmentBackendRejected(
+                    "conditional root rollback found ambiguous live successors"
+                )
+            predecessor.succset.clear()
+            predecessor.succset.push_back(int(original.serial))
+            predecessor.succset.push_back(taken_serial)
+            helper.predset._del(int(predecessor.serial))
+            if int(predecessor.serial) not in {
+                int(value) for value in original.predset
+            }:
+                original.predset.push_back(int(predecessor.serial))
+            self._semantic_edge_mark(
+                predecessor,
+                helper,
+                original,
+                replacement,
+                taken,
+            )
+        elif int(original.serial) not in successors:
+            raise SemanticFragmentBackendRejected(
+                "conditional root rollback cannot locate prior fallthrough authority"
+            )
+        self._discard_semantic_fragment_blocks((helper,))
+        gateway.discard_reserved_insert(helper_binding.version.handle)
+
     def _publish_semantic_fragment_roots(
         self,
         plan: FragmentPlan,
@@ -3697,10 +3843,10 @@ class DeferredGraphModifier:
                 self._rewrite_semantic_fragment_direct_root(edge, restore=False)
             elif edge.role is SemanticEdgeRole.CONDITIONAL_TAKEN:
                 self._rewrite_semantic_fragment_taken_root(edge, restore=False)
+            elif edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH:
+                self._publish_semantic_fragment_fallthrough_root(edge)
             else:
-                raise SemanticFragmentBackendRejected(
-                    "conditional fallthrough root publication requires a helper"
-                )
+                raise SemanticFragmentBackendRejected("unsupported root edge role")
 
     def _rebuild_semantic_fragment_chains(self, plan: FragmentPlan) -> None:
         """Invalidate live chains after publication or rollback."""
@@ -3732,10 +3878,10 @@ class DeferredGraphModifier:
                 self._rewrite_semantic_fragment_direct_root(edge, restore=True)
             elif edge.role is SemanticEdgeRole.CONDITIONAL_TAKEN:
                 self._rewrite_semantic_fragment_taken_root(edge, restore=True)
+            elif edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH:
+                self._rollback_semantic_fragment_fallthrough_root(edge)
             else:
-                raise SemanticFragmentBackendRejected(
-                    "conditional fallthrough root rollback is unavailable"
-                )
+                raise SemanticFragmentBackendRejected("unsupported root edge role")
 
     def _complete_semantic_fragment_publication(self, plan: FragmentPlan) -> None:
         """Release transaction-local backend state after committed authority."""
@@ -10040,6 +10186,7 @@ class DeferredGraphModifier:
         state_size: int | None = None,
         state_value: int | None = None,
         created_handle: MbaBlockHandle | None = None,
+        target_handle: MbaBlockHandle | None = None,
     ) -> int | None:
         """Create a 1-way NOP-goto block directly after ``blk`` that gotos
         ``target_blk``, returning its serial (the 2-way fall-through arm).
@@ -10053,7 +10200,7 @@ class DeferredGraphModifier:
         if gateway is None:
             raise RuntimeError("fallthrough helper insertion requires a mutation gateway")
         target_serial_before_insertion = int(target_blk.serial)
-        target_handle = gateway.identity_index.handle_for_serial(
+        target_handle = target_handle or gateway.identity_index.handle_for_serial(
             target_serial_before_insertion
         )
         state_fields = (state_register, state_size, state_value)
