@@ -27,6 +27,7 @@ from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentDataFlowObligation,
     FragmentDataFlowRole,
     FragmentEdge,
+    FragmentFlagCorridor,
     FragmentOperation,
     FragmentPlan,
     FragmentValueSite,
@@ -72,6 +73,8 @@ class _BlockReference:
     def __init__(self, serial: int | None = None):
         self.t = int(ida_hexrays.mop_z if serial is None else ida_hexrays.mop_b)
         self.b = -1 if serial is None else int(serial)
+        self.writes_ccflags = False
+        self.writes_cc = False
 
     def make_blkref(self, serial: int) -> None:
         self.t = int(ida_hexrays.mop_b)
@@ -80,6 +83,12 @@ class _BlockReference:
     def erase(self) -> None:
         self.t = int(ida_hexrays.mop_z)
         self.b = -1
+
+    def is_ccflags(self) -> bool:
+        return self.writes_ccflags
+
+    def is_cc(self) -> bool:
+        return self.writes_cc
 
 
 class _Instruction:
@@ -450,6 +459,50 @@ def _with_data_flow(
     )
 
 
+def _with_flag_corridor(
+    plan: FragmentPlan,
+    *,
+    consumer_ea: int,
+) -> FragmentPlan:
+    producer = FragmentValueSite(
+        site_id="flags.producer",
+        block_id="replacement",
+        value_id="condition-codes",
+        instruction_ea=0x401010,
+    )
+    consumer = FragmentValueSite(
+        site_id="flags.consumer",
+        block_id="target",
+        value_id="condition-codes",
+        instruction_ea=consumer_ea,
+    )
+    return replace(
+        plan,
+        flag_corridors=(
+            FragmentFlagCorridor(
+                corridor_id="branch-flags",
+                producer=producer,
+                consumer=consumer,
+                block_path=("replacement", "target"),
+                permitted_flag_write_eas=frozenset({0x401010}),
+            ),
+        ),
+    )
+
+
+def _set_block_instructions(block: _Block, *instructions: _Instruction) -> None:
+    for current, following in zip(instructions, instructions[1:]):
+        current.next = following
+    if instructions:
+        instructions[-1].next = None
+        block.head = instructions[0]
+        block.tail = instructions[-1]
+        block.end = max(instruction.ea for instruction in instructions) + 1
+    else:
+        block.head = None
+        block.tail = None
+
+
 def _plan_with_conditional_predecessor(
     gateway,
     *,
@@ -810,6 +863,190 @@ def test_backend_rejects_unsupported_data_flow_storage_namespace() -> None:
     assert mba.qty == 5
     assert tuple(entry.succset) == (original.serial,)
     gateway.abort(reason="runtime unsupported data-flow cleanup")
+
+
+def _flag_corridor_runtime_case(*, intervening_clobber: bool):
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    assert original.tail is not None
+    original.tail.d.writes_ccflags = True
+    consumer_ea = 0x401024 if intervening_clobber else 0x401020
+    consumer = _Instruction(ida_hexrays.m_nop, consumer_ea)
+    if intervening_clobber:
+        clobber = _Instruction(ida_hexrays.m_mov, 0x401020)
+        clobber.d.writes_cc = True
+        _set_block_instructions(target, clobber, consumer)
+    else:
+        _set_block_instructions(target, consumer)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _with_flag_corridor(
+        _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
+        consumer_ea=consumer_ea,
+    )
+    return mba, gateway, modifier, plan, entry, original
+
+
+def test_backend_projects_exact_condition_code_writes() -> None:
+    mba, gateway, modifier, plan, entry, original = _flag_corridor_runtime_case(
+        intervening_clobber=False,
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    replacement = projection.block("replacement")
+    assert replacement.flag_write_eas == frozenset({0x401010})
+    assert validate_fragment_projection(plan, projection).passed
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime flag projection cleanup")
+    assert mba.qty == 5
+    assert tuple(entry.succset) == (original.serial,)
+
+
+@pytest.mark.parametrize("intervening_clobber", (False, True))
+def test_gateway_validates_live_flag_corridor_atomically(
+    intervening_clobber: bool,
+) -> None:
+    mba, gateway, modifier, plan, entry, original = _flag_corridor_runtime_case(
+        intervening_clobber=intervening_clobber,
+    )
+    original_handle = gateway.identity_index.handle_for_serial(original.serial)
+    assert original_handle is not None
+    proxy = gateway.identity_index.logical_proxy_for_handle(original_handle)
+    assert proxy is not None
+    published = proxy.resolve()
+    assert published is not None
+
+    if intervening_clobber:
+        with pytest.raises(
+            SemanticFragmentPublicationRejected,
+            match="prepublication.*flag_corridor_integrity:branch-flags",
+        ):
+            gateway.publish_semantic_fragment(modifier, plan)
+        assert proxy.resolve() is published
+        assert tuple(entry.succset) == (original.serial,)
+        assert tuple(original.predset) == (entry.serial,)
+        assert mba.qty == 5
+        assert gateway.active is False
+        assert modifier._semantic_fragment_state is None
+        return
+
+    receipt = gateway.publish_semantic_fragment(modifier, plan)
+
+    assert receipt.prepublication_validation.passed
+    assert receipt.postpublication_validation.passed
+    assert any(
+        outcome.passed
+        and outcome.postcondition
+        is FragmentValidationPostcondition.FLAG_CORRIDOR_INTEGRITY
+        for outcome in receipt.prepublication_validation.outcomes
+    )
+    assert any(
+        outcome.passed
+        and outcome.postcondition
+        is FragmentValidationPostcondition.FLAG_CORRIDOR_INTEGRITY
+        for outcome in receipt.postpublication_validation.outcomes
+    )
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
+
+
+def test_backend_rejects_ambiguous_flag_corridor_endpoint() -> None:
+    mba, gateway, modifier, plan, entry, original = _flag_corridor_runtime_case(
+        intervening_clobber=False,
+    )
+    target = mba.get_mblock(2)
+    assert target is not None and target.head is not None
+    duplicate_consumer = _Instruction(ida_hexrays.m_nop, 0x401020)
+    _set_block_instructions(target, target.head, duplicate_consumer)
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="consumer.*target@0x401020.*observed 2",
+    ):
+        modifier._stage_semantic_fragment(plan)
+
+    assert modifier._semantic_fragment_state is None
+    assert mba.qty == 5
+    assert tuple(entry.succset) == (original.serial,)
+    gateway.abort(reason="runtime ambiguous flag endpoint cleanup")
+
+
+def test_backend_rejects_duplicate_physical_flag_writers() -> None:
+    mba, gateway, modifier, plan, entry, original = _flag_corridor_runtime_case(
+        intervening_clobber=False,
+    )
+    dispatcher = mba.get_mblock(3)
+    assert dispatcher is not None
+    first_writer = _Instruction(ida_hexrays.m_mov, 0x401030)
+    first_writer.d.writes_ccflags = True
+    second_writer = _Instruction(ida_hexrays.m_mov, 0x401030)
+    second_writer.d.writes_cc = True
+    _set_block_instructions(dispatcher, first_writer, second_writer)
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="condition-code writer is ambiguous at dispatcher@0x401030",
+    ):
+        modifier._stage_semantic_fragment(plan)
+
+    assert modifier._semantic_fragment_state is None
+    assert mba.qty == 5
+    assert tuple(entry.succset) == (original.serial,)
+    gateway.abort(reason="runtime duplicate flag writer cleanup")
+
+
+def test_gateway_rolls_back_postpublication_flag_clobber(monkeypatch) -> None:
+    mba, gateway, modifier, plan, entry, original = _flag_corridor_runtime_case(
+        intervening_clobber=True,
+    )
+    target = mba.get_mblock(2)
+    assert target is not None and target.head is not None
+    target.head.d.writes_cc = False
+    original_handle = gateway.identity_index.handle_for_serial(original.serial)
+    assert original_handle is not None
+    proxy = gateway.identity_index.logical_proxy_for_handle(original_handle)
+    assert proxy is not None
+    published = proxy.resolve()
+    assert published is not None
+    target_query_count = 0
+    query_writes = sfb.condition_code_write_eas
+
+    def _changing_flag_writes(block) -> tuple[int, ...]:
+        nonlocal target_query_count
+        if block is target:
+            target_query_count += 1
+            if target_query_count == 2:
+                return (0x401020,)
+        return query_writes(block)
+
+    monkeypatch.setattr(sfb, "condition_code_write_eas", _changing_flag_writes)
+
+    with pytest.raises(
+        SemanticFragmentPublicationRejected,
+        match="postpublication.*flag_corridor_integrity:branch-flags",
+    ):
+        gateway.publish_semantic_fragment(modifier, plan)
+
+    assert target_query_count == 2
+    assert proxy.resolve() is published
+    assert tuple(entry.succset) == (original.serial,)
+    assert tuple(original.predset) == (entry.serial,)
+    assert mba.qty == 5
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
 
 
 @pytest.mark.parametrize("postpublication_extra_use", (False, True))

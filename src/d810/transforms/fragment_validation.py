@@ -925,12 +925,19 @@ def _validate_flag_corridor(
         path_connected = block.instruction_eas.index(
             corridor.producer.instruction_ea
         ) < block.instruction_eas.index(corridor.consumer.instruction_ea)
+    producer_block = blocks.get(corridor.producer.block_id)
+    producer_write_observed = bool(
+        producer_block is not None
+        and corridor.producer.instruction_ea in producer_block.flag_write_eas
+    )
     observed_writes = _corridor_writes(corridor, blocks)
     unpermitted_writes = observed_writes - corridor.permitted_flag_write_eas
-    passed = path_connected and not unpermitted_writes
+    passed = path_connected and producer_write_observed and not unpermitted_writes
     reason = "flag corridor is connected and contains no intervening clobber"
     if not path_connected:
         reason = "flag producer-to-consumer corridor is disconnected or missing"
+    elif not producer_write_observed:
+        reason = "flag producer is not an observed condition-code writer"
     elif unpermitted_writes:
         reason = "flag corridor contains an intervening unpermitted flag write"
     _outcome(
