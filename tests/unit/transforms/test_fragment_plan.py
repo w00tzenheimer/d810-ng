@@ -9,12 +9,14 @@ import pytest
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 import d810.transforms.fragment_plan as fragment_plan
 from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentComputedBranchNormalization,
     FragmentDataFlowObligation,
     FragmentDataFlowRole,
     FragmentEdge,
@@ -242,6 +244,51 @@ def test_fragment_operation_supports_explicit_call_fallthrough() -> None:
 
     assert operation.roles == frozenset({SemanticEdgeRole.CALL_FALLTHROUGH})
     assert operation.predicate_anchor_ea is None
+
+
+def test_fragment_operation_carries_typed_computed_branch_normalization() -> None:
+    normalization = FragmentComputedBranchNormalization(
+        predicate_kind=PredicateKind.EQ,
+        condition_producer_ea=0x40AE28,
+        unresolved_transfer_ea=0x40AE3C,
+    )
+    operation = FragmentOperation(
+        operation_id="native-indirect-transfer@0x40AE3C",
+        source_block_id="native@0x40AE26",
+        predicate_anchor_ea=0x40AE2E,
+        computed_branch_normalization=normalization,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                target_block_id="native@0x40AE3E",
+            ),
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                target_block_id="native@0x40A5F0",
+            ),
+        ),
+    )
+
+    assert operation.computed_branch_normalization is normalization
+
+
+def test_direct_fragment_operation_rejects_computed_branch_normalization() -> None:
+    with pytest.raises(FragmentPlanRejected, match="complete conditional"):
+        FragmentOperation(
+            operation_id="invalid-direct-normalization",
+            source_block_id="source",
+            computed_branch_normalization=FragmentComputedBranchNormalization(
+                predicate_kind=PredicateKind.EQ,
+                condition_producer_ea=0x40AE28,
+                unresolved_transfer_ea=0x40AE3C,
+            ),
+            edges=(
+                FragmentEdge(
+                    role=SemanticEdgeRole.DIRECT,
+                    target_block_id="target",
+                ),
+            ),
+        )
 
 
 def test_fragment_block_materialization_is_explicit_and_role_complete() -> None:

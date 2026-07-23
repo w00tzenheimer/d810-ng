@@ -20,6 +20,7 @@ from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import StableBlockIdentity
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind
 
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
@@ -91,7 +92,9 @@ class NativeIndirectTransferProof:
     shape: NativeTransferShape
     source_identity: StableBlockIdentity
     source_anchor_ea: int
+    source_transfer_ea: int
     endpoints: tuple[NativeTransferEndpoint, ...]
+    predicate_kind: PredicateKind | None = None
     predicate_anchor_ea: int | None = None
     condition_producer_ea: int | None = None
     flag_corridor: tuple[StableBlockIdentity, ...] = ()
@@ -115,6 +118,14 @@ class NativeIndirectTransferProof:
         if not _identity_contains(self.source_identity, source_anchor_ea):
             raise FrontendNormalizationEvidenceRejected(
                 "native transfer source anchor is outside its identity"
+            )
+        source_transfer_ea = _native_ea(
+            self.source_transfer_ea,
+            "native transfer instruction anchor",
+        )
+        if not _identity_contains(self.source_identity, source_transfer_ea):
+            raise FrontendNormalizationEvidenceRejected(
+                "native transfer instruction anchor is outside its identity"
             )
 
         endpoints = tuple(self.endpoints)
@@ -170,6 +181,7 @@ class NativeIndirectTransferProof:
             _native_ea(ea, "permitted native flag writer")
             for ea in self.permitted_flag_write_eas
         )
+        predicate_kind = self.predicate_kind
 
         if self.shape is NativeTransferShape.DIRECT:
             if endpoint_roles != (SemanticEdgeRole.DIRECT,):
@@ -179,6 +191,7 @@ class NativeIndirectTransferProof:
             if (
                 predicate_anchor_ea is not None
                 or condition_producer_ea is not None
+                or predicate_kind is not None
                 or flag_corridor
                 or permitted_flag_write_eas
             ):
@@ -203,6 +216,10 @@ class NativeIndirectTransferProof:
             if predicate_anchor_ea is None or condition_producer_ea is None:
                 raise FrontendNormalizationEvidenceRejected(
                     "conditional native transfer requires producer and predicate anchors"
+                )
+            if not isinstance(predicate_kind, PredicateKind):
+                raise TypeError(
+                    "conditional native transfer requires a PredicateKind"
                 )
             if not _identity_contains(self.source_identity, predicate_anchor_ea):
                 raise FrontendNormalizationEvidenceRejected(
@@ -244,7 +261,9 @@ class NativeIndirectTransferProof:
         object.__setattr__(self, "proof_id", proof_id)
         object.__setattr__(self, "atomic_group_id", atomic_group_id)
         object.__setattr__(self, "source_anchor_ea", source_anchor_ea)
+        object.__setattr__(self, "source_transfer_ea", source_transfer_ea)
         object.__setattr__(self, "endpoints", endpoints)
+        object.__setattr__(self, "predicate_kind", predicate_kind)
         object.__setattr__(self, "predicate_anchor_ea", predicate_anchor_ea)
         object.__setattr__(
             self,

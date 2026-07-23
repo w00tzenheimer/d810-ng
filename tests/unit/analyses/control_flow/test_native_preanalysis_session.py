@@ -57,6 +57,7 @@ from d810.analyses.control_flow.native_semantic_closure import (
 from d810.core.native_preanalysis_key import NativePreanalysisKeyMismatch
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind
 from d810.ir.expressions import ValueOpKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from tests.native_preanalysis import make_native_key
@@ -1342,6 +1343,8 @@ def test_lifecycle_projects_complete_native_patch_ledger_as_frontend_evidence() 
     conditional_proof = proofs["native-indirect-transfer@0x1018"]
     assert conditional_proof.shape is NativeTransferShape.CONDITIONAL
     assert conditional_proof.source_anchor_ea == predicate_ea
+    assert conditional_proof.source_transfer_ea == conditional.jmp_ea
+    assert conditional_proof.predicate_kind is PredicateKind.NE
     assert conditional_proof.condition_producer_ea == producer_ea
     assert tuple(
         (
@@ -1363,6 +1366,7 @@ def test_lifecycle_projects_complete_native_patch_ledger_as_frontend_evidence() 
     direct_proof = proofs["native-indirect-transfer@0x1108"]
     assert direct_proof.shape is NativeTransferShape.DIRECT
     assert direct_proof.source_anchor_ea == direct_ea
+    assert direct_proof.source_transfer_ea == direct.jmp_ea
     assert direct_proof.endpoints[0].role is SemanticEdgeRole.DIRECT
     assert direct_proof.endpoints[0].anchor_ea == true_target_ea
 

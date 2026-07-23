@@ -41,6 +41,7 @@ from d810.ir.flowgraph import (
 )
 from d810.ir.maturity import IRMaturity
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.frontend_normalization import (
     DETACHED_SEMANTIC_CLOSURE_IMPORT,
@@ -168,6 +169,7 @@ def _conditional_proof(
         shape=NativeTransferShape.CONDITIONAL,
         source_identity=source,
         source_anchor_ea=0x1101,
+        source_transfer_ea=0x1101,
         endpoints=(
             NativeTransferEndpoint(
                 role=SemanticEdgeRole.CONDITIONAL_TAKEN,
@@ -180,6 +182,7 @@ def _conditional_proof(
                 anchor_ea=0x1300,
             ),
         ),
+        predicate_kind=PredicateKind.NE,
         predicate_anchor_ea=0x1101,
         condition_producer_ea=0x1100,
         flag_corridor=(source,),
@@ -200,6 +203,7 @@ def _direct_proof(
         shape=NativeTransferShape.DIRECT,
         source_identity=_identity(source_ea),
         source_anchor_ea=source_ea,
+        source_transfer_ea=source_ea,
         endpoints=(
             NativeTransferEndpoint(
                 role=SemanticEdgeRole.DIRECT,
@@ -734,6 +738,7 @@ def test_missing_downstream_transfer_source_is_normalized_inside_the_same_fragme
         shape=NativeTransferShape.CONDITIONAL,
         source_identity=imported_source_identity,
         source_anchor_ea=imported_predicate_ea,
+        source_transfer_ea=0x141F,
         endpoints=(
             NativeTransferEndpoint(
                 role=SemanticEdgeRole.CONDITIONAL_TAKEN,
@@ -746,6 +751,7 @@ def test_missing_downstream_transfer_source_is_normalized_inside_the_same_fragme
                 anchor_ea=imported_fallthrough_ea,
             ),
         ),
+        predicate_kind=PredicateKind.EQ,
         predicate_anchor_ea=imported_predicate_ea,
         condition_producer_ea=imported_source_ea,
         flag_corridor=(
@@ -828,6 +834,19 @@ def test_missing_downstream_transfer_source_is_normalized_inside_the_same_fragme
     )
     assert len(imported_operation) == 1
     assert imported_operation[0].predicate_anchor_ea == imported_predicate_ea
+    assert imported_operation[0].computed_branch_normalization is not None
+    assert (
+        imported_operation[0].computed_branch_normalization.predicate_kind
+        is PredicateKind.EQ
+    )
+    assert (
+        imported_operation[0].computed_branch_normalization.condition_producer_ea
+        == imported_source_ea
+    )
+    assert (
+        imported_operation[0].computed_branch_normalization.unresolved_transfer_ea
+        == 0x141F
+    )
     assert {edge.role for edge in imported_operation[0].edges} == {
         SemanticEdgeRole.CONDITIONAL_TAKEN,
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
