@@ -1091,7 +1091,11 @@ class D810Manager:
         from d810.hexrays.preanalysis.preopt_preanalysis import (
             run_preopt_preanalysis_handlers,
         )
+        from d810.manager.hexrays_frontend_normalization import (
+            install_live_frontend_normalization,
+        )
 
+        install_live_frontend_normalization()
         self.event_emitter.on(
             DecompilationEvent.HEXRAYS_PREOPT_READY,
             run_preopt_preanalysis_handlers,
@@ -1206,7 +1210,11 @@ class D810Manager:
         if not self._started:
             return
         self._started = False
+        from d810.manager.hexrays_frontend_normalization import (
+            uninstall_live_frontend_normalization,
+        )
 
+        uninstall_live_frontend_normalization()
         self.instruction_optimizer.remove()
         self.block_optimizer.remove()
         self.hx_decompiler_hook.unhook()
