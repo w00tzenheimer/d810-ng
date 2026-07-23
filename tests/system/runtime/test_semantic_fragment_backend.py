@@ -339,6 +339,9 @@ class _Mba:
     def __init__(self, blocks: tuple[_Block, ...]):
         self.blocks = {block.serial: block for block in blocks}
         self.qty = len(blocks)
+        self.removed_block_ranges: list[tuple[int, int]] = []
+        self.removed_unreachable_calls = 0
+        self.verify_calls = 0
         self.entry_ea = 0x401000
         self.maturity = int(ida_hexrays.MMAT_PREOPTIMIZED)
         self.chains_dirty = False
@@ -346,6 +349,8 @@ class _Mba:
         self.fictitious_ea_map: dict[int, int] = {}
         for block in blocks:
             block.mba = self
+            if 0 < int(block.serial) < len(blocks) - 1:
+                block.flags |= int(ida_hexrays.MBL_KEEP)
         self._relink()
 
     def get_mblock(self, serial: int):
@@ -353,6 +358,15 @@ class _Mba:
 
     def mark_chains_dirty(self) -> None:
         self.chains_dirty = True
+
+    def verify(self, _always: bool) -> None:
+        self.verify_calls += 1
+        for serial in range(self.qty):
+            block = self.get_mblock(serial)
+            assert block is not None
+            assert int(block.serial) == serial
+            assert (block.prevb is None) == (serial == 0)
+            assert (block.nextb is None) == (serial == self.qty - 1)
 
     def alloc_fict_ea(self, native_ea: int) -> int:
         live_ea = int(self.next_fictitious_ea)
@@ -400,6 +414,31 @@ class _Mba:
         self.qty -= 1
         self._shift_coordinates(removed_serial + 1, -1)
         self._relink()
+
+    def remove_blocks(self, start: int, end: int) -> None:
+        start = int(start)
+        end = int(end)
+        self.removed_block_ranges.append((start, end))
+        for serial in range(start, end):
+            self.blocks.pop(serial)
+        self.qty -= end - start
+        self._shift_coordinates(end, start - end)
+        self._relink()
+
+    def remove_empty_and_unreachable_blocks(self) -> bool:
+        self.removed_unreachable_calls += 1
+        removed = tuple(
+            serial
+            for serial, block in sorted(self.blocks.items())
+            if 0 < serial < self.qty - 1
+            and not int(block.flags) & int(ida_hexrays.MBL_KEEP)
+            and int(block.npred()) == 0
+        )
+        for serial in reversed(removed):
+            block = self.get_mblock(serial)
+            assert block is not None
+            self.remove_block(block)
+        return bool(removed)
 
     def _shift_coordinates(self, threshold: int, delta: int) -> None:
         for block in tuple(self.blocks.values()):
@@ -1970,6 +2009,39 @@ def test_failed_live_staging_restores_graph_and_records_rollback(
         ("rollback", "succeeded"),
         ("receipt", "aborted"),
     ]
+
+
+def test_staged_block_discard_uses_protected_unreachable_sweep(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_0WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_0WAY)
+    staged_first = _Block(2, start=0xF10000, block_type=ida_hexrays.BLT_0WAY)
+    staged_second = _Block(3, start=0xF10001, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401020, block_type=ida_hexrays.BLT_STOP)
+    original.flags |= int(ida_hexrays.MBL_KEEP)
+    staged_first.flags |= int(ida_hexrays.MBL_KEEP)
+    staged_second.flags |= int(ida_hexrays.MBL_KEEP)
+    mba = _Mba((entry, original, staged_first, staged_second, stop))
+    original.flags &= ~int(ida_hexrays.MBL_KEEP)
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+
+    def reject_low_level_batch_removal(_start, _end) -> None:
+        raise AssertionError("low-level block removal leaves stale serials")
+
+    monkeypatch.setattr(mba, "remove_blocks", reject_low_level_batch_removal)
+
+    modifier._discard_semantic_fragment_blocks(
+        (staged_first, staged_second),
+    )
+
+    assert mba.removed_unreachable_calls == 1
+    assert mba.qty == 3
+    assert mba.get_mblock(2) is stop
+    assert int(stop.serial) == 2
+    assert not int(original.flags) & int(ida_hexrays.MBL_KEEP)
+    assert mba.verify_calls == 1
 
 
 def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_work(

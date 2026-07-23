@@ -283,6 +283,7 @@ from d810.hexrays.ir.semantic_edge import (
     SemanticEdgeOperationRejected,
 )
 from d810.hexrays.ir.logical_block_proxy import LogicalBlockVersion
+from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.ir_translator import lift
 from d810.ir.block_identity import (
     BlockHandleProvenance,
@@ -3461,20 +3462,123 @@ class DeferredGraphModifier:
         self.mba.mark_chains_dirty()
 
     def _discard_semantic_fragment_blocks(self, blocks: tuple[object, ...]) -> None:
-        remover = getattr(self.mba, "remove_block", None)
-        if not callable(remover):
+        gateway = self._mutation_gateway
+        if gateway is None:
             raise SemanticFragmentBackendRejected(
-                "live MBA cannot discard staged semantic fragment blocks"
+                "staged semantic fragment discard requires a mutation gateway"
             )
-        for block in sorted(
-            blocks,
-            key=lambda candidate: int(candidate.serial),
-            reverse=True,
+        unreachable_sweeper = getattr(
+            self.mba,
+            "remove_empty_and_unreachable_blocks",
+            None,
+        )
+        if not callable(unreachable_sweeper):
+            raise SemanticFragmentBackendRejected(
+                "live MBA cannot sweep staged semantic fragment blocks"
+            )
+        blocks_by_serial = {
+            int(block.serial): block
+            for block in blocks
+        }
+        serials = tuple(sorted(blocks_by_serial))
+        original_qty = int(self.mba.qty)
+        if any(
+            serial <= 0 or serial >= original_qty - 1
+            for serial in serials
         ):
+            raise SemanticFragmentBackendRejected(
+                "staged semantic fragment discard cannot remove entry or stop blocks"
+            )
+        pre_sweep_index = MbaBlockIdentityIndex.from_mba(
+            self.mba,
+            generation=int(gateway.generation),
+            native_key=gateway.native_key,
+            evidence_generation=int(gateway.identity_index.evidence_generation),
+            session_id=f"{gateway.session_id}:rollback-pre",
+        )
+        survivor_identities = {
+            serial: pre_sweep_index.identity_for_serial(serial)
+            for serial in range(1, original_qty - 1)
+            if serial not in blocks_by_serial
+        }
+        survivor_identity_counts = {
+            identity: tuple(
+                serial
+                for serial, candidate_identity in survivor_identities.items()
+                if candidate_identity == identity
+            )
+            for identity in set(survivor_identities.values())
+            if identity is not None
+        }
+        temporary_protections = []
+        unsafe_survivors = []
+        for serial, identity in survivor_identities.items():
+            candidate = self.mba.get_mblock(serial)
+            if candidate is None or int(candidate.flags) & int(ida_hexrays.MBL_KEEP):
+                continue
+            label = f"blk{serial}@0x{int(getattr(candidate, 'start', -1)):X}"
+            if (
+                identity is None
+                or len(survivor_identity_counts.get(identity, ())) != 1
+            ):
+                unsafe_survivors.append(label)
+                continue
+            temporary_protections.append((identity, label))
+        if unsafe_survivors:
+            raise SemanticFragmentBackendRejected(
+                "staged semantic fragment discard cannot protect and rebind "
+                "survivors without unique native identity: "
+                + ", ".join(unsafe_survivors)
+            )
+        for identity, _label in temporary_protections:
+            serial = survivor_identity_counts[identity][0]
+            survivor = self.mba.get_mblock(serial)
+            if survivor is None:
+                raise SemanticFragmentBackendRejected(
+                    "staged semantic fragment survivor disappeared before sweep"
+                )
+            survivor.flags |= int(ida_hexrays.MBL_KEEP)
+        for block in blocks_by_serial.values():
             self._detach_semantic_fragment_block(block)
-            remover(block)
-        if blocks:
+            block.flags &= ~int(ida_hexrays.MBL_KEEP)
+        if serials:
+            changed = bool(unreachable_sweeper())
+            expected_qty = original_qty - len(serials)
+            if not changed or int(self.mba.qty) != expected_qty:
+                raise SemanticFragmentBackendRejected(
+                    "staged semantic fragment sweep removed an unexpected "
+                    f"inventory: expected_qty={expected_qty} "
+                    f"observed_qty={int(self.mba.qty)} changed={changed}"
+                )
+            post_sweep_index = MbaBlockIdentityIndex.from_mba(
+                self.mba,
+                generation=int(gateway.generation),
+                native_key=gateway.native_key,
+                evidence_generation=int(gateway.identity_index.evidence_generation),
+                session_id=f"{gateway.session_id}:rollback-post",
+            )
+            restore_failures = []
+            for identity, label in temporary_protections:
+                rebound = post_sweep_index.rebind_identity(identity)
+                if rebound.block is None:
+                    restore_failures.append(label)
+                    continue
+                survivor = self.mba.get_mblock(int(rebound.block.serial))
+                if survivor is None:
+                    restore_failures.append(label)
+                    continue
+                survivor.flags &= ~int(ida_hexrays.MBL_KEEP)
+            if restore_failures:
+                raise SemanticFragmentBackendRejected(
+                    "staged semantic fragment sweep could not restore "
+                    "temporary survivor protection: "
+                    + ", ".join(restore_failures)
+                )
             self.mba.mark_chains_dirty()
+            safe_verify(
+                self.mba,
+                "staged semantic fragment rollback sweep",
+            )
 
     def _stage_detached_semantic_replacement(
         self,
