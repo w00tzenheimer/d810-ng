@@ -179,6 +179,36 @@ class TestNativeSemanticCfgAdapter:
         assert edge.resolver_proven
         assert edge.source_instruction_ea == source_instruction_ea
 
+    def test_resolver_proven_unmarked_entry_has_one_native_block_owner(
+        self,
+        ida_database,
+    ) -> None:
+        function = _function("lab_rhad_indirect")
+        source_instruction_ea = _find_indirect_jump_ea(function)
+        source_instruction = _decoded_instruction(source_instruction_ea)
+        filler_ea = source_instruction_ea + int(source_instruction.size)
+        filler_instruction = _decoded_instruction(filler_ea)
+        resolver_target_ea = filler_ea + int(filler_instruction.size)
+        assert ida_bytes.get_byte(filler_ea) == 0xCC
+
+        result = build_native_semantic_cfg(
+            function,
+            live_native_eas=(),
+            seed_eas=(int(function.start_ea), resolver_target_ea),
+            resolver_target_eas_by_source={
+                source_instruction_ea: (resolver_target_ea,),
+            },
+            resolver_proven_unmarked_entry_eas=(resolver_target_ea,),
+        )
+
+        owners = tuple(
+            block
+            for block in result.cfg.blocks_by_ea.values()
+            if block.start_ea <= resolver_target_ea < block.end_ea
+        )
+        assert len(owners) == 1
+        assert owners[0].start_ea == resolver_target_ea
+
     def test_explicit_cut_without_target_evidence_stays_unproven(self) -> None:
         source_instruction_ea = 0x401010
 
@@ -325,6 +355,69 @@ class TestNativeSemanticCfgAdapter:
 
         assert set(result.cfg.blocks_by_ea) == {source_ea, *target_eas}
         assert not result.abstentions
+
+    def test_resolver_proven_entry_splits_stale_flowchart_owner(
+        self,
+        monkeypatch,
+    ) -> None:
+        function_ea = 0x401000
+        stale_entry_ea = 0x401010
+        resolver_entry_ea = 0x401011
+        stale_end_ea = 0x401030
+        facts = {
+            function_ea: NativeFlowBlockFact(
+                start_ea=function_ea,
+                end_ea=stale_entry_ea,
+                successor_eas=(stale_entry_ea,),
+            ),
+            stale_entry_ea: NativeFlowBlockFact(
+                start_ea=stale_entry_ea,
+                end_ea=stale_end_ea,
+                is_return_tail=True,
+                terminal_instruction_ea=stale_end_ea - 1,
+            ),
+        }
+        decoded = {
+            stale_entry_ea: NativeFlowBlockFact(
+                start_ea=stale_entry_ea,
+                end_ea=resolver_entry_ea,
+                force_stop=True,
+                terminal_instruction_ea=stale_entry_ea,
+            ),
+            resolver_entry_ea: NativeFlowBlockFact(
+                start_ea=resolver_entry_ea,
+                end_ea=stale_end_ea,
+                is_return_tail=True,
+                terminal_instruction_ea=stale_end_ea - 1,
+            ),
+        }
+        monkeypatch.setattr(
+            native_backend,
+            "_flowchart_facts",
+            lambda *_args, **_kwargs: facts,
+        )
+        monkeypatch.setattr(
+            native_backend,
+            "_decode_missing_flow_block",
+            lambda *_args, start_ea, **_kwargs: decoded[int(start_ea)],
+        )
+
+        result = build_native_semantic_cfg(
+            SimpleNamespace(start_ea=function_ea),
+            live_native_eas=(),
+            seed_eas=(function_ea, resolver_entry_ea),
+            resolver_target_eas_by_source={},
+            resolver_proven_unmarked_entry_eas=(resolver_entry_ea,),
+        )
+
+        owners = tuple(
+            block
+            for block in result.cfg.blocks_by_ea.values()
+            if block.start_ea <= resolver_entry_ea < block.end_ea
+        )
+        assert tuple(
+            (block.start_ea, block.end_ea) for block in owners
+        ) == ((resolver_entry_ea, stale_end_ea),)
 
     def test_non_code_seed_abstains_with_exact_native_ea(
         self,

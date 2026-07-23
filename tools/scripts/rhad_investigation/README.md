@@ -6,39 +6,9 @@ production recognizers. Hard-coded EAs belong only to this investigation
 fixture; production code must remain address- and sample-agnostic.
 
 The scripts expect a disposable copy of the loader under `.tmp/`. Never point
-an idalib experiment at the canonical fixture when testing byte materialization.
-Always close idalib databases with `close_database(False)`.
-
-## Maturity visibility
-
-`probe_maturity_allblks.py` materializes the computed-goto dispatcher, then
-compares normal, `DECOMP_ALL_BLKS`, and explicit-range generation at
-`MMAT_GENERATED`, `MMAT_PREOPTIMIZED`, `MMAT_LOCOPT`, and `MMAT_CALLS`.
-
-```bash
-cp samples/bins/rhad_loader_unpacked.bin .tmp/rhad_maturity_probe.bin
-tools/scripts/run_system_tests_docker.sh exec -- \
-  /app/ida/.venv/bin/python \
-  tools/scripts/rhad_investigation/probe_maturity_allblks.py
-```
-
-## Flowchart range injection
-
-`probe_flowchart_append.py` inspects whether the proven native handler range is
-already present in the `hxe_flowchart` graph. Set `RHAD_FLOWCHART_MODE=append`
-to reproduce the experimental `qflow_chart_t.append_to_flowchart()` injection.
-
-```bash
-cp samples/bins/rhad_loader_unpacked.bin .tmp/rhad_flowchart_append_probe.bin
-tools/scripts/run_system_tests_docker.sh exec -- \
-  /app/ida/.venv/bin/python \
-  tools/scripts/rhad_investigation/probe_flowchart_append.py
-
-RHAD_FLOWCHART_MODE=append \
-tools/scripts/run_system_tests_docker.sh exec -- \
-  /app/ida/.venv/bin/python \
-  tools/scripts/rhad_investigation/probe_flowchart_append.py
-```
+an idalib experiment at the canonical fixture when testing preanalysis or
+decompilation behavior. Always close idalib databases with
+`close_database(False)`.
 
 The `.tmp/probe_*.py` entries may be symlinks for command-history convenience;
 the tracked copies in this directory are authoritative.
@@ -181,30 +151,3 @@ Set `RHAD_TRANSFER_ORIGINS_OUTPUT` to persist the current imported-instruction
 registry as `(synthetic EA, native EA)` pairs. This is the authoritative way to
 interpret a ctree statement whose EA is in d810's fictitious `0xF1C...` range;
 microcode block serials and synthetic EAs are not native ownership anchors.
-
-## First-decompile INTERR 50735
-
-`probe_interr_50735.py` audits every analyzed `m_call`/`m_icall` argument and
-prints the native call EA, current block EA, argument index, operand size, and
-formal type size when Hex-Rays' 50735 invariant would fail. `--bare` isolates
-the static byte materializer from the d810 manager. The provider switches
-separately disable transient stack-point and callinfo restoration.
-
-```bash
-cp samples/bins/rhad_loader_unpacked.bin .tmp/rhad_interr_50735.bin
-rm -f .tmp/rhad_interr_50735.{id0,id1,id2,nam,til,i64}
-tools/scripts/run_system_tests_docker.sh exec -- \
-  /app/ida/.venv/bin/python \
-  tools/scripts/rhad_investigation/probe_interr_50735.py \
-  /work/.tmp/rhad_interr_50735.bin --bare --attempts 2
-```
-
-The historical failure was first-decompile-only: immediately after resolver
-materialization, `decompile(0x40A560)` returned `None`, code `-1`, error EA
-`0x40A560`, and `INTERR: 50735`; a later d810 decompile succeeded. SDK
-`verify.cpp` defines 50735 precisely as an `mcallarg_t` operand size that does
-not match `argument.type.get_size()`. Fresh disposable runs under the available
-Hex-Rays 9.2 and 9.3 images now succeed on the first bare attempt with failure
-code zero, including the original resolver commit under 9.3. Do not add a blind
-retry: use this audit and d810's `MINSN_50735_CALL_ARGUMENT_SIZE_MISMATCH`
-contract to identify the malformed call if it returns.

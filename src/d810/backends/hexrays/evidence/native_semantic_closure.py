@@ -113,6 +113,7 @@ def _decode_missing_flow_block(
     resolver_cut_eas: Collection[int],
     resolver_target_eas_by_source: Mapping[int, Collection[int]],
     resolver_proven_unmarked: bool,
+    semantic_entry_eas: Collection[int],
     abstentions: list[NativeCfgDecodeAbstention],
 ) -> NativeFlowBlockFact | None:
     start_ea = int(start_ea)
@@ -217,6 +218,14 @@ def _decode_missing_flow_block(
                 successor_eas=successors,
                 direct_branch_target_ea=direct_target_ea,
                 is_conditional_jump_tail=is_conditional_jump,
+            )
+
+        if next_ea in semantic_entry_eas:
+            return NativeFlowBlockFact(
+                start_ea=start_ea,
+                end_ea=next_ea,
+                successor_eas=(next_ea,),
+                terminal_instruction_ea=current_ea,
             )
 
         next_owner_func_ea = _owner_func_ea(next_ea)
@@ -352,6 +361,15 @@ def build_native_semantic_cfg(
     proven_unmarked_entries = {
         int(entry_ea) for entry_ea in resolver_proven_unmarked_entry_eas
     }
+    semantic_entry_eas = {
+        *seeds,
+        *proven_unmarked_entries,
+        *(
+            int(target_ea)
+            for target_eas in normalized_target_eas_by_source.values()
+            for target_ea in target_eas
+        ),
+    }
     facts_by_start_ea = _flowchart_facts(
         function,
         normalized_resolver_cut_eas,
@@ -368,13 +386,18 @@ def build_native_semantic_cfg(
         if entry_ea in live_eas and entry_ea not in seeds:
             continue
         fact = facts_by_start_ea.get(entry_ea)
-        if needs_native_flow_decode(fact):
+        crosses_semantic_entry = fact is not None and any(
+            int(fact.start_ea) < semantic_entry_ea < int(fact.end_ea)
+            for semantic_entry_ea in semantic_entry_eas
+        )
+        if needs_native_flow_decode(fact) or crosses_semantic_entry:
             fact = _decode_missing_flow_block(
                 function,
                 start_ea=entry_ea,
                 resolver_cut_eas=normalized_resolver_cut_eas,
                 resolver_target_eas_by_source=normalized_target_eas_by_source,
                 resolver_proven_unmarked=entry_ea in proven_unmarked_entries,
+                semantic_entry_eas=semantic_entry_eas,
                 abstentions=abstentions,
             )
             if fact is None:
