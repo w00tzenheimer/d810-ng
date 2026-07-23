@@ -1194,11 +1194,6 @@ def test_materialized_recovery_builds_portable_entry_route_evidence(
     )
     monkeypatch.setattr(
         unflattener,
-        "imported_detached_snippet_instruction_origins",
-        lambda _mba: (),
-    )
-    monkeypatch.setattr(
-        unflattener,
         "imported_detached_snippet_target_eas",
         lambda _mba: (),
     )
