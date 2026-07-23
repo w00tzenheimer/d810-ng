@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from collections.abc import MutableMapping
 
+from d810.analyses.control_flow.frontend_normalization import (
+    FrontendNormalizationEvidenceRejected,
+)
 from d810.core.logging import getLogger
+from d810.core.observability import emit as emit_diagnostic
+from d810.core.observability_events import LifecycleEventObserved
 from d810.manager.decompilation_lifecycle import DecompilationSessionContext
 from d810.manager.frontend_normalization import (
     SessionFrontendNormalizationEvidenceProvider,
     run_frontend_normalization_pipeline,
 )
+from d810.transforms.fragment_plan import FragmentPlanRejected
 
 
 logger = getLogger("D810.manager.frontend_normalization")
@@ -78,17 +84,38 @@ def run_live_frontend_normalization(
         function_ea=int(function_ea),
         mutation_gateway=mutation_gateway,
     )
-    result = run_frontend_normalization_pipeline(
-        source=source,
-        backend=backend,
-        evidence_provider=SessionFrontendNormalizationEvidenceProvider(
-            function_ea=int(function_ea),
+    try:
+        result = run_frontend_normalization_pipeline(
+            source=source,
+            backend=backend,
+            evidence_provider=SessionFrontendNormalizationEvidenceProvider(
+                function_ea=int(function_ea),
+                native_key=session.native_key,
+                state=session.native_preanalysis,
+            ),
+            lifecycle_state=session.native_preanalysis,
             native_key=session.native_key,
-            state=session.native_preanalysis,
-        ),
-        lifecycle_state=session.native_preanalysis,
-        native_key=session.native_key,
-    )
+        )
+    except (FrontendNormalizationEvidenceRejected, FragmentPlanRejected) as exc:
+        reason = str(exc)
+        emit_diagnostic(
+            LifecycleEventObserved(
+                session_id=session.identity_key,
+                func_ea=int(function_ea),
+                event_kind="frontend_normalization_rejected",
+                provider=_HANDLER_NAME,
+                phase="frontend_normalization",
+                evidence_generation=int(
+                    session.native_preanalysis.evidence_generation
+                ),
+                summary="frontend normalization planning rejected",
+                payload={
+                    "outcome": "rejected",
+                    "reason": reason,
+                },
+            )
+        )
+        raise
     if not result.microcode_modified:
         return
 
