@@ -1124,6 +1124,30 @@ class MbaBlockIdentityIndex:
             )
         serials[created.token] = int(returned_serial)
 
+    def discard_reserved_insert(
+        self,
+        *,
+        transaction_id: str,
+        handle: MbaBlockHandle,
+    ) -> None:
+        """Unbind a physically rolled-back reserved insertion before abort."""
+        transaction_id = str(transaction_id)
+        serials = self._serials_by_transaction.get(transaction_id)
+        proxy = self.logical_proxy_for_handle(handle)
+        if serials is None or proxy is None:
+            raise ValueError("reserved insertion rollback has no active owner")
+        action = self._proxy_actions_by_transaction.get(transaction_id, {}).get(
+            proxy.proxy_token
+        )
+        staged = proxy.resolve(transaction_id=transaction_id)
+        removed_serial = serials.get(handle.token)
+        if action != "new" or staged is None or removed_serial is None:
+            raise ValueError("reserved insertion rollback does not own a live block")
+        serials.pop(handle.token)
+        for token, serial in tuple(serials.items()):
+            if serial > int(removed_serial):
+                serials[token] = serial - 1
+
     def record_realized_serial(
         self,
         *,

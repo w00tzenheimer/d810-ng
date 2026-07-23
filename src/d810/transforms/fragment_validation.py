@@ -239,6 +239,27 @@ class ProjectedFallthroughHelper:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectedRootFallthroughHelper:
+    """Adjacent helper required to publish one conditional root fallthrough."""
+
+    helper_block_id: str
+    source_block_id: str
+    root_block_id: str
+
+    def __post_init__(self) -> None:
+        for field_name, description in (
+            ("helper_block_id", "projected root fallthrough helper block"),
+            ("source_block_id", "projected root fallthrough source"),
+            ("root_block_id", "projected root fallthrough target"),
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _identifier(getattr(self, field_name), description),
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectedFragment:
     """Complete serial-free graph and semantic projection of a staged fragment."""
 
@@ -246,6 +267,7 @@ class ProjectedFragment:
     blocks: tuple[ProjectedFragmentBlock, ...]
     identity_bindings: tuple[ProjectedIdentityBinding, ...]
     fallthrough_helpers: tuple[ProjectedFallthroughHelper, ...] = ()
+    root_fallthrough_helpers: tuple[ProjectedRootFallthroughHelper, ...] = ()
     data_flow_relations: tuple[ProjectedDataFlowRelation, ...] = ()
     value_ranges: tuple[ProjectedRangeFact, ...] = ()
 
@@ -257,6 +279,7 @@ class ProjectedFragment:
         blocks = tuple(self.blocks)
         identity_bindings = tuple(self.identity_bindings)
         fallthrough_helpers = tuple(self.fallthrough_helpers)
+        root_fallthrough_helpers = tuple(self.root_fallthrough_helpers)
         data_flow_relations = tuple(self.data_flow_relations)
         value_ranges = tuple(self.value_ranges)
         if any(not isinstance(block, ProjectedFragmentBlock) for block in blocks):
@@ -272,6 +295,11 @@ class ProjectedFragment:
         ):
             raise TypeError("projection contains an invalid fallthrough helper")
         if any(
+            not isinstance(helper, ProjectedRootFallthroughHelper)
+            for helper in root_fallthrough_helpers
+        ):
+            raise TypeError("projection contains an invalid root fallthrough helper")
+        if any(
             not isinstance(relation, ProjectedDataFlowRelation)
             for relation in data_flow_relations
         ):
@@ -282,6 +310,11 @@ class ProjectedFragment:
         object.__setattr__(self, "blocks", blocks)
         object.__setattr__(self, "identity_bindings", identity_bindings)
         object.__setattr__(self, "fallthrough_helpers", fallthrough_helpers)
+        object.__setattr__(
+            self,
+            "root_fallthrough_helpers",
+            root_fallthrough_helpers,
+        )
         object.__setattr__(self, "data_flow_relations", data_flow_relations)
         object.__setattr__(self, "value_ranges", value_ranges)
 
@@ -704,6 +737,49 @@ def _validate_operation(
     )
 
 
+def _validate_root_fallthrough_helpers(
+    plan: FragmentPlan,
+    projection: ProjectedFragment,
+    blocks: dict[str, ProjectedFragmentBlock],
+    outcomes: list[FragmentValidationOutcome],
+) -> None:
+    pairs: set[tuple[str, str]] = set()
+    for helper in projection.root_fallthrough_helpers:
+        helper_block = blocks.get(helper.helper_block_id)
+        source = blocks.get(helper.source_block_id)
+        root = blocks.get(helper.root_block_id)
+        pair = (helper.source_block_id, helper.root_block_id)
+        unique = pair not in pairs
+        pairs.add(pair)
+        passed = bool(
+            unique
+            and helper.root_block_id in plan.roots
+            and helper_block is not None
+            and source is not None
+            and root is not None
+            and source.kind is BlockKind.TWO_WAY
+            and len(source.successors) == 2
+            and source.successors[0] == helper.helper_block_id
+            and helper_block.physical_position == source.physical_position + 1
+            and helper_block.kind is BlockKind.ONE_WAY
+            and helper_block.successors == (helper.root_block_id,)
+            and helper_block.predecessors == (helper.source_block_id,)
+            and helper.helper_block_id in root.predecessors
+        )
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
+            helper.helper_block_id,
+            passed,
+            "root fallthrough uses one adjacent synthetic helper"
+            if passed
+            else "root fallthrough helper is missing, duplicated, or malformed",
+            helper.source_block_id,
+            helper.helper_block_id,
+            helper.root_block_id,
+        )
+
+
 def _validate_data_flow(
     obligation: FragmentDataFlowObligation,
     blocks: dict[str, ProjectedFragmentBlock],
@@ -1007,6 +1083,37 @@ def _validate_identity(
             helper.helper_block_id,
         )
 
+    for helper in projection.root_fallthrough_helpers:
+        binding = binding_by_id.get(helper.helper_block_id)
+        owner_valid = bool(
+            binding is not None
+            and binding.state is FragmentBindingState.STAGED
+            and binding.stable_identity is None
+        )
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+            helper.helper_block_id,
+            owner_valid,
+            "root fallthrough helper has one staged synthetic owner"
+            if owner_valid
+            else "root fallthrough helper lacks staged synthetic ownership",
+            helper.helper_block_id,
+        )
+        lineage_valid = bool(
+            binding is not None and binding.previous_version is None
+        )
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.VERSION_LINEAGE,
+            helper.helper_block_id,
+            lineage_valid,
+            "root fallthrough helper starts a new logical lineage"
+            if lineage_valid
+            else "root fallthrough helper incorrectly claims prior authority",
+            helper.helper_block_id,
+        )
+
 
 def validate_fragment_projection(
     plan: FragmentPlan,
@@ -1040,6 +1147,7 @@ def validate_fragment_projection(
             projection.fallthrough_helpers,
             outcomes,
         )
+    _validate_root_fallthrough_helpers(plan, projection, blocks, outcomes)
     for obligation in plan.data_flow_obligations:
         _validate_data_flow(
             obligation,
@@ -1215,6 +1323,7 @@ __all__ = [
     "ProjectedFragmentBlock",
     "ProjectedIdentityBinding",
     "ProjectedRangeFact",
+    "ProjectedRootFallthroughHelper",
     "validate_fragment_projection",
     "validate_published_fragment_observation",
 ]
