@@ -3947,9 +3947,19 @@ class DeferredGraphModifier:
             edge.replacement.version
         )
         helper = self._resolve_semantic_fragment_version(helper_binding.version)
-        taken, fallthrough = self._semantic_edge_conditional_arms(predecessor)
+        taken_serial = int(predecessor.tail.d.b)
+        taken = self.mba.get_mblock(taken_serial)
+        successors = tuple(int(value) for value in predecessor.succset)
+        fallthrough_serials = tuple(
+            successor for successor in successors if successor != taken_serial
+        )
         if (
-            int(fallthrough.serial) != int(original.serial)
+            taken is None
+            or len(successors) != 2
+            or taken_serial not in successors
+            or len(fallthrough_serials) != 1
+            or fallthrough_serials[0]
+            not in {int(original.serial), int(helper.serial)}
             or predecessor.nextb is None
             or int(predecessor.nextb.serial) != int(helper.serial)
             or int(helper.serial) != int(predecessor.serial) + 1
