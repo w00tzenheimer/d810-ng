@@ -359,7 +359,7 @@ class SemanticNativeBodyStagingContext:
             block_id,
             {},
         )
-        if live_ea in origins or native_ea in origins.values():
+        if live_ea in origins:
             raise SemanticFragmentBackendRejected(
                 f"native body instruction origin was bound more than once at "
                 f"{block_id}@0x{native_ea:X}"
@@ -1207,6 +1207,7 @@ def _materialize_terminal_effects(
 
 
 def _site_instruction_matches(
+    state: SemanticFragmentBackendState,
     live_by_id: dict[str, object],
     site,
     *,
@@ -1218,9 +1219,12 @@ def _site_instruction_matches(
             f"{context} {site.site_id!r} has no live block"
         )
     matches = []
+    origins = state.instruction_origins_by_block_id.get(str(site.block_id), {})
     instruction = block.head
     while instruction is not None:
-        if int(getattr(instruction, "ea", -1) or -1) == int(site.instruction_ea):
+        live_ea = int(getattr(instruction, "ea", -1) or -1)
+        native_ea = int(origins.get(live_ea, live_ea))
+        if native_ea == int(site.instruction_ea):
             matches.append(instruction)
         if instruction is block.tail:
             break
@@ -1229,12 +1233,14 @@ def _site_instruction_matches(
 
 
 def _exact_site_instruction(
+    state: SemanticFragmentBackendState,
     live_by_id: dict[str, object],
     site,
     *,
     context: str,
 ):
     block, matches = _site_instruction_matches(
+        state,
         live_by_id,
         site,
         context=context,
@@ -1249,10 +1255,12 @@ def _exact_site_instruction(
 
 
 def _require_logical_flag_producer(
+    state: SemanticFragmentBackendState,
     live_by_id: dict[str, object],
     site,
 ) -> None:
     _block, matches = _site_instruction_matches(
+        state,
         live_by_id,
         site,
         context="flag-corridor producer",
@@ -1280,12 +1288,18 @@ def _require_logical_flag_producer(
 
 
 def _require_flag_corridor_sites(
+    state: SemanticFragmentBackendState,
     plan: FragmentPlan,
     live_by_id: dict[str, object],
 ) -> None:
     for corridor in plan.flag_corridors:
-        _require_logical_flag_producer(live_by_id, corridor.producer)
+        _require_logical_flag_producer(
+            state,
+            live_by_id,
+            corridor.producer,
+        )
         _exact_site_instruction(
+            state,
             live_by_id,
             corridor.consumer,
             context="flag-corridor consumer",
@@ -1293,13 +1307,14 @@ def _require_flag_corridor_sites(
 
 
 def _project_flag_writes(
+    state: SemanticFragmentBackendState,
     plan: FragmentPlan,
     live_by_id: dict[str, object],
 ) -> dict[str, frozenset[int]]:
     result = {block_id: frozenset() for block_id in live_by_id}
     if not plan.flag_corridors:
         return result
-    _require_flag_corridor_sites(plan, live_by_id)
+    _require_flag_corridor_sites(state, plan, live_by_id)
     for block_id, block in live_by_id.items():
         try:
             observations = condition_code_write_eas(block)
@@ -1307,11 +1322,16 @@ def _project_flag_writes(
             raise SemanticFragmentBackendRejected(
                 f"condition-code writes cannot be observed for {block_id}"
             ) from exc
-        result[block_id] = frozenset(observations)
+        origins = state.instruction_origins_by_block_id.get(str(block_id), {})
+        result[block_id] = frozenset(
+            int(origins.get(int(live_ea), int(live_ea)))
+            for live_ea in observations
+        )
     return result
 
 
 def _project_value_ranges(
+    state: SemanticFragmentBackendState,
     plan: FragmentPlan,
     live_by_id: dict[str, object],
 ) -> tuple[ProjectedRangeFact, ...]:
@@ -1319,6 +1339,7 @@ def _project_value_ranges(
     for assumption in plan.value_range_assumptions:
         site = assumption.site
         block, instruction = _exact_site_instruction(
+            state,
             live_by_id,
             site,
             context="value-range site",
@@ -1646,7 +1667,7 @@ def _project_fragment(
             block,
             state.instruction_origins_by_block_id.get(block_id),
         )
-    flag_write_eas = _project_flag_writes(plan, live_by_id)
+    flag_write_eas = _project_flag_writes(state, plan, live_by_id)
 
     if simulate_root_publication:
         for root_id in plan.roots:
@@ -1740,7 +1761,7 @@ def _project_fragment(
         live_by_id,
         ids_by_serial,
     )
-    value_ranges = _project_value_ranges(plan, live_by_id)
+    value_ranges = _project_value_ranges(state, plan, live_by_id)
     return_carriers = _project_return_carriers(
         modifier,
         plan,

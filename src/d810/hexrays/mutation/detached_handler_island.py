@@ -17,7 +17,7 @@ import ida_typeinf
 import ida_ua
 import idautils
 
-from d810.core.typing import Callable, Collection, Mapping
+from d810.core.typing import Callable, Collection, Mapping, Sequence
 
 from d810.analyses.control_flow.detached_handler_island import (
     AppliedDetachedSnippetConditionalBoundaryPort,
@@ -917,6 +917,24 @@ def _template_block_stable_identity(
     )
 
 
+def _template_block_covers_identity(
+    block: DetachedSnippetBlockTemplate,
+    identity: StableBlockIdentity,
+) -> bool:
+    """Whether one cached microblock contains every exact portable anchor."""
+    instruction_eas = {
+        int(instruction.ea) for instruction in block.instructions
+    }
+    template_coordinates = {
+        int(block.native_entry_ea),
+        *instruction_eas,
+    }
+    return bool(
+        identity.exact_instruction_eas <= template_coordinates
+        and all(identity.native_ranges.contains(ea) for ea in instruction_eas)
+    )
+
+
 @dataclass(slots=True)
 class _ImportedSnippetRoot:
     """Renumbering-stable identity for one imported snippet root."""
@@ -987,26 +1005,39 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 dict[str, DetachedSnippetBlockTemplate],
             ]
         ] = []
+        candidate_diagnostics: list[tuple[int, int, str]] = []
         for (owner_ea, target_ea), template in (
             _PREOPT_UNION_SNIPPET_TEMPLATES.items()
         ):
-            if (
-                int(owner_ea) != int(self.function_ea)
-                or int(target_ea) not in entry_anchors
-                or int(template.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED)
-                or not all(
-                    any(
-                        int(owned_start) <= required_start
-                        and required_end <= int(owned_end)
-                        for owned_start, owned_end in template.owned_ranges
-                    )
-                    for required_start, required_end in required_ranges
+            if int(owner_ea) != int(self.function_ea):
+                continue
+            if int(target_ea) not in entry_anchors:
+                candidate_diagnostics.append(
+                    (int(target_ea), int(template.maturity), "target_not_entry")
                 )
+                continue
+            if int(template.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED):
+                candidate_diagnostics.append(
+                    (int(target_ea), int(template.maturity), "maturity_mismatch")
+                )
+                continue
+            if not all(
+                any(
+                    int(owned_start) <= required_start
+                    and required_end <= int(owned_end)
+                    for owned_start, owned_end in template.owned_ranges
+                )
+                for required_start, required_end in required_ranges
             ):
+                candidate_diagnostics.append(
+                    (int(target_ea), int(template.maturity), "range_not_owned")
+                )
                 continue
             matched: dict[str, DetachedSnippetBlockTemplate] = {}
+            block_mismatch: tuple[int, int] | None = None
             for block_id in native_body.block_ids:
-                identity = context.plan.block(block_id).stable_identity
+                plan_block = context.plan.block(block_id)
+                identity = plan_block.stable_identity
                 matches = (
                     ()
                     if identity is None
@@ -1014,26 +1045,49 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     else tuple(
                         template_block
                         for template_block in template.blocks
-                        if int(template_block.native_entry_ea)
-                        in identity.exact_instruction_eas
-                        and identity.native_ranges.contains(
-                            int(template_block.native_entry_ea)
-                        )
-                        and all(
-                            identity.native_ranges.contains(int(instruction.ea))
-                            for instruction in template_block.instructions
+                        if _template_block_covers_identity(
+                            template_block,
+                            identity,
                         )
                     )
                 )
+                substantive_matches = tuple(
+                    template_block
+                    for template_block in matches
+                    if template_block.instructions
+                )
+                if substantive_matches:
+                    matches = substantive_matches
                 if len(matches) != 1:
+                    block_mismatch = (
+                        int(plan_block.semantic_anchor_ea),
+                        len(matches),
+                    )
                     break
                 matched[str(block_id)] = matches[0]
+            if block_mismatch is not None:
+                candidate_diagnostics.append(
+                    (
+                        int(target_ea),
+                        int(template.maturity),
+                        (
+                            f"block@0x{block_mismatch[0]:X}:"
+                            f"matches={block_mismatch[1]}:"
+                            "template_shapes="
+                            f"{tuple((hex(int(block.native_entry_ea)), tuple(hex(int(insn.ea)) for insn in block.instructions)) for block in template.blocks)!r}"
+                        ),
+                    )
+                )
+                continue
             if len(matched) == len(native_body.block_ids):
                 candidates.append((template, matched))
         if len(candidates) != 1:
             raise SemanticFragmentBackendRejected(
                 f"native body {native_body.body_id!r} requires exactly one "
-                f"PREOPT union template, observed {len(candidates)}"
+                f"PREOPT union template, observed {len(candidates)}; "
+                f"entry_anchors={tuple(hex(ea) for ea in sorted(entry_anchors))!r} "
+                f"required_ranges={tuple((hex(start), hex(end)) for start, end in required_ranges)!r} "
+                f"candidates={tuple(candidate_diagnostics)!r}"
             )
         return candidates[0]
 
@@ -1162,9 +1216,14 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         native_body: FragmentNativeBody,
     ) -> None:
         """Copy instruction bodies only; FragmentPlan operations own all topology."""
-        if int(self.mba.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED):
+        # Hex-Rays invokes hxe_preoptimized after PREOPT has completed but
+        # before advancing mba.maturity from GENERATED to PREOPTIMIZED.
+        if int(self.mba.maturity) not in {
+            int(ida_hexrays.MMAT_GENERATED),
+            int(ida_hexrays.MMAT_PREOPTIMIZED),
+        }:
             raise SemanticFragmentBackendRejected(
-                "PREOPT native body requires a PREOPTIMIZED destination MBA"
+                "PREOPT native body requires the hxe_preoptimized destination MBA"
             )
         template, matched = self._select_template_blocks(context, native_body)
         stack_map = self._preflight_stack_rebase(

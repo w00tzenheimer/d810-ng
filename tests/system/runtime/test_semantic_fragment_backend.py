@@ -985,6 +985,7 @@ def _plan_with_imported_conditional(
     target: int,
     dispatcher: int,
     predicate_native_ea: int,
+    condition_producer_native_ea: int | None = None,
 ) -> FragmentPlan:
     plan = _plan(
         gateway,
@@ -1048,6 +1049,31 @@ def _plan_with_imported_conditional(
                 native_ranges=(native_range,),
                 proof_ids=("proof:native-body",),
             ),
+        ),
+        flag_corridors=(
+            ()
+            if condition_producer_native_ea is None
+            else (
+                FragmentFlagCorridor(
+                    corridor_id="imported-conditional-flags",
+                    producer=FragmentValueSite(
+                        site_id="imported-conditional-producer",
+                        block_id=imported.block_id,
+                        value_id="imported-condition-codes",
+                        instruction_ea=int(condition_producer_native_ea),
+                    ),
+                    consumer=FragmentValueSite(
+                        site_id="imported-conditional-consumer",
+                        block_id=imported.block_id,
+                        value_id="imported-condition-codes",
+                        instruction_ea=int(predicate_native_ea),
+                    ),
+                    block_path=(imported.block_id,),
+                    permitted_flag_write_eas=frozenset(
+                        {int(condition_producer_native_ea)}
+                    ),
+                ),
+            )
         ),
     )
 
@@ -2247,9 +2273,25 @@ def test_native_body_origin_binding_translates_operations_and_projection(
     gateway.abort(reason="runtime imported origin binding cleanup")
 
 
+@pytest.mark.parametrize(
+    "destination_maturity",
+    (ida_hexrays.MMAT_GENERATED, ida_hexrays.MMAT_PREOPTIMIZED),
+)
+@pytest.mark.parametrize("empty_topology_duplicate", (False, True))
+@pytest.mark.parametrize("split_predicate_microblock", (False, True))
 def test_cached_preopt_body_materializes_through_the_fragment_transaction(
     monkeypatch,
+    destination_maturity,
+    empty_topology_duplicate,
+    split_predicate_microblock,
 ) -> None:
+    def create_with_live_placeholder(**kwargs):
+        created = _create_fake_standalone_block(**kwargs)
+        if created.head is None:
+            placeholder = _Instruction(ida_hexrays.m_nop, created.mba.entry_ea)
+            created.insert_into_block(placeholder, created.head)
+        return created
+
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
     target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
@@ -2258,6 +2300,7 @@ def test_cached_preopt_body_materializes_through_the_fragment_transaction(
     _connect(entry, original)
     _connect(original, dispatcher)
     mba = _Mba((entry, original, target, dispatcher, stop))
+    mba.maturity = int(destination_maturity)
     gateway = _fragment_gateway(mba)
     predicate_native_ea = 0x500004
     plan = _plan_with_imported_conditional(
@@ -2267,24 +2310,63 @@ def test_cached_preopt_body_materializes_through_the_fragment_transaction(
         target=2,
         dispatcher=3,
         predicate_native_ea=predicate_native_ea,
+        condition_producer_native_ea=0x500001,
     )
+    producer_instruction = _Instruction(ida_hexrays.m_nop, 0x500001)
+    producer_instruction.d.writes_ccflags = True
     template = dhi.DetachedSnippetTemplate(
         function_ea=int(gateway.function_ea),
         target_ea=0x500000,
         maturity=int(ida_hexrays.MMAT_PREOPTIMIZED),
         root_source_serial=0,
         blocks=(
+            *(
+                (
+                    dhi.DetachedSnippetBlockTemplate(
+                        source_serial=0,
+                        native_entry_ea=0x500000,
+                        native_end_ea=0x500000,
+                        instructions=(),
+                        block_type=int(ida_hexrays.BLT_1WAY),
+                        block_flags=0,
+                        successor_serials=(1,),
+                        external_successor_eas=(),
+                    ),
+                )
+                if empty_topology_duplicate
+                else ()
+            ),
             dhi.DetachedSnippetBlockTemplate(
-                source_serial=0,
+                source_serial=1,
                 native_entry_ea=0x500000,
                 native_end_ea=0x500010,
                 instructions=(
+                    producer_instruction,
+                    _Instruction(ida_hexrays.m_nop, 0x500001),
                     _Instruction(ida_hexrays.m_jz, predicate_native_ea),
                 ),
                 block_type=int(ida_hexrays.BLT_0WAY),
                 block_flags=0,
                 successor_serials=(),
                 external_successor_eas=(),
+            ),
+            *(
+                (
+                    dhi.DetachedSnippetBlockTemplate(
+                        source_serial=2,
+                        native_entry_ea=predicate_native_ea,
+                        native_end_ea=0x500010,
+                        instructions=(
+                            _Instruction(ida_hexrays.m_jz, predicate_native_ea),
+                        ),
+                        block_type=int(ida_hexrays.BLT_0WAY),
+                        block_flags=0,
+                        successor_serials=(),
+                        external_successor_eas=(),
+                    ),
+                )
+                if split_predicate_microblock
+                else ()
             ),
         ),
         stack_vd_to_ida=(),
@@ -2296,7 +2378,7 @@ def test_cached_preopt_body_materializes_through_the_fragment_transaction(
         {(int(gateway.function_ea), 0x500000): template},
     )
     monkeypatch.setattr(dhi.ida_hexrays, "minsn_t", deepcopy)
-    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    monkeypatch.setattr(dm, "create_standalone_block", create_with_live_placeholder)
     monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
     modifier = dm.DeferredGraphModifier(
         mba,
@@ -2314,12 +2396,16 @@ def test_cached_preopt_body_materializes_through_the_fragment_transaction(
     projection = modifier._stage_semantic_fragment(plan)
 
     imported = projection.block("imported-conditional")
-    assert imported.instruction_eas == (predicate_native_ea,)
+    assert imported.instruction_eas == (0x500001, predicate_native_ea)
     assert set(imported.successors) == {
         "target",
         "fallthrough-helper:imported-conditional-route",
     }
-    assert tuple(mba.fictitious_ea_map.values()) == (predicate_native_ea,)
+    assert tuple(mba.fictitious_ea_map.values()) == (
+        0x500001,
+        0x500001,
+        predicate_native_ea,
+    )
     assert gateway.receipts == ()
 
     modifier._discard_staged_semantic_fragment(plan)
