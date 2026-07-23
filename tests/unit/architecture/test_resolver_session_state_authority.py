@@ -35,6 +35,16 @@ COMPUTED_GOTO_RESOLVER_PATH = (
     / "jumps"
     / "computed_goto_resolver.py"
 )
+MATERIALIZED_COMPUTED_GOTO_ISLAND_PATH = (
+    Path(__file__).parents[3]
+    / "src"
+    / "d810"
+    / "optimizers"
+    / "microcode"
+    / "flow"
+    / "jumps"
+    / "materialized_computed_goto_island.py"
+)
 MANAGER_PATH = Path(__file__).parents[3] / "src" / "d810" / "manager" / "manager.py"
 
 
@@ -298,3 +308,35 @@ def test_production_terminal_carrier_capture_has_no_legacy_template_authority() 
         "prepare_terminal_return_carrier_templates"
         not in _referenced_identifiers(manager_tree)
     )
+
+
+def test_computed_goto_resolver_has_no_direct_final_state_route_authority() -> None:
+    resolver_tree = ast.parse(
+        COMPUTED_GOTO_RESOLVER_PATH.read_text(encoding="utf-8"),
+        filename=str(COMPUTED_GOTO_RESOLVER_PATH),
+    )
+    resolver_functions = {
+        node.name for node in resolver_tree.body if isinstance(node, ast.FunctionDef)
+    }
+    assert "rebind_live_preopt_routes" not in resolver_functions
+    assert _referenced_identifiers(resolver_tree).isdisjoint(
+        {
+            "DeferredGraphModifier",
+            "queue_conditional_target_change",
+            "queue_goto_change",
+            "queue_lower_conditional_state_transition",
+            "queue_materialize_zero_way_conditional",
+            "queue_materialize_zero_way_goto",
+            "queue_terminal_goto_change",
+        }
+    )
+
+    island_tree = ast.parse(
+        MATERIALIZED_COMPUTED_GOTO_ISLAND_PATH.read_text(encoding="utf-8"),
+        filename=str(MATERIALIZED_COMPUTED_GOTO_ISLAND_PATH),
+    )
+    island_functions = {
+        node.name for node in island_tree.body if isinstance(node, ast.FunctionDef)
+    }
+    assert "_restore_preopt_terminal_return_carriers" not in island_functions
+    assert "rebind_live_preopt_routes" not in _referenced_identifiers(island_tree)
