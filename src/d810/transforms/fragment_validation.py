@@ -73,6 +73,7 @@ class FragmentValidationPostcondition(str, Enum):
     POSTVALIDATION_SCOPE = "postvalidation_scope"
     ROOT_AUTHORITY = "root_authority"
     OBSERVABLE_OPERATION = "observable_operation"
+    OBSERVABLE_FALLTHROUGH_HELPER = "observable_fallthrough_helper"
     POSTVALIDATION_COVERAGE = "postvalidation_coverage"
 
 
@@ -392,6 +393,8 @@ class PublishedFragmentObservation:
     published_root_ids: tuple[str, ...]
     observable_operations: tuple[FragmentOperation, ...]
     semantic_outcomes: tuple[FragmentValidationOutcome, ...]
+    fallthrough_helpers: tuple[ProjectedFallthroughHelper, ...]
+    root_fallthrough_helpers: tuple[ProjectedRootFallthroughHelper, ...]
 
     def __post_init__(self) -> None:
         plan_id = _identifier(self.plan_id, "published fragment plan id")
@@ -405,6 +408,8 @@ class PublishedFragmentObservation:
         )
         observable_operations = tuple(self.observable_operations)
         semantic_outcomes = tuple(self.semantic_outcomes)
+        fallthrough_helpers = tuple(self.fallthrough_helpers)
+        root_fallthrough_helpers = tuple(self.root_fallthrough_helpers)
         if any(
             not isinstance(operation, FragmentOperation)
             for operation in observable_operations
@@ -415,11 +420,29 @@ class PublishedFragmentObservation:
             for outcome in semantic_outcomes
         ):
             raise TypeError("published fragment contains an invalid outcome")
+        if any(
+            not isinstance(helper, ProjectedFallthroughHelper)
+            for helper in fallthrough_helpers
+        ):
+            raise TypeError("published fragment contains an invalid fallthrough helper")
+        if any(
+            not isinstance(helper, ProjectedRootFallthroughHelper)
+            for helper in root_fallthrough_helpers
+        ):
+            raise TypeError(
+                "published fragment contains an invalid root fallthrough helper"
+            )
         object.__setattr__(self, "plan_id", plan_id)
         object.__setattr__(self, "atomic_group_id", atomic_group_id)
         object.__setattr__(self, "published_root_ids", published_root_ids)
         object.__setattr__(self, "observable_operations", observable_operations)
         object.__setattr__(self, "semantic_outcomes", semantic_outcomes)
+        object.__setattr__(self, "fallthrough_helpers", fallthrough_helpers)
+        object.__setattr__(
+            self,
+            "root_fallthrough_helpers",
+            root_fallthrough_helpers,
+        )
 
 
 def _outcome(
@@ -1169,6 +1192,7 @@ def validate_fragment_projection(
 
 def _required_postpublication_outcomes(
     plan: FragmentPlan,
+    projection: ProjectedFragment,
 ) -> tuple[tuple[FragmentValidationPostcondition, str], ...]:
     required: list[tuple[FragmentValidationPostcondition, str]] = []
     required.extend(
@@ -1179,6 +1203,20 @@ def _required_postpublication_outcomes(
         (FragmentValidationPostcondition.DISPATCHER_ABSENCE, block_id)
         for block_id in plan.prohibited_dispatcher_blocks
     )
+    for operation in plan.operations:
+        required.append(
+            (
+                FragmentValidationPostcondition.OPERATION_TOPOLOGY,
+                operation.operation_id,
+            )
+        )
+        if SemanticEdgeRole.CONDITIONAL_FALLTHROUGH in operation.roles:
+            required.append(
+                (
+                    FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
+                    operation.operation_id,
+                )
+            )
     for obligation in plan.data_flow_obligations:
         required.extend(
             (
@@ -1213,12 +1251,81 @@ def _required_postpublication_outcomes(
             FragmentBlockRole.SYNTHETIC,
         }
     )
+    for helper in (
+        *projection.fallthrough_helpers,
+        *projection.root_fallthrough_helpers,
+    ):
+        required.extend(
+            (
+                (
+                    FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+                    helper.helper_block_id,
+                ),
+                (
+                    FragmentValidationPostcondition.VERSION_LINEAGE,
+                    helper.helper_block_id,
+                ),
+            )
+        )
+    required.extend(
+        (
+            FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
+            helper.helper_block_id,
+        )
+        for helper in projection.root_fallthrough_helpers
+    )
     return tuple(required)
+
+
+def _validate_observable_helpers(
+    expected: tuple[ProjectedFallthroughHelper | ProjectedRootFallthroughHelper, ...],
+    observed: tuple[ProjectedFallthroughHelper | ProjectedRootFallthroughHelper, ...],
+    outcomes: list[FragmentValidationOutcome],
+) -> None:
+    expected_by_id = {helper.helper_block_id: helper for helper in expected}
+    observed_by_id = {helper.helper_block_id: helper for helper in observed}
+    exact_cardinality = (
+        len(expected_by_id) == len(expected)
+        and len(observed_by_id) == len(observed)
+        and len(observed) == len(expected)
+    )
+    for helper_id in sorted(set(expected_by_id) | set(observed_by_id)):
+        planned = expected_by_id.get(helper_id)
+        actual = observed_by_id.get(helper_id)
+        passed = bool(
+            exact_cardinality
+            and planned is not None
+            and actual is not None
+            and type(actual) is type(planned)
+            and actual == planned
+        )
+        block_ids = ()
+        if planned is not None:
+            block_ids = (
+                planned.source_block_id,
+                planned.helper_block_id,
+                (
+                    planned.semantic_target_block_id
+                    if isinstance(planned, ProjectedFallthroughHelper)
+                    else planned.root_block_id
+                ),
+            )
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.OBSERVABLE_FALLTHROUGH_HELPER,
+            helper_id,
+            passed,
+            "published helper matches its projected semantic topology"
+            if passed
+            else "published helper is missing, extra, duplicated, or changed",
+            *block_ids,
+        )
 
 
 def validate_published_fragment_observation(
     plan: FragmentPlan,
     observation: PublishedFragmentObservation,
+    prepublication_projection: ProjectedFragment,
 ) -> FragmentValidationResult:
     """Validate post-publication semantics without requiring block survival."""
     if not isinstance(plan, FragmentPlan):
@@ -1226,6 +1333,10 @@ def validate_published_fragment_observation(
     if not isinstance(observation, PublishedFragmentObservation):
         raise TypeError(
             "published fragment validation requires a PublishedFragmentObservation"
+        )
+    if not isinstance(prepublication_projection, ProjectedFragment):
+        raise TypeError(
+            "published fragment validation requires its prepublication projection"
         )
 
     outcomes = list(observation.semantic_outcomes)
@@ -1284,8 +1395,22 @@ def validate_published_fragment_observation(
             *(edge.target_block_id for edge in operation.edges),
         )
 
+    _validate_observable_helpers(
+        prepublication_projection.fallthrough_helpers,
+        observation.fallthrough_helpers,
+        outcomes,
+    )
+    _validate_observable_helpers(
+        prepublication_projection.root_fallthrough_helpers,
+        observation.root_fallthrough_helpers,
+        outcomes,
+    )
+
     semantic_outcomes = observation.semantic_outcomes
-    for postcondition, subject_id in _required_postpublication_outcomes(plan):
+    for postcondition, subject_id in _required_postpublication_outcomes(
+        plan,
+        prepublication_projection,
+    ):
         matching = tuple(
             outcome
             for outcome in semantic_outcomes

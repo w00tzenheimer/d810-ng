@@ -848,6 +848,8 @@ def observe_published_semantic_fragment(
         published_root_ids=tuple(published_roots),
         observable_operations=tuple(observable_operations),
         semantic_outcomes=validation.outcomes,
+        fallthrough_helpers=projection.fallthrough_helpers,
+        root_fallthrough_helpers=projection.root_fallthrough_helpers,
     )
 
 

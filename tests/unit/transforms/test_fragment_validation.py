@@ -30,6 +30,7 @@ from d810.transforms.fragment_validation import (
     ProjectedFragmentBlock,
     ProjectedIdentityBinding,
     ProjectedRangeFact,
+    ProjectedRootFallthroughHelper,
     validate_fragment_projection,
     validate_published_fragment_observation,
 )
@@ -296,6 +297,67 @@ def _replace_blocks(
     return replace(
         projection,
         blocks=tuple(by_id.get(block.block_id, block) for block in projection.blocks),
+    )
+
+
+def _projection_with_root_fallthrough_helper(
+    plan: FragmentPlan,
+) -> ProjectedFragment:
+    projection = _projection(plan)
+    root_helper_id = "root.fallthrough"
+    return replace(
+        projection,
+        blocks=(
+            _projected_block(
+                "entry",
+                BlockKind.TWO_WAY,
+                (root_helper_id, "true"),
+                (),
+                0,
+            ),
+            _projected_block(
+                root_helper_id,
+                BlockKind.ONE_WAY,
+                ("replacement",),
+                ("entry",),
+                1,
+            ),
+            replace(
+                projection.block("replacement"),
+                predecessors=(root_helper_id,),
+                physical_position=2,
+            ),
+            replace(
+                projection.block("condition.fallthrough"),
+                physical_position=3,
+            ),
+            replace(projection.block("false"), physical_position=4),
+            replace(
+                projection.block("true"),
+                predecessors=("entry", "replacement"),
+                physical_position=5,
+            ),
+            replace(projection.block("original"), physical_position=6),
+            replace(projection.block("dispatcher"), physical_position=7),
+        ),
+        identity_bindings=projection.identity_bindings
+        + (
+            ProjectedIdentityBinding(
+                block_id=root_helper_id,
+                logical_owner_id="logical:root-fallthrough",
+                version=0,
+                generation=3,
+                state=FragmentBindingState.STAGED,
+                stable_identity=None,
+            ),
+        ),
+        root_fallthrough_helpers=(
+            ProjectedRootFallthroughHelper(
+                helper_block_id=root_helper_id,
+                source_block_id="entry",
+                root_block_id="replacement",
+            ),
+        ),
     )
 
 
@@ -606,7 +668,8 @@ def _published_observation(
     plan: FragmentPlan | None = None,
 ) -> PublishedFragmentObservation:
     plan = _plan() if plan is None else plan
-    prevalidation = validate_fragment_projection(plan, _projection(plan))
+    projection = _projection(plan)
+    prevalidation = validate_fragment_projection(plan, projection)
     assert prevalidation.passed
     return PublishedFragmentObservation(
         plan_id=plan.plan_id,
@@ -614,6 +677,8 @@ def _published_observation(
         published_root_ids=plan.roots,
         observable_operations=plan.operations,
         semantic_outcomes=prevalidation.outcomes,
+        fallthrough_helpers=projection.fallthrough_helpers,
+        root_fallthrough_helpers=projection.root_fallthrough_helpers,
     )
 
 
@@ -621,7 +686,9 @@ def test_postpublication_accepts_observable_semantics_without_physical_blocks() 
     plan = _plan()
     observation = _published_observation(plan)
 
-    result = validate_published_fragment_observation(plan, observation)
+    result = validate_published_fragment_observation(
+        plan, observation, _projection(plan)
+    )
 
     assert result.passed
     assert result.failures == ()
@@ -651,7 +718,9 @@ def test_postpublication_rejects_changed_semantic_operation() -> None:
         observable_operations=(changed_operation,),
     )
 
-    result = validate_published_fragment_observation(plan, observation)
+    result = validate_published_fragment_observation(
+        plan, observation, _projection(plan)
+    )
 
     assert FragmentValidationPostcondition.OBSERVABLE_OPERATION in {
         outcome.postcondition for outcome in result.failures
@@ -671,7 +740,9 @@ def test_postpublication_rejects_missing_semantic_postcondition() -> None:
         ),
     )
 
-    result = validate_published_fragment_observation(plan, observation)
+    result = validate_published_fragment_observation(
+        plan, observation, _projection(plan)
+    )
 
     assert FragmentValidationPostcondition.POSTVALIDATION_COVERAGE in {
         outcome.postcondition for outcome in result.failures
@@ -685,8 +756,68 @@ def test_postpublication_rejects_missing_root_authority() -> None:
         published_root_ids=(),
     )
 
-    result = validate_published_fragment_observation(plan, observation)
+    result = validate_published_fragment_observation(
+        plan, observation, _projection(plan)
+    )
 
     assert FragmentValidationPostcondition.ROOT_AUTHORITY in {
+        outcome.postcondition for outcome in result.failures
+    }
+
+
+def test_postpublication_rejects_missing_projected_fallthrough_helper() -> None:
+    plan = _plan()
+    projection = _projection(plan)
+    observation = replace(
+        _published_observation(plan),
+        fallthrough_helpers=(),
+    )
+
+    result = validate_published_fragment_observation(plan, observation, projection)
+
+    assert FragmentValidationPostcondition.OBSERVABLE_FALLTHROUGH_HELPER in {
+        outcome.postcondition for outcome in result.failures
+    }
+
+
+def test_postpublication_rejects_helper_without_live_topology_outcome() -> None:
+    plan = _plan()
+    projection = _projection(plan)
+    observation = _published_observation(plan)
+    observation = replace(
+        observation,
+        semantic_outcomes=tuple(
+            outcome
+            for outcome in observation.semantic_outcomes
+            if outcome.postcondition
+            is not FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY
+        ),
+    )
+
+    result = validate_published_fragment_observation(plan, observation, projection)
+
+    assert FragmentValidationPostcondition.POSTVALIDATION_COVERAGE in {
+        outcome.postcondition for outcome in result.failures
+    }
+
+
+def test_postpublication_rejects_missing_projected_root_fallthrough_helper() -> None:
+    plan = _plan()
+    projection = _projection_with_root_fallthrough_helper(plan)
+    prevalidation = validate_fragment_projection(plan, projection)
+    assert prevalidation.passed
+    observation = PublishedFragmentObservation(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        published_root_ids=plan.roots,
+        observable_operations=plan.operations,
+        semantic_outcomes=prevalidation.outcomes,
+        fallthrough_helpers=projection.fallthrough_helpers,
+        root_fallthrough_helpers=(),
+    )
+
+    result = validate_published_fragment_observation(plan, observation, projection)
+
+    assert FragmentValidationPostcondition.OBSERVABLE_FALLTHROUGH_HELPER in {
         outcome.postcondition for outcome in result.failures
     }

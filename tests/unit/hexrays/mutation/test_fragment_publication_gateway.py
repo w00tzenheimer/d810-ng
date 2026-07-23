@@ -364,6 +364,8 @@ class _FragmentBackend:
             published_root_ids=plan.roots,
             observable_operations=plan.operations,
             semantic_outcomes=outcomes,
+            fallthrough_helpers=self.projection.fallthrough_helpers,
+            root_fallthrough_helpers=self.projection.root_fallthrough_helpers,
         )
 
     def _rollback_semantic_fragment_roots(

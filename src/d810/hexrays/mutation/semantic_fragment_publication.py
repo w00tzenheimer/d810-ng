@@ -112,7 +112,11 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             raise TypeError(
                 "semantic-fragment backend returned an invalid published observation"
             )
-        postpublication = validate_published_fragment_observation(plan, observation)
+        postpublication = validate_published_fragment_observation(
+            plan,
+            observation,
+            projection,
+        )
         if not postpublication.passed:
             raise SemanticFragmentPublicationRejected(
                 "postpublication",
