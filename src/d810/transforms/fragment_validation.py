@@ -635,6 +635,7 @@ def _validate_reachability(
         if block.role not in {
             FragmentBlockRole.REPLACEMENT,
             FragmentBlockRole.SYNTHETIC,
+            FragmentBlockRole.IMPORTED,
         }:
             continue
         passed = block.block_id in fragment_reachable
@@ -1032,7 +1033,11 @@ def _validate_identity(
         expected_state = (
             FragmentBindingState.STAGED
             if block.role
-            in {FragmentBlockRole.REPLACEMENT, FragmentBlockRole.SYNTHETIC}
+            in {
+                FragmentBlockRole.REPLACEMENT,
+                FragmentBlockRole.SYNTHETIC,
+                FragmentBlockRole.IMPORTED,
+            }
             else FragmentBindingState.PUBLISHED
         )
         passed = bool(
@@ -1051,18 +1056,26 @@ def _validate_identity(
             block.block_id,
         )
 
-        if block.role is FragmentBlockRole.SYNTHETIC:
+        if block.role in {
+            FragmentBlockRole.SYNTHETIC,
+            FragmentBlockRole.IMPORTED,
+        }:
             lineage_valid = bool(
                 binding is not None and binding.previous_version is None
+            )
+            owner_description = (
+                "imported native owner"
+                if block.role is FragmentBlockRole.IMPORTED
+                else "new synthetic owner"
             )
             _outcome(
                 outcomes,
                 FragmentValidationPostcondition.VERSION_LINEAGE,
                 block.block_id,
                 lineage_valid,
-                "new synthetic owner has no predecessor version"
+                f"{owner_description} has no predecessor version"
                 if lineage_valid
-                else "new synthetic owner incorrectly claims a predecessor version",
+                else f"{owner_description} incorrectly claims a predecessor version",
                 block.block_id,
             )
         elif block.role is FragmentBlockRole.REPLACEMENT:
@@ -1276,6 +1289,7 @@ def _required_postpublication_outcomes(
         in {
             FragmentBlockRole.REPLACEMENT,
             FragmentBlockRole.SYNTHETIC,
+            FragmentBlockRole.IMPORTED,
         }
     )
     for helper in (

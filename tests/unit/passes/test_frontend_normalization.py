@@ -16,8 +16,11 @@ from d810.analyses.control_flow.frontend_normalization import (
     plan_detached_semantic_closure_import,
 )
 from d810.analyses.control_flow.native_semantic_closure import (
+    NativeBlock,
+    NativeCfg,
     NativeRange,
     NativeSemanticClosure,
+    NativeTerminalKind,
 )
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
@@ -48,7 +51,11 @@ from d810.passes.pass_pipeline import (
     BackendRoute,
     FunctionPipelineContext,
 )
-from d810.transforms.fragment_plan import FragmentPublicationPurpose
+from d810.transforms.fragment_plan import (
+    FragmentBlockMaterialization,
+    FragmentBlockRole,
+    FragmentPublicationPurpose,
+)
 from d810.transforms.frontend_normalization import (
     plan_frontend_computed_branch_normalization,
 )
@@ -178,6 +185,7 @@ def _conditional_proof(
 def _evidence(
     *,
     closure: NativeSemanticClosure | None = None,
+    native_cfg: NativeCfg | None = None,
     provenance: tuple[tuple[str, str], ...] = (),
 ) -> FrontendNormalizationEvidence:
     return FrontendNormalizationEvidence(
@@ -186,6 +194,7 @@ def _evidence(
         atomic_group_id="frontend-normalization:g7",
         transfer_proofs=(_conditional_proof(provenance=provenance),),
         semantic_closure=closure,
+        native_cfg=native_cfg,
     )
 
 
@@ -196,6 +205,18 @@ def _closure() -> NativeSemanticClosure:
         proven_internal_edges=(),
         abstentions=(),
         seed_provenance=(),
+    )
+
+
+def _native_cfg() -> NativeCfg:
+    return NativeCfg(
+        {
+            0x1300: NativeBlock(
+                start_ea=0x1300,
+                end_ea=0x1310,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+        }
     )
 
 
@@ -252,7 +273,7 @@ def test_provider_provenance_is_diagnostic_and_does_not_change_plan() -> None:
 def test_import_request_names_only_missing_proven_closure_entries() -> None:
     request = plan_detached_semantic_closure_import(
         _graph(faithful=False, include_false_target=False),
-        _evidence(closure=_closure()),
+        _evidence(closure=_closure(), native_cfg=_native_cfg()),
     )
 
     assert request == DetachedSemanticClosureImportRequest(
@@ -263,14 +284,42 @@ def test_import_request_names_only_missing_proven_closure_entries() -> None:
         native_ranges=(NativeRange(0x1300, 0x1310),),
         proof_ids=("conditional@0x1101",),
         semantic_closure=_closure(),
+        native_cfg=_native_cfg(),
     )
     assert (
         plan_detached_semantic_closure_import(
             _graph(faithful=True),
-            _evidence(closure=_closure()),
+            _evidence(closure=_closure(), native_cfg=_native_cfg()),
         )
         is None
     )
+
+
+def test_missing_target_is_staged_inside_the_same_normalization_fragment() -> None:
+    plan = plan_frontend_computed_branch_normalization(
+        _graph(faithful=False, include_false_target=False),
+        _evidence(closure=_closure(), native_cfg=_native_cfg()),
+    )
+
+    assert plan is not None
+    imported = tuple(
+        block for block in plan.blocks if block.role is FragmentBlockRole.IMPORTED
+    )
+    assert len(imported) == 1
+    assert (
+        imported[0].materialization
+        is FragmentBlockMaterialization.IMPORT_NATIVE
+    )
+    assert imported[0].semantic_anchor_ea == 0x1300
+    assert len(plan.native_bodies) == 1
+    assert plan.native_bodies[0].entry_block_ids == (imported[0].block_id,)
+    operation = plan.operations[0]
+    fallthrough = next(
+        edge
+        for edge in operation.edges
+        if edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+    )
+    assert fallthrough.target_block_id == imported[0].block_id
 
 
 def test_normalization_plan_replaces_lost_branch_with_one_atomic_two_arm_operation() -> None:
@@ -365,7 +414,7 @@ def test_resolve_pass_publishes_typed_portable_evidence_only() -> None:
 def test_import_and_normalize_passes_consume_the_resolved_analysis() -> None:
     graph = _graph(faithful=False, include_false_target=False)
     facts = AnalysisManager(graph)
-    evidence = _evidence(closure=_closure())
+    evidence = _evidence(closure=_closure(), native_cfg=_native_cfg())
     facts.put_analysis(FRONTEND_NORMALIZATION_EVIDENCE, evidence)
     import_result = ImportDetachedSemanticClosure().run(
         _context(graph, facts=facts)
