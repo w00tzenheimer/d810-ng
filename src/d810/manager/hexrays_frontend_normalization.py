@@ -125,6 +125,8 @@ def run_live_frontend_normalization(
     details["frontend_normalization"] = {
         "authority": "fragment_receipt",
         "published_generation": result.published_generation,
+        "published_work_item_id": result.published_work_item_id,
+        "remaining_obligation_count": result.remaining_obligation_count,
     }
     decision["microcode_modified"] = True
 
