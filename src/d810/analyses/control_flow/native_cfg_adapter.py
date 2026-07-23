@@ -83,6 +83,35 @@ def can_decode_proven_native_successor(
     )
 
 
+def can_decode_native_call_continuation(
+    *,
+    function_contains: bool,
+    ida_marks_flow: bool,
+    is_direct_call: bool,
+    is_code: bool,
+    owner_func_ea: int | None,
+    requested_func_ea: int,
+) -> bool:
+    """Retain owner-bounded call flow outside IDA's nominal function extent.
+
+    Resolver-proven detached code can lie outside ``func_contains`` while IDA
+    still marks the architectural call continuation as executable flow.  That
+    flow is admissible when no other function owns it.  An unresolved indirect
+    call inside the nominal function may also continue without the flow bit;
+    direct calls without flow remain fail-closed because their known callee may
+    be non-returning.
+    """
+    if not can_decode_proven_native_successor(
+        is_code=is_code,
+        owner_func_ea=owner_func_ea,
+        requested_func_ea=requested_func_ea,
+    ):
+        return False
+    if ida_marks_flow:
+        return True
+    return bool(function_contains and not is_direct_call)
+
+
 def has_native_semantic_boundary(
     *,
     resolver_cut: bool,
@@ -253,6 +282,7 @@ def build_native_cfg_from_flow_facts(
 __all__ = [
     "NativeFlowBlockFact",
     "build_native_cfg_from_flow_facts",
+    "can_decode_native_call_continuation",
     "can_decode_proven_native_successor",
     "has_native_semantic_boundary",
     "is_native_direct_control_operand",

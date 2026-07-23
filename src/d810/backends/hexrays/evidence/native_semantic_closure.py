@@ -15,6 +15,7 @@ import idaapi
 from d810.analyses.control_flow.native_cfg_adapter import (
     NativeFlowBlockFact,
     build_native_cfg_from_flow_facts,
+    can_decode_native_call_continuation,
     can_decode_proven_native_successor,
     has_native_semantic_boundary,
     is_native_direct_control_operand,
@@ -191,9 +192,16 @@ def _decode_missing_flow_block(
             )
 
         if is_call:
-            has_continuation = bool(
-                ida_funcs.func_contains(function, next_ea)
-                and ida_bytes.is_flow(ida_bytes.get_full_flags(next_ea))
+            next_flags = ida_bytes.get_full_flags(next_ea)
+            has_continuation = can_decode_native_call_continuation(
+                function_contains=bool(
+                    ida_funcs.func_contains(function, next_ea)
+                ),
+                ida_marks_flow=bool(ida_bytes.is_flow(next_flags)),
+                is_direct_call=direct_target_ea is not None,
+                is_code=bool(ida_bytes.is_code(next_flags)),
+                owner_func_ea=_owner_func_ea(next_ea),
+                requested_func_ea=requested_func_ea,
             )
             if not has_continuation:
                 return NativeFlowBlockFact(
