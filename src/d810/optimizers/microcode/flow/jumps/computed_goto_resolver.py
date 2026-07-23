@@ -10854,15 +10854,14 @@ def _preopt_resolver_cut_eas(
 
 def _preopt_union_internal_successor_eas(
     closure: NativeSemanticClosure,
-    *,
-    state_write_routes: Sequence[PortableStateWriteRouteEvidence] = (),
 ) -> dict[int, int]:
-    """Return unique resolver-cut edges whose endpoints share the union.
+    """Return unique frontend resolver cuts whose endpoints share the union.
 
     PREOPT represents an unresolved indirect tail with a synthetic empty
     successor.  Rebinding that sentinel is safe only when one native
     instruction has exactly one resolver-proven target and the target has an
-    owned stable-EA entry in the same closure.
+    owned stable-EA entry in the same closure.  Final state-machine routes are
+    semantic-lowering evidence and must not enter frontend normalization.
     """
     included = {int(entry_ea) for entry_ea in closure.included_block_eas}
     targets_by_instruction: dict[int, set[int]] = {}
@@ -10873,15 +10872,6 @@ def _preopt_union_internal_successor_eas(
             int(edge.source_instruction_ea),
             set(),
         ).add(int(edge.target_ea))
-    for route in state_write_routes:
-        if (
-            route.delivery_kind is not StateWriteRouteDeliveryKind.DIRECT_TARGET
-            or int(route.target_ea) not in included
-        ):
-            continue
-        targets_by_instruction.setdefault(int(route.delivery_ea), set()).add(
-            int(route.target_ea)
-        )
     return {
         instruction_ea: next(iter(target_eas))
         for instruction_ea, target_eas in targets_by_instruction.items()
@@ -11162,10 +11152,7 @@ def _capture_prepatch_preopt_union_source(
             owned_block_entry_eas=tuple(closure.included_block_eas),
             terminal_return_entry_eas=terminal_return_entry_eas,
             resolver_proven_internal_successor_eas=(
-                _preopt_union_internal_successor_eas(
-                    closure,
-                    state_write_routes=state.portable_evidence.state_write_routes,
-                )
+                _preopt_union_internal_successor_eas(closure)
             ),
             native_stack_frame_offsets_by_ea=dict(
                 resolution.native_stack_frame_offsets
@@ -13890,12 +13877,7 @@ def prepare_preopt_union_closure(
                 owned_block_entry_eas=tuple(effective_closure.included_block_eas),
                 terminal_return_entry_eas=terminal_return_entry_eas,
                 resolver_proven_internal_successor_eas=(
-                    _preopt_union_internal_successor_eas(
-                        effective_closure,
-                        state_write_routes=(
-                            state.portable_evidence.state_write_routes
-                        ),
-                    )
+                    _preopt_union_internal_successor_eas(effective_closure)
                 ),
             )
             if not captured:
