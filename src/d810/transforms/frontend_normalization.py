@@ -164,9 +164,13 @@ def _proof_is_faithful(binding: _BoundTransferProof) -> bool:
 def _graph_identities(
     graph: FlowGraph,
     evidence: FrontendNormalizationEvidence,
+    serials: set[int],
 ) -> dict[int, StableBlockIdentity] | None:
     identities: dict[int, StableBlockIdentity] = {}
-    for block in graph.blocks.values():
+    for serial in sorted(serials):
+        block = graph.blocks.get(int(serial))
+        if block is None:
+            return None
         identity = stable_block_identity_from_snapshot(
             block,
             native_key=evidence.native_key,
@@ -248,29 +252,23 @@ def plan_frontend_computed_branch_normalization(
         return None
 
     source_serials = tuple(int(binding.source.serial) for binding in bindings)
+    source_serial_set = set(source_serials)
     if (
-        len(set(source_serials)) != len(source_serials)
+        len(source_serial_set) != len(source_serials)
         or int(graph.entry_serial) in source_serials
         or any(not graph.predecessors(serial) for serial in source_serials)
     ):
         return None
-    identities = _graph_identities(graph, evidence)
-    if identities is None:
+    root_source_serials = tuple(
+        serial
+        for serial in source_serials
+        if any(
+            predecessor not in source_serial_set
+            for predecessor in graph.predecessors(serial)
+        )
+    )
+    if not root_source_serials:
         return None
-
-    base_ids = {
-        serial: f"native[{_identity_token(identity)}]"
-        for serial, identity in identities.items()
-    }
-    original_ids = {
-        serial: f"{base_ids[serial]}:original" for serial in source_serials
-    }
-    replacement_ids = {
-        serial: f"{base_ids[serial]}:replacement" for serial in source_serials
-    }
-
-    def published_id(serial: int) -> str:
-        return replacement_ids.get(int(serial), base_ids[int(serial)])
 
     body_id = f"native-body:{evidence.atomic_group_id}"
     imported_native_blocks: dict[int, NativeBlock] = {}
@@ -310,9 +308,43 @@ def plan_frontend_computed_branch_normalization(
             if target is None and imported_id_for_anchor(endpoint.anchor_ea) is None:
                 return None
 
+    relevant_serials = set(source_serials)
+    for binding in bindings:
+        relevant_serials.update(
+            int(target.serial)
+            for _endpoint, target in binding.endpoints
+            if target is not None
+        )
+        relevant_serials.update(int(block.serial) for block in binding.corridor)
+    for root_serial in root_source_serials:
+        relevant_serials.update(graph.predecessors(root_serial))
+    for native_block in imported_native_blocks.values():
+        for edge in native_block.outgoing_edges:
+            if edge.kind is NativeEdgeKind.CALL or edge.target_ea is None:
+                continue
+            live_target = _live_block_at_native_ea(graph, int(edge.target_ea))
+            if live_target is not None:
+                relevant_serials.add(int(live_target.serial))
+
+    identities = _graph_identities(graph, evidence, relevant_serials)
+    if identities is None:
+        return None
+    base_ids = {
+        serial: f"native[{_identity_token(identity)}]"
+        for serial, identity in identities.items()
+    }
+    original_ids = {
+        serial: f"{base_ids[serial]}:original" for serial in source_serials
+    }
+    replacement_ids = {
+        serial: f"{base_ids[serial]}:replacement" for serial in source_serials
+    }
+
+    def published_id(serial: int) -> str:
+        return replacement_ids.get(int(serial), base_ids[int(serial)])
+
     blocks: list[FragmentBlock] = []
-    for block in sorted(graph.blocks.values(), key=lambda item: int(item.serial)):
-        serial = int(block.serial)
+    for serial in sorted(relevant_serials):
         identity = identities[serial]
         semantic_anchor_ea = _semantic_anchor(identity)
         if serial in replacement_ids:
@@ -552,7 +584,7 @@ def plan_frontend_computed_branch_normalization(
         )
 
     roots = tuple(
-        replacement_ids[int(binding.source.serial)] for binding in bindings
+        replacement_ids[serial] for serial in root_source_serials
     )
     owned_originals = tuple(
         original_ids[int(binding.source.serial)] for binding in bindings
