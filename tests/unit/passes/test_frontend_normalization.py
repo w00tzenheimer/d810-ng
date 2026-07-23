@@ -583,9 +583,9 @@ def test_normalization_publishes_only_owned_boundary_roots() -> None:
             4: _block(
                 4,
                 0x1400,
-                (),
+                (7,),
                 (2,),
-                (_insn(0x1400, InsnKind.RET),),
+                (_insn(0x1400, InsnKind.GOTO, target=7),),
             ),
             5: _block(
                 5,
@@ -600,6 +600,13 @@ def test_normalization_publishes_only_owned_boundary_roots() -> None:
                 (5,),
                 (0,),
                 (_insn(0x1020, InsnKind.GOTO, target=5),),
+            ),
+            7: _block(
+                7,
+                0x1450,
+                (),
+                (4,),
+                (_insn(0x1450, InsnKind.RET),),
             ),
         },
         entry_serial=0,
@@ -633,7 +640,63 @@ def test_normalization_publishes_only_owned_boundary_roots() -> None:
         for block in plan.blocks
         if block.role is FragmentBlockRole.EXTERNAL
     }
-    assert {0x1000, 0x1020, 0x1050} <= external_anchors
+    assert {0x1000, 0x1020, 0x1050, 0x1400, 0x1450} <= external_anchors
+
+
+def test_normalization_abstains_when_original_route_corridor_is_not_closed() -> None:
+    graph = FlowGraph(
+        blocks={
+            0: _block(
+                0,
+                0x1000,
+                (1,),
+                (),
+                (_insn(0x1000, InsnKind.GOTO, target=1),),
+            ),
+            1: _block(
+                1,
+                0x1100,
+                (2,),
+                (0,),
+                (_insn(0x1100, InsnKind.GOTO, target=2),),
+            ),
+            2: _block(
+                2,
+                0x1200,
+                (),
+                (1, 4),
+                (_insn(0x1200, InsnKind.RET),),
+            ),
+            3: _block(
+                3,
+                0x1300,
+                (),
+                (),
+                (_insn(0x1300, InsnKind.RET),),
+            ),
+            4: _block(
+                4,
+                0x1400,
+                (2,),
+                (),
+                (_insn(0x1400, InsnKind.GOTO, target=2),),
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    evidence = replace(
+        _evidence(),
+        transfer_proofs=(
+            _direct_proof(
+                proof_id="direct@0x1100",
+                source_ea=0x1100,
+                target_ea=0x1300,
+            ),
+        ),
+    )
+
+    assert plan_frontend_computed_branch_normalization(graph, evidence) is None
 
 
 def test_normalization_abstains_when_live_graph_already_preserves_both_arms() -> None:

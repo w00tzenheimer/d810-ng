@@ -295,6 +295,48 @@ def _entry_root_corridor_serials(
     return forward_reachable & root_ancestors
 
 
+def _owned_original_route_corridor_serials(
+    graph: FlowGraph,
+    source_serials: tuple[int, ...],
+    relevant_serials: set[int],
+) -> set[int] | None:
+    """Close superseded originals' outgoing routes without guessing boundaries."""
+    relevant = {int(serial) for serial in relevant_serials}
+    corridor: set[int] = set()
+    pending = [
+        int(successor)
+        for source_serial in source_serials
+        for successor in graph.blocks[int(source_serial)].succs
+        if int(successor) not in relevant
+    ]
+    while pending:
+        serial = pending.pop()
+        if serial in relevant or serial in corridor:
+            continue
+        block = graph.blocks.get(serial)
+        if block is None:
+            return None
+        corridor.add(serial)
+        pending.extend(
+            int(successor)
+            for successor in block.succs
+            if int(successor) not in relevant and int(successor) not in corridor
+        )
+
+    closed_serials = relevant | corridor
+    for serial in closed_serials:
+        block = graph.blocks.get(serial)
+        if block is None:
+            return None
+        neighbours = {
+            *(int(successor) for successor in block.succs),
+            *(int(predecessor) for predecessor in graph.predecessors(serial)),
+        }
+        if not neighbours <= closed_serials:
+            return None
+    return corridor
+
+
 def plan_frontend_computed_branch_normalization(
     graph: FlowGraph,
     evidence: FrontendNormalizationEvidence,
@@ -396,6 +438,14 @@ def plan_frontend_computed_branch_normalization(
             live_target = _live_block_at_native_ea(graph, int(edge.target_ea))
             if live_target is not None:
                 relevant_serials.add(int(live_target.serial))
+    original_route_corridor_serials = _owned_original_route_corridor_serials(
+        graph,
+        source_serials,
+        relevant_serials,
+    )
+    if original_route_corridor_serials is None:
+        return None
+    relevant_serials.update(original_route_corridor_serials)
 
     identities = _graph_identities(graph, evidence, relevant_serials)
     if identities is None:
