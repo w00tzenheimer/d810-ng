@@ -108,6 +108,11 @@ def _build_current_mba_identity_index(*, session, mba):
     if state.preopt_union_import_active and state.identity_index is not None:
         return state.identity_index
 
+    build_graph = getattr(mba, "build_graph", None)
+    if not callable(build_graph):
+        raise TypeError("current MBA identity index requires a live graph")
+    build_graph()
+
     imported_instruction_origins = dict(
         state.imported_instruction_origins_for(stable_mba_identity(mba))
     )

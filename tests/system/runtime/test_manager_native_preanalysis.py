@@ -47,7 +47,12 @@ def test_current_mba_identity_index_uses_only_current_mba_imported_origins(
         function_ea=0x40A560,
     )
     state = resolver_session_state(session)
-    mba = SimpleNamespace(maturity=0, this=0x1234)
+    events: list[str] = []
+    mba = SimpleNamespace(
+        maturity=0,
+        this=0x1234,
+        build_graph=lambda: events.append("build_graph"),
+    )
     assert state.bind_current_imported_instruction_origins(0x1234, origins)
     captured: dict[str, object] = {}
     index = SimpleNamespace(
@@ -56,6 +61,7 @@ def test_current_mba_identity_index_uses_only_current_mba_imported_origins(
     )
 
     def build_index(current_mba, **kwargs):
+        events.append("index")
         captured["mba"] = current_mba
         captured.update(kwargs)
         return index
@@ -70,6 +76,7 @@ def test_current_mba_identity_index_uses_only_current_mba_imported_origins(
     assert captured["mba"] is mba
     assert captured["imported_instruction_origins"] == dict(origins)
     assert state.identity_index is index
+    assert events == ["build_graph", "index"]
 
 
 def test_current_mba_identity_index_rejects_previous_mba_origins(monkeypatch) -> None:
@@ -97,7 +104,11 @@ def test_current_mba_identity_index_rejects_previous_mba_origins(monkeypatch) ->
 
     _build_current_mba_identity_index(
         session=session,
-        mba=SimpleNamespace(maturity=0, this=0x5678),
+        mba=SimpleNamespace(
+            maturity=0,
+            this=0x5678,
+            build_graph=lambda: None,
+        ),
     )
 
     assert captured["imported_instruction_origins"] == {}
