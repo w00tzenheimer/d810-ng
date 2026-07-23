@@ -3096,6 +3096,127 @@ def test_gateway_publishes_direct_fragment_root_from_entry() -> None:
     assert modifier._semantic_fragment_state is None
 
 
+def test_gateway_allows_staged_internal_predecessor_for_publication_root() -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original_a = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    bridge = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_1WAY)
+    original_b = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(5, start=0x401050, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(6, start=0x401060, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original_a)
+    _connect(original_a, dispatcher)
+    _connect(bridge, original_b)
+    _connect(original_b, dispatcher)
+    mba = _Mba(
+        (entry, original_a, bridge, original_b, target, dispatcher, stop)
+    )
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    original_a_handle = gateway.identity_index.handle_for_serial(original_a.serial)
+    original_b_handle = gateway.identity_index.handle_for_serial(original_b.serial)
+    assert original_a_handle is not None
+    assert original_b_handle is not None
+    original_a_proxy = gateway.identity_index.logical_proxy_for_handle(
+        original_a_handle
+    )
+    original_b_proxy = gateway.identity_index.logical_proxy_for_handle(
+        original_b_handle
+    )
+    assert original_a_proxy is not None
+    assert original_b_proxy is not None
+    plan = _plan(
+        gateway,
+        entry=entry.serial,
+        original=original_a.serial,
+        target=target.serial,
+        dispatcher=dispatcher.serial,
+    )
+    index = gateway.identity_index
+
+    def _native(block_id: str, role: FragmentBlockRole, serial: int) -> FragmentBlock:
+        handle = index.handle_for_serial(serial)
+        assert handle is not None and handle.stable_identity is not None
+        rebound = index.resolve(handle)
+        assert rebound is not None and rebound.anchor_ea is not None
+        return FragmentBlock(
+            block_id=block_id,
+            role=role,
+            materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+            semantic_anchor_ea=int(rebound.anchor_ea),
+            stable_identity=handle.stable_identity,
+        )
+
+    original_b_plan = _native(
+        "original-b",
+        FragmentBlockRole.ORIGINAL,
+        original_b.serial,
+    )
+    replacement_b = FragmentBlock(
+        block_id="replacement-b",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=original_b_plan.semantic_anchor_ea,
+        stable_identity=original_b_plan.stable_identity,
+        replaces_block_id=original_b_plan.block_id,
+    )
+    plan = replace(
+        plan,
+        plan_id="runtime-two-root-fragment",
+        blocks=plan.blocks
+        + (
+            _native("bridge", FragmentBlockRole.EXTERNAL, bridge.serial),
+            original_b_plan,
+            replacement_b,
+        ),
+        roots=("replacement", replacement_b.block_id),
+        owned_originals=("original", original_b_plan.block_id),
+        operations=(
+            replace(
+                plan.operations[0],
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=replacement_b.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="direct-route-b",
+                source_block_id=replacement_b.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="target",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    receipt = gateway.publish_semantic_fragment(modifier, plan)
+
+    replacement_a_version = original_a_proxy.resolve()
+    replacement_b_version = original_b_proxy.resolve()
+    assert replacement_a_version is not None
+    assert replacement_b_version is not None
+    replacement_a_binding = gateway.identity_index.resolve_logical_version(
+        replacement_a_version
+    )
+    replacement_b_binding = gateway.identity_index.resolve_logical_version(
+        replacement_b_version
+    )
+    assert replacement_a_binding is not None
+    assert replacement_b_binding is not None
+    replacement_a = mba.get_mblock(replacement_a_binding.serial)
+    replacement_b_live = mba.get_mblock(replacement_b_binding.serial)
+    assert tuple(entry.succset) == (replacement_a.serial,)
+    assert tuple(bridge.succset) == (replacement_b_live.serial,)
+    assert tuple(replacement_a.succset) == (replacement_b_live.serial,)
+    assert set(replacement_b_live.predset) == {bridge.serial, replacement_a.serial}
+    assert receipt.root_publication_confirmed
+
+
 def test_direct_root_partial_write_restores_previous_authority(monkeypatch) -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
