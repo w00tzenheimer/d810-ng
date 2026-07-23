@@ -555,15 +555,15 @@ def test_normalization_publishes_only_owned_boundary_roots() -> None:
             0: _block(
                 0,
                 0x1000,
-                (1,),
+                (6,),
                 (),
-                (_insn(0x1000, InsnKind.GOTO, target=1),),
+                (_insn(0x1000, InsnKind.GOTO, target=6),),
             ),
             1: _block(
                 1,
                 0x1100,
                 (2,),
-                (0,),
+                (5,),
                 (_insn(0x1100, InsnKind.GOTO, target=2),),
             ),
             2: _block(
@@ -586,6 +586,20 @@ def test_normalization_publishes_only_owned_boundary_roots() -> None:
                 (),
                 (2,),
                 (_insn(0x1400, InsnKind.RET),),
+            ),
+            5: _block(
+                5,
+                0x1050,
+                (1,),
+                (6,),
+                (_insn(0x1050, InsnKind.GOTO, target=1),),
+            ),
+            6: _block(
+                6,
+                0x1020,
+                (5,),
+                (0,),
+                (_insn(0x1020, InsnKind.GOTO, target=5),),
             ),
         },
         entry_serial=0,
@@ -614,11 +628,12 @@ def test_normalization_publishes_only_owned_boundary_roots() -> None:
     assert {
         plan.block(block_id).semantic_anchor_ea for block_id in plan.roots
     } == {0x1100}
-    assert any(
-        block.role is FragmentBlockRole.EXTERNAL
-        and block.semantic_anchor_ea == 0x1000
+    external_anchors = {
+        block.semantic_anchor_ea
         for block in plan.blocks
-    )
+        if block.role is FragmentBlockRole.EXTERNAL
+    }
+    assert {0x1000, 0x1020, 0x1050} <= external_anchors
 
 
 def test_normalization_abstains_when_live_graph_already_preserves_both_arms() -> None:
