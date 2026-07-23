@@ -150,9 +150,11 @@ class _Backend:
         state: NativePreanalysisSessionState,
         *,
         publish_receipt: bool,
+        partial_work_item: bool = False,
     ) -> None:
         self.state = state
         self.publish_receipt = publish_receipt
+        self.partial_work_item = partial_work_item
         self.plans: list[object] = []
 
     def capabilities(self) -> frozenset[str]:
@@ -168,7 +170,14 @@ class _Backend:
             # backend models only their successful observable state transition.
             self.state._fragment_publication_mark_normalization_staged()
             self.state._fragment_publication_mark_normalization_validated()
-            self.state._fragment_publication_mark_normalization_published_and_postvalidated()
+            if self.partial_work_item:
+                self.state._fragment_publication_commit_normalization_work_item(
+                    work_item_id="frontend-normalization:g7:root@0x1100",
+                    selected_obligation_ids=("direct@0x1100",),
+                    remaining_obligation_ids=("direct@0x1400",),
+                )
+            else:
+                self.state._fragment_publication_mark_normalization_published_and_postvalidated()
         return _graph(normalized=True)
 
 
@@ -219,6 +228,35 @@ def test_pipeline_rejects_changed_graph_without_current_receipt_generation() -> 
             native_key=NATIVE_KEY,
         )
 
+    assert state.normalization_published_postvalidated_generation is None
+    assert len(backend.plans) == 1
+
+
+def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance() -> (
+    None
+):
+    state = _state()
+    backend = _Backend(
+        state,
+        publish_receipt=True,
+        partial_work_item=True,
+    )
+
+    result = run_frontend_normalization_pipeline(
+        source=_source(_graph(normalized=False)),
+        backend=backend,
+        evidence_provider=_Provider(_evidence()),
+        lifecycle_state=state,
+        native_key=NATIVE_KEY,
+    )
+
+    assert result.microcode_modified is True
+    assert result.published_generation is None
+    assert (
+        result.published_work_item_id
+        == "frontend-normalization:g7:root@0x1100"
+    )
+    assert result.remaining_obligation_count == 1
     assert state.normalization_published_postvalidated_generation is None
     assert len(backend.plans) == 1
 

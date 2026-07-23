@@ -33,7 +33,6 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
 from d810.analyses.control_flow.native_semantic_closure import (
     NativeBlock,
     NativeCfg,
-    NativeEdgeKind,
     NativeSemanticClosure,
 )
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
@@ -794,6 +793,10 @@ class NativePreanalysisSessionState:
     normalization_staged_generation: int | None = None
     normalization_validated_generation: int | None = None
     normalization_published_postvalidated_generation: int | None = None
+    normalization_work_item_publication_revision: int = 0
+    normalization_last_published_work_item_id: str | None = None
+    normalization_last_selected_obligation_ids: tuple[str, ...] = ()
+    normalization_last_remaining_obligation_ids: tuple[str, ...] = ()
     canonical_semantic_plan_generation: int | None = None
     semantic_fragment_staged_generation: int | None = None
     semantic_fragment_validated_generation: int | None = None
@@ -866,6 +869,53 @@ class NativePreanalysisSessionState:
             raise ValueError(
                 "portable evidence-ready generation must equal current evidence"
             )
+        publication_revision = int(
+            self.normalization_work_item_publication_revision
+        )
+        if publication_revision < 0:
+            raise ValueError(
+                "normalization work-item publication revision cannot be negative"
+            )
+        work_item_id = self.normalization_last_published_work_item_id
+        selected_obligation_ids = tuple(
+            str(value).strip()
+            for value in self.normalization_last_selected_obligation_ids
+        )
+        remaining_obligation_ids = tuple(
+            str(value).strip()
+            for value in self.normalization_last_remaining_obligation_ids
+        )
+        if publication_revision == 0:
+            if (
+                work_item_id is not None
+                or selected_obligation_ids
+                or remaining_obligation_ids
+            ):
+                raise ValueError(
+                    "unpublished normalization work item cannot retain authority"
+                )
+        elif (
+            work_item_id is None
+            or not str(work_item_id).strip()
+            or not selected_obligation_ids
+            or any(not value for value in selected_obligation_ids)
+            or any(not value for value in remaining_obligation_ids)
+            or len(set(selected_obligation_ids)) != len(selected_obligation_ids)
+            or len(set(remaining_obligation_ids))
+            != len(remaining_obligation_ids)
+            or set(selected_obligation_ids) & set(remaining_obligation_ids)
+        ):
+            raise ValueError(
+                "published normalization work item requires disjoint obligations"
+            )
+        self.normalization_work_item_publication_revision = publication_revision
+        self.normalization_last_published_work_item_id = (
+            None if work_item_id is None else str(work_item_id).strip()
+        )
+        self.normalization_last_selected_obligation_ids = selected_obligation_ids
+        self.normalization_last_remaining_obligation_ids = (
+            remaining_obligation_ids
+        )
 
         normalization_order = (
             self.normalization_published_postvalidated_generation or 0,
@@ -958,6 +1008,57 @@ class NativePreanalysisSessionState:
                 "normalization publication requires the current validated generation"
             ),
         )
+
+    def _fragment_publication_commit_normalization_work_item(
+        self,
+        *,
+        work_item_id: str,
+        selected_obligation_ids: tuple[str, ...],
+        remaining_obligation_ids: tuple[str, ...],
+    ) -> bool:
+        """Record one receipted work item without overstating generation authority."""
+        generation = self._require_current_portable_evidence()
+        if (
+            self.normalization_staged_generation != generation
+            or self.normalization_validated_generation != generation
+        ):
+            raise RuntimeError(
+                "normalization work-item commit requires current validated staging"
+            )
+        work_item_id = str(work_item_id).strip()
+        selected = tuple(str(value).strip() for value in selected_obligation_ids)
+        remaining = tuple(str(value).strip() for value in remaining_obligation_ids)
+        if (
+            not work_item_id
+            or not selected
+            or any(not value for value in (*selected, *remaining))
+            or len(set(selected)) != len(selected)
+            or len(set(remaining)) != len(remaining)
+            or set(selected) & set(remaining)
+        ):
+            raise ValueError(
+                "normalization work-item commit requires disjoint obligations"
+            )
+        self.normalization_work_item_publication_revision += 1
+        self.normalization_last_published_work_item_id = work_item_id
+        self.normalization_last_selected_obligation_ids = selected
+        self.normalization_last_remaining_obligation_ids = remaining
+        if not remaining:
+            return self._fragment_publication_mark_normalization_published_and_postvalidated()
+
+        published = self.normalization_published_postvalidated_generation
+        self.normalization_staged_generation = published
+        self.normalization_validated_generation = published
+        self._observe_transition(
+            operation="normalization_work_item_published",
+            previous_generation=0 if published is None else int(published),
+            evidence_family="frontend_normalization",
+            reason=(
+                f"work item {work_item_id} published with {len(selected)} "
+                f"selected and {len(remaining)} remaining obligations"
+            ),
+        )
+        return False
 
     def _fragment_publication_abort_normalization(self, *, reason: str) -> bool:
         """Discard current transient normalization state without moving authority."""
@@ -1512,7 +1613,6 @@ class NativePreanalysisSessionState:
 
     def clear_call_result_carriers(self, key: NativePreanalysisKey) -> bool:
         """Acknowledge call-result facts consumed by a later live maturity."""
-        current = self._resolver_evidence_for(key)
         return self._replace_resolver_evidence(
             key,
             evidence_family="call_result_carriers",

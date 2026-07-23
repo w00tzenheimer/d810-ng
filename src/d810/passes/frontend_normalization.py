@@ -26,7 +26,7 @@ from d810.passes.pass_pipeline import (
     no_caps,
 )
 from d810.transforms.frontend_normalization import (
-    plan_frontend_computed_branch_normalization,
+    plan_next_frontend_normalization_work_item,
 )
 
 
@@ -121,7 +121,7 @@ class NormalizeComputedBranch:
             return PassResult()
         if not isinstance(evidence, FrontendNormalizationEvidence):
             raise TypeError("frontend normalization analysis has the wrong type")
-        plan = plan_frontend_computed_branch_normalization(ctx.graph, evidence)
+        plan = plan_next_frontend_normalization_work_item(ctx.graph, evidence)
         if plan is None:
             return PassResult()
         return PassResult(

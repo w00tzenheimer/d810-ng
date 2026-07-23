@@ -60,6 +60,8 @@ class FrontendNormalizationRunResult:
     graph: FlowGraph
     microcode_modified: bool
     published_generation: int | None
+    published_work_item_id: str | None = None
+    remaining_obligation_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +122,9 @@ def run_frontend_normalization_pipeline(
 
     generation = int(lifecycle_state.evidence_generation)
     before_published = lifecycle_state.normalization_published_postvalidated_generation
+    before_work_item_revision = (
+        lifecycle_state.normalization_work_item_publication_revision
+    )
     if before_published == generation:
         return FrontendNormalizationRunResult(
             graph=graph,
@@ -158,11 +163,46 @@ def run_frontend_normalization_pipeline(
         raise TypeError("frontend normalization backend returned a non-portable graph")
 
     after_published = lifecycle_state.normalization_published_postvalidated_generation
+    after_work_item_revision = (
+        lifecycle_state.normalization_work_item_publication_revision
+    )
+    work_item_published = (
+        after_work_item_revision == before_work_item_revision + 1
+    )
+    if after_work_item_revision not in {
+        before_work_item_revision,
+        before_work_item_revision + 1,
+    }:
+        raise FrontendNormalizationPublicationError(
+            "frontend normalization published multiple work items in one pass"
+        )
     if after_published == generation:
         return FrontendNormalizationRunResult(
             graph=final_graph,
             microcode_modified=True,
             published_generation=generation,
+            published_work_item_id=(
+                lifecycle_state.normalization_last_published_work_item_id
+                if work_item_published
+                else None
+            ),
+        )
+    if work_item_published:
+        remaining = (
+            lifecycle_state.normalization_last_remaining_obligation_ids
+        )
+        if not remaining:
+            raise FrontendNormalizationPublicationError(
+                "partial normalization receipt lacks remaining obligations"
+            )
+        return FrontendNormalizationRunResult(
+            graph=final_graph,
+            microcode_modified=True,
+            published_generation=after_published,
+            published_work_item_id=(
+                lifecycle_state.normalization_last_published_work_item_id
+            ),
+            remaining_obligation_count=len(remaining),
         )
 
     graph_changed = final_graph != graph

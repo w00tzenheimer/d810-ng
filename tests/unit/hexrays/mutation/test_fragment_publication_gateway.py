@@ -794,6 +794,45 @@ def test_gateway_advances_only_normalization_for_normalization_plan() -> None:
     assert lifecycle.receipt_committed_generation is None
 
 
+def test_partial_normalization_receipt_does_not_advance_generation_authority() -> (
+    None
+):
+    plan = replace(
+        _plan(),
+        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id="gateway-fragment:root@0x401000",
+            selected_obligation_ids=("route@0x401000",),
+            remaining_obligation_ids=("route@0x402000",),
+        ),
+    )
+    lifecycle = NativePreanalysisSessionState(evidence_generation=1)
+    gateway, committed, aborted = _gateway(
+        plan,
+        lifecycle_authority=lifecycle,
+    )
+
+    receipt = gateway.publish_semantic_fragment(_FragmentBackend(gateway), plan)
+
+    assert receipt in gateway.receipts
+    assert len(committed) == 1
+    assert aborted == []
+    assert lifecycle.normalization_staged_generation is None
+    assert lifecycle.normalization_validated_generation is None
+    assert lifecycle.normalization_published_postvalidated_generation is None
+    assert lifecycle.normalization_work_item_publication_revision == 1
+    assert (
+        lifecycle.normalization_last_published_work_item_id
+        == "gateway-fragment:root@0x401000"
+    )
+    assert lifecycle.normalization_last_selected_obligation_ids == (
+        "route@0x401000",
+    )
+    assert lifecycle.normalization_last_remaining_obligation_ids == (
+        "route@0x402000",
+    )
+
+
 def test_postpublication_failure_aborts_transient_semantic_lifecycle() -> None:
     plan = _plan()
     lifecycle = _semantic_lifecycle()

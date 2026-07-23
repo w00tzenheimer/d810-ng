@@ -113,6 +113,8 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
         "frontend_normalization": {
             "authority": "fragment_receipt",
             "published_generation": 3,
+            "published_work_item_id": None,
+            "remaining_obligation_count": 0,
         }
     }
 

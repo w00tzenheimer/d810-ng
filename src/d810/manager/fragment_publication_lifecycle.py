@@ -15,6 +15,7 @@ from d810.hexrays.mutation.mba_mutation_events import (
 from d810.transforms.fragment_plan import (
     FragmentPlan,
     FragmentPublicationPurpose,
+    FragmentWorkItemScope,
 )
 from d810.transforms.fragment_validation import FragmentValidationResult
 
@@ -159,7 +160,16 @@ class SessionFragmentPublicationLifecycleAuthority:
             plan.publication_purpose
             is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
         ):
-            self.state._fragment_publication_mark_normalization_published_and_postvalidated()
+            scope = plan.work_item_scope
+            if not isinstance(scope, FragmentWorkItemScope):
+                raise TypeError(
+                    "normalization lifecycle commit requires a work-item scope"
+                )
+            self.state._fragment_publication_commit_normalization_work_item(
+                work_item_id=scope.work_item_id,
+                selected_obligation_ids=scope.selected_obligation_ids,
+                remaining_obligation_ids=scope.remaining_obligation_ids,
+            )
         else:
             self.state._fragment_publication_mark_semantic_fragment_published_and_postvalidated()
             self.state._fragment_publication_mark_receipt_committed()
