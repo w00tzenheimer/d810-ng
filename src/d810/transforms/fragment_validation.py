@@ -24,6 +24,8 @@ from d810.transforms.fragment_plan import (
     FragmentPlan,
     FragmentRangeAssumption,
     FragmentRangeObservation,
+    FragmentReturnCarrier,
+    FragmentTerminalReturn,
     FragmentValueSite,
 )
 
@@ -65,6 +67,10 @@ class FragmentValidationPostcondition(str, Enum):
     BLOCK_TOPOLOGY = "block_topology"
     OPERATION_TOPOLOGY = "operation_topology"
     FALLTHROUGH_TOPOLOGY = "fallthrough_topology"
+    TERMINAL_EFFECT_SCOPE = "terminal_effect_scope"
+    RETURN_CARRIER_INTEGRITY = "return_carrier_integrity"
+    TERMINAL_RETURN_INTEGRITY = "terminal_return_integrity"
+    TERMINAL_ROUTE_ATOMICITY = "terminal_route_atomicity"
     USE_DEF_INTEGRITY = "use_def_integrity"
     DEF_USE_INTEGRITY = "def_use_integrity"
     FLAG_CORRIDOR_INTEGRITY = "flag_corridor_integrity"
@@ -74,6 +80,8 @@ class FragmentValidationPostcondition(str, Enum):
     POSTVALIDATION_SCOPE = "postvalidation_scope"
     ROOT_AUTHORITY = "root_authority"
     OBSERVABLE_OPERATION = "observable_operation"
+    OBSERVABLE_RETURN_CARRIER = "observable_return_carrier"
+    OBSERVABLE_TERMINAL_RETURN = "observable_terminal_return"
     OBSERVABLE_FALLTHROUGH_HELPER = "observable_fallthrough_helper"
     POSTVALIDATION_COVERAGE = "postvalidation_coverage"
 
@@ -286,6 +294,8 @@ class ProjectedFragment:
     identity_bindings: tuple[ProjectedIdentityBinding, ...]
     fallthrough_helpers: tuple[ProjectedFallthroughHelper, ...] = ()
     root_fallthrough_helpers: tuple[ProjectedRootFallthroughHelper, ...] = ()
+    return_carriers: tuple[FragmentReturnCarrier, ...] = ()
+    terminal_returns: tuple[FragmentTerminalReturn, ...] = ()
     data_flow_relations: tuple[ProjectedDataFlowRelation, ...] = ()
     value_ranges: tuple[ProjectedRangeFact, ...] = ()
 
@@ -298,6 +308,8 @@ class ProjectedFragment:
         identity_bindings = tuple(self.identity_bindings)
         fallthrough_helpers = tuple(self.fallthrough_helpers)
         root_fallthrough_helpers = tuple(self.root_fallthrough_helpers)
+        return_carriers = tuple(self.return_carriers)
+        terminal_returns = tuple(self.terminal_returns)
         data_flow_relations = tuple(self.data_flow_relations)
         value_ranges = tuple(self.value_ranges)
         if any(not isinstance(block, ProjectedFragmentBlock) for block in blocks):
@@ -318,6 +330,16 @@ class ProjectedFragment:
         ):
             raise TypeError("projection contains an invalid root fallthrough helper")
         if any(
+            not isinstance(carrier, FragmentReturnCarrier)
+            for carrier in return_carriers
+        ):
+            raise TypeError("projection contains an invalid return carrier")
+        if any(
+            not isinstance(terminal_return, FragmentTerminalReturn)
+            for terminal_return in terminal_returns
+        ):
+            raise TypeError("projection contains an invalid terminal return")
+        if any(
             not isinstance(relation, ProjectedDataFlowRelation)
             for relation in data_flow_relations
         ):
@@ -333,6 +355,8 @@ class ProjectedFragment:
             "root_fallthrough_helpers",
             root_fallthrough_helpers,
         )
+        object.__setattr__(self, "return_carriers", return_carriers)
+        object.__setattr__(self, "terminal_returns", terminal_returns)
         object.__setattr__(self, "data_flow_relations", data_flow_relations)
         object.__setattr__(self, "value_ranges", value_ranges)
 
@@ -412,6 +436,8 @@ class PublishedFragmentObservation:
     semantic_outcomes: tuple[FragmentValidationOutcome, ...]
     fallthrough_helpers: tuple[ProjectedFallthroughHelper, ...]
     root_fallthrough_helpers: tuple[ProjectedRootFallthroughHelper, ...]
+    observable_return_carriers: tuple[FragmentReturnCarrier, ...] = ()
+    observable_terminal_returns: tuple[FragmentTerminalReturn, ...] = ()
 
     def __post_init__(self) -> None:
         plan_id = _identifier(self.plan_id, "published fragment plan id")
@@ -427,6 +453,8 @@ class PublishedFragmentObservation:
         semantic_outcomes = tuple(self.semantic_outcomes)
         fallthrough_helpers = tuple(self.fallthrough_helpers)
         root_fallthrough_helpers = tuple(self.root_fallthrough_helpers)
+        observable_return_carriers = tuple(self.observable_return_carriers)
+        observable_terminal_returns = tuple(self.observable_terminal_returns)
         if any(
             not isinstance(operation, FragmentOperation)
             for operation in observable_operations
@@ -449,6 +477,20 @@ class PublishedFragmentObservation:
             raise TypeError(
                 "published fragment contains an invalid root fallthrough helper"
             )
+        if any(
+            not isinstance(carrier, FragmentReturnCarrier)
+            for carrier in observable_return_carriers
+        ):
+            raise TypeError(
+                "published fragment contains an invalid observable return carrier"
+            )
+        if any(
+            not isinstance(terminal_return, FragmentTerminalReturn)
+            for terminal_return in observable_terminal_returns
+        ):
+            raise TypeError(
+                "published fragment contains an invalid observable terminal return"
+            )
         object.__setattr__(self, "plan_id", plan_id)
         object.__setattr__(self, "atomic_group_id", atomic_group_id)
         object.__setattr__(self, "published_root_ids", published_root_ids)
@@ -459,6 +501,16 @@ class PublishedFragmentObservation:
             self,
             "root_fallthrough_helpers",
             root_fallthrough_helpers,
+        )
+        object.__setattr__(
+            self,
+            "observable_return_carriers",
+            observable_return_carriers,
+        )
+        object.__setattr__(
+            self,
+            "observable_terminal_returns",
+            observable_terminal_returns,
         )
 
 
@@ -819,6 +871,158 @@ def _validate_root_fallthrough_helpers(
             helper.source_block_id,
             helper.helper_block_id,
             helper.root_block_id,
+        )
+
+
+def _validate_terminal_effects(
+    plan: FragmentPlan,
+    projection: ProjectedFragment,
+    blocks: dict[str, ProjectedFragmentBlock],
+    outcomes: list[FragmentValidationOutcome],
+) -> None:
+    observed_carriers_by_id: dict[str, list[FragmentReturnCarrier]] = {}
+    for carrier in projection.return_carriers:
+        observed_carriers_by_id.setdefault(carrier.carrier_id, []).append(carrier)
+    observed_returns_by_id: dict[str, list[FragmentTerminalReturn]] = {}
+    for terminal_return in projection.terminal_returns:
+        observed_returns_by_id.setdefault(
+            terminal_return.return_id,
+            [],
+        ).append(terminal_return)
+
+    planned_carrier_ids = {carrier.carrier_id for carrier in plan.return_carriers}
+    planned_return_ids = {
+        terminal_return.return_id
+        for terminal_return in plan.terminal_returns
+    }
+    observed_carrier_ids = {
+        carrier.carrier_id for carrier in projection.return_carriers
+    }
+    observed_return_ids = {
+        terminal_return.return_id
+        for terminal_return in projection.terminal_returns
+    }
+    scope_valid = bool(
+        len(observed_carrier_ids) == len(projection.return_carriers)
+        and len(observed_return_ids) == len(projection.terminal_returns)
+        and observed_carrier_ids == planned_carrier_ids
+        and observed_return_ids == planned_return_ids
+    )
+    _outcome(
+        outcomes,
+        FragmentValidationPostcondition.TERMINAL_EFFECT_SCOPE,
+        "terminal-effects",
+        scope_valid,
+        "projected terminal effects exactly match the planned identity set"
+        if scope_valid
+        else "projected terminal effects are missing, extra, or duplicated",
+        *sorted(
+            {
+                carrier.block_id for carrier in plan.return_carriers
+            }
+            | {
+                terminal_return.block_id
+                for terminal_return in plan.terminal_returns
+            }
+        ),
+    )
+
+    carrier_integrity: dict[str, bool] = {}
+    for carrier in plan.return_carriers:
+        observed = tuple(observed_carriers_by_id.get(carrier.carrier_id, ()))
+        block = blocks.get(carrier.block_id)
+        corridor_present = False
+        if block is not None:
+            instructions = block.instruction_eas
+            try:
+                start = instructions.index(carrier.state_write_ea)
+                end = instructions.index(carrier.carrier_ea, start + 1)
+            except ValueError:
+                pass
+            else:
+                corridor_present = (
+                    instructions[start : end + 1]
+                    == carrier.corridor_instruction_eas
+                )
+        passed = bool(
+            len(observed) == 1
+            and observed[0] == carrier
+            and corridor_present
+        )
+        carrier_integrity[carrier.carrier_id] = passed
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.RETURN_CARRIER_INTEGRITY,
+            carrier.carrier_id,
+            passed,
+            "return carrier and its state-write corridor match the plan"
+            if passed
+            else "return carrier is missing, changed, duplicated, or separated "
+            "from its state write",
+            carrier.block_id,
+        )
+
+    return_integrity: dict[str, bool] = {}
+    for terminal_return in plan.terminal_returns:
+        observed = tuple(
+            observed_returns_by_id.get(terminal_return.return_id, ())
+        )
+        block = blocks.get(terminal_return.block_id)
+        passed = bool(
+            len(observed) == 1
+            and observed[0] == terminal_return
+            and block is not None
+            and block.kind is BlockKind.ZERO_WAY
+            and not block.successors
+            and bool(block.instruction_eas)
+            and block.instruction_eas[-1] == terminal_return.instruction_ea
+        )
+        return_integrity[terminal_return.return_id] = passed
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.TERMINAL_RETURN_INTEGRITY,
+            terminal_return.return_id,
+            passed,
+            "terminal return is the zero-way block tail required by the plan"
+            if passed
+            else "terminal return is missing, changed, duplicated, or has "
+            "outgoing control flow",
+            terminal_return.block_id,
+        )
+
+    operation_integrity = {
+        outcome.subject_id: outcome.passed
+        for outcome in outcomes
+        if outcome.postcondition
+        is FragmentValidationPostcondition.OPERATION_TOPOLOGY
+    }
+    for terminal_route in plan.terminal_routes:
+        passed = bool(
+            operation_integrity.get(terminal_route.operation_id, False)
+            and carrier_integrity.get(terminal_route.carrier_id, False)
+            and return_integrity.get(terminal_route.return_id, False)
+        )
+        carrier = next(
+            item
+            for item in plan.return_carriers
+            if item.carrier_id == terminal_route.carrier_id
+        )
+        terminal_return = next(
+            item
+            for item in plan.terminal_returns
+            if item.return_id == terminal_route.return_id
+        )
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.TERMINAL_ROUTE_ATOMICITY,
+            terminal_route.terminal_route_id,
+            passed,
+            "route, return carrier, and terminal return are all present"
+            if passed
+            else "route, return carrier, and terminal return did not validate "
+            "as one fragment",
+            carrier.block_id,
+            terminal_return.block_id,
         )
 
 
@@ -1211,6 +1415,7 @@ def validate_fragment_projection(
             projection.fallthrough_helpers,
             outcomes,
         )
+    _validate_terminal_effects(plan, projection, blocks, outcomes)
     _validate_root_fallthrough_helpers(plan, projection, blocks, outcomes)
     for obligation in plan.data_flow_obligations:
         _validate_data_flow(
@@ -1263,6 +1468,33 @@ def _required_postpublication_outcomes(
                     operation.operation_id,
                 )
             )
+    required.append(
+        (
+            FragmentValidationPostcondition.TERMINAL_EFFECT_SCOPE,
+            "terminal-effects",
+        )
+    )
+    required.extend(
+        (
+            FragmentValidationPostcondition.RETURN_CARRIER_INTEGRITY,
+            carrier.carrier_id,
+        )
+        for carrier in plan.return_carriers
+    )
+    required.extend(
+        (
+            FragmentValidationPostcondition.TERMINAL_RETURN_INTEGRITY,
+            terminal_return.return_id,
+        )
+        for terminal_return in plan.terminal_returns
+    )
+    required.extend(
+        (
+            FragmentValidationPostcondition.TERMINAL_ROUTE_ATOMICITY,
+            terminal_route.terminal_route_id,
+        )
+        for terminal_route in plan.terminal_routes
+    )
     for obligation in plan.data_flow_obligations:
         required.extend(
             (
@@ -1390,12 +1622,29 @@ def validate_published_fragment_observation(
     observed_operation_ids = tuple(
         operation.operation_id for operation in observation.observable_operations
     )
+    observed_carrier_ids = tuple(
+        carrier.carrier_id
+        for carrier in observation.observable_return_carriers
+    )
+    observed_return_ids = tuple(
+        terminal_return.return_id
+        for terminal_return in observation.observable_terminal_returns
+    )
     scope_valid = (
         observation.plan_id == plan.plan_id
         and observation.atomic_group_id == plan.atomic_group_id
         and len(set(observation.published_root_ids))
         == len(observation.published_root_ids)
         and len(set(observed_operation_ids)) == len(observed_operation_ids)
+        and len(set(observed_carrier_ids)) == len(observed_carrier_ids)
+        and len(set(observed_return_ids)) == len(observed_return_ids)
+        and set(observed_carrier_ids)
+        == {carrier.carrier_id for carrier in plan.return_carriers}
+        and set(observed_return_ids)
+        == {
+            terminal_return.return_id
+            for terminal_return in plan.terminal_returns
+        }
     )
     _outcome(
         outcomes,
@@ -1440,6 +1689,48 @@ def validate_published_fragment_observation(
             else "published operation is missing, extra, or semantically different",
             operation.source_block_id,
             *(edge.target_block_id for edge in operation.edges),
+        )
+
+    observed_carriers_by_id = {
+        carrier.carrier_id: carrier
+        for carrier in observation.observable_return_carriers
+    }
+    for carrier in plan.return_carriers:
+        observed = observed_carriers_by_id.get(carrier.carrier_id)
+        passed = bool(
+            observed == carrier
+            and len(observed_carriers_by_id) == len(plan.return_carriers)
+        )
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.OBSERVABLE_RETURN_CARRIER,
+            carrier.carrier_id,
+            passed,
+            "published return carrier matches the planned portable semantics"
+            if passed
+            else "published return carrier is missing, extra, or changed",
+            carrier.block_id,
+        )
+
+    observed_returns_by_id = {
+        terminal_return.return_id: terminal_return
+        for terminal_return in observation.observable_terminal_returns
+    }
+    for terminal_return in plan.terminal_returns:
+        observed = observed_returns_by_id.get(terminal_return.return_id)
+        passed = bool(
+            observed == terminal_return
+            and len(observed_returns_by_id) == len(plan.terminal_returns)
+        )
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.OBSERVABLE_TERMINAL_RETURN,
+            terminal_return.return_id,
+            passed,
+            "published terminal return matches the planned portable semantics"
+            if passed
+            else "published terminal return is missing, extra, or changed",
+            terminal_return.block_id,
         )
 
     _validate_observable_helpers(

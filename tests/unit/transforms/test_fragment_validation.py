@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
@@ -21,6 +22,11 @@ from d810.transforms.fragment_plan import (
     FragmentPublicationPurpose,
     FragmentRangeAssumption,
     FragmentRangeObservation,
+    FragmentReturnCarrier,
+    FragmentReturnSource,
+    FragmentReturnSourceKind,
+    FragmentTerminalReturn,
+    FragmentTerminalRoute,
     FragmentValueSite,
 )
 from d810.transforms.fragment_validation import (
@@ -381,6 +387,262 @@ def _failed_codes(
         outcome.postcondition
         for outcome in validate_fragment_projection(plan, projection).failures
     }
+
+
+def _terminal_plan() -> FragmentPlan:
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1010),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1000, 0x1004),
+    )
+    terminal_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x2000, 0x2010),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x2000,),
+    )
+    source_original = FragmentBlock(
+        block_id="terminal-source.original",
+        role=FragmentBlockRole.ORIGINAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x1000,
+        stable_identity=source_identity,
+    )
+    source_replacement = FragmentBlock(
+        block_id="terminal-source.replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=0x1000,
+        stable_identity=source_identity,
+        replaces_block_id=source_original.block_id,
+    )
+    return_original = FragmentBlock(
+        block_id="terminal-return.original",
+        role=FragmentBlockRole.ORIGINAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x2000,
+        stable_identity=terminal_identity,
+    )
+    return_replacement = FragmentBlock(
+        block_id="terminal-return.replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=0x2000,
+        stable_identity=terminal_identity,
+        replaces_block_id=return_original.block_id,
+    )
+    return FragmentPlan(
+        plan_id="terminal-fragment",
+        atomic_group_id="terminal@0x1000",
+        publication_purpose=FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING,
+        native_key=NATIVE_KEY,
+        blocks=(
+            _native_block("entry", FragmentBlockRole.EXTERNAL, 0x5000),
+            source_original,
+            source_replacement,
+            return_original,
+            return_replacement,
+            _native_block("dispatcher", FragmentBlockRole.EXTERNAL, 0x4000),
+        ),
+        roots=(source_replacement.block_id,),
+        owned_originals=(source_original.block_id, return_original.block_id),
+        prohibited_dispatcher_blocks=("dispatcher",),
+        operations=(
+            FragmentOperation(
+                operation_id="route-to-terminal",
+                source_block_id=source_replacement.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=return_replacement.block_id,
+                    ),
+                ),
+            ),
+        ),
+        return_carriers=(
+            FragmentReturnCarrier(
+                carrier_id="return-carrier",
+                block_id=source_replacement.block_id,
+                state_write_ea=0x1000,
+                carrier_ea=0x1004,
+                operation=ValueOpKind.MOVE,
+                source=FragmentReturnSource(
+                    kind=FragmentReturnSourceKind.CONSTANT,
+                    width=4,
+                    constant=7,
+                ),
+                return_width=4,
+                corridor_instruction_eas=(0x1000, 0x1004),
+            ),
+        ),
+        terminal_returns=(
+            FragmentTerminalReturn(
+                return_id="return",
+                block_id=return_replacement.block_id,
+                instruction_ea=0x2000,
+                return_width=4,
+            ),
+        ),
+        terminal_routes=(
+            FragmentTerminalRoute(
+                terminal_route_id="terminal-route",
+                operation_id="route-to-terminal",
+                carrier_id="return-carrier",
+                return_id="return",
+            ),
+        ),
+    )
+
+
+def _terminal_projection(plan: FragmentPlan) -> ProjectedFragment:
+    return ProjectedFragment(
+        entry_block_id="entry",
+        blocks=(
+            _projected_block(
+                "entry",
+                BlockKind.ONE_WAY,
+                ("terminal-source.replacement",),
+                (),
+                0,
+            ),
+            _projected_block(
+                "terminal-source.replacement",
+                BlockKind.ONE_WAY,
+                ("terminal-return.replacement",),
+                ("entry",),
+                1,
+                instruction_eas=(0x1000, 0x1004),
+            ),
+            _projected_block(
+                "terminal-return.replacement",
+                BlockKind.ZERO_WAY,
+                (),
+                ("terminal-source.replacement",),
+                2,
+                instruction_eas=(0x2000,),
+            ),
+            _projected_block(
+                "terminal-source.original",
+                BlockKind.ZERO_WAY,
+                (),
+                (),
+                3,
+            ),
+            _projected_block(
+                "terminal-return.original",
+                BlockKind.ZERO_WAY,
+                (),
+                (),
+                4,
+            ),
+            _projected_block("dispatcher", BlockKind.ZERO_WAY, (), (), 5),
+        ),
+        identity_bindings=(
+            _binding(
+                plan,
+                "entry",
+                "logical:entry",
+                0,
+                2,
+                FragmentBindingState.PUBLISHED,
+            ),
+            _binding(
+                plan,
+                "terminal-source.original",
+                "logical:terminal-source",
+                1,
+                2,
+                FragmentBindingState.PUBLISHED,
+            ),
+            _binding(
+                plan,
+                "terminal-source.replacement",
+                "logical:terminal-source",
+                2,
+                3,
+                FragmentBindingState.STAGED,
+                previous_version=1,
+            ),
+            _binding(
+                plan,
+                "terminal-return.original",
+                "logical:terminal-return",
+                4,
+                2,
+                FragmentBindingState.PUBLISHED,
+            ),
+            _binding(
+                plan,
+                "terminal-return.replacement",
+                "logical:terminal-return",
+                5,
+                3,
+                FragmentBindingState.STAGED,
+                previous_version=4,
+            ),
+            _binding(
+                plan,
+                "dispatcher",
+                "logical:dispatcher",
+                0,
+                2,
+                FragmentBindingState.PUBLISHED,
+            ),
+        ),
+        return_carriers=plan.return_carriers,
+        terminal_returns=plan.terminal_returns,
+    )
+
+
+def test_terminal_projection_proves_carrier_return_and_route_atomically() -> None:
+    plan = _terminal_plan()
+
+    result = validate_fragment_projection(plan, _terminal_projection(plan))
+
+    assert result.passed, result.failures
+    assert {
+        FragmentValidationPostcondition.RETURN_CARRIER_INTEGRITY,
+        FragmentValidationPostcondition.TERMINAL_RETURN_INTEGRITY,
+        FragmentValidationPostcondition.TERMINAL_ROUTE_ATOMICITY,
+    }.issubset({outcome.postcondition for outcome in result.outcomes})
+
+
+def test_terminal_projection_rejects_missing_carrier_as_atomic_route_failure() -> None:
+    plan = _terminal_plan()
+    projection = replace(
+        _terminal_projection(plan),
+        return_carriers=(),
+    )
+
+    failures = validate_fragment_projection(plan, projection).failures
+
+    assert {
+        FragmentValidationPostcondition.RETURN_CARRIER_INTEGRITY,
+        FragmentValidationPostcondition.TERMINAL_ROUTE_ATOMICITY,
+    }.issubset({outcome.postcondition for outcome in failures})
+
+
+def test_terminal_projection_rejects_nonterminal_return_block() -> None:
+    plan = _terminal_plan()
+    projection = _terminal_projection(plan)
+    projection = _replace_blocks(
+        projection,
+        replace(
+            projection.block("terminal-return.replacement"),
+            kind=BlockKind.ONE_WAY,
+            successors=("dispatcher",),
+        ),
+        replace(
+            projection.block("dispatcher"),
+            predecessors=("terminal-return.replacement",),
+        ),
+    )
+
+    failures = validate_fragment_projection(plan, projection).failures
+
+    assert {
+        FragmentValidationPostcondition.TERMINAL_RETURN_INTEGRITY,
+        FragmentValidationPostcondition.TERMINAL_ROUTE_ATOMICITY,
+    }.issubset({outcome.postcondition for outcome in failures})
 
 
 def test_valid_projection_proves_every_required_postcondition() -> None:
@@ -786,6 +1048,61 @@ def _published_observation(
         fallthrough_helpers=projection.fallthrough_helpers,
         root_fallthrough_helpers=projection.root_fallthrough_helpers,
     )
+
+
+def _published_terminal_observation(
+    plan: FragmentPlan,
+) -> PublishedFragmentObservation:
+    projection = _terminal_projection(plan)
+    prevalidation = validate_fragment_projection(plan, projection)
+    assert prevalidation.passed
+    return PublishedFragmentObservation(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        published_root_ids=plan.roots,
+        observable_operations=plan.operations,
+        semantic_outcomes=prevalidation.outcomes,
+        fallthrough_helpers=(),
+        root_fallthrough_helpers=(),
+        observable_return_carriers=plan.return_carriers,
+        observable_terminal_returns=plan.terminal_returns,
+    )
+
+
+def test_postpublication_requires_observable_terminal_effects() -> None:
+    plan = _terminal_plan()
+    projection = _terminal_projection(plan)
+
+    result = validate_published_fragment_observation(
+        plan,
+        _published_terminal_observation(plan),
+        projection,
+    )
+
+    assert result.passed, result.failures
+    assert {
+        FragmentValidationPostcondition.OBSERVABLE_RETURN_CARRIER,
+        FragmentValidationPostcondition.OBSERVABLE_TERMINAL_RETURN,
+    }.issubset({outcome.postcondition for outcome in result.outcomes})
+
+
+def test_postpublication_rejects_disappeared_return_carrier() -> None:
+    plan = _terminal_plan()
+    projection = _terminal_projection(plan)
+    observation = replace(
+        _published_terminal_observation(plan),
+        observable_return_carriers=(),
+    )
+
+    result = validate_published_fragment_observation(
+        plan,
+        observation,
+        projection,
+    )
+
+    assert FragmentValidationPostcondition.OBSERVABLE_RETURN_CARRIER in {
+        outcome.postcondition for outcome in result.failures
+    }
 
 
 def test_postpublication_accepts_observable_semantics_without_physical_blocks() -> None:
