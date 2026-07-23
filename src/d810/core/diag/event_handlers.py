@@ -268,7 +268,8 @@ def _handle_mutation_plan(ev: MutationPlanObserved) -> None:
     except Exception:
         return
     if conn is not None:
-        persist_mutation_plan(conn, ev)
+        with conn:
+            persist_mutation_plan(conn, ev)
 
 
 def _handle_mutation_receipt(ev: MutationReceiptObserved) -> None:
@@ -277,7 +278,8 @@ def _handle_mutation_receipt(ev: MutationReceiptObserved) -> None:
     except Exception:
         return
     if conn is not None:
-        persist_mutation_receipt(conn, ev)
+        with conn:
+            persist_mutation_receipt(conn, ev)
 
 
 def _handle_dag(ev: DagObserved) -> None:

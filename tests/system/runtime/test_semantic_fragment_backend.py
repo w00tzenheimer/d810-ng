@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 from copy import deepcopy
@@ -12,11 +13,23 @@ import pytest
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.core.events import EventEmitter  # noqa: E402
+from d810.core.diag import create_diag_database  # noqa: E402
+from d810.core.diag.event_handlers import (  # noqa: E402
+    install_diag_event_handlers,
+    uninstall_diag_event_handlers,
+)
+from d810.core.observability import (  # noqa: E402
+    emit as emit_diagnostic,
+    reset_diagnostic_bus,
+)
+from d810.core.observability_events import DiagnosticSessionObserved  # noqa: E402
 from d810.hexrays.mutation import deferred_modifier as dm  # noqa: E402
 from d810.hexrays.mutation import detached_handler_island as dhi  # noqa: E402
 from d810.hexrays.mutation import semantic_fragment_backend as sfb  # noqa: E402
 from d810.hexrays.mutation.mba_mutation_events import (  # noqa: E402
     MbaMutationAborted,
+    MbaMutationCommitted,
+    MbaMutationPlanned,
 )
 from d810.hexrays.ir.exact_data_flow import DefSite, UseSite  # noqa: E402
 from d810.hexrays.ir.exact_value_ranges import (  # noqa: E402
@@ -38,6 +51,7 @@ from d810.ir.storage_identity import (  # noqa: E402
     StorageIdentity,
     StorageIdentityKind,
 )
+from d810.manager.manager import D810Manager  # noqa: E402
 from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentBlock,
     FragmentBlockMaterialization,
@@ -1504,6 +1518,12 @@ def test_gateway_receipts_terminal_effects_in_atomic_publication_inventory(
     _mba, gateway, modifier, plan, _entry, _original = (
         _terminal_effect_runtime_case(monkeypatch)
     )
+    emitter = EventEmitter()
+    planned: list[MbaMutationPlanned] = []
+    committed: list[MbaMutationCommitted] = []
+    emitter.on(MbaMutationPlanned, planned.append)
+    emitter.on(MbaMutationCommitted, committed.append)
+    gateway.event_emitter = emitter
 
     receipt = gateway.publish_semantic_fragment(modifier, plan)
 
@@ -1511,6 +1531,104 @@ def test_gateway_receipts_terminal_effects_in_atomic_publication_inventory(
     assert receipt.postpublication_validation.passed
     assert receipt.operation_count == receipt.planned_operation_count == 8
     assert gateway.receipts == (receipt,)
+    assert len(planned) == len(committed) == 1
+    assert planned[0].fragment_plan_id == plan.plan_id
+    assert planned[0].fragment_atomic_group_id == plan.atomic_group_id
+    persisted_plan = json.loads(planned[0].fragment_plan_json)
+    assert persisted_plan["plan_id"] == plan.plan_id
+    assert persisted_plan["atomic_group_id"] == plan.atomic_group_id
+    assert {block["block_id"] for block in persisted_plan["blocks"]} == {
+        block.block_id for block in plan.blocks
+    }
+    assert committed[0].receipt.version_transitions
+
+
+def test_live_fragment_publication_is_reconstructible_from_diagnostic_db(
+    monkeypatch,
+) -> None:
+    _mba, gateway, modifier, plan, _entry, _original = (
+        _terminal_effect_runtime_case(monkeypatch)
+    )
+    diag_conn = create_diag_database(":memory:").connection()
+    reset_diagnostic_bus()
+    monkeypatch.setattr(
+        "d810.core.diag.event_handlers.get_diag_conn",
+        lambda *_args, **_kwargs: diag_conn,
+    )
+    install_diag_event_handlers()
+    emitter = EventEmitter()
+    emitter.on(MbaMutationPlanned, D810Manager._on_mutation_planned)
+    emitter.on(MbaMutationCommitted, D810Manager._on_mutation_committed)
+    gateway.event_emitter = emitter
+    emit_diagnostic(
+        DiagnosticSessionObserved(
+            gateway.session_id,
+            gateway.function_ea,
+            1,
+            gateway.native_key.to_json(),
+            "active",
+        )
+    )
+
+    try:
+        receipt = gateway.publish_semantic_fragment(modifier, plan)
+    finally:
+        uninstall_diag_event_handlers()
+        reset_diagnostic_bus()
+
+    assert receipt.root_publication_confirmed
+    assert diag_conn.execute(
+        "SELECT plan_id,atomic_group_id,outcome,fragment_staged,"
+        "root_publication_succeeded,rollback_attempted "
+        "FROM semantic_fragment_transactions"
+    ).fetchone() == (
+        plan.plan_id,
+        plan.atomic_group_id,
+        "committed",
+        1,
+        1,
+        0,
+    )
+    persisted_plan = json.loads(
+        diag_conn.execute(
+            "SELECT plan_json FROM semantic_fragment_transactions"
+        ).fetchone()[0]
+    )
+    assert {block["block_id"] for block in persisted_plan["blocks"]} == {
+        block.block_id for block in plan.blocks
+    }
+    validation_rows = diag_conn.execute(
+        "SELECT phase,postcondition,passed "
+        "FROM semantic_fragment_validation_outcomes "
+        "ORDER BY outcome_index"
+    ).fetchall()
+    assert validation_rows
+    assert {phase for phase, _postcondition, _passed in validation_rows} == {
+        "prepublication",
+        "postpublication",
+    }
+    assert all(passed for _phase, _postcondition, passed in validation_rows)
+    assert validation_rows == [
+        (
+            phase,
+            outcome.postcondition.value,
+            int(outcome.passed),
+        )
+        for phase, validation in (
+            ("prepublication", receipt.prepublication_validation),
+            ("postpublication", receipt.postpublication_validation),
+        )
+        for outcome in validation.outcomes
+    ]
+    assert diag_conn.execute(
+        "SELECT from_state,to_state FROM logical_block_version_transitions "
+        "ORDER BY transition_index"
+    ).fetchall() == [
+        ("published", "retired"),
+        ("staged", "published"),
+        ("staged", "published"),
+        ("staged", "published"),
+    ]
 
 
 def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_work(
@@ -1565,6 +1683,18 @@ def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_wor
     assert aborted[0].planned_operation_count == 8
     assert aborted[0].applied_operation_count == 8
     assert "observable_return_carrier:return-value" in aborted[0].reason
+    assert aborted[0].fragment_plan_id == plan.plan_id
+    assert aborted[0].fragment_atomic_group_id == plan.atomic_group_id
+    assert aborted[0].fragment_staged
+    assert aborted[0].root_publication_attempted
+    assert aborted[0].root_publication_succeeded
+    assert aborted[0].rollback_attempted
+    assert aborted[0].rollback_succeeded
+    assert aborted[0].prepublication_validation is not None
+    assert aborted[0].prepublication_validation.passed
+    assert aborted[0].postpublication_validation is not None
+    assert not aborted[0].postpublication_validation.passed
+    assert aborted[0].discarded_version_ids
 
 
 @pytest.mark.parametrize(

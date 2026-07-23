@@ -147,12 +147,18 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
         projection = backend._stage_semantic_fragment(plan)
         if not isinstance(projection, ProjectedFragment):
             raise TypeError("semantic-fragment backend returned an invalid projection")
+        gateway._record_fragment_staged(plan)
         _mark_lifecycle_staged(
             lifecycle_authority,
             plan,
         )
         lifecycle_staged = True
         prepublication = validate_fragment_projection(plan, projection)
+        gateway._record_fragment_validation(
+            plan=plan,
+            phase="prepublication",
+            validation=prepublication,
+        )
         if not prepublication.passed:
             raise SemanticFragmentPublicationRejected(
                 "prepublication",
@@ -169,7 +175,9 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             root_inventory,
         )
         root_attempted = True
+        gateway._record_fragment_root_publication_attempted(plan)
         backend._publish_semantic_fragment_roots(plan, rollback_token)
+        gateway._record_fragment_root_publication_succeeded(plan)
         for _root_edge in root_inventory.items:
             gateway.record_edge_redirect()
         backend._rebuild_semantic_fragment_chains(plan)
@@ -182,6 +190,11 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             plan,
             observation,
             projection,
+        )
+        gateway._record_fragment_validation(
+            plan=plan,
+            phase="postpublication",
+            validation=postpublication,
         )
         if not postpublication.passed:
             raise SemanticFragmentPublicationRejected(
@@ -200,8 +213,13 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             try:
                 backend._rollback_semantic_fragment_roots(plan, rollback_token)
                 backend._rebuild_semantic_fragment_chains(plan)
+                gateway._record_fragment_rollback(plan, succeeded=True)
             except Exception as exc:
                 recovery_error = exc
+                try:
+                    gateway._record_fragment_rollback(plan, succeeded=False)
+                except Exception:
+                    pass
         if stage_attempted:
             try:
                 backend._discard_staged_semantic_fragment(plan)

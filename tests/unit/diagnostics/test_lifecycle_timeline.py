@@ -17,7 +17,9 @@ from d810.core.diag.lifecycle import (
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
+    FragmentValidationOutcomeObserved,
     IdentityDecisionObserved,
+    LogicalBlockVersionTransitionObserved,
     MutationPlanItemObserved,
     MutationPlanObserved,
     MutationReceiptObserved,
@@ -27,6 +29,7 @@ from d810.diagnostics.lifecycle_timeline import (
     evidence_lineage,
     lifecycle_timeline,
     mutation_batch,
+    render_mutation_batch,
 )
 
 
@@ -134,3 +137,119 @@ def test_cli_mutation_batch_and_evidence_lineage(
         "evidence-lineage", "--db", str(lifecycle_db_path), "--session", "session-1"
     ]) == 0
     assert "stack_selector" in capsys.readouterr().out
+
+
+def test_mutation_batch_renders_complete_semantic_fragment_evidence() -> None:
+    db = create_diag_database(":memory:")
+    conn = db.connection()
+    persist_diagnostic_session(
+        conn,
+        DiagnosticSessionObserved(
+            "fragment-session",
+            0x40C8B0,
+            1,
+            "{}",
+            "active",
+        ),
+    )
+    persist_mutation_plan(
+        conn,
+        MutationPlanObserved(
+            session_id="fragment-session",
+            func_ea=0x40C8B0,
+            mutation_batch_id="fragment-batch",
+            mutation_kind="fragment_publication",
+            planned_operation_count=1,
+            mba_generation=8,
+            evidence_generation=3,
+            maturity="MMAT_PREOPT",
+            description="publish semantic fragment",
+            fragment_plan_id="fragment-plan",
+            fragment_atomic_group_id="atomic-group",
+            fragment_plan_json=(
+                '{"atomic_group_id":"atomic-group","blocks":[],'
+                '"plan_id":"fragment-plan"}'
+            ),
+        ),
+    )
+    persist_mutation_receipt(
+        conn,
+        MutationReceiptObserved(
+            session_id="fragment-session",
+            func_ea=0x40C8B0,
+            mutation_batch_id="fragment-batch",
+            mutation_kind="fragment_publication",
+            pre_generation=8,
+            post_generation=9,
+            planned_operation_count=1,
+            applied_operation_count=1,
+            evidence_generation=3,
+            maturity="MMAT_PREOPT",
+            outcome="committed",
+            description="publish semantic fragment",
+            reason="",
+            fragment_plan_id="fragment-plan",
+            fragment_atomic_group_id="atomic-group",
+            fragment_staged=True,
+            root_publication_attempted=True,
+            root_publication_succeeded=True,
+            validation_outcomes=(
+                FragmentValidationOutcomeObserved(
+                    phase="prepublication",
+                    postcondition="dispatcher_absence",
+                    subject_id="dispatcher",
+                    passed=True,
+                    reason="dispatcher unreachable",
+                ),
+                FragmentValidationOutcomeObserved(
+                    phase="postpublication",
+                    postcondition="root_authority",
+                    subject_id="fragment-plan",
+                    passed=True,
+                    reason="root authority published",
+                ),
+            ),
+            version_transitions=(
+                LogicalBlockVersionTransitionObserved(
+                    proxy_token="logical-route",
+                    from_version=0,
+                    from_state="published",
+                    to_version=0,
+                    to_state="retired",
+                ),
+                LogicalBlockVersionTransitionObserved(
+                    proxy_token="logical-route",
+                    from_version=1,
+                    from_state="staged",
+                    to_version=1,
+                    to_state="published",
+                ),
+            ),
+        ),
+    )
+
+    result = mutation_batch(conn, "fragment-batch")
+
+    assert result["semantic_fragment"]["plan_id"] == "fragment-plan"
+    assert [
+        row["postcondition"] for row in result["fragment_validations"]
+    ] == ["dispatcher_absence", "root_authority"]
+    assert [
+        (row["from_state"], row["to_state"])
+        for row in result["version_transitions"]
+    ] == [("published", "retired"), ("staged", "published")]
+    assert [
+        row["event_kind"] for row in result["fragment_events"]
+    ] == [
+        "plan_recorded",
+        "fragment_staged",
+        "prepublication_validation",
+        "root_publication",
+        "postpublication_validation",
+        "receipt",
+    ]
+    rendered = render_mutation_batch(result)
+    assert "fragment plan=fragment-plan atomic-group=atomic-group" in rendered
+    assert "prepublication:dispatcher_absence:dispatcher passed" in rendered
+    assert "logical-route@v1 staged->published" in rendered
+    db.close()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 
 from d810.core.observability import SnapshotRef
 from d810.core.observability_models import (
@@ -133,6 +134,62 @@ class MutationPlanItemObserved:
 
 
 @dataclass(frozen=True)
+class FragmentValidationOutcomeObserved:
+    """One queryable semantic-fragment validation result."""
+
+    phase: str
+    postcondition: str
+    subject_id: str
+    passed: bool
+    reason: str
+    block_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.phase not in {"prepublication", "postpublication"}:
+            raise ValueError("fragment validation phase is invalid")
+        if not self.postcondition or not self.subject_id:
+            raise ValueError(
+                "fragment validation requires a postcondition and subject"
+            )
+        object.__setattr__(self, "passed", bool(self.passed))
+        object.__setattr__(
+            self,
+            "block_ids",
+            tuple(str(block_id) for block_id in self.block_ids),
+        )
+
+
+@dataclass(frozen=True)
+class LogicalBlockVersionTransitionObserved:
+    """One logical-version state transition persisted without MBA serials."""
+
+    proxy_token: str
+    from_version: int
+    from_state: str
+    to_version: int
+    to_state: str
+
+    def __post_init__(self) -> None:
+        states = {"staged", "published", "retired", "aborted"}
+        if not self.proxy_token:
+            raise ValueError("logical-version transition requires a proxy token")
+        if int(self.from_version) < 0 or int(self.to_version) < 0:
+            raise ValueError("logical-version numbers must be non-negative")
+        if self.from_state not in states or self.to_state not in states:
+            raise ValueError("logical-version transition state is invalid")
+        if int(self.from_version) != int(self.to_version):
+            raise ValueError("logical-version state transition cannot change identity")
+        if (self.from_state, self.to_state) not in {
+            ("published", "retired"),
+            ("staged", "published"),
+            ("staged", "aborted"),
+        }:
+            raise ValueError("logical-version transition is not authoritative")
+        object.__setattr__(self, "from_version", int(self.from_version))
+        object.__setattr__(self, "to_version", int(self.to_version))
+
+
+@dataclass(frozen=True)
 class MutationPlanObserved:
     session_id: str
     func_ea: int
@@ -144,7 +201,38 @@ class MutationPlanObserved:
     maturity: str
     description: str
     items: tuple[MutationPlanItemObserved, ...] = ()
+    fragment_plan_id: str = ""
+    fragment_atomic_group_id: str = ""
+    fragment_plan_json: str = ""
     timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        fragment_fields = (
+            bool(self.fragment_plan_id),
+            bool(self.fragment_atomic_group_id),
+            bool(self.fragment_plan_json),
+        )
+        if any(fragment_fields) and not all(fragment_fields):
+            raise ValueError(
+                "fragment mutation plan requires id, atomic group, and payload"
+            )
+        if (self.mutation_kind == "fragment_publication") != all(fragment_fields):
+            raise ValueError(
+                "fragment publication must carry its complete portable plan"
+            )
+        if all(fragment_fields):
+            try:
+                payload = json.loads(self.fragment_plan_json)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("fragment publication plan JSON is invalid") from exc
+            if not isinstance(payload, dict) or (
+                payload.get("plan_id") != self.fragment_plan_id
+                or payload.get("atomic_group_id")
+                != self.fragment_atomic_group_id
+            ):
+                raise ValueError(
+                    "fragment publication plan JSON identity does not match"
+                )
 
 
 @dataclass(frozen=True)
@@ -164,6 +252,15 @@ class MutationReceiptObserved:
     reason: str
     affected_identity_json: tuple[str, ...] = ()
     affected_anchor_eas: tuple[int, ...] = ()
+    fragment_plan_id: str = ""
+    fragment_atomic_group_id: str = ""
+    fragment_staged: bool = False
+    root_publication_attempted: bool = False
+    root_publication_succeeded: bool = False
+    rollback_attempted: bool = False
+    rollback_succeeded: bool | None = None
+    validation_outcomes: tuple[FragmentValidationOutcomeObserved, ...] = ()
+    version_transitions: tuple[LogicalBlockVersionTransitionObserved, ...] = ()
     timestamp: float = 0.0
 
     def __post_init__(self) -> None:
@@ -177,6 +274,58 @@ class MutationReceiptObserved:
             raise ValueError("an aborted receipt cannot advance the MBA generation")
         if len(self.affected_identity_json) != len(self.affected_anchor_eas):
             raise ValueError("receipt identities and EA anchors must align")
+        if any(
+            not isinstance(outcome, FragmentValidationOutcomeObserved)
+            for outcome in self.validation_outcomes
+        ):
+            raise TypeError("fragment receipt contains an invalid validation outcome")
+        if any(
+            not isinstance(transition, LogicalBlockVersionTransitionObserved)
+            for transition in self.version_transitions
+        ):
+            raise TypeError("mutation receipt contains an invalid version transition")
+        has_fragment = bool(self.fragment_plan_id)
+        if has_fragment != bool(self.fragment_atomic_group_id):
+            raise ValueError("fragment receipt requires plan and atomic-group ids")
+        if (self.mutation_kind == "fragment_publication") != has_fragment:
+            raise ValueError(
+                "fragment publication receipt requires fragment identity"
+            )
+        if self.root_publication_succeeded and not self.root_publication_attempted:
+            raise ValueError(
+                "root publication cannot succeed before it is attempted"
+            )
+        if self.rollback_attempted != (self.rollback_succeeded is not None):
+            raise ValueError(
+                "rollback success is present exactly when rollback was attempted"
+            )
+        if self.outcome == "committed" and has_fragment:
+            if (
+                not self.fragment_staged
+                or not self.root_publication_succeeded
+                or self.rollback_attempted
+            ):
+                raise ValueError(
+                    "committed fragment requires staged and published authority"
+                )
+            phases = {outcome.phase for outcome in self.validation_outcomes}
+            if phases != {"prepublication", "postpublication"} or not all(
+                outcome.passed for outcome in self.validation_outcomes
+            ):
+                raise ValueError(
+                    "committed fragment requires passed pre/post validation"
+                )
+        if not has_fragment and (
+            self.fragment_staged
+            or self.root_publication_attempted
+            or self.root_publication_succeeded
+            or self.rollback_attempted
+            or self.rollback_succeeded is not None
+            or self.validation_outcomes
+        ):
+            raise ValueError(
+                "non-fragment receipt cannot carry fragment transaction state"
+            )
 
 
 # ---------------------------------------------------------------------------

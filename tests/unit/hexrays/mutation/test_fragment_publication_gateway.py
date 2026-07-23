@@ -1011,6 +1011,7 @@ def test_generic_commit_cannot_bypass_fragment_postvalidation() -> None:
         StructuralMutationKind.FRAGMENT_PUBLICATION,
         serial_quantity=4,
         planned_operation_count=1,
+        fragment_plan=plan,
     )
     gateway.record_edge_redirect()
 

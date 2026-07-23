@@ -9,8 +9,9 @@ realizing the whole plan in one unpublished transaction.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
+import json
 
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
@@ -1352,6 +1353,63 @@ class FragmentPlan:
         raise KeyError(operation_id)
 
 
+def _portable_fragment_json_value(value):
+    """Convert one portable plan value into deterministic JSON data."""
+    if isinstance(value, NativePreanalysisKey):
+        return value.to_dict()
+    if isinstance(value, StableBlockIdentity):
+        return value.to_dict()
+    if isinstance(value, Enum):
+        return value.value
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: _portable_fragment_json_value(getattr(value, field.name))
+            for field in fields(value)
+        }
+    if isinstance(value, dict):
+        return {
+            str(key): _portable_fragment_json_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (tuple, list)):
+        return [_portable_fragment_json_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        converted = [_portable_fragment_json_value(item) for item in value]
+        return sorted(
+            converted,
+            key=lambda item: json.dumps(
+                item,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    raise TypeError(
+        "fragment plan contains a non-portable JSON value: "
+        f"{type(value).__name__}"
+    )
+
+
+def fragment_plan_to_dict(plan: FragmentPlan) -> dict[str, object]:
+    """Return the complete serial-free diagnostic representation of a plan."""
+    if not isinstance(plan, FragmentPlan):
+        raise TypeError("fragment plan serialization requires a FragmentPlan")
+    payload = _portable_fragment_json_value(plan)
+    if not isinstance(payload, dict):
+        raise TypeError("fragment plan serialization did not produce an object")
+    return payload
+
+
+def serialize_fragment_plan(plan: FragmentPlan) -> str:
+    """Serialize every plan member deterministically for diagnostic replay."""
+    return json.dumps(
+        fragment_plan_to_dict(plan),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 __all__ = [
     "FragmentBlock",
     "FragmentBlockMaterialization",
@@ -1373,4 +1431,6 @@ __all__ = [
     "FragmentTerminalReturn",
     "FragmentTerminalRoute",
     "FragmentValueSite",
+    "fragment_plan_to_dict",
+    "serialize_fragment_plan",
 ]

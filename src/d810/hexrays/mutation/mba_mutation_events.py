@@ -31,6 +31,7 @@ from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentPlan,
+    serialize_fragment_plan,
 )
 from d810.transforms.fragment_validation import FragmentValidationResult
 
@@ -179,6 +180,9 @@ class MbaMutationPlanned:
     planned_operation_count: int
     description: str
     items: tuple[MbaMutationPlanItem, ...] = ()
+    fragment_plan_id: str = ""
+    fragment_atomic_group_id: str = ""
+    fragment_plan_json: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +199,15 @@ class MbaMutationAborted:
     description: str
     reason: str
     discarded_version_ids: tuple[LogicalBlockVersionId, ...] = ()
+    fragment_plan_id: str = ""
+    fragment_atomic_group_id: str = ""
+    fragment_staged: bool = False
+    root_publication_attempted: bool = False
+    root_publication_succeeded: bool = False
+    rollback_attempted: bool = False
+    rollback_succeeded: bool | None = None
+    prepublication_validation: FragmentValidationResult | None = None
+    postpublication_validation: FragmentValidationResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +270,11 @@ class MbaMutationGateway:
         repr=False,
     )
     _active_root_publication_confirmed: bool = field(default=False, init=False)
+    _active_fragment_staged: bool = field(default=False, init=False)
+    _active_root_publication_attempted: bool = field(default=False, init=False)
+    _active_root_publication_succeeded: bool = field(default=False, init=False)
+    _active_rollback_attempted: bool = field(default=False, init=False)
+    _active_rollback_succeeded: bool | None = field(default=None, init=False)
     _active_fragment_effect_requirements: dict[
         tuple[str, str], MbaMutationPlanItem
     ] = field(default_factory=dict, init=False, repr=False)
@@ -316,6 +334,11 @@ class MbaMutationGateway:
         self._active_prepublication_validation = None
         self._active_postpublication_validation = None
         self._active_root_publication_confirmed = False
+        self._active_fragment_staged = False
+        self._active_root_publication_attempted = False
+        self._active_root_publication_succeeded = False
+        self._active_rollback_attempted = False
+        self._active_rollback_succeeded = None
         self._active_fragment_effect_requirements.clear()
         self._applied_fragment_effects.clear()
 
@@ -346,6 +369,7 @@ class MbaMutationGateway:
         description: str = "",
         planned_operation_count: int = 1,
         plan_items: Iterable[MbaMutationPlanItem] = (),
+        fragment_plan: FragmentPlan | None = None,
     ) -> None:
         if self.active:
             raise RuntimeError("a structural mutation batch is already active")
@@ -355,6 +379,12 @@ class MbaMutationGateway:
         if planned_operation_count < 0:
             raise ValueError("planned operation count must be non-negative")
         plan_items = tuple(plan_items)
+        if (
+            kind is StructuralMutationKind.FRAGMENT_PUBLICATION
+        ) != isinstance(fragment_plan, FragmentPlan):
+            raise ValueError(
+                "fragment-publication batch requires exactly one FragmentPlan"
+            )
         serial_quantity = (
             None if serial_quantity is None else int(serial_quantity)
         )
@@ -362,6 +392,7 @@ class MbaMutationGateway:
         self.identity_index.begin_transaction(batch_id, serial_quantity)
 
         self._reset_fragment_context()
+        self._active_fragment_plan = fragment_plan
         self._active_kind = kind
         self._active_description = str(description)
         self._active_batch_id = batch_id
@@ -382,6 +413,17 @@ class MbaMutationGateway:
                 planned_operation_count=self._planned_operation_count,
                 description=self._active_description,
                 items=plan_items,
+                fragment_plan_id=(
+                    "" if fragment_plan is None else fragment_plan.plan_id
+                ),
+                fragment_atomic_group_id=(
+                    "" if fragment_plan is None else fragment_plan.atomic_group_id
+                ),
+                fragment_plan_json=(
+                    ""
+                    if fragment_plan is None
+                    else serialize_fragment_plan(fragment_plan)
+                ),
             ),
             mutation_batch_id=batch_id,
         )
@@ -579,6 +621,7 @@ class MbaMutationGateway:
             ),
             planned_operation_count=len(items),
             plan_items=items,
+            fragment_plan=plan,
         )
         effect_kinds = {
             "semantic_fragment_return_carrier_materialization",
@@ -595,6 +638,68 @@ class MbaMutationGateway:
             raise ValueError("semantic-fragment effect inventory is ambiguous")
         self._active_fragment_effect_requirements.update(requirements)
 
+    def _require_active_fragment(self, plan: FragmentPlan) -> None:
+        self._require_active()
+        if (
+            self._active_kind is not StructuralMutationKind.FRAGMENT_PUBLICATION
+            or self._active_fragment_plan is not plan
+        ):
+            raise RuntimeError(
+                "semantic-fragment transaction does not own this plan"
+            )
+
+    def _record_fragment_staged(self, plan: FragmentPlan) -> None:
+        self._require_active_fragment(plan)
+        self._active_fragment_staged = True
+
+    def _record_fragment_validation(
+        self,
+        *,
+        plan: FragmentPlan,
+        phase: str,
+        validation: FragmentValidationResult,
+    ) -> None:
+        self._require_active_fragment(plan)
+        if not isinstance(validation, FragmentValidationResult):
+            raise TypeError("fragment validation has the wrong type")
+        if (
+            validation.plan_id != plan.plan_id
+            or validation.atomic_group_id != plan.atomic_group_id
+        ):
+            raise ValueError("fragment validation scope does not match the plan")
+        if phase == "prepublication":
+            self._active_prepublication_validation = validation
+        elif phase == "postpublication":
+            self._active_postpublication_validation = validation
+        else:
+            raise ValueError("fragment validation phase is invalid")
+
+    def _record_fragment_root_publication_attempted(
+        self,
+        plan: FragmentPlan,
+    ) -> None:
+        self._require_active_fragment(plan)
+        self._active_root_publication_attempted = True
+
+    def _record_fragment_root_publication_succeeded(
+        self,
+        plan: FragmentPlan,
+    ) -> None:
+        self._require_active_fragment(plan)
+        if not self._active_root_publication_attempted:
+            raise RuntimeError("root publication was not attempted")
+        self._active_root_publication_succeeded = True
+
+    def _record_fragment_rollback(
+        self,
+        plan: FragmentPlan,
+        *,
+        succeeded: bool,
+    ) -> None:
+        self._require_active_fragment(plan)
+        self._active_rollback_attempted = True
+        self._active_rollback_succeeded = bool(succeeded)
+
     def _record_fragment_semantic_validation(
         self,
         *,
@@ -603,9 +708,7 @@ class MbaMutationGateway:
         postpublication: FragmentValidationResult,
     ) -> None:
         """Attach passed semantic proof to the pending fragment receipt."""
-        self._require_active()
-        if self._active_kind is not StructuralMutationKind.FRAGMENT_PUBLICATION:
-            raise RuntimeError("semantic validation belongs to fragment publication")
+        self._require_active_fragment(plan)
         for phase, result in (
             ("prepublication", prepublication),
             ("postpublication", postpublication),
@@ -617,7 +720,15 @@ class MbaMutationGateway:
                 or result.atomic_group_id != plan.atomic_group_id
             ):
                 raise ValueError("fragment validation scope does not match the plan")
-        self._active_fragment_plan = plan
+        if (
+            self._active_prepublication_validation is not prepublication
+            or self._active_postpublication_validation is not postpublication
+        ):
+            raise ValueError(
+                "fragment receipt validation was not observed in transaction order"
+            )
+        if not self._active_root_publication_succeeded:
+            raise ValueError("fragment receipt requires published root authority")
         self._active_prepublication_validation = prepublication
         self._active_postpublication_validation = postpublication
         self._active_root_publication_confirmed = True
@@ -1183,6 +1294,31 @@ class MbaMutationGateway:
                     description=self._active_description,
                     reason=str(reason),
                     discarded_version_ids=discarded_version_ids,
+                    fragment_plan_id=(
+                        ""
+                        if self._active_fragment_plan is None
+                        else self._active_fragment_plan.plan_id
+                    ),
+                    fragment_atomic_group_id=(
+                        ""
+                        if self._active_fragment_plan is None
+                        else self._active_fragment_plan.atomic_group_id
+                    ),
+                    fragment_staged=self._active_fragment_staged,
+                    root_publication_attempted=(
+                        self._active_root_publication_attempted
+                    ),
+                    root_publication_succeeded=(
+                        self._active_root_publication_succeeded
+                    ),
+                    rollback_attempted=self._active_rollback_attempted,
+                    rollback_succeeded=self._active_rollback_succeeded,
+                    prepublication_validation=(
+                        self._active_prepublication_validation
+                    ),
+                    postpublication_validation=(
+                        self._active_postpublication_validation
+                    ),
                 ),
                 mutation_batch_id=aborted_batch_id,
             )

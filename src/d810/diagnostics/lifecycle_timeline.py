@@ -74,12 +74,36 @@ def mutation_batch(conn: sqlite3.Connection, batch_id: str) -> dict[str, Any]:
         "WHERE r.mutation_batch_id=? ORDER BY ri.identity_index",
         (batch_id,),
     ))
+    fragment_rows = _rows(conn.execute(
+        "SELECT * FROM semantic_fragment_transactions "
+        "WHERE mutation_batch_id=?",
+        (batch_id,),
+    ))
+    fragment_validations = _rows(conn.execute(
+        "SELECT * FROM semantic_fragment_validation_outcomes "
+        "WHERE mutation_batch_id=? ORDER BY outcome_index",
+        (batch_id,),
+    ))
+    version_transitions = _rows(conn.execute(
+        "SELECT * FROM logical_block_version_transitions "
+        "WHERE mutation_batch_id=? ORDER BY transition_index",
+        (batch_id,),
+    ))
+    fragment_events = _rows(conn.execute(
+        "SELECT * FROM semantic_fragment_transaction_events "
+        "WHERE mutation_batch_id=? ORDER BY event_index",
+        (batch_id,),
+    ))
     return {
         "batch_id": batch_id,
         "plan": plan_rows[0] if plan_rows else None,
         "items": items,
         "receipt": receipt_rows[0] if receipt_rows else None,
         "receipt_identities": identities,
+        "semantic_fragment": fragment_rows[0] if fragment_rows else None,
+        "fragment_validations": fragment_validations,
+        "version_transitions": version_transitions,
+        "fragment_events": fragment_events,
     }
 
 
@@ -165,6 +189,34 @@ def render_mutation_batch(result: dict[str, Any]) -> str:
             f"generation={receipt['pre_generation']}->{receipt['post_generation']} "
             f"applied={receipt['applied_operation_count']}/{receipt['planned_operation_count']}"
         )
+    fragment = result["semantic_fragment"]
+    if fragment is not None:
+        lines.append(
+            f"fragment plan={fragment['plan_id']} "
+            f"atomic-group={fragment['atomic_group_id']} "
+            f"staged={_bool_value(fragment['fragment_staged'])} "
+            f"root-published={_bool_value(fragment['root_publication_succeeded'])} "
+            f"rollback={_bool_value(fragment['rollback_succeeded'])}"
+        )
+        for event in result["fragment_events"]:
+            lines.append(
+                f"fragment-event[{event['event_index']}] "
+                f"{event['event_kind']} outcome={event['outcome']}"
+            )
+        for validation in result["fragment_validations"]:
+            lines.append(
+                f"validation[{validation['outcome_index']}] "
+                f"{validation['phase']}:{validation['postcondition']}:"
+                f"{validation['subject_id']} "
+                f"{'passed' if validation['passed'] else 'failed'} "
+                f"reason={validation['reason']}"
+            )
+        for transition in result["version_transitions"]:
+            lines.append(
+                f"version[{transition['transition_index']}] "
+                f"{transition['proxy_token']}@v{transition['from_version']} "
+                f"{transition['from_state']}->{transition['to_state']}"
+            )
     return "\n".join(lines)
 
 
@@ -191,6 +243,12 @@ def _generation_range(before: int | None, after: int | None) -> str:
 
 def _value(value: Any) -> str:
     return "-" if value is None else str(value)
+
+
+def _bool_value(value: Any) -> str:
+    if value is None:
+        return "-"
+    return "yes" if bool(value) else "no"
 
 
 __all__ = [
