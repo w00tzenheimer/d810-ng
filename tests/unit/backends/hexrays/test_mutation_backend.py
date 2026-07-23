@@ -135,3 +135,40 @@ def test_apply_lowers_plan_when_reachability_is_preserved() -> None:
     assert result is cfg
     assert translator.lower_calls == [plan]
     assert translator.lift_count == 2
+
+
+def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
+    cfg = _make_cfg(
+        [(0, 1), (1, 2), (2, 3)],
+        stop_serials=(3,),
+    )
+    translator = _FakeTranslator(cfg)
+    plan = object()
+    published = []
+
+    class _Gateway:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def new_transaction(self):
+            return _Gateway("fragment")
+
+        def publish_semantic_fragment(self, fragment_backend, fragment_plan):
+            published.append((self.name, fragment_backend, fragment_plan))
+
+    fragment_backend = object()
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_Gateway("root"),
+        translator=translator,
+        fragment_backend_factory=lambda live_source, gateway: (
+            fragment_backend
+            if live_source == "LIVE" and gateway.name == "fragment"
+            else None
+        ),
+    )
+
+    result = backend.publish_fragment(plan, live_source="LIVE")
+
+    assert result is cfg
+    assert published == [("fragment", fragment_backend, plan)]
+    assert translator.lift_count == 1

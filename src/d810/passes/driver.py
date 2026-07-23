@@ -7,10 +7,11 @@ pseudocode (spec unflatten):
     family.detect -> for spec in family.pipeline_for(match, ctx):
         validate_capabilities; result = spec.pass_factory().run(ctx)
         if result.rewrite_plan has work: ctx = ctx(graph=backend.apply(...)); facts.invalidate_to(...)
+        elif result.fragment_plan: ctx = ctx(graph=backend.publish_fragment(...)); facts.invalidate_to(...)
 
-Additive + behavior-neutral: not wired into the maturity hook yet. The live backend + lifter are
-the seam-pending pieces (``backends/hexrays``); everything here is portable and unit-tested with a
-null backend.
+Fragment publication defers pass-output visibility until the backend returns a
+committed, postvalidated graph snapshot. The live backend + lifter are supplied
+from ``backends/hexrays``; everything here remains portable.
 """
 from __future__ import annotations
 
@@ -390,13 +391,25 @@ def publish_contract_evidence_outputs(
 
 
 def validate_backend_route(spec: PassSpec, result) -> None:
-    """Fail when an analysis-only pass tries to emit backend mutation work."""
-    if (
-        spec.backend_route is BackendRoute.ANALYSIS_ONLY
-        and _plan_has_work(result.rewrite_plan)
-    ):
+    """Require one declared authority route for each pass result."""
+    has_rewrite_plan = _plan_has_work(result.rewrite_plan)
+    has_fragment_plan = result.fragment_plan is not None
+    if spec.backend_route is BackendRoute.ANALYSIS_ONLY:
+        if has_rewrite_plan or has_fragment_plan:
+            raise BackendRouteError(
+                f"analysis-only pass {spec.pass_id!r} produced mutation work"
+            )
+        return
+    if spec.backend_route is BackendRoute.MUTATION_BACKEND:
+        if has_fragment_plan:
+            raise BackendRouteError(
+                f"mutation-backend pass {spec.pass_id!r} produced fragment "
+                "publication work"
+            )
+        return
+    if spec.backend_route is BackendRoute.FRAGMENT_PUBLICATION and has_rewrite_plan:
         raise BackendRouteError(
-            f"analysis-only pass {spec.pass_id!r} produced a rewrite plan"
+            f"fragment-publication pass {spec.pass_id!r} produced a rewrite plan"
         )
 
 
@@ -439,18 +452,27 @@ def _run_pass_spec(
     validate_contract_fact_outputs(spec, result)
     validate_contract_evidence_outputs(spec, result)
     validate_backend_route(spec, result)
-    if scheduler is not None:
-        for request in result.run_later:
-            scheduler.request(
-                func_ea=ctx.source.func_ea,
-                pass_id=spec.pass_id,
-                current_maturity=ctx.maturity,
-                run_later=request,
-                domain=RunLaterDomain.PIPELINE_PASS,
-            )
-    publish_analysis_outputs(spec, ctx, result)
-    publish_contract_fact_outputs(spec, ctx, result)
-    publish_contract_evidence_outputs(spec, ctx, result)
+
+    def publish_result_side_effects() -> None:
+        if scheduler is not None:
+            for request in result.run_later:
+                scheduler.request(
+                    func_ea=ctx.source.func_ea,
+                    pass_id=spec.pass_id,
+                    current_maturity=ctx.maturity,
+                    run_later=request,
+                    domain=RunLaterDomain.PIPELINE_PASS,
+                )
+        publish_analysis_outputs(spec, ctx, result)
+        publish_contract_fact_outputs(spec, ctx, result)
+        publish_contract_evidence_outputs(spec, ctx, result)
+
+    defer_result_side_effects = (
+        spec.backend_route is BackendRoute.FRAGMENT_PUBLICATION
+        and result.fragment_plan is not None
+    )
+    if not defer_result_side_effects:
+        publish_result_side_effects()
     if _plan_has_work(result.rewrite_plan):
         new_graph = backend.apply(
             result.rewrite_plan, ctx.source.live_source, effective_safety_policy(spec)
@@ -460,6 +482,29 @@ def _run_pass_spec(
             if hasattr(facts, "invalidate_contract"):
                 facts.invalidate_contract(spec.contract)
             ctx = replace(ctx, graph=new_graph)
+    fragment_plan = result.fragment_plan
+    if fragment_plan is not None:
+        publish_fragment = getattr(backend, "publish_fragment", None)
+        if not callable(publish_fragment):
+            raise BackendRouteError(
+                f"fragment-publication pass {spec.pass_id!r} requires a "
+                "fragment-capable backend"
+            )
+        new_graph = publish_fragment(
+            fragment_plan,
+            ctx.source.live_source,
+            effective_safety_policy(spec),
+        )
+        if _graph_changed(ctx.graph, new_graph):
+            facts.invalidate_to(
+                new_graph,
+                effective_preserved_analyses(spec, result),
+            )
+            if hasattr(facts, "invalidate_contract"):
+                facts.invalidate_contract(spec.contract)
+            ctx = replace(ctx, graph=new_graph)
+    if defer_result_side_effects:
+        publish_result_side_effects()
     return ctx
 
 

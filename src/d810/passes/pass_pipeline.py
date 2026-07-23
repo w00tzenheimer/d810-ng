@@ -2,8 +2,10 @@
 
 This is the target call-graph vocabulary the optimizers-thinning end-state is built around
 (see docs/plans/2026-05-31-optimizers-thinning-execution-workflow-spec.md unflatten). Families return
-``PassSpec``s; passes schedule analyses (facts) + transforms (a ``PatchPlan``); a ``MutationBackend``
-applies the plan and returns a fresh ``FlowGraph`` snapshot (the sound invalidation epoch).
+``PassSpec``s; passes schedule analyses and exactly one transform authority:
+a ``PatchPlan`` through ``MutationBackend`` or a complete ``FragmentPlan``
+through ``FragmentPublicationBackend``. Both return a fresh ``FlowGraph``
+snapshot (the sound invalidation epoch).
 
 Additive + behavior-neutral: nothing here is wired into the runtime yet. Net-new types only;
 every concept that already exists is *bound to*, never duplicated.
@@ -15,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 
-from d810.core.typing import Any, Callable, Mapping, Protocol, TypeVar, runtime_checkable
+from d810.core.typing import Callable, Mapping, Protocol, TypeVar, runtime_checkable
 from d810.core.config import ProjectConfiguration
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.maturity import IRMaturity
@@ -23,6 +25,7 @@ from d810.analyses.value_flow.model import ValidatedFactView
 from d810.capabilities.resolver import CapabilitySet
 from d810.passes.contract_vocabulary import warn_legacy_contract_names
 from d810.passes.scheduler import RunLater
+from d810.transforms.fragment_plan import FragmentPlan
 from d810.transforms.plan import PatchPlan
 
 # Rewrite-plan vocabulary alias (canonical home already exists).
@@ -160,8 +163,8 @@ class FunctionSource(Protocol):
     """Portable handle to the function under analysis plus its live backend source.
 
     ``live_source`` is the opaque backend object (e.g. a live ``mba_t``) that a
-    ``MutationBackend`` consumes when applying a rewrite plan. Portable passes read
-    ``flow_graph`` and never touch ``live_source``.
+    backend consumes when applying a rewrite or publishing a fragment. Portable
+    passes read ``flow_graph`` and never touch ``live_source``.
     """
 
     @property
@@ -229,6 +232,7 @@ class BackendRoute(str, Enum):
     """Backend apply route for a pass result."""
 
     MUTATION_BACKEND = "mutation_backend"
+    FRAGMENT_PUBLICATION = "fragment_publication"
     ANALYSIS_ONLY = "analysis_only"
 
 
@@ -865,8 +869,7 @@ _PRESERVED_UNSET = object()
 
 @dataclass(frozen=True, init=False)
 class PassResult:
-    """What a pass produces: derived facts, a (possibly empty) rewrite plan, and an
-    OPTIMISTIC same-maturity invalidation hint (the sound base is snapshot identity).
+    """What a pass produces: facts, one exclusive mutation form, and invalidation.
 
     ``preserved`` remains default-all for legacy callers. The custom initializer also
     records whether the caller supplied it explicitly, so the driver can use the
@@ -875,6 +878,7 @@ class PassResult:
 
     facts: tuple[object, ...]
     rewrite_plan: PatchPlan
+    fragment_plan: FragmentPlan | None
     preserved: PreservedAnalyses
     run_later: tuple[RunLater, ...]
     analysis_outputs: Mapping[str, object]
@@ -886,6 +890,7 @@ class PassResult:
         *,
         facts: tuple[object, ...] = (),
         rewrite_plan: PatchPlan | None = None,
+        fragment_plan: FragmentPlan | None = None,
         preserved: PreservedAnalyses | object = _PRESERVED_UNSET,
         run_later: tuple[RunLater, ...] = (),
         analysis_outputs: Mapping[str, object] | None = None,
@@ -901,6 +906,9 @@ class PassResult:
             "rewrite_plan",
             rewrite_plan if rewrite_plan is not None else PatchPlan(),
         )
+        if fragment_plan is not None and not isinstance(fragment_plan, FragmentPlan):
+            raise TypeError("pass result fragment plan must be a FragmentPlan")
+        object.__setattr__(self, "fragment_plan", fragment_plan)
         object.__setattr__(self, "preserved", preserved_value)
         object.__setattr__(self, "run_later", run_later)
         object.__setattr__(
@@ -993,6 +1001,18 @@ class MutationBackend(Protocol):
     def apply(
         self,
         rewrite_plan: PatchPlan,
+        live_source: object,
+        safety_policy: SafetyPolicy,
+    ) -> FlowGraph: ...
+
+
+@runtime_checkable
+class FragmentPublicationBackend(Protocol):
+    """Backend boundary for validated, receipt-backed fragment publication."""
+
+    def publish_fragment(
+        self,
+        fragment_plan: FragmentPlan,
         live_source: object,
         safety_policy: SafetyPolicy,
     ) -> FlowGraph: ...
