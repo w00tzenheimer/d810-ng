@@ -3348,10 +3348,12 @@ def test_gateway_publishes_conditional_taken_fragment_root(
     assert modifier._semantic_fragment_state is None
 
 
+@pytest.mark.parametrize("insertion_retargets_fallthrough", (False, True))
 @pytest.mark.parametrize("fail_after_root_write", (False, True))
 def test_gateway_publishes_conditional_fallthrough_fragment_root(
     monkeypatch,
     fail_after_root_write: bool,
+    insertion_retargets_fallthrough: bool,
 ) -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     predecessor = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_2WAY)
@@ -3367,6 +3369,25 @@ def test_gateway_publishes_conditional_fallthrough_fragment_root(
     gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    if insertion_retargets_fallthrough:
+        copy_block_keep = dm.copy_block_keep
+
+        def _copy_block_with_live_fallthrough_transient(*args, **kwargs):
+            source = args[1]
+            clone = copy_block_keep(*args, **kwargs)
+            if int(source.start) != int(predecessor.start):
+                return clone
+            taken_serial = int(source.tail.d.b)
+            source.succset.clear()
+            source.succset.push_back(int(clone.serial))
+            source.succset.push_back(taken_serial)
+            return clone
+
+        monkeypatch.setattr(
+            dm,
+            "copy_block_keep",
+            _copy_block_with_live_fallthrough_transient,
+        )
     mark = modifier._semantic_edge_mark
     root_write_failed = False
 
