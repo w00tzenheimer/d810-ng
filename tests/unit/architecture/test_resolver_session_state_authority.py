@@ -244,6 +244,17 @@ LEGACY_FINAL_ROUTE_FUNCTIONS = frozenset(
     }
 )
 
+LEGACY_PREOPT_SEMANTIC_PORT_FUNCTIONS = frozenset(
+    {
+        "_compose_preopt_entry_bridge_ports",
+        "_compose_preopt_stack_carried_entry_choice_ports",
+        "_compose_preopt_stack_carrier_router_ports",
+        "_matching_preopt_entry_consumer_choice",
+        "_preopt_entry_bridge_boundary_ports",
+        "_preopt_live_residual_route_boundary_ports",
+    }
+)
+
 
 def _resolver_state_class() -> ast.ClassDef:
     tree = ast.parse(
@@ -424,6 +435,22 @@ def test_computed_goto_resolver_has_no_provider_specific_route_authority() -> No
 
     assert "_discover_reference_style_immediate_flow_routes" not in resolver_source
     assert "reference_style_immediate_flow_route" not in resolver_source
+
+
+def test_computed_goto_resolver_has_no_preopt_semantic_port_authority() -> None:
+    resolver_tree = ast.parse(
+        COMPUTED_GOTO_RESOLVER_PATH.read_text(encoding="utf-8"),
+        filename=str(COMPUTED_GOTO_RESOLVER_PATH),
+    )
+    resolver_functions = {
+        node.name for node in resolver_tree.body if isinstance(node, ast.FunctionDef)
+    }
+    assert resolver_functions.isdisjoint(LEGACY_PREOPT_SEMANTIC_PORT_FUNCTIONS)
+
+    boundary_planner = _function(resolver_tree, "_preopt_union_boundary_ports")
+    assert _referenced_identifiers(boundary_planner).isdisjoint(
+        LEGACY_PREOPT_SEMANTIC_PORT_FUNCTIONS
+    )
 
 
 def test_portable_session_has_no_profile_specific_trace_switches() -> None:
