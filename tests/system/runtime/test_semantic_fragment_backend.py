@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import platform
 from copy import deepcopy
 from dataclasses import replace
 
@@ -12,6 +14,10 @@ ida_hexrays = pytest.importorskip("ida_hexrays")
 from d810.hexrays.mutation import deferred_modifier as dm  # noqa: E402
 from d810.hexrays.mutation import semantic_fragment_backend as sfb  # noqa: E402
 from d810.hexrays.ir.exact_data_flow import DefSite, UseSite  # noqa: E402
+from d810.hexrays.ir.exact_value_ranges import (  # noqa: E402
+    ExactValueRangeProof,
+    prove_exact_unsigned_range,
+)
 from d810.hexrays.mutation.semantic_fragment_publication import (  # noqa: E402
     SemanticFragmentPublicationRejected,
 )
@@ -30,15 +36,28 @@ from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentFlagCorridor,
     FragmentOperation,
     FragmentPlan,
+    FragmentRangeAssumption,
+    FragmentRangeObservation,
     FragmentValueSite,
 )
 from d810.transforms.fragment_validation import (  # noqa: E402
     FragmentBindingState,
     FragmentValidationPostcondition,
     ProjectedDataFlowRelation,
+    ProjectedRangeFact,
     validate_fragment_projection,
 )
 from tests.system.runtime.mutation_gateway import make_mutation_gateway  # noqa: E402
+
+
+def _get_default_binary() -> str:
+    override = os.environ.get("D810_TEST_BINARY")
+    if override:
+        return override
+    return {
+        "Windows": "libobfuscated.dll",
+        "Darwin": "libobfuscated.dylib",
+    }.get(platform.system(), "libobfuscated.so")
 
 
 class _EdgeSet:
@@ -114,6 +133,8 @@ class _Block:
         self.mba = None
         self.nextb = None
         self.prevb = None
+        self.valrange_bounds: list[tuple[int | None, int | None]] = []
+        self.valrange_queries: list[tuple[int, int]] = []
 
     def nsucc(self) -> int:
         return self.succset.size()
@@ -123,6 +144,24 @@ class _Block:
 
     def make_nop(self, instruction) -> None:
         instruction.opcode = int(ida_hexrays.m_nop)
+
+    def get_valranges(self, result, _vivl, instruction, flags: int) -> bool:
+        self.valrange_queries.append((int(instruction.ea), int(flags)))
+        if not self.valrange_bounds:
+            return False
+        lo, hi = self.valrange_bounds.pop(0)
+        observed = ida_hexrays.valrng_t(int(result.get_size()))
+        observed.set_all()
+        if lo is not None:
+            lower = ida_hexrays.valrng_t(int(result.get_size()))
+            lower.set_cmp(ida_hexrays.CMP_AE, int(lo))
+            observed.intersect_with(lower)
+        if hi is not None:
+            upper = ida_hexrays.valrng_t(int(result.get_size()))
+            upper.set_cmp(ida_hexrays.CMP_BE, int(hi))
+            observed.intersect_with(upper)
+        result.swap(observed)
+        return True
 
     def remove_from_block(self, instruction) -> None:
         previous = None
@@ -485,6 +524,52 @@ def _with_flag_corridor(
                 consumer=consumer,
                 block_path=("replacement", "target"),
                 permitted_flag_write_eas=frozenset({0x401010}),
+            ),
+        ),
+    )
+
+
+def _with_value_range(
+    plan: FragmentPlan,
+    *,
+    observation: FragmentRangeObservation = (
+        FragmentRangeObservation.AFTER_INSTRUCTION
+    ),
+) -> FragmentPlan:
+    storage = StorageIdentity(StorageIdentityKind.REGISTER, offset=10)
+    definition = FragmentValueSite(
+        site_id="selector.def",
+        block_id="replacement",
+        value_id="selector",
+        instruction_ea=0x401010,
+        storage_identity=storage,
+        width=1,
+    )
+    use = FragmentValueSite(
+        site_id="selector.range",
+        block_id="target",
+        value_id="selector",
+        instruction_ea=0x401020,
+        storage_identity=storage,
+        width=1,
+    )
+    return replace(
+        plan,
+        data_flow_obligations=(
+            FragmentDataFlowObligation(
+                obligation_id="selector-flow",
+                role=FragmentDataFlowRole.CONDITION,
+                definition=definition,
+                uses=(use,),
+            ),
+        ),
+        value_range_assumptions=(
+            FragmentRangeAssumption(
+                assumption_id="selector-domain",
+                site=use,
+                observation=observation,
+                lo=0,
+                hi=1,
             ),
         ),
     )
@@ -1047,6 +1132,297 @@ def test_gateway_rolls_back_postpublication_flag_clobber(monkeypatch) -> None:
     assert mba.qty == 5
     assert gateway.active is False
     assert modifier._semantic_fragment_state is None
+
+
+def _range_runtime_case(
+    *bounds: tuple[int | None, int | None],
+    observation: FragmentRangeObservation = FragmentRangeObservation.AFTER_INSTRUCTION,
+):
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    _set_block_instructions(target, _Instruction(ida_hexrays.m_nop, 0x401020))
+    target.valrange_bounds.extend(bounds)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = make_mutation_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _with_value_range(
+        _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
+        observation=observation,
+    )
+    return mba, gateway, modifier, plan, entry, original, target
+
+
+def _install_range_data_flow_queries(monkeypatch, target: _Block) -> None:
+    current_definition_serial = -1
+
+    def _reached_uses(
+        _mba,
+        block_serial: int,
+        *_args,
+    ) -> list[UseSite]:
+        nonlocal current_definition_serial
+        current_definition_serial = int(block_serial)
+        return [UseSite(target.serial, 0x401020, ida_hexrays.m_nop)]
+
+    def _reaching_definitions(
+        _mba,
+        _block_serial: int,
+        *_args,
+    ) -> list[DefSite]:
+        assert current_definition_serial >= 0
+        return [
+            DefSite(current_definition_serial, 0x401010, ida_hexrays.m_goto),
+        ]
+
+    monkeypatch.setattr(
+        sfb,
+        "find_uses_reached_by_reg_definition",
+        _reached_uses,
+    )
+    monkeypatch.setattr(
+        sfb,
+        "find_reaching_defs_for_reg_use",
+        _reaching_definitions,
+    )
+
+
+def _install_range_value_query(monkeypatch) -> None:
+    def _prove(
+        block: _Block,
+        instruction: _Instruction,
+        _storage: StorageIdentity,
+        _width: int,
+        *,
+        at_end: bool,
+        required_lo: int | None,
+        required_hi: int | None,
+    ) -> ExactValueRangeProof | None:
+        block.valrange_queries.append(
+            (
+                int(instruction.ea),
+                int(ida_hexrays.VR_EXACT)
+                | int(
+                    ida_hexrays.VR_AT_END
+                    if at_end
+                    else ida_hexrays.VR_AT_START
+                ),
+            )
+        )
+        if not block.valrange_bounds:
+            return None
+        lo, hi = block.valrange_bounds.pop(0)
+        if required_lo is not None and (lo is None or lo < required_lo):
+            return None
+        if required_hi is not None and (hi is None or hi > required_hi):
+            return None
+        return ExactValueRangeProof(lo=lo, hi=hi)
+
+    monkeypatch.setattr(sfb, "prove_exact_unsigned_range", _prove)
+
+
+@pytest.mark.parametrize(
+    ("observation", "expected_position"),
+    (
+        (FragmentRangeObservation.BEFORE_INSTRUCTION, ida_hexrays.VR_AT_START),
+        (FragmentRangeObservation.AFTER_INSTRUCTION, ida_hexrays.VR_AT_END),
+    ),
+)
+def test_backend_projects_exact_live_value_range(
+    monkeypatch,
+    observation: FragmentRangeObservation,
+    expected_position: int,
+) -> None:
+    mba, gateway, modifier, plan, entry, original, target = _range_runtime_case(
+        (1, 1),
+        observation=observation,
+    )
+    _install_range_data_flow_queries(monkeypatch, target)
+    _install_range_value_query(monkeypatch)
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    assert projection.value_ranges == (
+        ProjectedRangeFact(
+            site_id="selector.range",
+            value_id="selector",
+            observation=observation,
+            lo=1,
+            hi=1,
+        ),
+    )
+    assert target.valrange_queries == [
+        (0x401020, int(ida_hexrays.VR_EXACT) | int(expected_position)),
+    ]
+    assert validate_fragment_projection(plan, projection).passed
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime value-range projection cleanup")
+    assert mba.qty == 5
+    assert tuple(entry.succset) == (original.serial,)
+
+
+@pytest.mark.parametrize("live_bounds", ((0, 1), (0, 2)))
+def test_gateway_validates_live_value_range_atomically(
+    monkeypatch,
+    live_bounds: tuple[int, int],
+) -> None:
+    mba, gateway, modifier, plan, entry, original, target = _range_runtime_case(
+        live_bounds,
+        live_bounds,
+    )
+    _install_range_data_flow_queries(monkeypatch, target)
+    _install_range_value_query(monkeypatch)
+    original_handle = gateway.identity_index.handle_for_serial(original.serial)
+    assert original_handle is not None
+    proxy = gateway.identity_index.logical_proxy_for_handle(original_handle)
+    assert proxy is not None
+    published = proxy.resolve()
+    assert published is not None
+
+    if live_bounds == (0, 2):
+        with pytest.raises(
+            SemanticFragmentPublicationRejected,
+            match="prepublication.*value_range_proven:selector-domain",
+        ):
+            gateway.publish_semantic_fragment(modifier, plan)
+        assert proxy.resolve() is published
+        assert tuple(entry.succset) == (original.serial,)
+        assert tuple(original.predset) == (entry.serial,)
+        assert mba.qty == 5
+        assert gateway.active is False
+        assert modifier._semantic_fragment_state is None
+        return
+
+    receipt = gateway.publish_semantic_fragment(modifier, plan)
+
+    assert receipt.prepublication_validation.passed
+    assert receipt.postpublication_validation.passed
+    assert any(
+        outcome.passed
+        and outcome.postcondition
+        is FragmentValidationPostcondition.VALUE_RANGE_PROVEN
+        for outcome in receipt.prepublication_validation.outcomes
+    )
+    assert any(
+        outcome.passed
+        and outcome.postcondition
+        is FragmentValidationPostcondition.VALUE_RANGE_PROVEN
+        for outcome in receipt.postpublication_validation.outcomes
+    )
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
+
+
+def test_gateway_rolls_back_postpublication_value_range_drift(
+    monkeypatch,
+) -> None:
+    mba, gateway, modifier, plan, entry, original, target = _range_runtime_case(
+        (0, 1),
+        (0, 2),
+    )
+    _install_range_data_flow_queries(monkeypatch, target)
+    _install_range_value_query(monkeypatch)
+    original_handle = gateway.identity_index.handle_for_serial(original.serial)
+    assert original_handle is not None
+    proxy = gateway.identity_index.logical_proxy_for_handle(original_handle)
+    assert proxy is not None
+    published = proxy.resolve()
+    assert published is not None
+
+    with pytest.raises(
+        SemanticFragmentPublicationRejected,
+        match="postpublication.*value_range_proven:selector-domain",
+    ):
+        gateway.publish_semantic_fragment(modifier, plan)
+
+    assert proxy.resolve() is published
+    assert tuple(entry.succset) == (original.serial,)
+    assert tuple(original.predset) == (entry.serial,)
+    assert mba.qty == 5
+    assert gateway.active is False
+    assert modifier._semantic_fragment_state is None
+
+
+class TestExactValueRangeSdk:
+    binary_name = _get_default_binary()
+
+    @pytest.mark.parametrize(
+        ("storage", "at_end", "expected_position"),
+        (
+            (
+                StorageIdentity(StorageIdentityKind.REGISTER, offset=10),
+                False,
+                ida_hexrays.VR_AT_START,
+            ),
+            (
+                StorageIdentity(StorageIdentityKind.STACK, offset=0x20),
+                True,
+                ida_hexrays.VR_AT_END,
+            ),
+        ),
+    )
+    def test_proves_exact_unsigned_singleton_at_declared_side(
+        self,
+        libobfuscated_setup,
+        storage: StorageIdentity,
+        at_end: bool,
+        expected_position: int,
+    ) -> None:
+        block = _Block(0, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+        instruction = _Instruction(ida_hexrays.m_nop, 0x401020)
+        _set_block_instructions(block, instruction)
+        block.valrange_bounds.append((1, 1))
+
+        proof = prove_exact_unsigned_range(
+            block,
+            instruction,
+            storage,
+            1,
+            at_end=at_end,
+            required_lo=0,
+            required_hi=1,
+        )
+
+        assert proof == ExactValueRangeProof(lo=1, hi=1)
+        assert block.valrange_queries == [
+            (0x401020, int(ida_hexrays.VR_EXACT) | int(expected_position)),
+        ]
+
+    @pytest.mark.parametrize(
+        ("live_bounds", "expected"),
+        (
+            ((0, 1), ExactValueRangeProof(lo=0, hi=1)),
+            ((0, 2), None),
+        ),
+    )
+    def test_proves_only_ranges_within_required_envelope(
+        self,
+        libobfuscated_setup,
+        live_bounds: tuple[int, int],
+        expected: ExactValueRangeProof | None,
+    ) -> None:
+        block = _Block(0, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+        instruction = _Instruction(ida_hexrays.m_nop, 0x401020)
+        _set_block_instructions(block, instruction)
+        block.valrange_bounds.append(live_bounds)
+
+        proof = prove_exact_unsigned_range(
+            block,
+            instruction,
+            StorageIdentity(StorageIdentityKind.REGISTER, offset=10),
+            1,
+            at_end=False,
+            required_lo=0,
+            required_hi=1,
+        )
+
+        assert proof == expected
 
 
 @pytest.mark.parametrize("postpublication_extra_use", (False, True))

@@ -13,6 +13,10 @@ from d810.hexrays.ir.exact_data_flow import (
     find_uses_reached_by_reg_definition,
     find_uses_reached_by_stkvar_definition,
 )
+from d810.hexrays.ir.exact_value_ranges import (
+    ExactValueRangeQueryUnavailable,
+    prove_exact_unsigned_range,
+)
 from d810.hexrays.ir.flag_queries import (
     ConditionCodeQueryUnavailable,
     condition_code_write_eas,
@@ -36,6 +40,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentPlan,
+    FragmentRangeObservation,
 )
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
@@ -46,6 +51,7 @@ from d810.transforms.fragment_validation import (
     ProjectedFragment,
     ProjectedFragmentBlock,
     ProjectedIdentityBinding,
+    ProjectedRangeFact,
     ProjectedRootFallthroughHelper,
     validate_fragment_projection,
 )
@@ -331,17 +337,32 @@ def _instruction_eas(block) -> tuple[int, ...]:
     return tuple(result)
 
 
-def _instruction_ea_observations(block) -> tuple[int, ...]:
-    result: list[int] = []
+def _exact_site_instruction(
+    live_by_id: dict[str, object],
+    site,
+    *,
+    context: str,
+):
+    block = live_by_id.get(site.block_id)
+    if block is None:
+        raise SemanticFragmentBackendRejected(
+            f"{context} {site.site_id!r} has no live block"
+        )
+    matches = []
     instruction = block.head
     while instruction is not None:
-        ea = int(getattr(instruction, "ea", -1) or -1)
-        if 0 <= ea < _BADADDR:
-            result.append(ea)
+        if int(getattr(instruction, "ea", -1) or -1) == int(site.instruction_ea):
+            matches.append(instruction)
         if instruction is block.tail:
             break
         instruction = instruction.next
-    return tuple(result)
+    if len(matches) != 1:
+        raise SemanticFragmentBackendRejected(
+            f"{context} {site.site_id!r} is ambiguous at "
+            f"{site.block_id}@0x{int(site.instruction_ea):X}: "
+            f"observed {len(matches)} top-level instructions"
+        )
+    return block, matches[0]
 
 
 def _require_unambiguous_flag_corridor_sites(
@@ -353,21 +374,11 @@ def _require_unambiguous_flag_corridor_sites(
             ("producer", corridor.producer),
             ("consumer", corridor.consumer),
         ):
-            block = live_by_id.get(site.block_id)
-            if block is None:
-                raise SemanticFragmentBackendRejected(
-                    f"flag-corridor {role} {site.site_id!r} has no live block"
-                )
-            matches = sum(
-                ea == int(site.instruction_ea)
-                for ea in _instruction_ea_observations(block)
+            _exact_site_instruction(
+                live_by_id,
+                site,
+                context=f"flag-corridor {role}",
             )
-            if matches != 1:
-                raise SemanticFragmentBackendRejected(
-                    f"flag-corridor {role} {site.site_id!r} is ambiguous at "
-                    f"{site.block_id}@0x{int(site.instruction_ea):X}: "
-                    f"observed {matches} top-level instructions"
-                )
 
 
 def _project_flag_writes(
@@ -394,6 +405,54 @@ def _project_flag_writes(
             seen.add(ea)
         result[block_id] = frozenset(observations)
     return result
+
+
+def _project_value_ranges(
+    plan: FragmentPlan,
+    live_by_id: dict[str, object],
+) -> tuple[ProjectedRangeFact, ...]:
+    facts: list[ProjectedRangeFact] = []
+    for assumption in plan.value_range_assumptions:
+        site = assumption.site
+        block, instruction = _exact_site_instruction(
+            live_by_id,
+            site,
+            context="value-range site",
+        )
+        storage = site.storage_identity
+        if storage is None:
+            raise SemanticFragmentBackendRejected(
+                f"value-range site {site.site_id!r} has no portable storage identity"
+            )
+        try:
+            proof = prove_exact_unsigned_range(
+                block,
+                instruction,
+                storage,
+                site.width,
+                at_end=(
+                    assumption.observation
+                    is FragmentRangeObservation.AFTER_INSTRUCTION
+                ),
+                required_lo=assumption.lo,
+                required_hi=assumption.hi,
+            )
+        except ExactValueRangeQueryUnavailable as exc:
+            raise SemanticFragmentBackendRejected(
+                f"value range cannot be observed at "
+                f"{site.block_id}@0x{int(site.instruction_ea):X}"
+            ) from exc
+        if proof is not None:
+            facts.append(
+                ProjectedRangeFact(
+                    site_id=site.site_id,
+                    value_id=site.value_id,
+                    observation=assumption.observation,
+                    lo=proof.lo,
+                    hi=proof.hi,
+                )
+            )
+    return tuple(facts)
 
 
 def _unowned_endpoint(modifier: DeferredGraphModifier, serial: int) -> str:
@@ -774,6 +833,7 @@ def _project_fragment(
         live_by_id,
         ids_by_serial,
     )
+    value_ranges = _project_value_ranges(plan, live_by_id)
     return ProjectedFragment(
         entry_block_id=entry_ids[0],
         blocks=projected_blocks,
@@ -781,6 +841,7 @@ def _project_fragment(
         fallthrough_helpers=tuple(state.fallthrough_helpers),
         root_fallthrough_helpers=tuple(state.root_fallthrough_helpers),
         data_flow_relations=data_flow_relations,
+        value_ranges=value_ranges,
     )
 
 
@@ -1169,11 +1230,6 @@ def stage_semantic_fragment(
         raise TypeError("semantic fragment backend requires a FragmentPlan")
     if modifier._semantic_fragment_state is not None:
         raise RuntimeError("a semantic fragment is already staged")
-    if plan.value_range_assumptions:
-        raise SemanticFragmentBackendRejected(
-            "live portable value-range projection is not implemented"
-        )
-
     state = SemanticFragmentBackendState(
         plan_id=plan.plan_id,
         atomic_group_id=plan.atomic_group_id,
