@@ -22,7 +22,6 @@ _SIMPLE_FLOW_RULE_PASS_IDS: Mapping[str, str] = {
     "identity-call-resolver": "IdentityCallResolver",
     "indirect-branch-resolver": "IndirectBranchResolver",
     "indirect-call-resolver": "IndirectCallResolver",
-    "materialized-computed-goto-island": "MaterializedComputedGotoIslandRule",
     "mba-state-preconditioner": "MbaStatePreconditioner",
     "jump-fixer": "JumpFixer",
     "single-trip-loop-peel": "SingleTripLoopPeel",

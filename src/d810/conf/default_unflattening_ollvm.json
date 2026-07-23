@@ -917,13 +917,6 @@
   ],
   "blk_rules": [
     {
-      "name": "MaterializedComputedGotoIslandRule",
-      "is_activated": true,
-      "config": {
-        "maturities": ["MMAT_LOCOPT", "MMAT_CALLS"]
-      }
-    },
-    {
       "name": "IndirectCallResolver",
       "is_activated": true,
       "config": {}

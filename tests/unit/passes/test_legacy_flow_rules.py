@@ -17,7 +17,6 @@ from d810.passes.legacy_flow_rules import (
     LegacyFlowRuleAdapterPass,
     LegacyFlowRuleRequest,
     legacy_flow_rule_pass_registry,
-    register_legacy_flow_rule_passes,
 )
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import (
@@ -30,8 +29,6 @@ from d810.passes.pipeline_config_parser import (
     pass_specs_from_project_config,
     pipeline_configs_from_project_config,
 )
-from d810.passes.registry import PassRegistry
-
 _CONF_DIR = Path("src/d810/conf")
 
 
@@ -182,10 +179,6 @@ def test_legacy_flow_rule_registry_builds_jump_fixer_canary_entry():
         ("identity-call-resolver", "IdentityCallResolver"),
         ("indirect-branch-resolver", "IndirectBranchResolver"),
         ("indirect-call-resolver", "IndirectCallResolver"),
-        (
-            "materialized-computed-goto-island",
-            "MaterializedComputedGotoIslandRule",
-        ),
         ("mba-state-preconditioner", "MbaStatePreconditioner"),
         ("jump-fixer", "JumpFixer"),
     ],

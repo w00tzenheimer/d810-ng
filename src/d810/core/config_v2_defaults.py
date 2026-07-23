@@ -217,7 +217,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
         runtime_config="default_unflattening_ollvm_config_v2_canary.json",
         expected_pass_ids=(
             "mba-simplify",
-            "materialized-computed-goto-island",
             "indirect-call-resolver",
             "mba-state-preconditioner",
             "recover_dispatcher",
