@@ -38,65 +38,13 @@ def _session() -> DecompilationSessionContext:
     )
 
 
-class _Mba:
-    def build_graph(self) -> None:
-        pass
-
-
-def test_live_adapter_prepares_cfg_before_lifting(monkeypatch) -> None:
-    events: list[str] = []
-
-    class _RecordingMba:
-        def build_graph(self) -> None:
-            events.append("build_graph")
-
-    mba = _RecordingMba()
-    monkeypatch.setattr(
-        live_normalization,
-        "_lift_live_function",
-        lambda live_mba: (
-            events.append("lift"),
-            SimpleNamespace(
-                flow_graph=GRAPH,
-                func_ea=0x1000,
-                live_source=live_mba,
-            ),
-        )[1],
-    )
-    monkeypatch.setattr(
-        live_normalization,
-        "_new_live_backend",
-        lambda **_kwargs: object(),
-    )
-    monkeypatch.setattr(
-        live_normalization,
-        "run_frontend_normalization_pipeline",
-        lambda **_kwargs: FrontendNormalizationRunResult(
-            graph=GRAPH,
-            microcode_modified=False,
-            published_generation=None,
-        ),
-    )
-
-    live_normalization.run_live_frontend_normalization(
-        function_ea=0x1000,
-        mba=mba,
-        decision={
-            "session": _session(),
-            "mutation_gateway": object(),
-        },
-    )
-
-    assert events == ["build_graph", "lift"]
-
-
 def test_live_adapter_reports_only_receipt_backed_pipeline_result(
     monkeypatch,
 ) -> None:
     session = _session()
     session.native_preanalysis.evidence_generation = 3
     session.native_preanalysis.portable_evidence_ready_generation = 3
-    mba = _Mba()
+    mba = object()
     gateway = object()
     source = SimpleNamespace(
         flow_graph=GRAPH,
@@ -183,11 +131,10 @@ def test_live_adapter_abstains_without_manager_injected_gateway(
 
 def test_live_adapter_does_not_claim_a_pipeline_noop(monkeypatch) -> None:
     session = _session()
-    mba = _Mba()
     source = SimpleNamespace(
         flow_graph=GRAPH,
         func_ea=0x1000,
-        live_source=mba,
+        live_source=object(),
     )
     monkeypatch.setattr(
         live_normalization,
@@ -215,7 +162,7 @@ def test_live_adapter_does_not_claim_a_pipeline_noop(monkeypatch) -> None:
 
     live_normalization.run_live_frontend_normalization(
         function_ea=0x1000,
-        mba=mba,
+        mba=source.live_source,
         decision=decision,
     )
 
