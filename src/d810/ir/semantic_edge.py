@@ -15,6 +15,7 @@ class SemanticEdgeRole(str, Enum):
     """
 
     DIRECT = "direct"
+    CALL_FALLTHROUGH = "call_fallthrough"
     CONDITIONAL_TAKEN = "conditional_taken"
     CONDITIONAL_FALLTHROUGH = "conditional_fallthrough"
 

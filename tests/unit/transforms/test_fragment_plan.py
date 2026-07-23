@@ -222,6 +222,22 @@ def test_fragment_plan_is_serial_free_and_groups_complete_conditional() -> None:
         assert forbidden_coordinate_names.isdisjoint(names)
 
 
+def test_fragment_operation_supports_explicit_call_fallthrough() -> None:
+    operation = FragmentOperation(
+        operation_id="call-continuation",
+        source_block_id="call",
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                target_block_id="continuation",
+            ),
+        ),
+    )
+
+    assert operation.roles == frozenset({SemanticEdgeRole.CALL_FALLTHROUGH})
+    assert operation.predicate_anchor_ea is None
+
+
 def test_fragment_block_materialization_is_explicit_and_role_complete() -> None:
     plan = _valid_plan()
 

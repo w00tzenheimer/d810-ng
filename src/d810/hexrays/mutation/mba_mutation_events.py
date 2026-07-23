@@ -457,7 +457,12 @@ class MbaMutationGateway:
                 )
         for operation in plan.operations:
             source = plan.block(operation.source_block_id)
-            if SemanticEdgeRole.CONDITIONAL_FALLTHROUGH in operation.roles:
+            if operation.roles.intersection(
+                {
+                    SemanticEdgeRole.CALL_FALLTHROUGH,
+                    SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                }
+            ):
                 items.append(
                     MbaMutationPlanItem(
                         item_index=len(items),
@@ -652,7 +657,12 @@ class MbaMutationGateway:
             self._semantic_edge_proxy_metadata(mba, operation.source)
         )
         items: list[MbaMutationPlanItem] = []
-        if SemanticEdgeRole.CONDITIONAL_FALLTHROUGH in operation.roles:
+        if operation.roles.intersection(
+            {
+                SemanticEdgeRole.CALL_FALLTHROUGH,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }
+        ):
             items.append(
                 MbaMutationPlanItem(
                     item_index=len(items),
@@ -665,7 +675,7 @@ class MbaMutationGateway:
                     source_anchor_ea=source_anchor,
                     source_identity=source_identity,
                     disposition="planned",
-                    reason="physical conditional fallthrough invariant",
+                    reason="physical semantic fallthrough invariant",
                 )
             )
         for edge in operation.edges:

@@ -558,20 +558,29 @@ def _realize_operations(
                 description=f"fragment operation {operation.operation_id}",
             )
         )
-        if len(operation.edges) == 1:
+        helper_edges = tuple(
+            edge
+            for edge in operation.edges
+            if edge.role
+            in {
+                SemanticEdgeRole.CALL_FALLTHROUGH,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }
+        )
+        if not helper_edges:
             if helper_version is not None:
                 raise SemanticFragmentBackendRejected(
-                    "direct fragment operation unexpectedly created a helper"
+                    "semantic fragment operation unexpectedly created a helper"
                 )
             continue
-        if helper_version is None:
+        if len(helper_edges) != 1 or helper_version is None:
             raise SemanticFragmentBackendRejected(
-                "conditional fragment operation did not create a fallthrough helper"
+                "semantic fallthrough operation did not create exactly one helper"
             )
         helper_block_id = f"fallthrough-helper:{operation.operation_id}"
         if helper_block_id in state.bindings:
             raise SemanticFragmentBackendRejected(
-                f"conditional helper id collision: {helper_block_id!r}"
+                f"semantic fallthrough helper id collision: {helper_block_id!r}"
             )
         gateway = _gateway(modifier)
         helper_proxy = gateway.identity_index.logical_proxy_for_handle(
@@ -579,7 +588,7 @@ def _realize_operations(
         )
         if helper_proxy is None:
             raise SemanticFragmentBackendRejected(
-                "conditional fallthrough helper has no logical proxy"
+                "semantic fallthrough helper has no logical proxy"
             )
         state.bindings[helper_block_id] = SemanticFragmentRuntimeBinding(
             block_id=helper_block_id,
@@ -588,11 +597,7 @@ def _realize_operations(
             state=FragmentBindingState.STAGED,
         )
         state.staged_block_ids.append(helper_block_id)
-        fallthrough_target = next(
-            edge.target_block_id
-            for edge in operation.edges
-            if edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
-        )
+        fallthrough_target = helper_edges[0].target_block_id
         state.fallthrough_helpers.append(
             ProjectedFallthroughHelper(
                 helper_block_id=helper_block_id,
