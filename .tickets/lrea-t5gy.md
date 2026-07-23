@@ -71,3 +71,7 @@ The mandatory current-WIP A560 canary completed in 16.27 seconds with no segfaul
 **2026-07-23T18:50:55Z**
 
 The next A560 vertical-loop canary completed in 14.32 seconds with no segfault or INTERR after commit `a0318daad` made every absent proof source a required detached root, normalized missing anchors to unique native block entries, and preserved conditional-owner disambiguation. Primary DB: `.tmp/logs/d810_logs/000000000040a560_1784832616_11.diag.sqlite3`. Highest completed level remains C1 because no mutation plan, transaction, or receipt exists. The previous `native-indirect-transfer@0x40A619` source-ownership rejection is gone. The new first failed obligation is event 7: frontend-normalization planning rejects because detached block `0x40A68C` targets an unavailable block. Continue from that exact native-EA-anchored target-ownership gap; do not broaden publication.
+
+**2026-07-23T18:56:39Z**
+
+The diagnostic-first refinement makes the current A560 C1 failure self-contained in the primary DB. Canary DB `.tmp/logs/d810_logs/000000000040a560_1784832878_11.diag.sqlite3` records event 7 as `detached block 0x40A68C direct_jump target 0x40A6A0 is unavailable`. Highest completed level remains C1: no FragmentPlan, transaction, or receipt exists. The next v3.1 obligation is therefore exact publication ownership for the native direct edge `0x40A68C -> 0x40A6A0`; do not infer it from logs or broaden to the 91-route publication. The diagnostic change is covered by the full frontend-normalization unit file, 20/20 green, with Ruff and diff checks clean.
