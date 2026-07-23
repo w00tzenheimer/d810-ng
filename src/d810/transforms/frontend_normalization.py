@@ -10,6 +10,7 @@ from d810.analyses.control_flow.frontend_normalization import (
     NativeIndirectTransferProof,
     NativeTransferEndpoint,
     NativeTransferShape,
+    native_anchor_matches,
     plan_detached_semantic_closure_import,
     unique_block_for_native_anchor,
 )
@@ -68,24 +69,53 @@ def _bind_corridor_block(
     identity: StableBlockIdentity,
     *,
     preferred_anchor_ea: int | None = None,
+    preferred_block: BlockSnapshot | None = None,
 ) -> BlockSnapshot | None:
     anchor_ea = (
         _semantic_anchor(identity)
         if preferred_anchor_ea is None
         else int(preferred_anchor_ea)
     )
-    return unique_block_for_native_anchor(graph, identity, anchor_ea)
+    matches = native_anchor_matches(graph, identity, anchor_ea)
+    if preferred_block is not None:
+        preferred = tuple(
+            block
+            for block in matches
+            if int(block.serial) == int(preferred_block.serial)
+        )
+        if len(preferred) == 1:
+            return preferred[0]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _bind_source_block(
+    graph: FlowGraph,
+    proof: NativeIndirectTransferProof,
+) -> BlockSnapshot | None:
+    matches = native_anchor_matches(
+        graph,
+        proof.source_identity,
+        proof.source_anchor_ea,
+    )
+    if len(matches) == 1:
+        return matches[0]
+    if proof.shape is not NativeTransferShape.CONDITIONAL:
+        return None
+    conditional_owners = tuple(
+        block
+        for block in matches
+        if block.tail is not None
+        and block.tail.is_conditional_jump
+        and int(block.tail.ea) == int(proof.predicate_anchor_ea)
+    )
+    return conditional_owners[0] if len(conditional_owners) == 1 else None
 
 
 def _bind_proof(
     graph: FlowGraph,
     proof: NativeIndirectTransferProof,
 ) -> _BoundTransferProof | None:
-    source = unique_block_for_native_anchor(
-        graph,
-        proof.source_identity,
-        proof.source_anchor_ea,
-    )
+    source = _bind_source_block(graph, proof)
     if source is None:
         return None
     endpoints: list[tuple[NativeTransferEndpoint, BlockSnapshot | None]] = []
@@ -108,6 +138,9 @@ def _bind_proof(
             graph,
             identity,
             preferred_anchor_ea=preferred_anchor_ea,
+            preferred_block=(
+                source if index == len(proof.flag_corridor) - 1 else None
+            ),
         )
         if block is None:
             return None

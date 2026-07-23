@@ -490,6 +490,65 @@ def test_normalization_ignores_unreferenced_synthetic_blocks() -> None:
     )
 
 
+def test_normalization_prefers_conditional_owner_over_same_ea_trampoline() -> None:
+    graph = FlowGraph(
+        blocks={
+            0: _block(
+                0,
+                0x1000,
+                (1,),
+                (),
+                (_insn(0x1000, InsnKind.GOTO, target=1),),
+            ),
+            1: _block(
+                1,
+                0x1100,
+                (4, 3),
+                (0,),
+                (
+                    _insn(0x1100, InsnKind.SUB),
+                    _insn(0x1101, InsnKind.COND_JUMP, target=4),
+                ),
+            ),
+            2: _block(
+                2,
+                0x1200,
+                (),
+                (4,),
+                (_insn(0x1200, InsnKind.RET),),
+            ),
+            3: _block(
+                3,
+                0x1300,
+                (),
+                (1,),
+                (_insn(0x1300, InsnKind.RET),),
+            ),
+            4: _block(
+                4,
+                0x1101,
+                (2,),
+                (1,),
+                (
+                    _insn(0x1101, InsnKind.MOV),
+                    _insn(0x1101, InsnKind.GOTO, target=2),
+                ),
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    plan = plan_frontend_computed_branch_normalization(
+        graph,
+        _evidence(),
+    )
+
+    assert plan is not None
+    operation = plan.operations[0]
+    assert plan.block(operation.source_block_id).semantic_anchor_ea == 0x1100
+
+
 def test_normalization_publishes_only_owned_boundary_roots() -> None:
     graph = FlowGraph(
         blocks={
