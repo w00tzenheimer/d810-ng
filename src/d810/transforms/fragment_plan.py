@@ -53,6 +53,13 @@ class FragmentDataFlowRole(str, Enum):
     RETURN = "return"
 
 
+class FragmentRangeObservation(str, Enum):
+    """Exact instruction-time coordinate for a portable value-range proof."""
+
+    BEFORE_INSTRUCTION = "before_instruction"
+    AFTER_INSTRUCTION = "after_instruction"
+
+
 def _require_identifier(value: str, description: str) -> str:
     value = str(value).strip()
     if not value:
@@ -401,6 +408,7 @@ class FragmentRangeAssumption:
 
     assumption_id: str
     site: FragmentValueSite
+    observation: FragmentRangeObservation
     lo: int | None = None
     hi: int | None = None
 
@@ -415,6 +423,14 @@ class FragmentRangeAssumption:
             raise FragmentPlanRejected(
                 "fragment range assumption requires portable storage identity"
             )
+        if not isinstance(self.observation, FragmentRangeObservation):
+            raise TypeError(
+                "fragment range assumption requires an instruction observation"
+            )
+        if not 1 <= self.site.width <= 8:
+            raise FragmentPlanRejected(
+                "fragment range assumption requires a 1..8 byte value site"
+            )
         lo = None if self.lo is None else int(self.lo)
         hi = None if self.hi is None else int(self.hi)
         if lo is None and hi is None:
@@ -424,6 +440,14 @@ class FragmentRangeAssumption:
         if lo is not None and hi is not None and lo > hi:
             raise FragmentPlanRejected(
                 "fragment range assumption lower bound exceeds upper bound"
+            )
+        max_unsigned = (1 << (self.site.width * 8)) - 1
+        if any(
+            bound is not None and not 0 <= bound <= max_unsigned
+            for bound in (lo, hi)
+        ):
+            raise FragmentPlanRejected(
+                "fragment range bounds must fit the unsigned site width"
             )
         object.__setattr__(self, "assumption_id", assumption_id)
         object.__setattr__(self, "lo", lo)
@@ -727,5 +751,6 @@ __all__ = [
     "FragmentPlan",
     "FragmentPlanRejected",
     "FragmentRangeAssumption",
+    "FragmentRangeObservation",
     "FragmentValueSite",
 ]

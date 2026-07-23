@@ -23,6 +23,7 @@ from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
     FragmentRangeAssumption,
+    FragmentRangeObservation,
     FragmentValueSite,
 )
 
@@ -209,18 +210,23 @@ class ProjectedRangeFact:
 
     site_id: str
     value_id: str
+    observation: FragmentRangeObservation
     lo: int | None = None
     hi: int | None = None
 
     def __post_init__(self) -> None:
         site_id = _identifier(self.site_id, "projected range site id")
         value_id = _identifier(self.value_id, "projected range value id")
+        if not isinstance(self.observation, FragmentRangeObservation):
+            raise TypeError("projected range fact requires an instruction observation")
         lo = None if self.lo is None else int(self.lo)
         hi = None if self.hi is None else int(self.hi)
         if lo is None and hi is None:
             raise ValueError("projected range fact requires at least one bound")
         if lo is not None and hi is not None and lo > hi:
             raise ValueError("projected range lower bound exceeds upper bound")
+        if any(bound is not None and bound < 0 for bound in (lo, hi)):
+            raise ValueError("projected range bounds must be unsigned")
         object.__setattr__(self, "site_id", site_id)
         object.__setattr__(self, "value_id", value_id)
         object.__setattr__(self, "lo", lo)
@@ -971,6 +977,7 @@ def _validate_range(
         for fact in facts
         if fact.site_id == assumption.site.site_id
         and fact.value_id == assumption.site.value_id
+        and fact.observation is assumption.observation
     )
     passed = len(matching) == 1 and _range_satisfies(assumption, matching[0])
     _outcome(

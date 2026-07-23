@@ -19,6 +19,7 @@ from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
     FragmentRangeAssumption,
+    FragmentRangeObservation,
     FragmentValueSite,
 )
 from d810.transforms.fragment_validation import (
@@ -147,6 +148,7 @@ def _plan() -> FragmentPlan:
             FragmentRangeAssumption(
                 assumption_id="boolean-condition",
                 site=definition,
+                observation=FragmentRangeObservation.AFTER_INSTRUCTION,
                 lo=0,
                 hi=1,
             ),
@@ -290,6 +292,7 @@ def _projection(plan: FragmentPlan | None = None) -> ProjectedFragment:
             ProjectedRangeFact(
                 site_id="flags.def",
                 value_id="flags:choice",
+                observation=FragmentRangeObservation.AFTER_INSTRUCTION,
                 lo=0,
                 hi=1,
             ),
@@ -638,8 +641,27 @@ def test_range_wider_than_required_assumption_is_rejected() -> None:
             ProjectedRangeFact(
                 site_id="flags.def",
                 value_id="flags:choice",
+                observation=FragmentRangeObservation.AFTER_INSTRUCTION,
                 lo=0,
                 hi=2,
+            ),
+        ),
+    )
+
+    assert FragmentValidationPostcondition.VALUE_RANGE_PROVEN in _failed_codes(
+        _plan(),
+        projection,
+    )
+
+
+def test_range_at_wrong_instruction_observation_is_rejected() -> None:
+    projection = _projection()
+    projection = replace(
+        projection,
+        value_ranges=(
+            replace(
+                projection.value_ranges[0],
+                observation=FragmentRangeObservation.BEFORE_INSTRUCTION,
             ),
         ),
     )
