@@ -3580,6 +3580,20 @@ class DeferredGraphModifier:
         created_handle = None
         recorded = False
         try:
+            staged_initializers = self._block_instructions(created)
+            if any(
+                int(instruction.opcode) != int(ida_hexrays.m_nop)
+                for instruction in staged_initializers
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "imported native-body block inherited a non-placeholder "
+                    "instruction"
+                )
+            self.remove_nops_now(created)
+            if created.head is not None or created.tail is not None:
+                raise SemanticFragmentBackendRejected(
+                    "imported native-body placeholder removal was incomplete"
+                )
             created_handle = gateway.identity_index.create_imported_native_handle(
                 stable_identity
             )
