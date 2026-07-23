@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from types import SimpleNamespace
 
 import ida_hexrays
 from d810.analyses.control_flow.detached_handler_island import (
     DetachedSnippetBoundaryPortOwner,
-    DetachedSnippetBoundaryPorts,
-    make_resolver_cut_boundary_port,
 )
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
-from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
-from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.optimizers.microcode.flow.jumps import (
     materialized_computed_goto_island as island,
 )
@@ -50,25 +45,6 @@ class _MBA:
     def get_mblock(self, serial: int) -> _Block:
         assert serial == 0
         return self._block
-
-
-@dataclass(frozen=True)
-class _Preparation:
-    prepared: bool
-    published: bool = True
-    primary_seed_ea: int | None = 0x2000
-    seed_eas: tuple[int, ...] = (0x2000, 0x2100)
-    imported_block_entry_eas: tuple[int, ...] = (0x2000, 0x2100)
-
-
-@dataclass(frozen=True)
-class _ImportResult:
-    roots: tuple[tuple[int, int], ...]
-    applied_boundary_ports: tuple[object, ...] = ()
-    abstained_boundary_ports: tuple[object, ...] = ()
-
-    def __iter__(self):
-        return (target_ea for target_ea, _serial in self.roots)
 
 
 class _LiveBlock:
@@ -149,283 +125,6 @@ def test_detached_planner_excludes_empty_external_placeholder_target(
     assert captured["live_target_eas"] == frozenset()
 
 
-def test_terminal_return_carrier_preopt_handler_records_modification(
-    monkeypatch,
-) -> None:
-    mba = object()
-    restored: list[tuple[object, int]] = []
-    refined: list[tuple[object, int]] = []
-
-    monkeypatch.setattr(
-        island,
-        "restore_terminal_return_carriers",
-        lambda current_mba, function_ea: (
-            restored.append((current_mba, function_ea)) or 1
-        ),
-    )
-    monkeypatch.setattr(
-        island,
-        "refine_transient_terminal_return_type",
-        lambda current_mba, function_ea: (
-            refined.append((current_mba, function_ea)) or False
-        ),
-    )
-
-    decision: dict[str, object] = {"request_redo": False}
-
-    island._restore_preopt_terminal_return_carriers(
-        function_ea=0x40A560,
-        mba=mba,
-        decision=decision,
-    )
-
-    assert restored == [(mba, 0x40A560)]
-    assert refined == [(mba, 0x40A560)]
-    assert decision == {
-        "request_redo": False,
-        "microcode_modified": True,
-        "details": {
-            "terminal_return_carriers": 1,
-            "terminal_return_type_refined": False,
-        },
-    }
-
-
-def test_preopt_handler_imports_one_prepared_union_once(monkeypatch) -> None:
-    session, state = _resolver_state()
-    mba = SimpleNamespace(qty=1)
-    imports: list[tuple[object, int, tuple[int, ...], dict[str, object]]] = []
-    preparation = _Preparation(prepared=True)
-    boundary_port = make_resolver_cut_boundary_port(
-        source_block_ea=0x2000,
-        source_instruction_ea=0x2004,
-        target_ea=0x1000,
-        source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
-        target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
-        provenance="test_preopt_union",
-    )
-    state.native_preanalysis.merge_native_facts(
-        state.native_key,
-        boundary_ports=DetachedSnippetBoundaryPorts((boundary_port,), ()),
-    )
-
-    monkeypatch.setattr(island, "restore_terminal_return_carriers", lambda *_: 0)
-    monkeypatch.setattr(
-        island,
-        "refine_transient_terminal_return_type",
-        lambda *_: False,
-    )
-    monkeypatch.setattr(
-        island,
-        "get_prepared_preopt_union_closure",
-        lambda candidate_state: preparation if candidate_state is state else None,
-    )
-    monkeypatch.setattr(island, "stable_mba_identity", lambda _mba: 77)
-    monkeypatch.setattr(
-        island,
-        "has_instruction_backed_native_block",
-        lambda _mba, _ea: True,
-    )
-    monkeypatch.setattr(
-        island,
-        "find_unique_live_block_by_ea",
-        lambda *_args: (_ for _ in ()).throw(
-            AssertionError("PREOPT seed validation must use native provenance")
-        ),
-    )
-
-    def import_union(current_mba, function_ea, target_eas, **kwargs):
-        imports.append((current_mba, function_ea, target_eas, kwargs))
-        return _ImportResult(
-            roots=((0x2000, 8),),
-            applied_boundary_ports=(object(),),
-        )
-
-    monkeypatch.setattr(
-        island,
-        "materialize_preopt_union_snippet_templates",
-        import_union,
-    )
-    monkeypatch.setattr(
-        island,
-        "imported_detached_snippet_instruction_origins",
-        lambda current_mba: (
-            ((0xFFFFFFFFFFFFFF01, 0x2000),) if current_mba is mba else ()
-        ),
-    )
-    rebound_routes: list[tuple[int, object, object]] = []
-    monkeypatch.setattr(
-        island,
-        "rebind_live_preopt_routes",
-        lambda *, function_ea, mba, decision: rebound_routes.append(
-            (int(function_ea), mba, decision)
-        ),
-    )
-    gateway = make_mutation_gateway(mba)
-    gateway.identity_index.evidence_generation = state.evidence_generation
-    state.bind_current_mba(gateway.identity_index)
-    root_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x2000, 0x2001),),
-        native_key=NATIVE_KEY,
-    )
-    root_handle = SimpleNamespace(stable_identity=root_identity)
-    monkeypatch.setattr(
-        type(gateway.identity_index),
-        "handle_for_serial",
-        lambda _current_index, serial: root_handle if int(serial) == 8 else None,
-    )
-    first_decision: dict[str, object] = {
-        "session": session,
-        "mutation_gateway": gateway,
-    }
-    island._restore_preopt_terminal_return_carriers(
-        function_ea=0x1000,
-        mba=mba,
-        decision=first_decision,
-    )
-    island._restore_preopt_terminal_return_carriers(
-        function_ea=0x1000,
-        mba=mba,
-        decision={
-            "session": session,
-            "mutation_gateway": make_mutation_gateway(mba),
-        },
-    )
-
-    assert imports == [
-        (
-            mba,
-            0x1000,
-            (0x2000,),
-            {"mutation_gateway": gateway},
-        )
-    ]
-    assert first_decision["microcode_modified"] is True
-    assert first_decision["details"] == {
-        "preopt_union_root_ea": 0x2000,
-        "preopt_union_seed_count": 2,
-        "preopt_union_boundary_port_count": 1,
-    }
-    assert (
-        state.native_preanalysis.normalization_published_postvalidated_generation
-        is None
-    )
-    assert state.native_preanalysis.needs_normalization_publication()
-    assert state.current_imported_instruction_origins == ((0xFFFFFFFFFFFFFF01, 0x2000),)
-    assert state.current_imported_root_handles == ((0x2000, root_handle),)
-    assert rebound_routes == [(0x1000, mba, first_decision)]
-
-
-def test_live_bootstrap_endpoint_does_not_suppress_prepared_union(monkeypatch) -> None:
-    session, state = _resolver_state()
-    source_ea = 0x40D348
-    handler_ea = 0x40EAA7
-    state_constant = 0x699BC698
-    assert state.native_preanalysis.discover_static_native_bootstrap_route(
-        state.native_key,
-        source_anchor_ea=source_ea,
-        state_constant=state_constant,
-        handler_anchor_ea=handler_ea,
-    )
-    source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(source_ea, source_ea + 1),), native_key=NATIVE_KEY
-    )
-    handler_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(handler_ea, handler_ea + 1),), native_key=NATIVE_KEY
-    )
-    state.bind_current_mba(
-        MbaBlockIdentityIndex.from_bindings(
-            generation=0,
-            evidence_generation=state.evidence_generation,
-            bindings=((source_identity, 0), (handler_identity, 1)),
-            native_key=NATIVE_KEY,
-        )
-    )
-    source = SimpleNamespace(
-        serial=0,
-        head=object(),
-        tail=SimpleNamespace(ea=source_ea, opcode=ida_hexrays.m_goto),
-        nsucc=lambda: 1,
-    )
-    handler = SimpleNamespace(serial=1, head=object(), tail=object())
-    mba = SimpleNamespace(
-        qty=2,
-        get_mblock=lambda serial: source if int(serial) == 0 else handler,
-    )
-    preparation = _Preparation(prepared=True)
-
-    monkeypatch.setattr(island, "restore_terminal_return_carriers", lambda *_: 0)
-    monkeypatch.setattr(
-        island,
-        "refine_transient_terminal_return_type",
-        lambda *_: False,
-    )
-    monkeypatch.setattr(
-        island,
-        "get_prepared_preopt_union_closure",
-        lambda candidate_state: preparation if candidate_state is state else None,
-    )
-    monkeypatch.setattr(island, "stable_mba_identity", lambda _mba: 77)
-    monkeypatch.setattr(
-        island,
-        "has_instruction_backed_native_block",
-        lambda _mba, _ea: True,
-    )
-    imports: list[tuple[object, int, tuple[int, ...]]] = []
-
-    def import_union(current_mba, function_ea, target_eas, **_kwargs):
-        imports.append((current_mba, function_ea, target_eas))
-        return _ImportResult(roots=((0x2000, 8),))
-
-    monkeypatch.setattr(
-        island,
-        "materialize_preopt_union_snippet_templates",
-        import_union,
-    )
-    monkeypatch.setattr(
-        island,
-        "imported_detached_snippet_instruction_origins",
-        lambda _mba: (),
-    )
-    monkeypatch.setattr(
-        island,
-        "rebind_live_preopt_routes",
-        lambda **_kwargs: None,
-    )
-
-    gateway = make_mutation_gateway(mba)
-    root_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x2000, 0x2001),),
-        native_key=NATIVE_KEY,
-    )
-    root_handle = SimpleNamespace(stable_identity=root_identity)
-    monkeypatch.setattr(
-        type(gateway.identity_index),
-        "handle_for_serial",
-        lambda _current_index, serial: root_handle if int(serial) == 8 else None,
-    )
-    decision: dict[str, object] = {
-        "session": session,
-        "mutation_gateway": gateway,
-    }
-    island._restore_preopt_terminal_return_carriers(
-        function_ea=0x1000,
-        mba=mba,
-        decision=decision,
-    )
-
-    assert imports == [(mba, 0x1000, (0x2000,))]
-    assert decision["microcode_modified"] is True
-    assert state.preopt_union_imported_mbas == {(0x1000, 77, 0)}
-    assert state.preopt_union_mutated_mbas == set()
-    assert (
-        state.native_preanalysis.normalization_published_postvalidated_generation
-        is None
-    )
-    assert state.native_preanalysis.needs_normalization_publication()
-    assert state.native_preanalysis.needs_bootstrap_route_binding()
-
-
 def test_preopt_success_records_session_owned_union_ownership(monkeypatch) -> None:
     _session, state = _resolver_state()
     mba = object()
@@ -504,32 +203,8 @@ def test_preopt_union_ownership_suppresses_late_bridge_applicators(
         island.ida_hexrays.MMAT_CALLS,
     ):
         mba = SimpleNamespace(entry_ea=0x1000, maturity=maturity)
-        state.preopt_union_imported_mbas.add(
-            island._preopt_union_import_key(0x1000, mba)
-        )
+        state.preopt_union_imported_mbas.add((0x1000, 91, 7))
         assert rule.optimize(SimpleNamespace(mba=mba)) == 0
-
-
-def test_changed_template_generation_reenables_import_but_preserves_ownership(
-    monkeypatch,
-) -> None:
-    _session, state = _resolver_state()
-    mba = object()
-    generation = [7]
-    monkeypatch.setattr(island, "stable_mba_identity", lambda _mba: 91)
-    monkeypatch.setattr(
-        island,
-        "detached_snippet_template_generation",
-        lambda _function_ea: generation[0],
-    )
-
-    state.preopt_union_imported_mbas.add(island._preopt_union_import_key(0x1000, mba))
-    assert island._preopt_union_generation_was_processed(state, 0x1000, mba)
-    assert island._preopt_union_owns_mba(state, 0x1000, mba)
-
-    generation[0] = 8
-    assert not island._preopt_union_generation_was_processed(state, 0x1000, mba)
-    assert island._preopt_union_owns_mba(state, 0x1000, mba)
 
 
 def test_rule_has_no_legacy_importer_configuration_surface() -> None:
@@ -545,18 +220,7 @@ def test_rule_has_no_legacy_importer_configuration_surface() -> None:
 def test_configure_does_not_install_adapter_owned_preopt_mutation(
     monkeypatch,
 ) -> None:
-    registered: list[str] = []
     unregistered: list[str] = []
-    monkeypatch.setattr(
-        island,
-        "register_locopt_preanalysis_handler",
-        lambda name, _handler: registered.append(name),
-    )
-    monkeypatch.setattr(
-        island,
-        "register_calls_done_preanalysis_handler",
-        lambda name, _handler: registered.append(name),
-    )
     monkeypatch.setattr(
         island,
         "unregister_locopt_preanalysis_handler",
@@ -572,7 +236,8 @@ def test_configure_does_not_install_adapter_owned_preopt_mutation(
     rule = island.MaterializedComputedGotoIslandRule()
     rule.configure({})
 
-    assert registered == []
+    assert not hasattr(island, "register_locopt_preanalysis_handler")
+    assert not hasattr(island, "register_calls_done_preanalysis_handler")
     assert not hasattr(island, "register_preopt_preanalysis_handler")
     assert unregistered == [
         island._CALLS_HANDLER_NAME,
@@ -580,139 +245,11 @@ def test_configure_does_not_install_adapter_owned_preopt_mutation(
     ]
 
 
-def test_post_mutation_preopt_abstention_suppresses_locopt_fallback(
-    monkeypatch,
-) -> None:
-    session, state = _resolver_state()
-    mba = SimpleNamespace(
-        qty=1,
-        entry_ea=0x1000,
-        maturity=island.ida_hexrays.MMAT_LOCOPT,
-    )
-    fallback_calls: list[object] = []
-    monkeypatch.setattr(island, "restore_terminal_return_carriers", lambda *_: 0)
-    monkeypatch.setattr(
-        island,
-        "refine_transient_terminal_return_type",
-        lambda *_: False,
-    )
-    monkeypatch.setattr(
-        island,
-        "get_prepared_preopt_union_closure",
-        lambda candidate_state: (
-            _Preparation(prepared=True) if candidate_state is state else None
-        ),
-    )
-    monkeypatch.setattr(island, "stable_mba_identity", lambda _mba: 122)
-
-    def mutate_then_abstain(*_args, **_kwargs):
-        mba.qty += 2
-        return _ImportResult(roots=())
-
-    monkeypatch.setattr(
-        island,
-        "materialize_preopt_union_snippet_templates",
-        mutate_then_abstain,
-    )
-    monkeypatch.setattr(
-        island,
-        "has_instruction_backed_native_block",
-        lambda _mba, _ea: True,
-    )
-    monkeypatch.setattr(
-        island,
-        "_materialize_missing_detached_snippets",
-        lambda current_mba, *_args, **_kwargs: fallback_calls.append(current_mba) or 1,
-    )
-
-    preopt_decision: dict[str, object] = {
-        "session": session,
-        "mutation_gateway": make_mutation_gateway(mba),
-    }
-    island._restore_preopt_terminal_return_carriers(
-        function_ea=0x1000,
-        mba=mba,
-        decision=preopt_decision,
-    )
-    rule = island.MaterializedComputedGotoIslandRule()
-    _bind_rule_state(rule, state)
-    assert rule.optimize(SimpleNamespace(mba=mba)) == 0
-
-    assert fallback_calls == []
-    assert (0x1000, 122, 0) in state.preopt_union_mutated_mbas
-    assert (
-        state.native_preanalysis.normalization_published_postvalidated_generation
-        is None
-    )
-    assert preopt_decision["microcode_modified"] is True
-    assert preopt_decision["details"] == {
-        "preopt_union_post_mutation_abstention": True,
-        "preopt_union_block_delta": 2,
-        "preopt_union_imported_roots": (),
-        "preopt_union_applied_boundary_ports": 0,
-        "preopt_union_expected_boundary_ports": 0,
-        "preopt_union_abstained_boundary_ports": 0,
-        "preopt_union_instruction_backed_seeds": True,
-        "preopt_union_missing_instruction_backed_seed_eas": (),
-    }
-
-
-def test_empty_external_placeholder_is_not_a_preopt_union_success(
-    monkeypatch,
-) -> None:
-    session, state = _resolver_state()
-    mba = SimpleNamespace(qty=1)
-    monkeypatch.setattr(island, "restore_terminal_return_carriers", lambda *_: 0)
-    monkeypatch.setattr(
-        island,
-        "refine_transient_terminal_return_type",
-        lambda *_: False,
-    )
-    monkeypatch.setattr(
-        island,
-        "get_prepared_preopt_union_closure",
-        lambda candidate_state: (
-            _Preparation(prepared=True) if candidate_state is state else None
-        ),
-    )
-    monkeypatch.setattr(island, "stable_mba_identity", lambda _mba: 123)
-    monkeypatch.setattr(
-        island,
-        "detached_snippet_template_generation",
-        lambda _function_ea: 7,
-    )
-    monkeypatch.setattr(
-        island,
-        "materialize_preopt_union_snippet_templates",
-        lambda *_args, **_kwargs: _ImportResult(roots=((0x2000, 8),)),
-    )
-    monkeypatch.setattr(
-        island,
-        "has_instruction_backed_native_block",
-        lambda _mba, ea: ea != 0x2100,
-    )
-
-    decision: dict[str, object] = {"session": session}
-    island._restore_preopt_terminal_return_carriers(
-        function_ea=0x1000,
-        mba=mba,
-        decision=decision,
-    )
-
-    assert (0x1000, 123, 7) not in state.preopt_union_imported_mbas
-    assert (
-        state.native_preanalysis.normalization_published_postvalidated_generation
-        is None
-    )
-    assert decision == {"session": session}
-
-
 def test_applied_preopt_boundary_prevents_legacy_residual_route_overwrite(
     monkeypatch,
 ) -> None:
     from d810.analyses.control_flow.detached_handler_island import (
         AppliedDetachedSnippetDirectBoundaryPort,
-        DetachedSnippetBoundaryPortOwner,
         DetachedSnippetDirectBoundaryPort,
     )
     from d810.analyses.control_flow.materialized_indirect_transfer import (

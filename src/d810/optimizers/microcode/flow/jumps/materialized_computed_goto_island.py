@@ -52,17 +52,14 @@ from d810.hexrays.mutation.detached_handler_island import (
     detached_snippet_replacement_arm_states,
     find_unique_live_block_by_ea,
     find_unique_live_block_by_native_ea,
-    has_instruction_backed_native_block,
     has_detached_snippet_template,
     has_detached_replacement_snippet_template,
     imported_detached_snippet_direct_boundary_evidence,
     imported_detached_snippet_target_eas,
     imported_detached_snippet_instruction_origins,
     materialize_detached_handler_island,
-    materialize_preopt_union_snippet_templates,
     materialize_detached_replacement_snippet_templates,
     materialize_detached_snippet_templates,
-    refine_transient_terminal_return_type,
     reconcile_imported_callinfo_with_live_native_calls,
     redirect_live_target_predecessors,
     restore_call_result_carriers,
@@ -75,11 +72,9 @@ from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.transforms.graph_modification import SyntheticRegisterNonzeroCondition
 from d810.hexrays.preanalysis.calls_done_preanalysis import (
-    register_calls_done_preanalysis_handler,
     unregister_calls_done_preanalysis_handler,
 )
 from d810.hexrays.preanalysis.locopt_preanalysis import (
-    register_locopt_preanalysis_handler,
     unregister_locopt_preanalysis_handler,
 )
 from d810.optimizers.microcode.flow.handler import (
@@ -87,9 +82,7 @@ from d810.optimizers.microcode.flow.handler import (
     FlowRulePriority,
 )
 from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
-    get_prepared_preopt_union_closure,
     is_computed_goto_materialized,
-    rebind_live_preopt_routes,
     recover_conditional_handler_bridge_transfers_from_mba,
 )
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
@@ -230,26 +223,6 @@ def _disable_calls_done_capture() -> None:
     clear_terminal_return_carrier_templates()
 
 
-def _preopt_union_import_key(function_ea: int, mba: object) -> tuple[int, int, int]:
-    return (
-        int(function_ea),
-        stable_mba_identity(mba),
-        detached_snippet_template_generation(int(function_ea)),
-    )
-
-
-def _preopt_union_generation_was_processed(
-    state: ResolverSessionState,
-    function_ea: int,
-    mba: object,
-) -> bool:
-    key = _preopt_union_import_key(function_ea, mba)
-    return (
-        key in state.preopt_union_imported_mbas
-        or key in state.preopt_union_mutated_mbas
-    )
-
-
 def _preopt_union_owns_mba(
     state: ResolverSessionState,
     function_ea: int,
@@ -263,205 +236,6 @@ def _preopt_union_owns_mba(
             *state.preopt_union_imported_mbas,
             *state.preopt_union_mutated_mbas,
         )
-    )
-
-
-def _record_preopt_modification(
-    decision: dict[str, object],
-    **details: object,
-) -> None:
-    current_details = decision.get("details")
-    merged_details = dict(current_details) if isinstance(current_details, dict) else {}
-    merged_details.update(details)
-    decision["microcode_modified"] = True
-    decision["details"] = merged_details
-
-
-def _restore_preopt_terminal_return_carriers(
-    *,
-    function_ea: int,
-    mba: object,
-    decision: dict[str, object],
-) -> None:
-    """Restore carriers, then import one prepared union before LOCOPT/CALLS."""
-    restored = restore_terminal_return_carriers(mba, int(function_ea))
-    return_type_refined = refine_transient_terminal_return_type(
-        mba,
-        int(function_ea),
-    )
-    if restored > 0 or return_type_refined:
-        _record_preopt_modification(
-            decision,
-            terminal_return_carriers=int(restored),
-            terminal_return_type_refined=bool(return_type_refined),
-        )
-        logger.info(
-            "PREOPT restored %d terminal return carrier(s) and refined_return=%s "
-            "before local and call analysis",
-            int(restored),
-            bool(return_type_refined),
-        )
-
-    session = decision.get("session")
-    if session is None:
-        return
-    try:
-        state = resolver_session_state(session)
-    except (TypeError, ValueError):
-        return
-
-    preparation = get_prepared_preopt_union_closure(state)
-    if (
-        preparation is None
-        or not preparation.prepared
-        or not preparation.published
-        or preparation.primary_seed_ea is None
-        or state.preopt_union_import_active
-        or _preopt_union_generation_was_processed(state, int(function_ea), mba)
-    ):
-        return
-
-    primary_seed_ea = int(preparation.primary_seed_ea)
-    mutation_gateway = decision.get("mutation_gateway")
-    if not isinstance(mutation_gateway, MbaMutationGateway):
-        logger.info(
-            "PREOPT union import skipped: func=0x%X reason=mutation_gateway",
-            int(function_ea),
-        )
-        return
-    qty_before_import = int(mba.qty)
-    state.preopt_union_import_active = True
-    try:
-        imported = materialize_preopt_union_snippet_templates(
-            mba,
-            int(function_ea),
-            (primary_seed_ea,),
-            mutation_gateway=mutation_gateway,
-        )
-    finally:
-        state.preopt_union_import_active = False
-    qty_after_import = int(mba.qty)
-    requested_roots = {primary_seed_ea}
-    expected_boundary_ports = len(state.boundary_ports.direct) + len(
-        state.boundary_ports.conditional
-    )
-    seed_eas = preparation.seed_eas or (primary_seed_ea,)
-    missing_instruction_backed_seed_eas = tuple(
-        int(seed_ea)
-        for seed_ea in seed_eas
-        if not has_instruction_backed_native_block(mba, int(seed_ea))
-    )
-    seeds_are_instruction_backed = not missing_instruction_backed_seed_eas
-    logger.info(
-        "PREOPT union import result: func=0x%X roots=%s applied=%d "
-        "expected=%d abstained=%d seeds_instruction_backed=%s",
-        int(function_ea),
-        tuple(hex(int(root_ea)) for root_ea in imported),
-        len(imported.applied_boundary_ports),
-        expected_boundary_ports,
-        len(imported.abstained_boundary_ports),
-        seeds_are_instruction_backed,
-    )
-    if (
-        set(imported) != requested_roots
-        or len(imported.applied_boundary_ports) != expected_boundary_ports
-        or imported.abstained_boundary_ports
-        or not seeds_are_instruction_backed
-    ):
-        logger.info(
-            "PREOPT union import abstained: func=0x%X primary=0x%X "
-            "roots=%s applied_ports=%d expected_ports=%d "
-            "abstained_ports=%d instruction_backed_seeds=%s",
-            int(function_ea),
-            primary_seed_ea,
-            [hex(int(root_ea)) for root_ea in imported],
-            len(imported.applied_boundary_ports),
-            expected_boundary_ports,
-            len(imported.abstained_boundary_ports),
-            seeds_are_instruction_backed,
-        )
-        block_delta = qty_after_import - qty_before_import
-        if block_delta != 0:
-            state.preopt_union_mutated_mbas.add(
-                _preopt_union_import_key(int(function_ea), mba)
-            )
-            _record_preopt_modification(
-                decision,
-                preopt_union_post_mutation_abstention=True,
-                preopt_union_block_delta=int(block_delta),
-                preopt_union_imported_roots=tuple(int(root_ea) for root_ea in imported),
-                preopt_union_applied_boundary_ports=len(
-                    imported.applied_boundary_ports
-                ),
-                preopt_union_expected_boundary_ports=expected_boundary_ports,
-                preopt_union_abstained_boundary_ports=len(
-                    imported.abstained_boundary_ports
-                ),
-                preopt_union_instruction_backed_seeds=seeds_are_instruction_backed,
-                preopt_union_missing_instruction_backed_seed_eas=(
-                    missing_instruction_backed_seed_eas
-                ),
-            )
-            logger.error(
-                "PREOPT union import abstained after mutating the live MBA; "
-                "legacy fallback suppressed: func=0x%X block_delta=%d",
-                int(function_ea),
-                int(block_delta),
-            )
-        return
-
-    imported_instruction_origins = tuple(
-        imported_detached_snippet_instruction_origins(mba)
-    )
-    state.bind_current_imported_instruction_origins(
-        stable_mba_identity(mba),
-        imported_instruction_origins,
-    )
-    imported_root_handles = tuple(
-        (
-            int(target_ea),
-            mutation_gateway.identity_index.handle_for_serial(int(root_serial)),
-        )
-        for target_ea, root_serial in imported.roots
-    )
-    if any(handle is None for _target_ea, handle in imported_root_handles):
-        logger.error(
-            "PREOPT union import abstained after mutation: func=0x%X "
-            "reason=imported_root_handle_missing",
-            int(function_ea),
-        )
-        return
-    state.bind_current_imported_root_handles(
-        stable_mba_identity(mba),
-        tuple(
-            (int(target_ea), handle)
-            for target_ea, handle in imported_root_handles
-            if handle is not None
-        ),
-    )
-    state.preopt_union_imported_mbas.add(
-        _preopt_union_import_key(int(function_ea), mba)
-    )
-    _record_preopt_modification(
-        decision,
-        preopt_union_root_ea=primary_seed_ea,
-        preopt_union_seed_count=len(seed_eas),
-        preopt_union_boundary_port_count=expected_boundary_ports,
-    )
-    rebind_live_preopt_routes(
-        function_ea=int(function_ea),
-        mba=mba,
-        decision=decision,
-    )
-    logger.info(
-        "PREOPT union import materialized without lifecycle publication: "
-        "func=0x%X primary=0x%X seeds=%s boundary_ports=%d "
-        "evidence_generation=%d",
-        int(function_ea),
-        primary_seed_ea,
-        [hex(int(seed_ea)) for seed_ea in seed_eas],
-        expected_boundary_ports,
-        int(state.evidence_generation),
     )
 
 
