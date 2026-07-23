@@ -298,15 +298,6 @@ class ComputedGotoResolution:
         return sum(len(targets) for targets in self.jmp_targets.values())
 
 
-_FLAG_CORRIDOR_EDGE_KINDS = frozenset(
-    {
-        NativeEdgeKind.DIRECT_JUMP,
-        NativeEdgeKind.FALLTHROUGH,
-        NativeEdgeKind.CALL_FALLTHROUGH,
-    }
-)
-
-
 def _unique_native_block_for_anchor(
     native_cfg: NativeCfg,
     anchor_ea: int,
@@ -352,71 +343,80 @@ def _native_block_identity(
     )
 
 
-def _unique_flag_corridor(
-    native_cfg: NativeCfg,
+def _patch_plan_source_identity(
+    native_key: NativePreanalysisKey,
+    plan: ComputedGotoPatchPlan,
     *,
-    producer_ea: int,
-    predicate_ea: int,
-) -> tuple[NativeBlock, ...]:
-    producer = _unique_native_block_for_anchor(
-        native_cfg,
-        producer_ea,
-        description="condition producer",
-    )
-    predicate = _unique_native_block_for_anchor(
-        native_cfg,
-        predicate_ea,
-        description="condition consumer",
-    )
-    if producer.start_ea == predicate.start_ea:
-        return (producer,)
-
-    adjacency: dict[int, tuple[int, ...]] = {}
-    for block in native_cfg.blocks_by_ea.values():
-        successors: set[int] = set()
-        for edge in block.outgoing_edges:
-            if edge.kind not in _FLAG_CORRIDOR_EDGE_KINDS or edge.target_ea is None:
-                continue
-            target_matches = tuple(
-                candidate
-                for candidate in native_cfg.blocks_by_ea.values()
-                if int(candidate.start_ea)
-                <= int(edge.target_ea)
-                < int(candidate.end_ea)
-            )
-            if len(target_matches) != 1:
-                continue
-            (target,) = target_matches
-            successors.add(int(target.start_ea))
-        adjacency[int(block.start_ea)] = tuple(sorted(successors))
-
-    target_entry = int(predicate.start_ea)
-    paths: list[tuple[int, ...]] = []
-
-    def visit(entry_ea: int, path: tuple[int, ...]) -> None:
-        if len(paths) > 1:
-            return
-        for successor_ea in adjacency.get(int(entry_ea), ()):
-            if successor_ea in path:
-                continue
-            candidate = (*path, successor_ea)
-            if successor_ea == target_entry:
-                paths.append(candidate)
-                continue
-            visit(successor_ea, candidate)
-
-    producer_entry = int(producer.start_ea)
-    visit(producer_entry, (producer_entry,))
-    if len(paths) != 1:
+    exact_eas: tuple[int, ...],
+) -> StableBlockIdentity:
+    """Validate one patched extent and retain its synthesized source identity."""
+    block_entry = int(plan.block_entry)
+    patch_start = int(plan.patch_start)
+    region_end = int(plan.region_end)
+    jmp_ea = int(plan.jmp_ea)
+    insn_heads = tuple(int(ea) for ea in plan.insn_heads)
+    new_block_eas = tuple(int(ea) for ea in plan.new_block_eas)
+    if (
+        block_entry < 0
+        or patch_start < block_entry
+        or region_end <= patch_start
+        or not patch_start <= jmp_ea < region_end
+        or not insn_heads
+        or insn_heads[0] != patch_start
+        or any(not patch_start <= ea < region_end for ea in insn_heads)
+        or any(ea not in insn_heads for ea in new_block_eas)
+    ):
         raise FrontendNormalizationEvidenceRejected(
-            "conditional transfer requires one linear native flag corridor"
+            "computed transfer patch has no exact native source extent"
         )
-    return tuple(native_cfg.blocks_by_ea[entry_ea] for entry_ea in paths[0])
+    normalized_exact_eas = tuple(sorted({int(ea) for ea in exact_eas}))
+    if not normalized_exact_eas or any(
+        not patch_start <= ea < region_end for ea in normalized_exact_eas
+    ):
+        raise FrontendNormalizationEvidenceRejected(
+            "computed transfer source anchors escaped their patch extent"
+        )
+    return StableBlockIdentity.from_intervals(
+        (NativeEaInterval(patch_start, region_end),),
+        native_key=native_key,
+        exact_instruction_eas=normalized_exact_eas,
+    )
+
+
+def _patch_plan_condition_identity(
+    native_key: NativePreanalysisKey,
+    plan: ComputedGotoPatchPlan,
+    *,
+    condition_producer_ea: int,
+) -> StableBlockIdentity:
+    """Retain the pre-patch producer corridor owned by one computed transfer."""
+    block_entry = int(plan.block_entry)
+    patch_start = int(plan.patch_start)
+    condition_producer_ea = int(condition_producer_ea)
+    if not block_entry <= condition_producer_ea < patch_start:
+        raise FrontendNormalizationEvidenceRejected(
+            "conditional patch does not preserve its condition producer"
+        )
+    return StableBlockIdentity.from_intervals(
+        (NativeEaInterval(block_entry, patch_start),),
+        native_key=native_key,
+        exact_instruction_eas=(condition_producer_ea,),
+    )
+
+
+def _resolver_target_identity(
+    native_key: NativePreanalysisKey,
+    target_ea: int,
+) -> StableBlockIdentity:
+    """Retain one destination exactly as proved by the resolver ledger."""
+    return StableBlockIdentity.from_instruction_eas(
+        (int(target_ea),),
+        native_key=native_key,
+    )
 
 
 def _patch_plan_frontend_proof(
     native_key: NativePreanalysisKey,
-    native_cfg: NativeCfg,
     plan: ComputedGotoPatchPlan,
     *,
     atomic_group_id: str,
@@ -426,51 +426,29 @@ def _patch_plan_frontend_proof(
     provenance = (
         ("provider", "native-computed-goto"),
         ("source_jmp_ea", f"0x{int(plan.jmp_ea):X}"),
+        ("patch_block_entry_ea", f"0x{int(plan.block_entry):X}"),
+        ("patch_start_ea", f"0x{int(plan.patch_start):X}"),
+        ("patch_region_end_ea", f"0x{int(plan.region_end):X}"),
     )
     if len(target_eas) == 1:
         source_anchor_ea = int(plan.patch_start)
-        source_block = _unique_native_block_for_anchor(
-            native_cfg,
-            source_anchor_ea,
-            description="direct transfer source",
-        )
-        matching_edges = tuple(
-            edge
-            for edge in source_block.outgoing_edges
-            if edge.kind is NativeEdgeKind.DIRECT_JUMP
-            and edge.target_ea is not None
-            and int(edge.target_ea) == target_eas[0]
-            and (
-                edge.source_instruction_ea is None
-                or int(edge.source_instruction_ea) == source_anchor_ea
-            )
-        )
-        if len(matching_edges) != 1:
-            raise FrontendNormalizationEvidenceRejected(
-                "direct patch plan is not present in the native CFG"
-            )
-        target_block = _unique_native_block_for_anchor(
-            native_cfg,
-            target_eas[0],
-            description="direct transfer target",
+        source_identity = _patch_plan_source_identity(
+            native_key,
+            plan,
+            exact_eas=(source_anchor_ea,),
         )
         return NativeIndirectTransferProof(
             proof_id=proof_id,
             atomic_group_id=atomic_group_id,
             shape=NativeTransferShape.DIRECT,
-            source_identity=_native_block_identity(
-                native_key,
-                source_block,
-                exact_eas=(source_anchor_ea,),
-            ),
+            source_identity=source_identity,
             source_anchor_ea=source_anchor_ea,
             endpoints=(
                 NativeTransferEndpoint(
                     role=SemanticEdgeRole.DIRECT,
-                    identity=_native_block_identity(
+                    identity=_resolver_target_identity(
                         native_key,
-                        target_block,
-                        exact_eas=(target_eas[0],),
+                        target_eas[0],
                     ),
                     anchor_ea=target_eas[0],
                 ),
@@ -502,70 +480,23 @@ def _patch_plan_frontend_proof(
         raise FrontendNormalizationEvidenceRejected(
             "conditional patch plan topology is inconsistent"
         )
-    source_block = _unique_native_block_for_anchor(
-        native_cfg,
-        predicate_ea,
-        description="conditional transfer source",
+    source_identity = _patch_plan_source_identity(
+        native_key,
+        plan,
+        exact_eas=(predicate_ea,),
     )
-    edge_by_kind = {
-        edge.kind: edge
-        for edge in source_block.outgoing_edges
-        if edge.kind
-        in {
-            NativeEdgeKind.CONDITIONAL_TRUE,
-            NativeEdgeKind.CONDITIONAL_FALSE,
-        }
-        and edge.source_instruction_ea is not None
-        and int(edge.source_instruction_ea) == predicate_ea
-    }
-    if (
-        len(edge_by_kind) != 2
-        or edge_by_kind[NativeEdgeKind.CONDITIONAL_TRUE].target_ea
-        != true_target_ea
-        or edge_by_kind[NativeEdgeKind.CONDITIONAL_FALSE].target_ea
-        != false_target_ea
-    ):
-        raise FrontendNormalizationEvidenceRejected(
-            "conditional patch plan is not present in the native CFG"
-        )
-    corridor_blocks = _unique_flag_corridor(
-        native_cfg,
-        producer_ea=condition_producer_ea,
-        predicate_ea=predicate_ea,
+    condition_identity = _patch_plan_condition_identity(
+        native_key,
+        plan,
+        condition_producer_ea=condition_producer_ea,
     )
-    corridor_identities = tuple(
-        _native_block_identity(
-            native_key,
-            block,
-            exact_eas=tuple(
-                {
-                    *(
-                        (condition_producer_ea,)
-                        if index == 0
-                        else ()
-                    ),
-                    *((predicate_ea,) if index == len(corridor_blocks) - 1 else ()),
-                    *(
-                        (int(block.start_ea),)
-                        if index not in {0, len(corridor_blocks) - 1}
-                        else ()
-                    ),
-                }
-            ),
-        )
-        for index, block in enumerate(corridor_blocks)
-    )
+    corridor_identities = (condition_identity, source_identity)
     endpoints = tuple(
         NativeTransferEndpoint(
             role=role,
-            identity=_native_block_identity(
+            identity=_resolver_target_identity(
                 native_key,
-                _unique_native_block_for_anchor(
-                    native_cfg,
-                    target_ea,
-                    description="conditional transfer target",
-                ),
-                exact_eas=(target_ea,),
+                target_ea,
             ),
             anchor_ea=target_ea,
         )
@@ -581,11 +512,7 @@ def _patch_plan_frontend_proof(
         proof_id=proof_id,
         atomic_group_id=atomic_group_id,
         shape=NativeTransferShape.CONDITIONAL,
-        source_identity=_native_block_identity(
-            native_key,
-            source_block,
-            exact_eas=(predicate_ea,),
-        ),
+        source_identity=source_identity,
         source_anchor_ea=predicate_ea,
         endpoints=endpoints,
         predicate_anchor_ea=predicate_ea,
@@ -1216,17 +1143,19 @@ class NativePreanalysisSessionState:
         atomic_group_id = (
             f"frontend-normalization:g{int(self.evidence_generation)}"
         )
-        proofs = tuple(
-            _patch_plan_frontend_proof(
-                key,
-                facts.native_cfg,
-                plan,
-                atomic_group_id=atomic_group_id,
-            )
-            for plan in sorted(
+        patch_plans = tuple(
+            sorted(
                 resolution.patch_plans,
                 key=lambda item: int(item.jmp_ea),
             )
+        )
+        proofs = tuple(
+            _patch_plan_frontend_proof(
+                key,
+                plan,
+                atomic_group_id=atomic_group_id,
+            )
+            for plan in patch_plans
         )
         return FrontendNormalizationEvidence(
             native_key=key,
