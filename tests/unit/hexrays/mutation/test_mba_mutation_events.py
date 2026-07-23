@@ -567,8 +567,8 @@ def test_gateway_replacement_is_transaction_local_until_commit() -> None:
     assert index.resolve(original).generation == 4
     assert len(receipt.version_transitions) == 1
     transition = receipt.version_transitions[0]
-    assert transition.retired_version_id is not None
-    assert transition.promoted_version_id == staged.version_id
+    assert transition.retired_version is not None
+    assert transition.promoted_version is staged
 
 
 def test_gateway_stages_inserted_replacement_as_one_logical_operation() -> None:
@@ -650,7 +650,7 @@ def test_gateway_abort_discards_staged_version_and_preserves_published_authority
     assert index.resolve(original).handle is original
     assert index.resolve(original).generation == 3
     assert index.generation == 3
-    assert aborted[-1].discarded_version_ids == (staged.version_id,)
+    assert aborted[-1].discarded_versions == (staged,)
 
 
 def test_gateway_insert_is_transaction_local_and_abort_restores_bindings() -> None:
@@ -719,8 +719,8 @@ def test_gateway_insert_commit_publishes_new_proxy_and_shifted_bindings() -> Non
     assert index.resolve(original).serial == 5
     assert index.resolve(created).serial == 3
     assert any(
-        transition.retired_version_id is None
-        and transition.promoted_version_id is not None
+        transition.retired_version is None
+        and transition.promoted_version is not None
         for transition in receipt.version_transitions
     )
 
@@ -779,7 +779,7 @@ def test_gateway_remove_commit_retires_proxy_without_promoting_version() -> None
 
     assert index.resolve(original) is None
     assert any(
-        transition.retired_version_id is not None
-        and transition.promoted_version_id is None
+        transition.retired_version is not None
+        and transition.promoted_version is None
         for transition in receipt.version_transitions
     )

@@ -16,7 +16,6 @@ from d810.core.typing import Iterable
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.ir.logical_block_proxy import (
     LogicalBlockVersion,
-    LogicalBlockVersionId,
     LogicalBlockVersionTransition,
 )
 from d810.hexrays.ir.semantic_edge import (
@@ -314,7 +313,7 @@ class MbaMutationAborted:
     applied_operation_count: int
     description: str
     reason: str
-    discarded_version_ids: tuple[LogicalBlockVersionId, ...] = ()
+    discarded_versions: tuple[LogicalBlockVersion, ...] = ()
     fragment_plan_id: str = ""
     fragment_atomic_group_id: str = ""
     root_publication_groups: tuple[MbaMutationRootPublicationGroup, ...] = ()
@@ -1560,7 +1559,7 @@ class MbaMutationGateway:
     def abort(self, *, reason: str = "aborted") -> None:
         """Forget an uncommitted batch; callers must rebuild after SDK failure."""
         aborted_batch_id = str(self._active_batch_id)
-        discarded_version_ids = (
+        discarded_versions = (
             self.identity_index.abort_proxy_transaction(str(self._active_batch_id))
             if self.active
             else ()
@@ -1581,7 +1580,7 @@ class MbaMutationGateway:
                     applied_operation_count=int(self._operation_count),
                     description=self._active_description,
                     reason=str(reason),
-                    discarded_version_ids=discarded_version_ids,
+                    discarded_versions=discarded_versions,
                     fragment_plan_id=(
                         ""
                         if self._active_fragment_plan is None

@@ -64,15 +64,28 @@ class LogicalBlockVersion:
 @dataclass(frozen=True, slots=True)
 class LogicalBlockVersionTransition:
     transaction_id: str
-    retired_version_id: LogicalBlockVersionId | None
-    promoted_version_id: LogicalBlockVersionId | None
+    retired_version: LogicalBlockVersion | None
+    promoted_version: LogicalBlockVersion | None
 
     def __post_init__(self) -> None:
         transaction_id = str(self.transaction_id)
         if not transaction_id:
             raise ValueError("logical block transition requires a transaction id")
-        if self.retired_version_id is None and self.promoted_version_id is None:
+        retired = self.retired_version
+        promoted = self.promoted_version
+        if retired is None and promoted is None:
             raise ValueError("logical block transition requires a changed version")
+        if retired is not None and promoted is not None:
+            if retired.version_id.proxy_token != promoted.version_id.proxy_token:
+                raise ValueError("logical block transition cannot cross proxies")
+            if promoted.predecessor_version_id != retired.version_id:
+                raise ValueError(
+                    "promoted logical block must identify its retired predecessor"
+                )
+        elif promoted is not None and promoted.predecessor_version_id is not None:
+            raise ValueError(
+                "initial logical block publication cannot claim a predecessor"
+            )
         object.__setattr__(self, "transaction_id", transaction_id)
 
 
@@ -326,8 +339,8 @@ class LogicalBlockProxy:
             self._generation = retirement_generation
             return LogicalBlockVersionTransition(
                 transaction_id=transaction_id,
-                retired_version_id=published.version_id,
-                promoted_version_id=None,
+                retired_version=published,
+                promoted_version=None,
             )
         try:
             staged = self._staged[transaction_id]
@@ -354,8 +367,8 @@ class LogicalBlockProxy:
             self._lineage.append((published.version_id, staged.version_id))
         return LogicalBlockVersionTransition(
             transaction_id=transaction_id,
-            retired_version_id=published_version_id,
-            promoted_version_id=staged.version_id,
+            retired_version=published,
+            promoted_version=staged,
         )
 
     def abort(self, transaction_id: str) -> LogicalBlockVersion:

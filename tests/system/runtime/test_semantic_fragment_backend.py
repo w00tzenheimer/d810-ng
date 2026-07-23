@@ -92,6 +92,36 @@ def _fragment_gateway(mba):
     )
 
 
+def _persisted_version_transition_row(version, from_state: str, to_state: str):
+    identity = version.handle.stable_identity
+    anchor_ea = (
+        None
+        if identity is None
+        else min(
+            identity.exact_instruction_eas,
+            default=identity.native_ranges.intervals[0].start_ea,
+        )
+    )
+    predecessor = version.predecessor_version_id
+    return (
+        version.version_id.proxy_token,
+        version.version_id.version,
+        version.handle.token,
+        version.generation,
+        version.handle.provenance.value,
+        (
+            None
+            if identity is None
+            else json.dumps(identity.to_dict(), sort_keys=True)
+        ),
+        None if anchor_ea is None else f"0x{anchor_ea:016x}",
+        anchor_ea,
+        None if predecessor is None else predecessor.version,
+        from_state,
+        to_state,
+    )
+
+
 def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
@@ -1784,15 +1814,30 @@ def test_live_fragment_publication_is_reconstructible_from_diagnostic_db(
         )
         for outcome in validation.outcomes
     ]
+    expected_version_rows = []
+    for transition in receipt.version_transitions:
+        if transition.retired_version is not None:
+            expected_version_rows.append(
+                _persisted_version_transition_row(
+                    transition.retired_version,
+                    "published",
+                    "retired",
+                )
+            )
+        if transition.promoted_version is not None:
+            expected_version_rows.append(
+                _persisted_version_transition_row(
+                    transition.promoted_version,
+                    "staged",
+                    "published",
+                )
+            )
     assert diag_conn.execute(
-        "SELECT from_state,to_state FROM logical_block_version_transitions "
-        "ORDER BY transition_index"
-    ).fetchall() == [
-        ("published", "retired"),
-        ("staged", "published"),
-        ("staged", "published"),
-        ("staged", "published"),
-    ]
+        "SELECT proxy_token,version,physical_handle_token,generation,"
+        "provenance,stable_identity_json,anchor_ea_hex,anchor_ea_i64,"
+        "predecessor_version,from_state,to_state "
+        "FROM logical_block_version_transitions ORDER BY transition_index"
+    ).fetchall() == expected_version_rows
     root_group = diag_conn.execute(
         "SELECT group_id,predecessor_block_id,predecessor_anchor_ea_i64,"
         "edge_ids_json,edge_roles_json,original_block_ids_json,"
@@ -1986,7 +2031,16 @@ def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_wor
     assert aborted[0].prepublication_validation.passed
     assert aborted[0].postpublication_validation is not None
     assert not aborted[0].postpublication_validation.passed
-    assert aborted[0].discarded_version_ids
+    assert aborted[0].discarded_versions
+    assert diag_conn.execute(
+        "SELECT proxy_token,version,physical_handle_token,generation,"
+        "provenance,stable_identity_json,anchor_ea_hex,anchor_ea_i64,"
+        "predecessor_version,from_state,to_state "
+        "FROM logical_block_version_transitions ORDER BY transition_index"
+    ).fetchall() == [
+        _persisted_version_transition_row(version, "staged", "aborted")
+        for version in aborted[0].discarded_versions
+    ]
     assert diag_conn.execute(
         "SELECT group_id,publication_attempted,publication_succeeded,"
         "rollback_attempted,rollback_succeeded "

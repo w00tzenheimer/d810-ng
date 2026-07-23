@@ -161,32 +161,93 @@ class FragmentValidationOutcomeObserved:
 
 @dataclass(frozen=True)
 class LogicalBlockVersionTransitionObserved:
-    """One logical-version state transition persisted without MBA serials."""
+    """One complete logical-version state transition without MBA serials."""
 
     proxy_token: str
-    from_version: int
+    version: int
+    physical_handle_token: str
+    generation: int
+    provenance: str
+    stable_identity_json: str | None
+    anchor_ea: int | None
+    predecessor_version: int | None
     from_state: str
-    to_version: int
     to_state: str
 
     def __post_init__(self) -> None:
         states = {"staged", "published", "retired", "aborted"}
-        if not self.proxy_token:
-            raise ValueError("logical-version transition requires a proxy token")
-        if int(self.from_version) < 0 or int(self.to_version) < 0:
-            raise ValueError("logical-version numbers must be non-negative")
+        proxy_token = str(self.proxy_token)
+        physical_handle_token = str(self.physical_handle_token)
+        version = int(self.version)
+        generation = int(self.generation)
+        predecessor_version = (
+            None
+            if self.predecessor_version is None
+            else int(self.predecessor_version)
+        )
+        anchor_ea = None if self.anchor_ea is None else int(self.anchor_ea)
+        if not proxy_token or not physical_handle_token:
+            raise ValueError(
+                "logical-version transition requires logical and physical tokens"
+            )
+        if version < 0 or generation < 0:
+            raise ValueError(
+                "logical-version number and generation must be non-negative"
+            )
+        if predecessor_version is not None and (
+            predecessor_version < 0 or predecessor_version >= version
+        ):
+            raise ValueError(
+                "logical-version predecessor must be an earlier version"
+            )
         if self.from_state not in states or self.to_state not in states:
             raise ValueError("logical-version transition state is invalid")
-        if int(self.from_version) != int(self.to_version):
-            raise ValueError("logical-version state transition cannot change identity")
         if (self.from_state, self.to_state) not in {
             ("published", "retired"),
             ("staged", "published"),
             ("staged", "aborted"),
         }:
             raise ValueError("logical-version transition is not authoritative")
-        object.__setattr__(self, "from_version", int(self.from_version))
-        object.__setattr__(self, "to_version", int(self.to_version))
+        if self.provenance not in {"native", "imported_native", "synthetic"}:
+            raise ValueError("logical-version provenance is invalid")
+        if self.provenance == "synthetic":
+            if self.stable_identity_json is not None or anchor_ea is not None:
+                raise ValueError(
+                    "synthetic logical version cannot claim native identity"
+                )
+        else:
+            if self.stable_identity_json is None or anchor_ea is None:
+                raise ValueError(
+                    "native logical version requires identity and EA anchor"
+                )
+            try:
+                identity_payload = json.loads(self.stable_identity_json)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "logical-version stable identity JSON is invalid"
+                ) from exc
+            if not isinstance(identity_payload, dict):
+                raise ValueError(
+                    "logical-version stable identity must be an object"
+                )
+            if anchor_ea < 0:
+                raise ValueError(
+                    "logical-version EA anchor must be non-negative"
+                )
+        object.__setattr__(self, "proxy_token", proxy_token)
+        object.__setattr__(self, "version", version)
+        object.__setattr__(
+            self,
+            "physical_handle_token",
+            physical_handle_token,
+        )
+        object.__setattr__(self, "generation", generation)
+        object.__setattr__(self, "anchor_ea", anchor_ea)
+        object.__setattr__(
+            self,
+            "predecessor_version",
+            predecessor_version,
+        )
 
 
 @dataclass(frozen=True)

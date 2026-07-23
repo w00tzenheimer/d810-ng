@@ -26,7 +26,6 @@ from d810.ir.flowgraph import FlowGraph
 from d810.hexrays.ir.logical_block_proxy import (
     LogicalBlockProxy,
     LogicalBlockVersion,
-    LogicalBlockVersionId,
     LogicalBlockVersionTransition,
 )
 
@@ -816,10 +815,10 @@ class MbaBlockIdentityIndex:
     def abort_proxy_transaction(
         self,
         transaction_id: str,
-    ) -> tuple[LogicalBlockVersionId, ...]:
+    ) -> tuple[LogicalBlockVersion, ...]:
         """Discard staged physical versions without changing publication."""
         transaction_id = str(transaction_id)
-        discarded: list[LogicalBlockVersionId] = []
+        discarded: list[LogicalBlockVersion] = []
         actions = self._proxy_actions_by_transaction.pop(transaction_id, {})
         for proxy_token in sorted(
             self._proxy_tokens_by_transaction.pop(transaction_id, ())
@@ -842,7 +841,7 @@ class MbaBlockIdentityIndex:
                         tokens.discard(staged.handle.token)
                         if not tokens:
                             self._tokens_by_identity.pop(identity, None)
-            discarded.append(staged.version_id)
+            discarded.append(staged)
         self._serials_by_transaction.pop(transaction_id, None)
         self._baseline_tokens_by_transaction.pop(transaction_id, None)
         return tuple(discarded)

@@ -401,15 +401,33 @@ class LogicalBlockVersionTransitionRecord(BaseModel):
     mutation_batch_id = TextField()
     transition_index = IntegerField()
     proxy_token = TextField()
-    from_version = IntegerField()
-    from_state = TextField()
-    to_version = IntegerField()
-    to_state = TextField()
+    version = IntegerField()
+    physical_handle_token = TextField()
+    generation = IntegerField()
+    provenance = TextField(
+        constraints=[
+            Check("provenance IN ('native','imported_native','synthetic')")
+        ]
+    )
+    stable_identity_json = TextField(null=True)
+    anchor_ea_hex = TextField(null=True)
+    anchor_ea_i64 = IntegerField(null=True)
+    predecessor_version = IntegerField(null=True)
+    from_state = TextField(
+        constraints=[Check("from_state IN ('staged','published')")]
+    )
+    to_state = TextField(
+        constraints=[
+            Check("to_state IN ('published','retired','aborted')")
+        ]
+    )
 
     class Meta:
         table_name = "logical_block_version_transitions"
         primary_key = CompositeKey("event", "transition_index")
-        indexes = ((("mutation_batch_id", "proxy_token"), False),)
+        indexes = (
+            (("mutation_batch_id", "proxy_token", "version"), False),
+        )
 
 
 class SemanticFragmentTransactionEvent(BaseModel):

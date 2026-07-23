@@ -85,8 +85,8 @@ def test_commit_promotes_stage_retires_published_and_records_lineage() -> None:
     transition = proxy.commit("tx-commit")
 
     assert transition.transaction_id == "tx-commit"
-    assert transition.retired_version_id == original.version_id
-    assert transition.promoted_version_id == staged.version_id
+    assert transition.retired_version is original
+    assert transition.promoted_version is staged
     assert proxy.resolve() is staged
     assert proxy.generation == 4
     assert proxy.retired_versions == (original,)
@@ -221,8 +221,8 @@ def test_new_logical_block_is_unpublished_until_owning_transaction_commits() -> 
 
     transition = proxy.commit("tx-insert")
 
-    assert transition.retired_version_id is None
-    assert transition.promoted_version_id == staged.version_id
+    assert transition.retired_version is None
+    assert transition.promoted_version is staged
     assert proxy.resolve() is staged
     assert proxy.generation == 4
 
@@ -242,8 +242,8 @@ def test_retirement_is_transaction_local_and_commit_has_no_promoted_version() ->
 
     transition = proxy.commit("tx-remove")
 
-    assert transition.retired_version_id == published.version_id
-    assert transition.promoted_version_id is None
+    assert transition.retired_version is published
+    assert transition.promoted_version is None
     assert proxy.resolve() is None
     assert proxy.generation == 4
     assert proxy.state_of(published.version_id) is LogicalBlockVersionState.RETIRED

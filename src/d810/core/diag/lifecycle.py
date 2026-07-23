@@ -505,16 +505,28 @@ def persist_mutation_receipt(
             conn.execute(
                 "INSERT INTO logical_block_version_transitions "
                 "(event_id,mutation_batch_id,transition_index,proxy_token,"
-                "from_version,from_state,to_version,to_state) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "version,physical_handle_token,generation,provenance,"
+                "stable_identity_json,anchor_ea_hex,anchor_ea_i64,"
+                "predecessor_version,from_state,to_state) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     event_id,
                     event.mutation_batch_id,
                     transition_index,
                     transition.proxy_token,
-                    transition.from_version,
+                    transition.version,
+                    transition.physical_handle_token,
+                    transition.generation,
+                    transition.provenance,
+                    transition.stable_identity_json,
+                    (
+                        None
+                        if transition.anchor_ea is None
+                        else _func_hex(transition.anchor_ea)
+                    ),
+                    transition.anchor_ea,
+                    transition.predecessor_version,
                     transition.from_state,
-                    transition.to_version,
                     transition.to_state,
                 ),
             )
