@@ -17,6 +17,7 @@ class NativeEdgeKind(str, Enum):
     CONDITIONAL_TRUE = "conditional_true"
     CONDITIONAL_FALSE = "conditional_false"
     CALL = "call"
+    CALL_FALLTHROUGH = "call_fallthrough"
     INDIRECT = "indirect"
 
 
@@ -157,6 +158,7 @@ _TRAVERSED_EDGE_KINDS = frozenset(
     {
         NativeEdgeKind.DIRECT_JUMP,
         NativeEdgeKind.FALLTHROUGH,
+        NativeEdgeKind.CALL_FALLTHROUGH,
         NativeEdgeKind.CONDITIONAL_TRUE,
         NativeEdgeKind.CONDITIONAL_FALSE,
     }
@@ -222,6 +224,7 @@ def plan_native_generation_ranges(
             if edge.kind not in {
                 NativeEdgeKind.DIRECT_JUMP,
                 NativeEdgeKind.FALLTHROUGH,
+                NativeEdgeKind.CALL_FALLTHROUGH,
             }:
                 continue
             source_index = containing_range_index(edge.source_ea)

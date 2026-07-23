@@ -18,9 +18,12 @@ from d810.analyses.control_flow.frontend_normalization import (
 from d810.analyses.control_flow.native_semantic_closure import (
     NativeBlock,
     NativeCfg,
+    NativeEdge,
+    NativeEdgeKind,
     NativeRange,
     NativeSemanticClosure,
     NativeTerminalKind,
+    ProvenInternalEdge,
 )
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
@@ -54,6 +57,7 @@ from d810.passes.pass_pipeline import (
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentEdge,
     FragmentPublicationPurpose,
 )
 from d810.transforms.frontend_normalization import (
@@ -320,6 +324,74 @@ def test_missing_target_is_staged_inside_the_same_normalization_fragment() -> No
         if edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
     )
     assert fallthrough.target_block_id == imported[0].block_id
+
+
+def test_imported_call_continuation_keeps_its_portable_fallthrough_role() -> None:
+    call_ea = 0x1308
+    continuation_ea = 0x1310
+    closure = NativeSemanticClosure(
+        included_block_eas=(0x1300, continuation_ea),
+        native_ranges=(NativeRange(0x1300, 0x1320),),
+        proven_internal_edges=(
+            ProvenInternalEdge(
+                source_ea=0x1300,
+                target_ea=continuation_ea,
+                kind=NativeEdgeKind.CALL_FALLTHROUGH,
+            ),
+        ),
+        abstentions=(),
+        seed_provenance=(),
+    )
+    native_cfg = NativeCfg(
+        {
+            0x1300: NativeBlock(
+                start_ea=0x1300,
+                end_ea=continuation_ea,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.CALL_FALLTHROUGH,
+                        target_ea=continuation_ea,
+                        source_instruction_ea=call_ea,
+                    ),
+                ),
+            ),
+            continuation_ea: NativeBlock(
+                start_ea=continuation_ea,
+                end_ea=0x1320,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+        }
+    )
+
+    plan = plan_frontend_computed_branch_normalization(
+        _graph(faithful=False, include_false_target=False),
+        _evidence(closure=closure, native_cfg=native_cfg),
+    )
+
+    assert plan is not None
+    call_source = next(
+        block
+        for block in plan.blocks
+        if block.semantic_anchor_ea == 0x1300
+        and block.role is FragmentBlockRole.IMPORTED
+    )
+    continuation = next(
+        block
+        for block in plan.blocks
+        if block.semantic_anchor_ea == continuation_ea
+        and block.role is FragmentBlockRole.IMPORTED
+    )
+    operation = next(
+        operation
+        for operation in plan.operations
+        if operation.source_block_id == call_source.block_id
+    )
+    assert operation.edges == (
+        FragmentEdge(
+            role=SemanticEdgeRole.CALL_FALLTHROUGH,
+            target_block_id=continuation.block_id,
+        ),
+    )
 
 
 def test_normalization_plan_replaces_lost_branch_with_one_atomic_two_arm_operation() -> None:

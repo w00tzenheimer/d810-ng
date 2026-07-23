@@ -71,7 +71,7 @@ def test_call_tail_excludes_direct_callee_from_traversable_successors() -> None:
     )
 
     assert cfg.blocks_by_ea[0x4200].outgoing_edges == (
-        NativeEdge(NativeEdgeKind.FALLTHROUGH, continuation_ea),
+        NativeEdge(NativeEdgeKind.CALL_FALLTHROUGH, continuation_ea),
     )
 
 
