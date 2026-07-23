@@ -586,11 +586,17 @@ class SemanticRouteProof:
             request = terminal_return_carrier.request
             destination = destinations[0]
             if (
-                destination.target_identity.native_ranges
-                != terminal_return_carrier.terminal_identity.native_ranges
-                or destination.target_anchor_ea != int(request.terminal_target_ea)
+                destination.target_anchor_ea != int(request.terminal_target_ea)
+                or destination.target_anchor_ea
+                not in destination.target_identity.exact_instruction_eas
+                or destination.target_anchor_ea
+                not in terminal_return_carrier.terminal_identity.exact_instruction_eas
                 or destination.state_constant != int(request.state_constant)
                 or state_write.instruction_ea != terminal_return_carrier.state_write_ea
+                or state_write.instruction_ea
+                not in state_write.identity.exact_instruction_eas
+                or state_write.instruction_ea
+                not in terminal_return_carrier.capture_identity.exact_instruction_eas
                 or state_write.state_constant != int(request.state_constant)
                 or state_write.state_variable
                 != StorageIdentity(

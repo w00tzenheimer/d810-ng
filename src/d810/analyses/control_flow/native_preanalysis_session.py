@@ -1272,10 +1272,13 @@ class NativePreanalysisSessionState:
                 and int(carrier.request.state_constant)
                 == (int(route.state_constant) & 0xFFFFFFFF)
                 and int(carrier.request.terminal_target_ea) == int(route.target_ea)
-                and carrier.capture_identity.native_ranges
-                == route.write_identity.native_ranges
-                and carrier.terminal_identity.native_ranges
-                == route.target_identity.native_ranges
+                and int(route.source_write_ea)
+                in carrier.capture_identity.exact_instruction_eas
+                and int(route.source_write_ea)
+                in route.write_identity.exact_instruction_eas
+                and int(route.target_ea)
+                in carrier.terminal_identity.exact_instruction_eas
+                and int(route.target_ea) in route.target_identity.exact_instruction_eas
             )
             if len(matching_terminal_carriers) > 1:
                 return None
