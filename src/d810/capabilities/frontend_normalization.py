@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from d810.analyses.control_flow.frontend_normalization import (
         FrontendNormalizationEvidence,
     )
+    from d810.transforms.fragment_plan import FragmentPlan
 
 
 @runtime_checkable
@@ -22,4 +23,20 @@ class FrontendNormalizationEvidenceCapability(Protocol):
         ...
 
 
-__all__ = ["FrontendNormalizationEvidenceCapability"]
+@runtime_checkable
+class FrontendNormalizationPlanCapability(Protocol):
+    """Supply receipt-associated portable PREOPT plan intent."""
+
+    def plan_for(
+        self,
+        function_ea: int,
+        evidence_generation: int,
+    ) -> "FragmentPlan | None":
+        """Return one complete plan intent for an exact generation."""
+        ...
+
+
+__all__ = [
+    "FrontendNormalizationEvidenceCapability",
+    "FrontendNormalizationPlanCapability",
+]

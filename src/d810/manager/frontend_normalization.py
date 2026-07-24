@@ -18,13 +18,99 @@ from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.maturity import IRMaturity
 from d810.passes.frontend_normalization import (
+    FRONTEND_NORMALIZATION_PLAN_INTENT,
     standard_frontend_normalization_passes,
 )
 from d810.passes.function_pass_manager import FunctionPassManager
+from d810.transforms.fragment_plan import (
+    FragmentPlan,
+    FragmentPublicationPurpose,
+)
 
 
 class FrontendNormalizationPublicationError(RuntimeError):
     """A backend changed or partially staged CFG authority without a receipt."""
+
+
+@dataclass(slots=True)
+class SessionFrontendNormalizationPlanAuthority:
+    """Manager-owned, generation-keyed PREOPT plan intent."""
+
+    function_ea: int
+    native_key: NativePreanalysisKey
+    _plan: FragmentPlan | None = None
+    _evidence_generation: int | None = None
+    _receipted_work_item_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        function_ea = int(self.function_ea)
+        if function_ea < 0:
+            raise ValueError(
+                "frontend normalization plan function EA must be non-negative"
+            )
+        if not isinstance(self.native_key, NativePreanalysisKey):
+            raise TypeError("frontend normalization plan requires a native key")
+        object.__setattr__(self, "function_ea", function_ea)
+
+    def record_receipted_plan(
+        self,
+        plan: FragmentPlan,
+        *,
+        evidence_generation: int,
+        work_item_id: str,
+    ) -> None:
+        """Retain complete intent only after one selected work item commits."""
+        if not isinstance(plan, FragmentPlan):
+            raise TypeError(
+                "frontend normalization plan authority requires a FragmentPlan"
+            )
+        if (
+            plan.publication_purpose
+            is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+        ):
+            raise TypeError(
+                "frontend normalization plan authority requires normalization intent"
+            )
+        if plan.native_key != self.native_key:
+            raise FrontendNormalizationPublicationError(
+                "frontend normalization plan belongs to another native identity"
+            )
+        generation = int(evidence_generation)
+        if generation <= 0:
+            raise ValueError(
+                "frontend normalization plan generation must be positive"
+            )
+        work_item_id = str(work_item_id).strip()
+        if not work_item_id:
+            raise FrontendNormalizationPublicationError(
+                "frontend normalization plan requires a receipted work item"
+            )
+        if (
+            self._evidence_generation == generation
+            and self._plan is not None
+            and self._plan != plan
+        ):
+            raise FrontendNormalizationPublicationError(
+                "frontend normalization plan authority changed within one generation"
+            )
+        self._plan = plan
+        self._evidence_generation = generation
+        self._receipted_work_item_ids = tuple(
+            dict.fromkeys((*self._receipted_work_item_ids, work_item_id))
+        )
+
+    def plan_for(
+        self,
+        function_ea: int,
+        evidence_generation: int,
+    ) -> FragmentPlan | None:
+        """Return intent only for its exact function and evidence generation."""
+        if (
+            int(function_ea) != self.function_ea
+            or int(evidence_generation) != self._evidence_generation
+        ):
+            return None
+        return self._plan
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +187,7 @@ def run_frontend_normalization_pipeline(
     source: object,
     backend: object,
     evidence_provider: FrontendNormalizationEvidenceCapability,
+    plan_authority: SessionFrontendNormalizationPlanAuthority,
     lifecycle_state: NativePreanalysisSessionState,
     native_key: NativePreanalysisKey,
     project_config: object | None = None,
@@ -111,6 +198,13 @@ def run_frontend_normalization_pipeline(
         raise TypeError("frontend normalization requires session lifecycle state")
     if not isinstance(native_key, NativePreanalysisKey):
         raise TypeError("frontend normalization requires a native key")
+    if not isinstance(
+        plan_authority,
+        SessionFrontendNormalizationPlanAuthority,
+    ):
+        raise TypeError(
+            "frontend normalization requires manager-owned plan authority"
+        )
     graph = getattr(source, "flow_graph", None)
     if not isinstance(graph, FlowGraph):
         raise TypeError("frontend normalization source requires a portable FlowGraph")
@@ -176,7 +270,37 @@ def run_frontend_normalization_pipeline(
         raise FrontendNormalizationPublicationError(
             "frontend normalization published multiple work items in one pass"
         )
+    analysis_manager = manager.analysis_manager_for(function_ea)
+    complete_plan = (
+        None
+        if analysis_manager is None
+        else analysis_manager.get_analysis(
+            FRONTEND_NORMALIZATION_PLAN_INTENT,
+            None,
+        )
+    )
+    if work_item_published:
+        if not isinstance(complete_plan, FragmentPlan):
+            raise FrontendNormalizationPublicationError(
+                "receipt-backed normalization lacks complete portable plan intent"
+            )
+        work_item_id = (
+            lifecycle_state.normalization_last_published_work_item_id
+        )
+        if work_item_id is None:
+            raise FrontendNormalizationPublicationError(
+                "receipt-backed normalization lacks its work-item identity"
+            )
+        plan_authority.record_receipted_plan(
+            complete_plan,
+            evidence_generation=generation,
+            work_item_id=work_item_id,
+        )
     if after_published == generation:
+        if not work_item_published:
+            raise FrontendNormalizationPublicationError(
+                "normalization generation advanced without a work-item receipt"
+            )
         return FrontendNormalizationRunResult(
             graph=final_graph,
             microcode_modified=True,
@@ -226,5 +350,6 @@ __all__ = [
     "FrontendNormalizationPublicationError",
     "FrontendNormalizationRunResult",
     "SessionFrontendNormalizationEvidenceProvider",
+    "SessionFrontendNormalizationPlanAuthority",
     "run_frontend_normalization_pipeline",
 ]

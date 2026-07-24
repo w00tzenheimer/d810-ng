@@ -161,6 +161,36 @@ class FrontendNormalizationCorridorRejected(
 
 
 @dataclass(frozen=True, slots=True)
+class FrontendNormalizationGenerationPlan:
+    """Complete portable intent plus one connected publication work item."""
+
+    complete_plan: FragmentPlan
+    work_item_plan: FragmentPlan
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.complete_plan, FragmentPlan) or not isinstance(
+            self.work_item_plan,
+            FragmentPlan,
+        ):
+            raise TypeError(
+                "frontend normalization generation requires FragmentPlan values"
+            )
+        if (
+            self.complete_plan.publication_purpose
+            is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+            or self.work_item_plan.publication_purpose
+            is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+        ):
+            raise TypeError(
+                "frontend normalization generation requires normalization plans"
+            )
+        if self.complete_plan.native_key != self.work_item_plan.native_key:
+            raise FrontendNormalizationEvidenceRejected(
+                "frontend normalization generation native identity drifted"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class _BoundTransferProof:
     proof: NativeIndirectTransferProof
     source: BlockSnapshot
@@ -2069,13 +2099,30 @@ def plan_next_frontend_normalization_work_item(
     evidence: FrontendNormalizationEvidence,
 ) -> FragmentPlan | None:
     """Plan one connected normalization publication without claiming its siblings."""
+    generation_plan = plan_frontend_normalization_generation(graph, evidence)
+    return None if generation_plan is None else generation_plan.work_item_plan
+
+
+def plan_frontend_normalization_generation(
+    graph: FlowGraph,
+    evidence: FrontendNormalizationEvidence,
+) -> FrontendNormalizationGenerationPlan | None:
+    """Retain complete intent while selecting one connected publication."""
     complete_plan = plan_frontend_computed_branch_normalization(graph, evidence)
     if complete_plan is None:
         return None
-    return _select_frontend_root_component(complete_plan, evidence)
+    return FrontendNormalizationGenerationPlan(
+        complete_plan=complete_plan,
+        work_item_plan=_select_frontend_root_component(
+            complete_plan,
+            evidence,
+        ),
+    )
 
 
 __all__ = [
+    "FrontendNormalizationGenerationPlan",
     "plan_frontend_computed_branch_normalization",
+    "plan_frontend_normalization_generation",
     "plan_next_frontend_normalization_work_item",
 ]

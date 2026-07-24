@@ -1051,3 +1051,48 @@ requiring closure of the complete transfer inventory against the later CALLS
 graph. Strict corridor closure must remain unchanged inside the selected
 component. Do not add `blk7@0x40A560` to the candidate by reachability, weaken
 the external-predecessor veto, or broaden to the 91-route transaction.
+
+**2026-07-24T09:42:23Z**
+
+The retained-plan and omitted-delivery source-rebinding slice is verified and
+ready for commit. PREOPT now retains the complete, serial-free normalization
+plan only after a selected work-item receipt, under manager-owned
+function/native-key/generation authority. CALLS consumes that exact plan through
+a read-only lifecycle binding instead of replanning the complete inventory
+against the mutated graph.
+
+Canonical composition keeps the retained PREOPT source identity as proof of the
+full state-write-to-delivery corridor, then binds a unique current block whose
+identity is a contained subset and which owns the exact state write. A
+materialized corridor EA in any other current block rejects the entire route as
+`split_route_corridor_ownership`; generic stable-identity equality remains
+strict. For the A560 candidate, this accounts for CALLS retaining the write at
+`0x40A5B2` in `blk3@0x40A5AE` while omitting delivery EA `0x40A5C8`.
+
+The affected architecture and manager set is 80/80 green. The broader unit-pass,
+manager, authority, canonical-transform, computed-goto resolver, and adapter set
+is 826/826 green. Changed-file Ruff and diff checks pass, ast-grep passes,
+all 14 worktree-local import contracts pass, and `graphify update .` completes
+with 44,724 nodes and 129,899 edges.
+
+The mandatory exact A560 canary completed in 16.76 seconds without a process
+segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784885824_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-live-source-subset.txt`. The semantic oracle remains red
+with one residual `while ( 1 )`.
+
+The previous `current_graph_owner_count_mismatch` at `0x40A5C8` is gone, and
+CALLS proceeds into the canonical pipeline. The highest DB-proven contiguous
+level nevertheless remains C2: the DB contains the generation-1
+frontend-normalization plan and 260/260 committed receipt, but no canonical C3
+plan, semantic-fragment transaction, or typed canonical rejection. The accepted
+CALLS attempt then consumes its one-shot budget and the next callback records
+`canonical_composition_already_attempted`.
+
+The first failed obligation is therefore Phase 8/C3 diagnostic completeness.
+The DB cannot yet identify the exception or scheduler boundary between canonical
+pipeline entry and plan publication. The next slice must persist that exact
+pipeline exception as a typed canonical diagnostic and then re-raise it; it must
+not swallow an unexpected exception or claim a semantic failure. Only after the
+DB exposes the underlying cause should the v3.1 vertical loop change planning or
+publication behavior.

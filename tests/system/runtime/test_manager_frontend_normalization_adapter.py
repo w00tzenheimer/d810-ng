@@ -125,6 +125,10 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
     assert pipeline_args["backend"] is backend
     assert pipeline_args["lifecycle_state"] is session.native_preanalysis
     assert pipeline_args["native_key"] == NATIVE_KEY
+    assert (
+        pipeline_args["plan_authority"]
+        is session.frontend_normalization_plan_authority
+    )
     assert decision["microcode_modified"] is True
     assert decision["details"] == {
         "frontend_normalization": {

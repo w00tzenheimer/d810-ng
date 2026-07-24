@@ -129,6 +129,9 @@ def run_live_frontend_normalization(
                 native_key=session.native_key,
                 state=session.native_preanalysis,
             ),
+            plan_authority=(
+                session.frontend_normalization_plan_authority
+            ),
             lifecycle_state=session.native_preanalysis,
             native_key=session.native_key,
         )

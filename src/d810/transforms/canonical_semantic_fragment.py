@@ -110,43 +110,85 @@ def _unique_plan_block(
     return matches[0]
 
 
-def _unique_graph_serial(
+def _current_route_source(
     graph: FlowGraph,
-    identity: StableBlockIdentity,
-    anchor_ea: int,
     *,
-    description: str,
-) -> int:
-    anchor_ea = int(anchor_ea)
-    matches = tuple(
-        int(block.serial)
+    retained_identity: StableBlockIdentity,
+    state_write_identity: StableBlockIdentity,
+    state_write_ea: int,
+    delivery_ea: int,
+    corridor_instruction_eas: tuple[int, ...],
+) -> tuple[int, StableBlockIdentity]:
+    state_write_ea = int(state_write_ea)
+    delivery_ea = int(delivery_ea)
+    current_blocks = tuple(
+        (block, identity)
         for block in graph.blocks.values()
-        if anchor_ea
-        in {
-            int(block.start_ea),
-            *(
-                int(instruction.ea)
-                for instruction in block.insn_snapshots
-            ),
-        }
-        and stable_block_identity_from_snapshot(
-            block,
-            native_key=identity.native_key,
+        if (
+            identity := stable_block_identity_from_snapshot(
+                block,
+                native_key=retained_identity.native_key,
+            )
         )
-        == identity
+        is not None
+    )
+    matches = tuple(
+        (block, identity)
+        for block, identity in current_blocks
+        if _identity_contains(retained_identity, identity)
+        and _identity_contains(identity, state_write_identity)
+        and state_write_ea in identity.exact_instruction_eas
     )
     if len(matches) != 1:
         raise CanonicalSemanticFragmentRejected(
-            f"{description} 0x{anchor_ea:X} requires one current-graph owner, "
-            f"observed {len(matches)}",
-            reason_code="current_graph_owner_count_mismatch",
-            anchor_ea=anchor_ea,
+            f"canonical route state write 0x{state_write_ea:X} requires one "
+            f"current source owner, observed {len(matches)}",
+            reason_code="current_route_source_owner_count_mismatch",
+            anchor_ea=state_write_ea,
             payload={
-                "description": description,
                 "owner_count": len(matches),
+                "owner_labels": tuple(
+                    f"blk{int(block.serial)}@0x{int(block.start_ea):X}"
+                    for block, _identity in matches
+                ),
             },
         )
-    return matches[0]
+    source_block, source_identity = matches[0]
+    source_serial = int(source_block.serial)
+
+    for corridor_ea in tuple(int(ea) for ea in corridor_instruction_eas):
+        materialized_owners = tuple(
+            block
+            for block, _identity in current_blocks
+            if corridor_ea
+            in {
+                int(block.start_ea),
+                *(int(instruction.ea) for instruction in block.insn_snapshots),
+            }
+        )
+        if not materialized_owners:
+            continue
+        if (
+            len(materialized_owners) != 1
+            or int(materialized_owners[0].serial) != source_serial
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "canonical route corridor has split current-graph ownership "
+                f"at 0x{corridor_ea:X}",
+                reason_code="split_route_corridor_ownership",
+                anchor_ea=corridor_ea,
+                payload={
+                    "delivery_ea": f"0x{delivery_ea:X}",
+                    "source_owner": (
+                        f"blk{source_serial}@0x{int(source_block.start_ea):X}"
+                    ),
+                    "materialized_owner_labels": tuple(
+                        f"blk{int(block.serial)}@0x{int(block.start_ea):X}"
+                        for block in materialized_owners
+                    ),
+                },
+            )
+    return source_serial, source_identity
 
 
 def _merged_imported_ranges(
@@ -339,30 +381,34 @@ def compose_canonical_semantic_fragment_plan(
         roles=frozenset({FragmentBlockRole.EXTERNAL}),
         description="canonical route source",
     )
-    source_identity = source.stable_identity
-    if source_identity is None:
+    retained_source_identity = source.stable_identity
+    if retained_source_identity is None:
         raise CanonicalSemanticFragmentRejected(
             "canonical route source lacks stable identity"
         )
     state_write = proof.state_write
     if (
-        not _identity_contains(source_identity, state_write.identity)
+        not _identity_contains(retained_source_identity, state_write.identity)
         or state_write.instruction_ea
-        not in source_identity.exact_instruction_eas
+        not in retained_source_identity.exact_instruction_eas
+        or state_write.corridor_instruction_eas[-1] != int(proof.source_anchor_ea)
         or any(
-            ea not in source_identity.exact_instruction_eas
+            ea not in retained_source_identity.exact_instruction_eas
             for ea in state_write.corridor_instruction_eas
         )
     ):
         raise CanonicalSemanticFragmentRejected(
             "canonical state-write corridor is not owned by its live source"
         )
-    source_serial = _unique_graph_serial(
+    source_serial, source_identity = _current_route_source(
         graph,
-        source_identity,
-        proof.source_anchor_ea,
-        description="canonical route source",
+        retained_identity=retained_source_identity,
+        state_write_identity=state_write.identity,
+        state_write_ea=state_write.instruction_ea,
+        delivery_ea=proof.source_anchor_ea,
+        corridor_instruction_eas=state_write.corridor_instruction_eas,
     )
+    source_anchor_ea = int(state_write.instruction_ea)
     (destination,) = proof.destinations
     target = _unique_plan_block(
         normalization_plan,
@@ -440,7 +486,7 @@ def compose_canonical_semantic_fragment_plan(
                 materialization=(
                     FragmentBlockMaterialization.REUSE_PUBLISHED
                 ),
-                semantic_anchor_ea=int(proof.source_anchor_ea),
+                semantic_anchor_ea=source_anchor_ea,
                 stable_identity=source_identity,
             ),
             FragmentBlock(
@@ -449,7 +495,7 @@ def compose_canonical_semantic_fragment_plan(
                 materialization=(
                     FragmentBlockMaterialization.CLONE_PUBLISHED
                 ),
-                semantic_anchor_ea=int(proof.source_anchor_ea),
+                semantic_anchor_ea=source_anchor_ea,
                 stable_identity=source_identity,
                 replaces_block_id=original_id,
             ),

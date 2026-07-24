@@ -48,6 +48,7 @@ from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.frontend_normalization import (
     DETACHED_SEMANTIC_CLOSURE_IMPORT,
     FRONTEND_NORMALIZATION_EVIDENCE,
+    FRONTEND_NORMALIZATION_PLAN_INTENT,
     NATIVE_INDIRECT_TRANSFER_EVIDENCE,
     ImportDetachedSemanticClosure,
     NormalizeComputedBranch,
@@ -2237,3 +2238,13 @@ def test_import_and_normalize_passes_consume_the_resolved_analysis() -> None:
         normalize_result.fragment_plan.publication_purpose
         is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
     )
+    complete_plan = normalize_result.analysis_outputs[
+        FRONTEND_NORMALIZATION_PLAN_INTENT
+    ]
+    assert (
+        complete_plan.publication_purpose
+        is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+    )
+    assert complete_plan.plan_id == "frontend-normalization:0x1000:g7"
+    assert normalize_result.fragment_plan.plan_id.endswith("root@0x1100")
+    assert complete_plan is not normalize_result.fragment_plan

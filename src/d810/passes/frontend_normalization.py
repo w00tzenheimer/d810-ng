@@ -26,12 +26,13 @@ from d810.passes.pass_pipeline import (
     no_caps,
 )
 from d810.transforms.frontend_normalization import (
-    plan_next_frontend_normalization_work_item,
+    plan_frontend_normalization_generation,
 )
 
 
 FRONTEND_NORMALIZATION_EVIDENCE = "frontend_normalization_evidence"
 DETACHED_SEMANTIC_CLOSURE_IMPORT = "detached_semantic_closure_import"
+FRONTEND_NORMALIZATION_PLAN_INTENT = "frontend_normalization_plan_intent"
 NATIVE_INDIRECT_TRANSFER_EVIDENCE = "ir.branch_target"
 
 _EARLY_MATURITY = MaturityRange(
@@ -121,17 +122,25 @@ class NormalizeComputedBranch:
             return PassResult()
         if not isinstance(evidence, FrontendNormalizationEvidence):
             raise TypeError("frontend normalization analysis has the wrong type")
-        plan = plan_next_frontend_normalization_work_item(ctx.graph, evidence)
-        if plan is None:
+        generation_plan = plan_frontend_normalization_generation(
+            ctx.graph,
+            evidence,
+        )
+        if generation_plan is None:
             return PassResult()
         return PassResult(
-            fragment_plan=plan,
+            fragment_plan=generation_plan.work_item_plan,
             preserved=PreservedAnalyses.preserving(
                 {
                     FRONTEND_NORMALIZATION_EVIDENCE,
                     DETACHED_SEMANTIC_CLOSURE_IMPORT,
                 }
             ),
+            analysis_outputs={
+                FRONTEND_NORMALIZATION_PLAN_INTENT: (
+                    generation_plan.complete_plan
+                ),
+            },
         )
 
 
@@ -185,6 +194,7 @@ def standard_frontend_normalization_passes() -> tuple[PassSpec, ...]:
             maturity_gates=frozenset({IRMaturity.CANONICAL}),
             analyses=AnalysisContract(
                 required=frozenset({FRONTEND_NORMALIZATION_EVIDENCE}),
+                provided=frozenset({FRONTEND_NORMALIZATION_PLAN_INTENT}),
             ),
             preservation=PreservedAnalyses.preserving(
                 preserve_frontend_evidence
@@ -203,6 +213,7 @@ def standard_frontend_normalization_passes() -> tuple[PassSpec, ...]:
 __all__ = [
     "DETACHED_SEMANTIC_CLOSURE_IMPORT",
     "FRONTEND_NORMALIZATION_EVIDENCE",
+    "FRONTEND_NORMALIZATION_PLAN_INTENT",
     "NATIVE_INDIRECT_TRANSFER_EVIDENCE",
     "ImportDetachedSemanticClosure",
     "NormalizeComputedBranch",
