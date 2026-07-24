@@ -2741,18 +2741,28 @@ def observe_published_semantic_fragment(
     observable_operations = []
     for operation in plan.operations:
         relevant = outcomes_by_subject.get(operation.operation_id, ())
+        required_topology = {
+            FragmentValidationPostcondition.OPERATION_TOPOLOGY,
+        }
+        if operation.roles.intersection(
+            {
+                SemanticEdgeRole.CALL_FALLTHROUGH,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }
+        ):
+            required_topology.add(
+                FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY
+            )
         topology = tuple(
             outcome
             for outcome in relevant
-            if outcome.postcondition
-            in {
-                FragmentValidationPostcondition.OPERATION_TOPOLOGY,
-                FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
-            }
+            if outcome.postcondition in required_topology
         )
-        expected_count = 1 if len(operation.edges) == 1 else 2
-        if len(topology) == expected_count and all(
-            outcome.passed for outcome in topology
+        if (
+            len(topology) == len(required_topology)
+            and {outcome.postcondition for outcome in topology}
+            == required_topology
+            and all(outcome.passed for outcome in topology)
         ):
             observable_operations.append(operation)
 
