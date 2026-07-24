@@ -1488,17 +1488,37 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
 
 
 @pytest.mark.parametrize(
-    ("semantic_predicate", "combine_opcode", "expected_branch_opcode"),
     (
-        (PredicateKind.SLT, ida_hexrays.m_xor, ida_hexrays.m_jnz),
-        (PredicateKind.SGE, ida_hexrays.m_xor, ida_hexrays.m_jz),
-        (PredicateKind.SLT, ida_hexrays.m_or, None),
+        "semantic_predicate",
+        "combine_opcode",
+        "predicate_layout",
+        "expected_branch_opcode",
+    ),
+    (
+        (PredicateKind.SLT, ida_hexrays.m_xor, "nested", ida_hexrays.m_jnz),
+        (PredicateKind.SGE, ida_hexrays.m_xor, "nested", ida_hexrays.m_jz),
+        (PredicateKind.SLT, ida_hexrays.m_or, "nested", None),
+        (
+            PredicateKind.SLT,
+            ida_hexrays.m_xor,
+            "separate-direct",
+            ida_hexrays.m_jnz,
+        ),
+        (
+            PredicateKind.SGE,
+            ida_hexrays.m_xor,
+            "separate-lnot",
+            ida_hexrays.m_jz,
+        ),
+        (PredicateKind.SGE, ida_hexrays.m_xor, "separate-direct", None),
+        (PredicateKind.SGE, ida_hexrays.m_xor, "separate-lnot-mismatch", None),
     ),
 )
 def test_preopt_native_body_normalizes_signed_flag_xor_before_staging(
     monkeypatch,
     semantic_predicate,
     combine_opcode,
+    predicate_layout,
     expected_branch_opcode,
 ) -> None:
     _install_runtime_fakes(monkeypatch)
@@ -1526,6 +1546,62 @@ def test_preopt_native_body_normalizes_signed_flag_xor_before_staging(
         left=sign_result,
         right=overflow_result,
     )
+    predicate_result = _Operand(
+        ida_hexrays.mop_r,
+        register=predicate_register,
+        size=4,
+    )
+    if predicate_layout == "nested":
+        predicate_instructions = (
+            _Instruction(
+                ida_hexrays.m_xdu,
+                predicate_ea,
+                left=_Operand(
+                    ida_hexrays.mop_d,
+                    size=1,
+                    nested=predicate_expression,
+                ),
+                dest=predicate_result,
+            ),
+        )
+    else:
+        combine_result = _Operand(
+            ida_hexrays.mop_r,
+            register=predicate_register + 1,
+            size=1,
+        )
+        if predicate_layout == "separate-direct":
+            zext_source = combine_result
+        else:
+            lnot_source = (
+                combine_result
+                if predicate_layout == "separate-lnot"
+                else _Operand(
+                    ida_hexrays.mop_r,
+                    register=predicate_register + 2,
+                    size=1,
+                )
+            )
+            zext_source = _Operand(
+                ida_hexrays.mop_d,
+                size=1,
+                nested=_Instruction(
+                    ida_hexrays.m_lnot,
+                    predicate_ea,
+                    left=lnot_source,
+                    dest=_Operand(ida_hexrays.mop_z, size=1),
+                ),
+            )
+        predicate_expression.d = combine_result
+        predicate_instructions = (
+            predicate_expression,
+            _Instruction(
+                ida_hexrays.m_xdu,
+                predicate_ea,
+                left=zext_source,
+                dest=predicate_result,
+            ),
+        )
     source = _MBA(
         (
             _Block(
@@ -1542,20 +1618,7 @@ def test_preopt_native_body_normalizes_signed_flag_xor_before_staging(
                         condition_producer_ea,
                         dest=sign_result,
                     ),
-                    _Instruction(
-                        ida_hexrays.m_xdu,
-                        predicate_ea,
-                        left=_Operand(
-                            ida_hexrays.mop_d,
-                            size=1,
-                            nested=predicate_expression,
-                        ),
-                        dest=_Operand(
-                            ida_hexrays.mop_r,
-                            register=predicate_register,
-                            size=4,
-                        ),
-                    ),
+                    *predicate_instructions,
                     _Instruction(
                         ida_hexrays.m_mul,
                         predicate_ea + 3,
@@ -1664,11 +1727,12 @@ def test_preopt_native_body_normalizes_signed_flag_xor_before_staging(
         with pytest.raises(
             detached_handler_island.SemanticFragmentBackendRejected,
             match="condition producer does not match",
-        ):
+        ) as rejected:
             materializer.stage_native_body(
                 context=context,
                 native_body=native_body,
             )
+        assert "observed_predicate_shapes=" in str(rejected.value)
         assert context.staged_block_ids == []
         return
 

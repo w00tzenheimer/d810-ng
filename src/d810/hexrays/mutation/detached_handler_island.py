@@ -1927,11 +1927,34 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             )
             for index in predicate_indexes
         )
+        observed_producer_shapes = tuple(
+            (
+                f"0x{int(instruction.ea):X}",
+                int(instruction.opcode),
+                _diagnostic_operand_shape(instruction.l),
+                _diagnostic_operand_shape(instruction.r),
+                _diagnostic_operand_shape(instruction.d),
+            )
+            for instruction in instructions
+            if int(instruction.ea) == int(normalization.condition_producer_ea)
+        )
+        observed_predicate_shapes = tuple(
+            (
+                f"0x{int(instructions[index].ea):X}",
+                int(instructions[index].opcode),
+                _diagnostic_operand_shape(instructions[index].l),
+                _diagnostic_operand_shape(instructions[index].r),
+                _diagnostic_operand_shape(instructions[index].d),
+            )
+            for index in predicate_indexes
+        )
         raise SemanticFragmentBackendRejected(
             "PREOPT computed branch condition producer does not match its "
             f"portable predicate; {label} "
             f"observed_producers={observed_producers!r} "
-            f"observed_predicates={observed_predicates!r}"
+            f"observed_predicates={observed_predicates!r} "
+            f"observed_producer_shapes={observed_producer_shapes!r} "
+            f"observed_predicate_shapes={observed_predicate_shapes!r}"
         )
 
     @staticmethod
@@ -2039,42 +2062,93 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         normalization: FragmentComputedBranchNormalization,
     ) -> _ComputedBranchNormalizationPlan | None:
         """Recognize one exact ``SF XOR OF`` signed predicate materialization."""
-        if (
-            normalization.predicate_kind
-            not in {PredicateKind.SLT, PredicateKind.SGE}
-            or len(predicate_indexes) != 1
-        ):
+        if normalization.predicate_kind not in {
+            PredicateKind.SLT,
+            PredicateKind.SGE,
+        } or len(predicate_indexes) not in {1, 2}:
             return None
+        cut_index: int
+        branch_condition_template: object
+        if len(predicate_indexes) == 1:
+            predicate_index = int(predicate_indexes[0])
+            predicate = instructions[predicate_index]
+            if (
+                value_op_from_opcode(int(predicate.opcode))
+                is not ValueOpKind.ZEXT
+                or int(predicate.l.t) != int(ida_hexrays.mop_d)
+                or value_op_from_opcode(int(predicate.l.d.opcode))
+                is not ValueOpKind.XOR
+                or not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
+                    predicate
+                )
+            ):
+                return None
+            xor = predicate.l.d
+            cut_index = predicate_index
+            branch_condition_template = predicate.l
+        else:
+            xor_index, predicate_index = (
+                int(index) for index in predicate_indexes
+            )
+            xor = instructions[xor_index]
+            predicate = instructions[predicate_index]
+            compare_flags = int(ida_hexrays.EQ_IGNSIZE)
+            if (
+                predicate_index != xor_index + 1
+                or value_op_from_opcode(int(xor.opcode)) is not ValueOpKind.XOR
+                or value_op_from_opcode(int(predicate.opcode))
+                is not ValueOpKind.ZEXT
+                or not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
+                    xor
+                )
+                or not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
+                    predicate
+                )
+                or int(xor.d.size) <= 0
+                or int(predicate.l.size) != int(xor.d.size)
+            ):
+                return None
+            if normalization.predicate_kind is PredicateKind.SLT:
+                predicate_consumes_xor = (
+                    int(predicate.l.t) != int(ida_hexrays.mop_d)
+                    and predicate.l.equal_mops(xor.d, compare_flags)
+                )
+            else:
+                predicate_consumes_xor = (
+                    int(predicate.l.t) == int(ida_hexrays.mop_d)
+                    and int(predicate.l.d.ea)
+                    == int(operation.predicate_anchor_ea)
+                    and value_op_from_opcode(int(predicate.l.d.opcode))
+                    is ValueOpKind.LNOT
+                    and int(predicate.l.d.r.t) == int(ida_hexrays.mop_z)
+                    and int(predicate.l.d.d.t) == int(ida_hexrays.mop_z)
+                    and int(predicate.l.d.l.size) == int(xor.d.size)
+                    and int(predicate.l.d.d.size) == int(xor.d.size)
+                    and predicate.l.d.l.equal_mops(xor.d, compare_flags)
+                )
+            if not predicate_consumes_xor:
+                return None
+            branch_condition_template = ida_hexrays.mop_t()
+            branch_condition_template.create_from_insn(xor)
+            branch_condition_template.size = int(xor.d.size)
+            cut_index = xor_index
         producer_rows = tuple(
             (index, instruction, value_op_from_opcode(int(instruction.opcode)))
             for index, instruction in enumerate(instructions)
             if int(instruction.ea) == int(normalization.condition_producer_ea)
         )
         producer_kinds = {row[2] for row in producer_rows}
-        predicate_index = int(predicate_indexes[0])
         if (
             len(producer_rows) != 2
             or producer_kinds
             != {ValueOpKind.OVERFLOW_FLAG, ValueOpKind.SIGN_BIT}
             or tuple(row[0] for row in producer_rows)
-            != (predicate_index - 2, predicate_index - 1)
+            != (cut_index - 2, cut_index - 1)
             or not all(
                 PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
                     row[1]
                 )
                 for row in producer_rows
-            )
-        ):
-            return None
-        predicate = instructions[predicate_index]
-        if (
-            value_op_from_opcode(int(predicate.opcode))
-            is not ValueOpKind.ZEXT
-            or int(predicate.l.t) != int(ida_hexrays.mop_d)
-            or value_op_from_opcode(int(predicate.l.d.opcode))
-            is not ValueOpKind.XOR
-            or not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
-                predicate
             )
         ):
             return None
@@ -2086,7 +2160,6 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         sign = next(
             row[1] for row in producer_rows if row[2] is ValueOpKind.SIGN_BIT
         )
-        xor = predicate.l.d
         compare_flags = int(ida_hexrays.EQ_IGNSIZE)
         if not (
             (
@@ -2106,10 +2179,10 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
         return _ComputedBranchNormalizationPlan(
             operation=operation,
-            cut_index=predicate_index,
+            cut_index=cut_index,
             result_instruction_index=None,
             branch_opcode=branch_opcode,
-            branch_condition_template=predicate.l,
+            branch_condition_template=branch_condition_template,
         )
 
     def _prepare_native_body_instructions(
