@@ -2441,3 +2441,41 @@ Rollback then fails with SDK `INTERR 50856`; the defining assertion at
 with block type. Continue the v3.3 vertical loop from the predicate/carrier
 use-def break at imported consumer `0x40BECC`. Do not claim C4 or C5, weaken
 the use-def gate, or broaden to the 91-route publication.
+
+**2026-07-24T23:31:14Z**
+
+Commits `4eebe4f6b` and `2541337a2` isolate Ruff formatting and make failed
+data-flow validation rows persist missing site ids, observed definition/use
+site ids, and relation counts. Commits `3281f9b57` and `363086f5c` similarly
+isolate Ruff formatting and convert portable IDA stack offsets through
+`mba.stkoff_ida2vd()` before live UD/DU queries. Focused verification is
+52/52 validation/DB tests, 409/409 route tests, and 138/138 semantic-backend,
+validation, and DB tests. Commit hooks and the architecture gates are green.
+
+The mandatory cache-disabled A560 canary at `363086f5c` returned normally in
+16.89 seconds with no process crash. Log:
+`.tmp/rhad-a560-v33-stack-dataflow-canary.txt`; primary DB:
+`.tmp/rhad-a560-v33-stack-dataflow-canary/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-stack-dataflow-canary/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one `while ( 1 )`; this is not A560
+acceptance.
+
+The highest contiguous level remains C3. Canonical transaction
+`6fe5fcabfbce497c8b40b40692cb7328` stages the fragment, does not attempt root
+publication, and aborts at the same first C4 outcome 161. The enriched row
+proves both planned native sites are present but the predicate use observes
+zero reaching definitions. Stack-coordinate conversion is active: carrier
+def-use outcome 164 now observes one actual use, but labels it
+`unplanned-use:S64:...@0xF1C00CF4` because the staged imported instruction has
+a transaction-local fictitious EA while the plan declares native consumer EA
+`0x40BECC`. Predicate and carrier use-def queries still use native `0x40BECC`
+against the staged instruction and therefore return no relation.
+
+Rollback again fails with SDK `INTERR 50856`; the defining assertion at
+`.ida-sdk/src/verifier/verify.cpp:1155` is successor cardinality disagreeing
+with block type. Continue at the same C4 obligation by rebinding planned native
+data-flow site EAs to transaction-local live EAs before querying, then map every
+observed live EA back through instruction-origin authority before matching a
+portable site. Do not accept raw fictitious EAs as portable evidence or weaken
+the use-def gate.
