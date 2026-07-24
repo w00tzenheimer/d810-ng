@@ -2515,3 +2515,42 @@ assertion at `.ida-sdk/src/include/hexrays.hpp:5570` is `n < qty` in
 block index after the stage abort. Continue from the data-flow-specific live
 site ambiguity; do not weaken origin authority, claim C4, or broaden to the
 91-route publication.
+
+**2026-07-24T23:48:14Z**
+
+Commits `550c347e1` and `bbf164430` finish the one-to-many data-flow site
+binding slice and isolate Ruff's whole-file reflow. When several staged
+instructions share one native origin, the backend now selects by portable
+storage identity, width, and access role (definition or use), and rejects zero
+or multiple exact matches. Generic instruction-origin lookup remains strict.
+The final exact-chain, semantic-backend, fragment-validation, and diagnostic
+suite is 167/167 green; Ruff check/format, commit hooks, architecture gates,
+and `graphify update .` are green. Docker client/server 29.6.2 is live.
+
+The mandatory cache-disabled A560 diagnostic canary at committed HEAD
+`bbf164430` returned normally in 18.69 seconds. Log:
+`.tmp/rhad-a560-v33-dataflow-role-canary.txt`; primary DB:
+`.tmp/rhad-a560-v33-dataflow-role-canary/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-dataflow-role-canary/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one `while ( 1 )`; this is not A560
+acceptance.
+
+Canonical transaction `6600c389b01c433a8a3f6628ad6b7f82` now stages the
+fragment and runs all 295 prepublication checks. It does not attempt root
+publication. The prior carrier failures are repaired: outcomes 163-164 prove
+both carrier use-def and def-use integrity. The only failures are outcomes 161
+and 162 for predicate
+`state-choice@0x40BECC:0xEC71CA67:0xA0716E5B`, between native definition owner
+`native[0x40A5AB-0x40A5AC;exact=0x40A5AB]` and imported consumer owner
+`native[0x40BECC-0x40BEE7;exact=0x40BECC,0x40BED0,0x40BED6]`. Both planned
+sites exist, but the use observes no reaching definition and the definition
+observes no declared use.
+
+The highest contiguous level remains C3. The first C4 obligation is now the
+predicate's live definition/use relation, not site identity. Rollback records
+SDK `INTERR 50856`; `.ida-sdk/src/verifier/verify.cpp:1155` defines it as
+successor cardinality disagreeing with block type after the validation abort.
+Continue the v3.3 vertical loop by comparing the staged predicate producer and
+consumer operands plus exact UD/DU chains. Do not weaken data-flow validation,
+claim C4, or broaden to the 91-route publication.
