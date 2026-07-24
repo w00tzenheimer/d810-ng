@@ -1632,3 +1632,67 @@ weakening validation or broadening to the 91-route publication. Preserve
 fragment atomicity. Make rollback safe as a separately proven consequence if
 the projection failure exercises it, but keep projected-entry ownership as
 the primary C4 obligation.
+
+**2026-07-24T12:55:07Z**
+
+Commit `497fca4ce` completes the positional function-entry projection slice.
+The live A560 shape has an empty one-way positional entry at
+`blk0@0x40A560` whose sole successor is the identity-bearing semantic entry at
+`blk1@0x40A560`. Canonical plans begin at that semantic entry, so the old
+projection incorrectly required a plan block itself to occupy serial zero.
+
+The backend now projects the positional entry through its existing published
+logical proxy and version when no planned binding owns that physical block.
+It does not invent a portable native plan identity or choose an entry by
+address overlap. The projected entry remains a real, identity-index-owned
+published boundary, and normal graph closure, identity ownership, root
+reachability, original supersession, dispatcher exclusion, and topology
+validation remain mandatory.
+
+The focused red test reproduced the two-layer entry shape and failed with
+`fragment plan must own exactly one projected function entry` before the
+backend change. It is now green. The full semantic-fragment backend file is
+82/82 green. The nearby backend, validation, publication-gateway, canonical,
+manager, and detached-import suite is 343/343 green locally and 343/343 green
+in pinned `d810-idapro-9.3-test-runtime:py313-v1` Docker; artifact:
+`.tmp/positional-entry-projection-runtime.txt`. Changed-file Ruff, diff
+checks, ast-grep, all 14 worktree-local import contracts, commit hooks, and
+`graphify update .` pass.
+
+The mandatory A560 canary completed with pytest in 17.57 seconds. The worker
+returned normally and there was no OS segfault. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784897596_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-positional-entry.txt`. The semantic oracle remains red
+with one residual `while ( 1 )`, so this is not A560 acceptance.
+
+The intended boundary advanced: canonical fragment staging now completes and
+prepublication validation runs. Transaction
+`3ffc663054f04866aae2ae933067de46` plans 73 mutation items, applies the 70
+prepublication items, stages the fragment, and records 198 prepublication
+outcomes: 195 pass and three fail. The three root-publication items remain
+unapplied. The highest contiguous canary level remains C3 because C4 requires
+prepublication validation to pass.
+
+The first failed C4 obligation is:
+
+`fallthrough_topology /
+native[0x40A607-0x40A615;exact=0x40A613]: two-way physical fallthrough is
+missing, nonadjacent, or misordered`.
+
+The same projection also reports reachable prohibited dispatcher residue at
+`native[0x40A5F0-0x40A5F1,0x40A5F6-0x40A5F7,0x40A5F8-0x40A5F9,0x40A5FE-0x40A5FF;exact=0x40A5F0,0x40A5F6,0x40A5F8,0x40A5FE]`
+and an identity/authority mismatch for that same dispatcher block. These may
+share one ownership cause, but the DB does not yet prove that, so retain their
+separate failed obligations.
+
+Rollback again fails verification with SDK 9.3 `INTERR 50856`, the
+block-type/tail versus successor-count invariant, in
+`staged semantic fragment rollback sweep`. No `INTERR 52719` is present in
+this canary. The rollback defect is secondary to the prepublication topology
+failure and remains decoded from the matching SDK assertion.
+
+Continue the v3.1 vertical loop from the `0x40A613` fallthrough obligation.
+Reconstruct the projected physical neighbors, semantic successor order, and
+binding states from the plan and DB, then write a focused red test for the
+generic shape. Do not reorder or suppress validation, drop the dispatcher
+failures, or broaden publication before this selected fragment reaches C4.
