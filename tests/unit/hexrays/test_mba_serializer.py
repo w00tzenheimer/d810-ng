@@ -92,6 +92,7 @@ class _FakeInsn:
         l: _FakeMop,
         r: _FakeMop,
         d: _FakeMop,
+        iprops: int = 0,
     ):
         self.opcode = opcode
         self.ea = ea
@@ -99,6 +100,8 @@ class _FakeInsn:
         self.l = l
         self.r = r
         self.d = d
+        self.iprops = iprops
+        self.next = None
 
     def dstr(self) -> str:
         return self._text
@@ -124,6 +127,13 @@ class _FakeIhr:
     m_mov = 4
     m_call = 56
     m_icall = 57
+    IPROP_ASSERT = 0x80
+    BLT_NONE = 0
+    BLT_STOP = 1
+    BLT_1WAY = 2
+    BLT_2WAY = 3
+    BLT_NWAY = 4
+    BLT_XTRN = 5
 
     @staticmethod
     def get_mreg_name(register: int, size: int) -> str:
@@ -133,6 +143,40 @@ class _FakeIhr:
 
 
 class TestMbaSerializerInstructionMeta:
+    def test_live_assertion_state_is_first_class(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import d810.hexrays.mba_serializer as serializer
+
+        monkeypatch.setattr(serializer, "_ihr", _FakeIhr)
+        z = _FakeMop(_FakeIhr.mop_z)
+        insn = _FakeInsn(
+            opcode=_FakeIhr.m_mov,
+            ea=0x401234,
+            text="mov #1, r0",
+            l=z,
+            r=z,
+            d=z,
+            iprops=_FakeIhr.IPROP_ASSERT,
+        )
+        block = SimpleNamespace(
+            head=insn,
+            type=_FakeIhr.BLT_STOP,
+            start=0x401234,
+            end=0x401235,
+            nsucc=lambda: 0,
+            npred=lambda: 0,
+            succ=lambda _index: 0,
+            pred=lambda _index: 0,
+        )
+        mba = SimpleNamespace(qty=1, get_mblock=lambda _index: block)
+
+        snapshot = serializer.mba_to_block_snapshots(mba)[0].instructions[0]
+
+        assert snapshot.iprops == _FakeIhr.IPROP_ASSERT
+        assert snapshot.is_assert is True
+
     def test_call_meta_includes_block_local_argument_register_setup(
         self,
         monkeypatch: pytest.MonkeyPatch,

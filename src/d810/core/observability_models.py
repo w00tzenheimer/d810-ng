@@ -83,6 +83,8 @@ class InstructionSnapshot:
         ea: Effective address.
         opcode: Numeric opcode.
         opcode_name: Human-readable opcode name (e.g. "m_mov").
+        iprops: Raw ``minsn_t.iprops`` bitmask.
+        is_assert: Whether ``IPROP_ASSERT`` is set in ``iprops``.
         dest_type: Destination mop type (e.g. "mop_S", "mop_r").
         dest_stkoff: Stack offset if dest is mop_S.
         dest_size: Destination operand size in bytes.
@@ -93,13 +95,15 @@ class InstructionSnapshot:
         src_r_stkoff: Right source stack offset if mop_S.
         src_r_value: Right source immediate value if mop_n.
         dstr: IDA's display string for the instruction.
-        meta: Optional JSON metadata (iprops, sub-insn tree, etc.).
+        meta: Optional JSON metadata (sub-insn tree, call setup, etc.).
     """
 
     index: int
     ea: int
     opcode: int
     opcode_name: str
+    iprops: int = 0
+    is_assert: bool = False
     dest_type: str | None = None
     dest_stkoff: int | None = None
     dest_size: int | None = None

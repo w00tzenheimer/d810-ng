@@ -283,6 +283,8 @@ def snapshot_mba(
                     "ea_i64": ea_i64,
                     "opcode": insn.opcode,
                     "opcode_name": insn.opcode_name,
+                    "iprops": int(insn.iprops),
+                    "is_assert": int(insn.is_assert),
                     "dest_type": insn.dest_type,
                     "dest_stkoff": _safe_int(insn.dest_stkoff),
                     "dest_size": insn.dest_size,

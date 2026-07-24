@@ -44,6 +44,25 @@ def test_create_tables_idempotent():
     create_tables(db)  # second call (factory already created once) must not raise
 
 
+def test_instruction_schema_exposes_indexed_assertion_state() -> None:
+    conn = create_diag_database(":memory:").connection()
+    columns = [
+        row[1] for row in conn.execute("PRAGMA table_info(instructions)")
+    ]
+    assert columns[7:9] == ["iprops", "is_assert"]
+
+    indexed_columns = {
+        tuple(
+            column[2]
+            for column in conn.execute(
+                f"PRAGMA index_info({index_row[1]})"
+            )
+        )
+        for index_row in conn.execute("PRAGMA index_list(instructions)")
+    }
+    assert ("snapshot_id", "is_assert") in indexed_columns
+
+
 def test_root_publication_group_schema_is_serial_free_and_ea_anchored():
     conn = create_diag_database(":memory:").connection()
     columns = [

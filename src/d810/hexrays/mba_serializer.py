@@ -301,11 +301,14 @@ def mba_to_block_snapshots(
                 insn_index=insn_idx,
                 block_register_defs=block_register_defs,
             )
+            iprops = int(insn.iprops)
             insns.append(InstructionSnapshot(
                 index=insn_idx,
                 ea=insn.ea,
                 opcode=insn.opcode,
                 opcode_name=_opcode_name(insn.opcode),
+                iprops=iprops,
+                is_assert=bool(iprops & _ihr.IPROP_ASSERT),
                 dest_type=dest_type,
                 dest_stkoff=dest_stkoff,
                 dest_size=dest_size,

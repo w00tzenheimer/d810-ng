@@ -513,6 +513,35 @@ class TestSnapshotMba:
         ).fetchone()
         assert rows[0] == 6  # 3 blocks * 2 insns
 
+    def test_writes_instruction_assertion_state(self) -> None:
+        conn = create_diag_database(":memory:").connection()
+        block = BlockSnapshot(
+            serial=7,
+            block_type=0,
+            type_name="BLT_STOP",
+            start_ea=0x401234,
+            nsucc=0,
+            npred=0,
+            instructions=[
+                _make_insn(
+                    0,
+                    ea=0x401234,
+                    opcode=4,
+                    opcode_name="m_mov",
+                    iprops=0x80,
+                    is_assert=True,
+                ),
+            ],
+        )
+
+        snapshot_mba(conn, [block], label="assert", func_ea=0x401000)
+
+        row = conn.execute(
+            "SELECT block_serial, ea_hex, iprops, is_assert "
+            "FROM instructions WHERE snapshot_id=1"
+        ).fetchone()
+        assert row == (7, "0x0000000000401234", 0x80, 1)
+
     def test_writes_block_observations(self) -> None:
         conn = create_diag_database(":memory:").connection()
         block = BlockSnapshot(

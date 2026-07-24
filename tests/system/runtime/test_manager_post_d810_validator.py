@@ -61,11 +61,12 @@ def _seed_instruction(
     conn.execute(
         """
         INSERT INTO instructions
-            (snapshot_id, block_serial, insn_index, ea_hex, ea_i64, opcode, opcode_name,
-             dest_type, dest_stkoff, dest_size, src_l_type, src_l_stkoff,
+            (snapshot_id, block_serial, insn_index, ea_hex, ea_i64, opcode,
+             opcode_name, iprops, is_assert, dest_type, dest_stkoff, dest_size,
+             src_l_type, src_l_stkoff,
              src_l_value_hex, src_l_value_i64, src_r_type, src_r_stkoff,
              src_r_value_hex, src_r_value_i64, dstr, meta)
-        VALUES (?, ?, ?, '0x0', 0, 4, 'm_mov',
+        VALUES (?, ?, ?, '0x0', 0, 4, 'm_mov', 0, 0,
                 CASE WHEN ? IS NULL THEN NULL ELSE 'mop_S' END, ?, 8,
                 CASE WHEN ? IS NULL THEN NULL ELSE 'mop_S' END, ?, NULL, NULL,
                 CASE WHEN ? IS NULL THEN NULL ELSE 'mop_S' END, ?, NULL, NULL,
