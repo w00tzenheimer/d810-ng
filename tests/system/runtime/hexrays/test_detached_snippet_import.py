@@ -521,6 +521,7 @@ class _NativeBodyStagingContext:
         self.populated_block_ids: list[str] = []
         self.blocks: dict[str, _Block] = {}
         self.instruction_origins: dict[tuple[str, int], int] = {}
+        self.predicate_live_eas_by_operation_id: dict[str, int] = {}
 
     def stage_block(self, block_id: str) -> None:
         block_id = str(block_id)
@@ -574,6 +575,29 @@ class _NativeBodyStagingContext:
         key = (str(block_id), int(live_ea))
         assert key not in self.instruction_origins
         self.instruction_origins[key] = int(native_ea)
+
+    def bind_operation_predicate(self, *, operation_id: str) -> None:
+        operation = next(
+            operation
+            for operation in self.plan.operations
+            if operation.operation_id == str(operation_id)
+        )
+        block = self.blocks[operation.source_block_id]
+        branch = block.tail
+        assert branch is not None
+        live_ea = int(branch.ea)
+        assert (
+            self.instruction_origins[
+                (operation.source_block_id, live_ea)
+            ]
+            == int(operation.predicate_anchor_ea)
+        )
+        assert operation.operation_id not in (
+            self.predicate_live_eas_by_operation_id
+        )
+        self.predicate_live_eas_by_operation_id[
+            operation.operation_id
+        ] = live_ea
 
 
 def _prepare_and_stage_native_body(
@@ -1929,6 +1953,9 @@ def test_preopt_native_body_materializes_storage_predicate_before_staging(
     assert int(branch.r.nnn.value) == 0
     assert int(branch.r.size) == 4
     assert set(context.instruction_origins.values()) == {consumer_ea}
+    assert context.predicate_live_eas_by_operation_id == {
+        operation_id: int(branch.ea),
+    }
 
 
 @pytest.mark.parametrize(

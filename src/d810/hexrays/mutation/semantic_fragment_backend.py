@@ -55,6 +55,7 @@ from d810.transforms.fragment_plan import (
     FragmentConditionalSelectEnvelope,
     FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
+    FragmentOperation,
     FragmentPlan,
     FragmentRangeObservation,
     FragmentReturnCarrier,
@@ -213,6 +214,9 @@ class SemanticFragmentBackendState:
     instruction_origins_by_block_id: dict[str, dict[int, int]] = field(
         default_factory=dict
     )
+    predicate_live_eas_by_operation_id: dict[str, int] = field(
+        default_factory=dict
+    )
     original_mba_outline_ranges: tuple[tuple[int, int], ...] | None = None
     staged_mba_outline_ranges: tuple[tuple[int, int], ...] = ()
     original_mba_had_outlines: bool | None = None
@@ -243,6 +247,42 @@ class SemanticFragmentBackendState:
                 f"{block_id}@0x{native_ea:X}"
             )
         return native_ea if not matches else int(matches[0])
+
+    def live_operation_predicate_ea(
+        self,
+        operation: FragmentOperation,
+    ) -> int:
+        """Resolve a predicate through its typed materialization binding."""
+        if operation.predicate_anchor_ea is None:
+            raise SemanticFragmentBackendRejected(
+                f"fragment operation {operation.operation_id!r} has no predicate"
+            )
+        if operation.storage_predicate_materialization is None:
+            return self.live_instruction_ea(
+                operation.source_block_id,
+                operation.predicate_anchor_ea,
+            )
+        try:
+            live_ea = int(
+                self.predicate_live_eas_by_operation_id[
+                    operation.operation_id
+                ]
+            )
+        except KeyError as exc:
+            raise SemanticFragmentBackendRejected(
+                f"fragment operation {operation.operation_id!r} lacks its "
+                "typed live predicate binding"
+            ) from exc
+        native_ea = self.instruction_origins_by_block_id.get(
+            operation.source_block_id,
+            {},
+        ).get(live_ea)
+        if native_ea != int(operation.predicate_anchor_ea):
+            raise SemanticFragmentBackendRejected(
+                f"fragment operation {operation.operation_id!r} live "
+                "predicate binding changed"
+            )
+        return live_ea
 
 
 @runtime_checkable
@@ -426,6 +466,51 @@ class SemanticNativeBodyStagingContext:
             )
         origins[live_ea] = native_ea
 
+    def bind_operation_predicate(self, *, operation_id: str) -> None:
+        """Bind one synthesized branch by operation, not by shared native EA."""
+        operation = self.plan.operation(str(operation_id))
+        block_id = operation.source_block_id
+        if (
+            operation.storage_predicate_materialization is None
+            or block_id not in self.native_body.block_ids
+            or block_id not in self._populated_block_ids
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"native body cannot bind predicate operation {operation_id!r}"
+            )
+        live_block = _live_block_for_binding(
+            self._modifier,
+            self.state.binding(block_id),
+        )
+        branch = live_block.tail
+        live_ea = (
+            None
+            if branch is None
+            else int(getattr(branch, "ea", -1) or -1)
+        )
+        origins = self.state.instruction_origins_by_block_id.get(
+            block_id,
+            {},
+        )
+        if (
+            branch is None
+            or live_ea is None
+            or live_ea < 0
+            or not ida_hexrays.is_mcode_jcond(int(branch.opcode))
+            or origins.get(live_ea) != int(operation.predicate_anchor_ea)
+            or operation.operation_id
+            in self.state.predicate_live_eas_by_operation_id
+            or live_ea
+            in self.state.predicate_live_eas_by_operation_id.values()
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"native body synthesized predicate binding changed for "
+                f"{operation.operation_id!r} at {block_id}"
+            )
+        self.state.predicate_live_eas_by_operation_id[
+            operation.operation_id
+        ] = live_ea
+
     def validate_complete(self) -> None:
         """Reject partial bodies or materializers that changed publication authority."""
         if tuple(self._staged_block_ids) != self.native_body.block_ids:
@@ -472,6 +557,23 @@ class SemanticNativeBodyStagingContext:
                         f"ownership: {block_id}@0x{int(native_ea):X} "
                         f"live=0x{int(live_ea):X} mapped=0x{mapped_ea:X}"
                     )
+        expected_predicate_operations = {
+            operation.operation_id
+            for operation in self.plan.operations
+            if (
+                operation.source_block_id in self.native_body.block_ids
+                and operation.storage_predicate_materialization is not None
+            )
+        }
+        if any(
+            operation_id
+            not in self.state.predicate_live_eas_by_operation_id
+            for operation_id in expected_predicate_operations
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"native body {self.native_body.body_id!r} has an unbound "
+                "synthesized predicate"
+            )
         gateway = _gateway(self._modifier)
         if gateway.active_batch_id != self.transaction_id:
             raise SemanticFragmentBackendRejected(
@@ -1062,10 +1164,7 @@ def _realize_operations(
                 predicate_anchor_ea=(
                     None
                     if operation.predicate_anchor_ea is None
-                    else state.live_instruction_ea(
-                        operation.source_block_id,
-                        operation.predicate_anchor_ea,
-                    )
+                    else state.live_operation_predicate_ea(operation)
                 ),
                 rewrite_anchor_ea=direct_rewrite_anchor_ea,
                 description=f"fragment operation {operation.operation_id}",

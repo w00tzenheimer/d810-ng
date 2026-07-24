@@ -2654,6 +2654,14 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 instructions=instructions,
                 block_flags=block_flags,
             )
+        for operation in context.plan.operations:
+            if (
+                operation.source_block_id in native_body.block_ids
+                and operation.storage_predicate_materialization is not None
+            ):
+                context.bind_operation_predicate(
+                    operation_id=operation.operation_id,
+                )
 
 
 @dataclass(slots=True)
