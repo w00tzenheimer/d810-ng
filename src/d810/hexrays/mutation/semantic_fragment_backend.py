@@ -2084,6 +2084,7 @@ def _unowned_endpoint(modifier: DeferredGraphModifier, serial: int) -> str:
 
 def _query_reaching_definitions(
     modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
     site,
     live_block,
 ):
@@ -2096,7 +2097,7 @@ def _query_reaching_definitions(
         return find_reaching_defs_for_reg_use(
             modifier.mba,
             int(live_block.serial),
-            int(site.instruction_ea),
+            state.live_instruction_ea(site.block_id, site.instruction_ea),
             int(storage.offset),
             int(site.width),
         )
@@ -2111,7 +2112,7 @@ def _query_reaching_definitions(
         return find_reaching_defs_for_stkvar_use(
             modifier.mba,
             int(live_block.serial),
-            int(site.instruction_ea),
+            state.live_instruction_ea(site.block_id, site.instruction_ea),
             live_stack_offset,
             int(site.width),
         )
@@ -2123,6 +2124,7 @@ def _query_reaching_definitions(
 
 def _query_reached_uses(
     modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
     site,
     live_block,
 ):
@@ -2135,7 +2137,7 @@ def _query_reached_uses(
         return find_uses_reached_by_reg_definition(
             modifier.mba,
             int(live_block.serial),
-            int(site.instruction_ea),
+            state.live_instruction_ea(site.block_id, site.instruction_ea),
             int(storage.offset),
             int(site.width),
         )
@@ -2150,7 +2152,7 @@ def _query_reached_uses(
         return find_uses_reached_by_stkvar_definition(
             modifier.mba,
             int(live_block.serial),
-            int(site.instruction_ea),
+            state.live_instruction_ea(site.block_id, site.instruction_ea),
             live_stack_offset,
             int(site.width),
         )
@@ -2184,6 +2186,7 @@ def _require_unambiguous_observed_anchors(
 
 def _observed_site_id(
     modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
     observation,
     candidates,
     ids_by_serial: dict[int, str],
@@ -2193,8 +2196,14 @@ def _observed_site_id(
     role: str,
 ) -> str:
     block_serial = int(observation.block_serial)
-    instruction_ea = int(observation.ins_ea)
+    live_instruction_ea = int(observation.ins_ea)
     block_id = ids_by_serial.get(block_serial)
+    instruction_ea = int(
+        state.instruction_origins_by_block_id.get(str(block_id), {}).get(
+            live_instruction_ea,
+            live_instruction_ea,
+        )
+    )
     matches = tuple(
         site
         for site in candidates
@@ -2218,6 +2227,7 @@ def _observed_site_id(
 def _project_data_flow_relations(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
     live_by_id: dict[str, object],
     ids_by_serial: dict[int, str],
 ) -> tuple[ProjectedDataFlowRelation, ...]:
@@ -2241,7 +2251,12 @@ def _project_data_flow_relations(
                 f"data-flow definition {definition.site_id!r} has no live block"
             )
         reached_uses = tuple(
-            _query_reached_uses(modifier, definition, definition_block)
+            _query_reached_uses(
+                modifier,
+                state,
+                definition,
+                definition_block,
+            )
         )
         _require_unambiguous_observed_anchors(
             modifier,
@@ -2252,6 +2267,7 @@ def _project_data_flow_relations(
         for observed_use in reached_uses:
             use_site_id = _observed_site_id(
                 modifier,
+                state,
                 observed_use,
                 uses,
                 ids_by_serial,
@@ -2276,7 +2292,12 @@ def _project_data_flow_relations(
                     f"data-flow use {use.site_id!r} has no live block"
                 )
             reaching_definitions = tuple(
-                _query_reaching_definitions(modifier, use, use_block)
+                _query_reaching_definitions(
+                    modifier,
+                    state,
+                    use,
+                    use_block,
+                )
             )
             _require_unambiguous_observed_anchors(
                 modifier,
@@ -2287,6 +2308,7 @@ def _project_data_flow_relations(
             for observed_definition in reaching_definitions:
                 definition_site_id = _observed_site_id(
                     modifier,
+                    state,
                     observed_definition,
                     definitions,
                     ids_by_serial,
@@ -2520,6 +2542,7 @@ def _project_fragment(
     data_flow_relations = _project_data_flow_relations(
         modifier,
         plan,
+        state,
         live_by_id,
         ids_by_serial,
     )
