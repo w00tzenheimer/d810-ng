@@ -2233,3 +2233,57 @@ The first C4 obligation is unchanged but now has differential proof:
 in a portable detached rewrite plan, lowering and validating one closed C5
 fragment off to the side, then publishing it once. Do not add a live-backend
 exception or broaden to the 91-route publication.
+
+**2026-07-24T21:43:58Z**
+
+Commit `deddb3700` completes the portable direct-transfer rewrite contract
+without changing the live Hex-Rays mutation backend. A canonical direct
+operation now carries its semantic proof id, exact rewrite anchor, ordered
+proof corridor, and an explicit ordered subset of instructions that the
+rewrite supersedes. Imported rewrites require canonical native-body proof
+ownership, and competing operations may not supersede the same native EA.
+Frontend-normalization plans cannot carry this canonical rewrite intent.
+
+The first draft incorrectly treated every proof-corridor instruction as
+exclusive rewrite ownership. The first diagnostic canary exposed that error:
+route `0x40BB63` has proof corridor `0x40BB44 -> 0x40BB4B -> 0x40BB63`, but
+the reference ledger's only planned replacement is `0x40BB63`; the native
+conditional at `0x40BB4B` is preserved. The final contract therefore records
+the full proof corridor separately from the superseded set. Unit coverage
+proves that preserved-corridor overlap is accepted while superseded-transfer
+overlap is rejected.
+
+Verification is 247/247 focused portable-plan, canonical-pass, validation,
+pipeline, and gateway tests; changed-file Ruff and diff checks; ast-grep; all
+14 worktree-local import contracts; commit hooks; and `graphify update .`.
+Docker Desktop was found stopped between canaries, restarted, and verified
+with matching client/server 29.6.2 before the authoritative rerun.
+
+The mandatory cache-disabled A560 canary at commit `deddb3700` returned
+normally in 25.23 seconds with no segfault or numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-direct-contract-canary-v2.txt`; primary DB:
+`.tmp/rhad-a560-v33-direct-contract-canary-v2/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-direct-contract-canary-v2/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one `while ( 1 )`; this is not A560
+acceptance.
+
+The DB records two committed 260-operation frontend-normalization
+transactions. The first canonical attempt requests the ten known CALLS
+companions and aborts cleanly. Follow-up canonical transaction
+`f535b3c9eacd4f3db34a4c34ea7c9cca` plans 171 operations, applies zero,
+stages no fragment, attempts no root publication, and rolls back cleanly. Its
+serialized plan proves operation
+`route:state_assignment@0x40BB63:0xE9795EF` is owned by imported native
+identity `0x40BB51`, carries rewrite anchor `0x40BB63`, proof corridor
+`0x40BB44 -> 0x40BB4B -> 0x40BB63`, supersedes only `0x40BB63`, and targets
+`0x40ACF3`.
+
+The highest contiguous main-A560 level remains C3. The first failed C4
+obligation is still detached PREOPT preflight for imported owner `0x40BB51`:
+the captured template ends in a conditional transfer at `0x40BB63`, while
+the proof-owned canonical operation requires one direct edge. Continue v3.3
+by making the detached rewriter consume this portable envelope for one closed
+route, validating that unpublished fragment through C5, and only then
+publishing one root. Do not add a live-backend exception or broaden to the
+91-route transaction.
