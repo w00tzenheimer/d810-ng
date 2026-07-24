@@ -1296,3 +1296,33 @@ these roles through the one proven current owner during plan composition, then
 let fragment validation expose whether that shared block is also prohibited
 dispatcher residue. The backend must continue rejecting arbitrary duplicate
 physical bindings.
+
+**2026-07-24T10:43:15Z**
+
+The projected-boundary current-owner slice is verified and ready for its own
+commit. During canonical composition, a projected PREOPT boundary now seeds a
+current role only when its portable identity wholly contains exactly one
+current block identity. Later predecessor or prohibited-dispatcher references
+to that current block reuse the projected boundary id. Zero current owners
+remain unresolved for the normal binding gate; multiple owners and two
+projected boundaries sharing one current owner reject explicitly. The live
+backend's arbitrary duplicate-physical-binding rejection remains unchanged.
+
+The canonical transform, lowering, and plan suites are 48/48 green, and
+changed-file Ruff and diff checks pass. The mandatory A560 canary completed in
+14.64 seconds without a process segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784889758_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-projected-boundary-owner.txt`. The semantic oracle remains
+red with one residual `while ( 1 )`, and the highest contiguous level remains
+C3 because no canonical transaction is staged.
+
+The proven `blk4@0x40A5F0` alias is gone. The first C4 obligation advances to
+root-inventory block
+`native[0x40A560-0x40A561,0xF1C00018-0xF1C00019;exact=0xF1C00018]`,
+which does not rebind uniquely. Identity event 160 classifies it as ambiguous:
+its range combines native `0x40A560` with fictitious PREOPT EA `0xF1C00018`,
+and no current serial is selected. The next slice must trace that projected
+boundary back to its normalization-plan owner and replace fictitious live
+coordinates with the owner's portable native identity before composition. It
+must not teach stable identity binding to accept fictitious EAs or select an
+ambiguous candidate.

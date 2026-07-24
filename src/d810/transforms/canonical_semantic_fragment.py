@@ -221,6 +221,26 @@ def _claim_current_external_identity(
     )
 
 
+def _current_owners_contained_by_identity(
+    graph: FlowGraph,
+    identity: StableBlockIdentity,
+) -> tuple[tuple[int, int], ...]:
+    """Return current block serials and anchors wholly owned by one identity."""
+    owners = []
+    for block in graph.blocks.values():
+        current_identity = stable_block_identity_from_snapshot(
+            block,
+            native_key=identity.native_key,
+        )
+        if current_identity is None or not _identity_contains(
+            identity,
+            current_identity,
+        ):
+            continue
+        owners.append((int(block.serial), int(block.start_ea)))
+    return tuple(owners)
+
+
 def _merged_imported_ranges(
     plan: FragmentPlan,
     block_ids: frozenset[str],
@@ -567,6 +587,56 @@ def compose_canonical_semantic_fragment_plan(
     blocks: list[FragmentBlock] = list(target_external_blocks)
     external_id_by_serial: dict[int, str] = {}
     external_owner_serial_by_identity: dict[StableBlockIdentity, int] = {}
+    for boundary in target_external_blocks:
+        identity = boundary.stable_identity
+        if identity is None:
+            raise CanonicalSemanticFragmentRejected(
+                "projected canonical boundary lacks stable identity"
+            )
+        current_owners = _current_owners_contained_by_identity(
+            graph,
+            identity,
+        )
+        if len(current_owners) > 1:
+            raise CanonicalSemanticFragmentRejected(
+                "projected canonical boundary has multiple current owners",
+                reason_code="projected_boundary_current_owner_ambiguous",
+                anchor_ea=int(boundary.semantic_anchor_ea),
+                payload={
+                    "boundary_block_id": boundary.block_id,
+                    "current_owner_labels": tuple(
+                        f"blk{serial}@0x{anchor_ea:X}"
+                        for serial, anchor_ea in current_owners
+                    ),
+                    "stable_identity": identity.diagnostic_label(),
+                },
+            )
+        if not current_owners:
+            continue
+        ((owner_serial, owner_anchor_ea),) = current_owners
+        existing_boundary_id = external_id_by_serial.get(owner_serial)
+        if (
+            existing_boundary_id is not None
+            and existing_boundary_id != boundary.block_id
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "projected canonical boundaries share one current owner",
+                reason_code="projected_boundary_current_owner_alias",
+                anchor_ea=int(boundary.semantic_anchor_ea),
+                payload={
+                    "candidate_block_id": boundary.block_id,
+                    "existing_block_id": existing_boundary_id,
+                    "current_owner": (
+                        f"blk{owner_serial}@0x{owner_anchor_ea:X}"
+                    ),
+                },
+            )
+        _claim_current_external_identity(
+            owner_serial,
+            identity,
+            owner_serial_by_identity=external_owner_serial_by_identity,
+        )
+        external_id_by_serial[owner_serial] = boundary.block_id
 
     def external_block_id(serial: int) -> str:
         serial = int(serial)
