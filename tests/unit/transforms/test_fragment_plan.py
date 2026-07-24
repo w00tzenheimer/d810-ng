@@ -23,6 +23,7 @@ from d810.transforms.fragment_plan import (
     FragmentEdge,
     FragmentFlagCorridor,
     FragmentImportedConditionalSelectEnvelope,
+    FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
     FragmentPlanRejected,
@@ -491,6 +492,155 @@ def test_fragment_operation_carries_typed_computed_branch_normalization() -> Non
     )
 
     assert operation.computed_branch_normalization is normalization
+
+
+def _same_ea_imported_conditional_plan(
+    *,
+    selected_identity: StableBlockIdentity | None = None,
+) -> FragmentPlan:
+    original = _native_block(
+        "entry.original",
+        FragmentBlockRole.ORIGINAL,
+        0x4000,
+    )
+    replacement = FragmentBlock(
+        block_id="entry.replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=0x4000,
+        stable_identity=original.stable_identity,
+        replaces_block_id=original.block_id,
+    )
+    source_identity = StableBlockIdentity.from_intervals(
+        (
+            NativeEaInterval(0x5000, 0x5001),
+            NativeEaInterval(0x5002, 0x5003),
+            NativeEaInterval(0x5004, 0x5005),
+            NativeEaInterval(0x5006, 0x5007),
+        ),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x5000, 0x5002, 0x5004, 0x5006),
+    )
+    source = FragmentBlock(
+        block_id="split.imported",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x5000,
+        stable_identity=source_identity,
+        native_body_id="native-body:split",
+    )
+    selected_identity = selected_identity or _identity(0x5006)
+    join_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x5010, 0x5013),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x5010, 0x5012),
+    )
+    taken = _native_block(
+        "split.taken",
+        FragmentBlockRole.EXTERNAL,
+        0x6000,
+    )
+    fallthrough = _native_block(
+        "split.fallthrough",
+        FragmentBlockRole.EXTERNAL,
+        0x7000,
+    )
+    operation_id = "native-indirect-transfer@0x5012"
+    return FragmentPlan(
+        plan_id="canonical-same-ea-split",
+        atomic_group_id="canonical-same-ea-split:g1",
+        publication_purpose=(
+            FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+        ),
+        native_key=NATIVE_KEY,
+        blocks=(original, replacement, source, taken, fallthrough),
+        roots=(replacement.block_id,),
+        owned_originals=(original.block_id,),
+        prohibited_dispatcher_blocks=(),
+        operations=(
+            FragmentOperation(
+                operation_id="entry-route",
+                source_block_id=replacement.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=source.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id=operation_id,
+                source_block_id=source.block_id,
+                predicate_anchor_ea=0x5002,
+                computed_branch_normalization=(
+                    FragmentComputedBranchNormalization(
+                        predicate_kind=PredicateKind.SLT,
+                        normalization_start_ea=0x5002,
+                        condition_producer_ea=0x5000,
+                        unresolved_transfer_ea=0x5012,
+                        conditional_select_envelope=(
+                            FragmentImportedConditionalSelectEnvelope(
+                                source_branch_ea=0x5006,
+                                selected_value_ea=0x5006,
+                                selected_value_identity=selected_identity,
+                                join_identity=join_identity,
+                            )
+                        ),
+                    )
+                ),
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        target_block_id=taken.block_id,
+                    ),
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                        target_block_id=fallthrough.block_id,
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id="native-body:split",
+                block_ids=(source.block_id,),
+                entry_block_ids=(source.block_id,),
+                terminal_block_ids=(),
+                native_ranges=(
+                    NativeEaInterval(0x5000, 0x5007),
+                    NativeEaInterval(0x5010, 0x5013),
+                ),
+                proof_ids=(operation_id,),
+            ),
+        ),
+    )
+
+
+def test_imported_conditional_select_allows_one_role_shared_ea() -> None:
+    plan = _same_ea_imported_conditional_plan()
+
+    operation = plan.operations[1]
+    normalization = operation.computed_branch_normalization
+    assert normalization is not None
+    envelope = normalization.conditional_select_envelope
+    assert isinstance(envelope, FragmentImportedConditionalSelectEnvelope)
+    assert envelope.source_branch_ea == envelope.selected_value_ea == 0x5006
+
+
+def test_imported_conditional_select_rejects_wider_role_overlap() -> None:
+    selected_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x5004, 0x5007),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x5004, 0x5006),
+    )
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="overlaps outside its one role-shared source/select EA",
+    ):
+        _same_ea_imported_conditional_plan(
+            selected_identity=selected_identity,
+        )
 
 
 def test_direct_fragment_operation_rejects_computed_branch_normalization() -> None:
