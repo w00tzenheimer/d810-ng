@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, replace
 
 from d810.analyses.control_flow.frontend_normalization import (
@@ -46,6 +47,117 @@ from d810.transforms.fragment_plan import (
     FragmentValueSite,
     FragmentWorkItemScope,
 )
+
+
+_BADADDR = 0xFFFFFFFFFFFFFFFF
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedRouteCorridorBlock:
+    """One snapshot-local block reference paired with its required EA anchor."""
+
+    serial: int
+    anchor_ea: int
+
+    def __post_init__(self) -> None:
+        serial = int(self.serial)
+        anchor_ea = int(self.anchor_ea)
+        if serial < 0:
+            raise ValueError("projected corridor block serial must be non-negative")
+        if not 0 <= anchor_ea < _BADADDR:
+            raise ValueError("projected corridor block requires a valid EA anchor")
+        object.__setattr__(self, "serial", serial)
+        object.__setattr__(self, "anchor_ea", anchor_ea)
+
+    @property
+    def label(self) -> str:
+        return f"blk{self.serial}@0x{self.anchor_ea:X}"
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "label": self.label,
+            "serial": self.serial,
+            "anchor_ea": f"0x{self.anchor_ea:X}",
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedRouteCorridorFailure:
+    """EA-anchored explanation for one projected corridor boundary failure."""
+
+    reason_code: str
+    edge_role: str
+    context_anchor_ea: int
+    corridor_block: ProjectedRouteCorridorBlock | None
+    boundary_block: ProjectedRouteCorridorBlock | None
+
+    def __post_init__(self) -> None:
+        reason_code = str(self.reason_code).strip()
+        edge_role = str(self.edge_role).strip()
+        context_anchor_ea = int(self.context_anchor_ea)
+        if not reason_code:
+            raise ValueError("projected corridor failure reason must not be empty")
+        if not edge_role:
+            raise ValueError("projected corridor failure edge role must not be empty")
+        if not 0 <= context_anchor_ea < _BADADDR:
+            raise ValueError(
+                "projected corridor failure requires a valid context EA"
+            )
+        object.__setattr__(self, "reason_code", reason_code)
+        object.__setattr__(self, "edge_role", edge_role)
+        object.__setattr__(self, "context_anchor_ea", context_anchor_ea)
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "reason_code": self.reason_code,
+            "edge_role": self.edge_role,
+            "context_anchor_ea": f"0x{self.context_anchor_ea:X}",
+            "corridor_block": (
+                None
+                if self.corridor_block is None
+                else self.corridor_block.to_payload()
+            ),
+            "boundary_block": (
+                None
+                if self.boundary_block is None
+                else self.boundary_block.to_payload()
+            ),
+        }
+
+    def description(self) -> str:
+        corridor_label = (
+            "unanchored corridor block"
+            if self.corridor_block is None
+            else self.corridor_block.label
+        )
+        boundary_label = (
+            "unanchored boundary block"
+            if self.boundary_block is None
+            else self.boundary_block.label
+        )
+        if self.reason_code == "external_predecessor":
+            return f"external predecessor {boundary_label} -> {corridor_label}"
+        if self.reason_code == "external_successor":
+            return f"external successor {corridor_label} -> {boundary_label}"
+        return f"{self.reason_code} at {corridor_label}"
+
+
+class FrontendNormalizationCorridorRejected(
+    FrontendNormalizationEvidenceRejected
+):
+    """Projected normalization routes have an open EA-anchored boundary."""
+
+    def __init__(self, failure: ProjectedRouteCorridorFailure) -> None:
+        if not isinstance(failure, ProjectedRouteCorridorFailure):
+            raise TypeError(
+                "frontend normalization corridor rejection requires "
+                "a projected corridor failure"
+            )
+        self.failure = failure
+        super().__init__(
+            "original route corridor is not closed: "
+            f"{failure.description()}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -809,41 +921,119 @@ def _entry_root_corridor_serials(
 def _projected_route_corridor_serials(
     graph: FlowGraph,
     relevant_serials: set[int],
-) -> set[int] | None:
+) -> set[int]:
     """Close projected outgoing routes without guessing incoming boundaries."""
+
+    def block_ref(serial: int) -> ProjectedRouteCorridorBlock | None:
+        block = graph.blocks.get(int(serial))
+        if block is None:
+            return None
+        candidates = (
+            int(block.start_ea),
+            *(int(instruction.ea) for instruction in block.insn_snapshots),
+        )
+        anchor_ea = next(
+            (ea for ea in candidates if 0 <= ea < _BADADDR),
+            None,
+        )
+        if anchor_ea is None:
+            return None
+        return ProjectedRouteCorridorBlock(
+            serial=int(block.serial),
+            anchor_ea=anchor_ea,
+        )
+
+    def reject(
+        *,
+        reason_code: str,
+        edge_role: str,
+        corridor_serial: int | None,
+        boundary_serial: int | None,
+    ) -> None:
+        raise FrontendNormalizationCorridorRejected(
+            ProjectedRouteCorridorFailure(
+                reason_code=reason_code,
+                edge_role=edge_role,
+                context_anchor_ea=int(graph.func_ea),
+                corridor_block=(
+                    None
+                    if corridor_serial is None
+                    else block_ref(corridor_serial)
+                ),
+                boundary_block=(
+                    None
+                    if boundary_serial is None
+                    else block_ref(boundary_serial)
+                ),
+            )
+        )
+
     relevant = {int(serial) for serial in relevant_serials}
     corridor: set[int] = set()
-    pending = [
-        int(successor)
-        for serial in relevant
-        for successor in graph.blocks[serial].succs
-        if int(successor) not in relevant
-    ]
+    pending: deque[tuple[int, int]] = deque()
+    for serial in sorted(relevant):
+        block = graph.blocks.get(serial)
+        if block is None:
+            reject(
+                reason_code="missing_relevant_block",
+                edge_role="relevant_member",
+                corridor_serial=None,
+                boundary_serial=None,
+            )
+        for successor in sorted(int(item) for item in block.succs):
+            if successor not in relevant:
+                pending.append((serial, successor))
     while pending:
-        serial = pending.pop()
+        predecessor, serial = pending.popleft()
         if serial in relevant or serial in corridor:
             continue
         block = graph.blocks.get(serial)
         if block is None:
-            return None
+            reject(
+                reason_code="missing_successor_block",
+                edge_role="outgoing_successor",
+                corridor_serial=predecessor,
+                boundary_serial=None,
+            )
         corridor.add(serial)
-        pending.extend(
-            int(successor)
-            for successor in block.succs
-            if int(successor) not in relevant and int(successor) not in corridor
-        )
+        for successor in sorted(int(item) for item in block.succs):
+            if successor not in relevant and successor not in corridor:
+                pending.append((serial, successor))
 
     closed_serials = relevant | corridor
-    for serial in closed_serials:
+    for serial in sorted(closed_serials):
         block = graph.blocks.get(serial)
         if block is None:
-            return None
-        neighbours = {
-            *(int(successor) for successor in block.succs),
-            *(int(predecessor) for predecessor in graph.predecessors(serial)),
-        }
-        if not neighbours <= closed_serials:
-            return None
+            reject(
+                reason_code="missing_corridor_block",
+                edge_role="corridor_member",
+                corridor_serial=None,
+                boundary_serial=None,
+            )
+        external_predecessors = sorted(
+            int(predecessor)
+            for predecessor in graph.predecessors(serial)
+            if int(predecessor) not in closed_serials
+        )
+        if external_predecessors:
+            reject(
+                reason_code="external_predecessor",
+                edge_role="incoming_predecessor",
+                corridor_serial=serial,
+                boundary_serial=external_predecessors[0],
+            )
+        external_successors = sorted(
+            int(successor)
+            for successor in block.succs
+            if int(successor) not in closed_serials
+        )
+        if external_successors:
+            reject(
+                reason_code="external_successor",
+                edge_role="outgoing_successor",
+                corridor_serial=serial,
+                boundary_serial=external_successors[0],
+            )
     return corridor
 
 
@@ -1111,10 +1301,6 @@ def plan_frontend_computed_branch_normalization(
         graph,
         relevant_serials,
     )
-    if projected_route_corridor_serials is None:
-        raise FrontendNormalizationEvidenceRejected(
-            "original route corridor is not closed"
-        )
     relevant_serials.update(projected_route_corridor_serials)
 
     identities = _graph_identities(graph, evidence, relevant_serials)
