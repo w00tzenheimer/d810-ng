@@ -4,6 +4,10 @@
 **Status:** approved for implementation
 **Date:** 2026-07-17
 
+> Superseded for new UI work by
+> `2026-07-23-algorithm-driven-deobfuscation-workbench.md`.
+> Its direct-run identity/freshness/comparison rules remain in force.
+
 ## Decision
 
 The function-scoped Deobfuscation Workbench will make its normal path a

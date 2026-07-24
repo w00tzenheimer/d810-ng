@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from d810.core.deobfuscation_case import (
     CaseEvidenceLevel,
     CaseFinding,
@@ -177,6 +179,24 @@ def test_c5_receipt_names_publication_without_claiming_semantic_success() -> Non
 
     assert view.verdict.label == "Publication receipt committed."
     assert "deobfuscated" not in view.verdict.detail.casefold()
+
+
+@pytest.mark.parametrize(
+    "level",
+    (
+        CaseEvidenceLevel.C1_DISCOVERY,
+        CaseEvidenceLevel.C2_NORMALIZATION,
+        CaseEvidenceLevel.C3_CANONICAL_PLAN,
+        CaseEvidenceLevel.C4_STAGED_PROOF,
+        CaseEvidenceLevel.C5_PUBLICATION,
+    ),
+)
+def test_c1_through_c5_never_render_as_semantic_success(
+    level: CaseEvidenceLevel,
+) -> None:
+    view = project_case_workflow(_snapshot(case=_case(evidence=_evidence(level=level))))
+
+    assert "semantic result verified" not in view.verdict.label.casefold()
 
 
 def test_unavailable_snapshot_disables_both_entry_points() -> None:
