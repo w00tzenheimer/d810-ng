@@ -131,6 +131,23 @@ class _FakeMBA:
     def optimize_local(self, _flags: int):
         pass
 
+    def insert_block(self, insertion_serial: int):
+        insertion_serial = int(insertion_serial)
+        for block in tuple(self.blocks.values()):
+            if int(block.serial) >= insertion_serial:
+                block.serial += 1
+        helper = _FakeBlock(insertion_serial, start=self.entry_ea)
+        helper.mba = self
+        helper.head = None
+        helper.tail = None
+        helper.type = int(ida_hexrays.BLT_0WAY)
+        helper.nsucc = lambda: 0  # type: ignore[method-assign]
+        helper.npred = lambda: 0  # type: ignore[method-assign]
+        self.blocks = {int(block.serial): block for block in self.blocks.values()}
+        self.blocks[insertion_serial] = helper
+        self.qty += 1
+        return helper
+
 
 def test_modifier_uses_an_injected_session_mutation_gateway() -> None:
     mba = _FakeMBA()
@@ -1219,22 +1236,26 @@ def test_conditional_lowering_helper_remaps_later_branch_targets(monkeypatch):
     helper = _FakeBlock(11)
     helper.mba = mba
     helper.head = None
-    helper.make_nop = lambda _insn: None  # type: ignore[attr-defined]
+    helper.tail = None
+    helper.nsucc = lambda: 0  # type: ignore[method-assign]
+    helper.npred = lambda: 0  # type: ignore[method-assign]
     helper.mark_lists_dirty = lambda: None  # type: ignore[assignment]
     source = _FakeBlock(5)
     source.mba = mba
     mba.blocks = {5: source, 10: guard, 20: target}
     mba.qty = 30
 
-    def _copy_block_keep(_mba, _guard, _insertion_serial):
-        assert _insertion_serial == 11
+    def _insert_block(insertion_serial):
+        assert insertion_serial == 11
         mba.qty += 1
         target.serial = 21
-        mba.blocks[21] = target
+        mba.blocks = {
+            int(block.serial): block for block in mba.blocks.values()
+        }
         mba.blocks[11] = helper
         return helper
 
-    monkeypatch.setattr(dm, "copy_block_keep", _copy_block_keep)
+    mba.insert_block = _insert_block  # type: ignore[attr-defined]
     monkeypatch.setattr(dm, "insert_goto_instruction", lambda *_a, **_k: None)
 
     modifier = dm.DeferredGraphModifier(
@@ -1303,7 +1324,7 @@ def test_restore_pruned_conditional_preserves_predicate_and_builds_both_arms(
     }
     mba.qty = 40
 
-    def _copy_block_keep(_mba, _guard, insertion_serial):
+    def _insert_block(insertion_serial):
         rebuilt: dict[int, _FakeBlock] = {}
         for block in tuple(mba.blocks.values()):
             replacement = _FakeBlock(
@@ -1328,13 +1349,15 @@ def test_restore_pruned_conditional_preserves_predicate_and_builds_both_arms(
         helper = _FakeBlock(int(insertion_serial), start=0xF1C10000)
         helper.mba = mba
         helper.head = None
-        helper.make_nop = lambda _insn: None  # type: ignore[attr-defined]
+        helper.tail = None
+        helper.nsucc = lambda: 0  # type: ignore[method-assign]
+        helper.npred = lambda: 0  # type: ignore[method-assign]
         rebuilt[int(helper.serial)] = helper
         mba.blocks = rebuilt
         mba.qty += 1
         return helper
 
-    monkeypatch.setattr(dm, "copy_block_keep", _copy_block_keep)
+    mba.insert_block = _insert_block  # type: ignore[attr-defined]
     monkeypatch.setattr(dm, "insert_goto_instruction", lambda *_a, **_k: None)
     monkeypatch.setattr(dm.ida_hexrays, "mop_t", _BlockReference)
 
@@ -1387,11 +1410,13 @@ def test_conditional_lowering_helpers_keep_target_identity_across_two_insertions
 
     goto_targets: list[tuple[_FakeBlock, int]] = []
 
-    def _copy_block_keep(_mba, _guard, insertion_serial):
+    def _insert_block(insertion_serial):
         helper = _FakeBlock(int(insertion_serial), start=0xF1C00000 + mba.qty)
         helper.mba = mba
         helper.head = None
-        helper.make_nop = lambda _insn: None  # type: ignore[attr-defined]
+        helper.tail = None
+        helper.nsucc = lambda: 0  # type: ignore[method-assign]
+        helper.npred = lambda: 0  # type: ignore[method-assign]
         helper.mark_lists_dirty = lambda: None  # type: ignore[assignment]
         for block in tuple(mba.blocks.values()):
             if int(block.serial) >= int(insertion_serial):
@@ -1401,7 +1426,7 @@ def test_conditional_lowering_helpers_keep_target_identity_across_two_insertions
         mba.qty += 1
         return helper
 
-    monkeypatch.setattr(dm, "copy_block_keep", _copy_block_keep)
+    mba.insert_block = _insert_block  # type: ignore[attr-defined]
     monkeypatch.setattr(
         dm,
         "insert_goto_instruction",
@@ -1420,6 +1445,71 @@ def test_conditional_lowering_helpers_keep_target_identity_across_two_insertions
     assert int(mba.get_mblock(second_target_serial).start) == 0x40C0FE
 
 
+def test_conditional_helper_inserts_empty_block_without_copying_imported_body(
+    monkeypatch,
+) -> None:
+    mba = _FakeMBA()
+    source = _FakeBlock(10, start=0x40A5CA)
+    source.mba = mba
+    source.head = SimpleNamespace(ea=0xF1C00018, next=None)
+    source.tail = source.head
+    target = _FakeBlock(20, start=0x40C898)
+    target.mba = mba
+    mba.blocks = {
+        int(source.serial): source,
+        int(target.serial): target,
+    }
+    mba.qty = 30
+    inserted: list[int] = []
+    goto_targets: list[int] = []
+
+    def _insert_block(insertion_serial: int):
+        insertion_serial = int(insertion_serial)
+        inserted.append(insertion_serial)
+        for block in tuple(mba.blocks.values()):
+            if int(block.serial) >= insertion_serial:
+                block.serial += 1
+        helper = _FakeBlock(insertion_serial, start=mba.entry_ea)
+        helper.mba = mba
+        helper.head = None
+        helper.tail = None
+        helper.type = int(ida_hexrays.BLT_0WAY)
+        helper.nsucc = lambda: 0  # type: ignore[method-assign]
+        helper.npred = lambda: 0  # type: ignore[method-assign]
+        mba.blocks = {int(block.serial): block for block in mba.blocks.values()}
+        mba.blocks[insertion_serial] = helper
+        mba.qty += 1
+        return helper
+
+    mba.insert_block = _insert_block  # type: ignore[attr-defined]
+
+    def _reject_body_copy(*_args, **_kwargs):
+        raise AssertionError("adjacent helper must not copy an imported body")
+
+    monkeypatch.setattr(dm, "copy_block_keep", _reject_body_copy)
+    monkeypatch.setattr(
+        dm,
+        "insert_goto_instruction",
+        lambda _helper, target_serial, **_kwargs: goto_targets.append(
+            int(target_serial)
+        ),
+    )
+
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=make_mutation_gateway(mba),
+    )
+    assert modifier._build_fallthrough_goto_helper(source, target) == 11
+
+    assert inserted == [11]
+    assert goto_targets == [21]
+    helper = mba.get_mblock(11)
+    assert helper is not None
+    assert helper.head is None
+    assert tuple(helper.succset) == (21,)
+    assert int(mba.get_mblock(21).start) == 0x40C898
+
+
 def test_conditional_helper_rebinds_target_when_proxy_serial_stays_stale(
     monkeypatch,
 ) -> None:
@@ -1436,7 +1526,7 @@ def test_conditional_helper_rebinds_target_when_proxy_serial_stays_stale(
     mba.qty = 30
     goto_targets: list[int] = []
 
-    def _copy_block_keep(_mba, _guard, insertion_serial):
+    def _insert_block(insertion_serial):
         rebuilt: dict[int, _FakeBlock] = {}
         for serial, block in tuple(mba.blocks.items()):
             if int(serial) < int(insertion_serial):
@@ -1451,14 +1541,16 @@ def test_conditional_helper_rebinds_target_when_proxy_serial_stays_stale(
         helper = _FakeBlock(int(insertion_serial), start=0xF1C20000)
         helper.mba = mba
         helper.head = None
-        helper.make_nop = lambda _insn: None  # type: ignore[attr-defined]
+        helper.tail = None
+        helper.nsucc = lambda: 0  # type: ignore[method-assign]
+        helper.npred = lambda: 0  # type: ignore[method-assign]
         helper.mark_lists_dirty = lambda: None  # type: ignore[assignment]
         rebuilt[int(helper.serial)] = helper
         mba.blocks = rebuilt
         mba.qty += 1
         return helper
 
-    monkeypatch.setattr(dm, "copy_block_keep", _copy_block_keep)
+    mba.insert_block = _insert_block  # type: ignore[attr-defined]
     monkeypatch.setattr(
         dm,
         "insert_goto_instruction",
