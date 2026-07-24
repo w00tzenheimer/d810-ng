@@ -185,6 +185,39 @@ def _instruction_ea(instruction: object) -> int:
     return int(getattr(instruction, "ea", -1))
 
 
+def find_exact_storage_access_eas(
+    mba: object,
+    block_serial: int,
+    candidate_eas: tuple[int, ...],
+    *,
+    register: int | None = None,
+    stack_offset: int | None = None,
+    size: int,
+    require_definition: bool,
+) -> tuple[int, ...]:
+    """Select candidate instructions with one exact storage access role.
+
+    The returned EAs remain transaction-local. Duplicate physical anchors are
+    preserved so the caller can reject ambiguity instead of silently choosing
+    one instruction.
+    """
+    candidates = frozenset(int(candidate_ea) for candidate_ea in candidate_eas)
+    if not candidates:
+        return ()
+    return tuple(
+        _instruction_ea(instruction)
+        for instruction, has_use, has_definition in _block_storage_accesses(
+            mba,
+            block_serial,
+            register=register,
+            stack_offset=stack_offset,
+            size=size,
+        )
+        if _instruction_ea(instruction) in candidates
+        and (has_definition if require_definition else has_use)
+    )
+
+
 def _definition_site(block_serial: int, instruction: object) -> DefSite:
     return DefSite(
         block_serial=int(block_serial),
@@ -525,6 +558,7 @@ def get_ud_du_chains(
 __all__ = [
     "DefSite",
     "UseSite",
+    "find_exact_storage_access_eas",
     "find_reaching_defs_for_reg_use",
     "find_reaching_defs_for_stkvar_use",
     "find_uses_reached_by_reg_definition",

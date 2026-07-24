@@ -9,6 +9,7 @@ import ida_range
 
 from d810.core.typing import Mapping, Protocol, TYPE_CHECKING, runtime_checkable
 from d810.hexrays.ir.exact_data_flow import (
+    find_exact_storage_access_eas,
     find_reaching_defs_for_reg_use,
     find_reaching_defs_for_stkvar_use,
     find_uses_reached_by_reg_definition,
@@ -2082,44 +2083,105 @@ def _unowned_endpoint(modifier: DeferredGraphModifier, serial: int) -> str:
     return "unowned@unknown-ea"
 
 
+def _live_data_flow_site_binding(
+    modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
+    site,
+    live_block,
+    *,
+    role: str,
+    require_definition: bool,
+) -> tuple[int, int, StorageIdentityKind]:
+    storage = site.storage_identity
+    if storage is None:
+        raise SemanticFragmentBackendRejected(
+            f"data-flow {role} {site.site_id!r} has no portable storage identity"
+        )
+    register: int | None = None
+    stack_offset: int | None = None
+    if storage.kind is StorageIdentityKind.REGISTER:
+        register = int(storage.offset)
+        identifier = register
+    elif storage.kind is StorageIdentityKind.STACK:
+        try:
+            stack_offset = int(modifier.mba.stkoff_ida2vd(int(storage.offset)))
+        except Exception as exc:
+            raise SemanticFragmentBackendRejected(
+                f"data-flow {role} {site.site_id!r} stack identity cannot bind "
+                "to the live MBA"
+            ) from exc
+        identifier = stack_offset
+    else:
+        raise SemanticFragmentBackendRejected(
+            f"data-flow {role} {site.site_id!r} has unsupported storage namespace "
+            f"{storage.kind.name.lower()}"
+        )
+
+    native_ea = int(site.instruction_ea)
+    origin_matches = tuple(
+        int(live_ea)
+        for live_ea, candidate_native_ea in state.instruction_origins_by_block_id.get(
+            str(site.block_id),
+            {},
+        ).items()
+        if int(candidate_native_ea) == native_ea
+    )
+    candidate_eas = origin_matches or (native_ea,)
+    if len(candidate_eas) == 1:
+        return (int(candidate_eas[0]), int(identifier), storage.kind)
+    matches = find_exact_storage_access_eas(
+        modifier.mba,
+        int(live_block.serial),
+        candidate_eas,
+        register=register,
+        stack_offset=stack_offset,
+        size=int(site.width),
+        require_definition=require_definition,
+    )
+    if len(matches) > 1:
+        raise SemanticFragmentBackendRejected(
+            f"data-flow {role} {site.site_id!r} has ambiguous live storage "
+            f"access at {site.block_id}@0x{native_ea:X}"
+        )
+    if not matches:
+        raise SemanticFragmentBackendRejected(
+            f"data-flow {role} {site.site_id!r} has no exact live storage "
+            f"access at {site.block_id}@0x{native_ea:X}"
+        )
+    return (int(matches[0]), int(identifier), storage.kind)
+
+
 def _query_reaching_definitions(
     modifier: DeferredGraphModifier,
     state: SemanticFragmentBackendState,
     site,
     live_block,
 ):
-    storage = site.storage_identity
-    if storage is None:
-        raise SemanticFragmentBackendRejected(
-            f"data-flow use {site.site_id!r} has no portable storage identity"
-        )
-    if storage.kind is StorageIdentityKind.REGISTER:
+    live_instruction_ea, identifier, storage_kind = _live_data_flow_site_binding(
+        modifier,
+        state,
+        site,
+        live_block,
+        role="use",
+        require_definition=False,
+    )
+    if storage_kind is StorageIdentityKind.REGISTER:
         return find_reaching_defs_for_reg_use(
             modifier.mba,
             int(live_block.serial),
-            state.live_instruction_ea(site.block_id, site.instruction_ea),
-            int(storage.offset),
+            live_instruction_ea,
+            identifier,
             int(site.width),
         )
-    if storage.kind is StorageIdentityKind.STACK:
-        try:
-            live_stack_offset = int(modifier.mba.stkoff_ida2vd(int(storage.offset)))
-        except Exception as exc:
-            raise SemanticFragmentBackendRejected(
-                f"data-flow use {site.site_id!r} stack identity cannot bind "
-                "to the live MBA"
-            ) from exc
+    if storage_kind is StorageIdentityKind.STACK:
         return find_reaching_defs_for_stkvar_use(
             modifier.mba,
             int(live_block.serial),
-            state.live_instruction_ea(site.block_id, site.instruction_ea),
-            live_stack_offset,
+            live_instruction_ea,
+            identifier,
             int(site.width),
         )
-    raise SemanticFragmentBackendRejected(
-        f"data-flow use {site.site_id!r} has unsupported storage namespace "
-        f"{storage.kind.name.lower()}"
-    )
+    raise AssertionError("live data-flow binding accepted an unsupported namespace")
 
 
 def _query_reached_uses(
@@ -2128,38 +2190,31 @@ def _query_reached_uses(
     site,
     live_block,
 ):
-    storage = site.storage_identity
-    if storage is None:
-        raise SemanticFragmentBackendRejected(
-            f"data-flow definition {site.site_id!r} has no portable storage identity"
-        )
-    if storage.kind is StorageIdentityKind.REGISTER:
+    live_instruction_ea, identifier, storage_kind = _live_data_flow_site_binding(
+        modifier,
+        state,
+        site,
+        live_block,
+        role="definition",
+        require_definition=True,
+    )
+    if storage_kind is StorageIdentityKind.REGISTER:
         return find_uses_reached_by_reg_definition(
             modifier.mba,
             int(live_block.serial),
-            state.live_instruction_ea(site.block_id, site.instruction_ea),
-            int(storage.offset),
+            live_instruction_ea,
+            identifier,
             int(site.width),
         )
-    if storage.kind is StorageIdentityKind.STACK:
-        try:
-            live_stack_offset = int(modifier.mba.stkoff_ida2vd(int(storage.offset)))
-        except Exception as exc:
-            raise SemanticFragmentBackendRejected(
-                f"data-flow definition {site.site_id!r} stack identity cannot "
-                "bind to the live MBA"
-            ) from exc
+    if storage_kind is StorageIdentityKind.STACK:
         return find_uses_reached_by_stkvar_definition(
             modifier.mba,
             int(live_block.serial),
-            state.live_instruction_ea(site.block_id, site.instruction_ea),
-            live_stack_offset,
+            live_instruction_ea,
+            identifier,
             int(site.width),
         )
-    raise SemanticFragmentBackendRejected(
-        f"data-flow definition {site.site_id!r} has unsupported storage namespace "
-        f"{storage.kind.name.lower()}"
-    )
+    raise AssertionError("live data-flow binding accepted an unsupported namespace")
 
 
 def _require_unambiguous_observed_anchors(
