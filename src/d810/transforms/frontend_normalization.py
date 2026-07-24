@@ -1268,13 +1268,30 @@ def plan_frontend_computed_branch_normalization(
                     ),
                 )
             )
-        entry_block_ids = tuple(
-            str(imported_id_for_anchor(entry_ea))
-            for entry_ea in import_request.required_entry_eas
+        imported_block_ids = set(imported_ids.values())
+        semantic_entry_block_ids = {
+            edge.target_block_id
+            for operation in operations
+            if operation.source_block_id not in imported_block_ids
+            for edge in operation.edges
+            if edge.target_block_id in imported_block_ids
+        }
+        semantic_entry_block_ids.update(
+            imported_block_id
+            for seed in import_request.semantic_closure.seed_provenance
+            for imported_block_id in (
+                imported_id_for_anchor(int(seed.entry_ea)),
+            )
+            if imported_block_id is not None
         )
-        if any(block_id == "None" for block_id in entry_block_ids):
+        entry_block_ids = tuple(
+            imported_ids[entry_ea]
+            for entry_ea in sorted(imported_native_blocks)
+            if imported_ids[entry_ea] in semantic_entry_block_ids
+        )
+        if not entry_block_ids:
             raise FrontendNormalizationEvidenceRejected(
-                "detached import entry is not owned by the planned native body"
+                "detached import has no live-boundary or proof-owned body entry"
             )
         native_bodies = (
             FragmentNativeBody(
@@ -1355,7 +1372,7 @@ def _select_frontend_root_component(
     plan: FragmentPlan,
     evidence: FrontendNormalizationEvidence,
 ) -> FragmentPlan:
-    """Return the smallest complete publication-root component and its obligations."""
+    """Select one live root plus every proof-owned detached body component."""
     if (
         plan.publication_purpose
         is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
@@ -1424,13 +1441,49 @@ def _select_frontend_root_component(
             }
         return block_ids, operation_ids, flag_corridors
 
-    root_components = tuple(
+    publication_root_components = tuple(
         (root_block_id, *root_component(root_block_id))
         for root_block_id in plan.roots
     )
-    root_reachable_operation_ids = {
+    proof_owned_native_body_entry_ids: set[str] = set()
+    semantic_closure = evidence.semantic_closure
+    if semantic_closure is not None:
+        declared_native_body_entry_ids = {
+            entry_block_id
+            for native_body in plan.native_bodies
+            for entry_block_id in native_body.entry_block_ids
+        }
+        for seed in semantic_closure.seed_provenance:
+            matches = tuple(
+                block.block_id
+                for block in plan.blocks
+                if block.role is FragmentBlockRole.IMPORTED
+                and block.stable_identity is not None
+                and block.stable_identity.native_ranges.contains(int(seed.entry_ea))
+            )
+            if len(matches) > 1:
+                raise FrontendNormalizationEvidenceRejected(
+                    f"proof-owned native-body entry 0x{int(seed.entry_ea):X} "
+                    "is ambiguous"
+                )
+            if not matches:
+                continue
+            if matches[0] not in declared_native_body_entry_ids:
+                raise FrontendNormalizationEvidenceRejected(
+                    f"proof-owned native-body entry 0x{int(seed.entry_ea):X} "
+                    "is not declared by its body"
+                )
+            proof_owned_native_body_entry_ids.add(matches[0])
+    native_body_root_components = tuple(
+        (entry_block_id, *root_component(entry_block_id))
+        for entry_block_id in sorted(proof_owned_native_body_entry_ids)
+    )
+    actionable_operation_ids = {
         operation_id
-        for _root_block_id, _block_ids, operation_ids, _corridors in root_components
+        for _root_block_id, _block_ids, operation_ids, _corridors in (
+            *publication_root_components,
+            *native_body_root_components,
+        )
         for operation_id in operation_ids
     }
     (
@@ -1439,7 +1492,7 @@ def _select_frontend_root_component(
         selected_operation_ids,
         selected_flag_corridors,
     ) = min(
-        root_components,
+        publication_root_components,
         key=lambda component: (
             len(component[2]),
             len(component[1]),
@@ -1447,6 +1500,25 @@ def _select_frontend_root_component(
             int(plan.block(component[0]).semantic_anchor_ea),
             str(component[0]),
         ),
+    )
+    selected_flag_corridor_ids = {
+        corridor.corridor_id for corridor in selected_flag_corridors
+    }
+    for (
+        _entry_block_id,
+        native_body_block_ids,
+        native_body_operation_ids,
+        native_body_flag_corridors,
+    ) in native_body_root_components:
+        selected_block_ids.update(native_body_block_ids)
+        selected_operation_ids.update(native_body_operation_ids)
+        selected_flag_corridor_ids.update(
+            corridor.corridor_id for corridor in native_body_flag_corridors
+        )
+    selected_flag_corridors = tuple(
+        corridor
+        for corridor in plan.flag_corridors
+        if corridor.corridor_id in selected_flag_corridor_ids
     )
 
     selected_replacements = {
@@ -1486,12 +1558,12 @@ def _select_frontend_root_component(
         proof_id
         for proof_id in pending_proof_ids
         if proof_id not in selected_proof_ids
-        and proof_id in root_reachable_operation_ids
+        and proof_id in actionable_operation_ids
     )
     unreachable_proof_ids = tuple(
         proof_id
         for proof_id in pending_proof_ids
-        if proof_id not in root_reachable_operation_ids
+        if proof_id not in actionable_operation_ids
     )
 
     selected_operations = tuple(
@@ -1524,10 +1596,9 @@ def _select_frontend_root_component(
             for edge in operation.edges
             if edge.target_block_id in selected_imported_ids
         }
-        if not imported_entry_ids:
-            imported_entry_ids = set(native_body.entry_block_ids) & (
-                selected_imported_ids
-            )
+        imported_entry_ids.update(
+            set(native_body.entry_block_ids) & selected_imported_ids
+        )
         if not imported_entry_ids:
             raise FrontendNormalizationEvidenceRejected(
                 "selected native body has no publication boundary entry"
