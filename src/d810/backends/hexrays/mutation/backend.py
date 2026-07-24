@@ -19,6 +19,7 @@ from d810.analyses.control_flow.graph_checks import (
 from d810.analyses.control_flow.edit_simulation import simulate_edits
 from d810.core.logging import getLogger
 from d810.core.typing import Callable, TYPE_CHECKING
+from d810.ir.block_identity import CurrentMbaIdentityBindingSnapshot
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.fragment_plan import FragmentPlan
 from d810.transforms.plan import PatchPlan
@@ -62,19 +63,19 @@ class HexRaysMutationBackend:
             else self._new_fragment_backend
         )
 
-    def committed_current_mba_instruction_origins(
+    def committed_current_mba_identity_binding(
         self,
-    ) -> tuple[tuple[int, int], ...]:
+    ) -> CurrentMbaIdentityBindingSnapshot | None:
         """Return only the last successfully committed fragment's live binding."""
         receipt = self._committed_fragment_receipt
         if receipt is None:
-            return ()
-        origins = getattr(receipt, "current_mba_instruction_origins", None)
-        if not isinstance(origins, tuple):
+            return None
+        binding = getattr(receipt, "current_mba_identity_binding", None)
+        if not isinstance(binding, CurrentMbaIdentityBindingSnapshot):
             raise TypeError(
-                "committed fragment receipt has invalid instruction origins"
+                "committed fragment receipt has invalid current-MBA identity binding"
             )
-        return origins
+        return binding
 
     def _new_fragment_backend(self, live_source: object, gateway: object) -> object:
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier

@@ -6,11 +6,37 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
+from d810.ir.block_identity import (
+    CurrentMbaBlockIdentityBinding,
+    CurrentMbaIdentityBindingSnapshot,
+    NativeEaInterval,
+    StableBlockIdentity,
+)
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
 from d810.transforms.plan import PatchConvertToGoto, PatchPlan, PatchRedirectGoto
+from tests.native_preanalysis import make_native_key
 
 
 MUTATION_GATEWAY = object()
+NATIVE_KEY = make_native_key()
+
+
+def _current_mba_identity_binding() -> CurrentMbaIdentityBindingSnapshot:
+    live_ea = 0xF10000
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401020),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x401010,),
+    )
+    return CurrentMbaIdentityBindingSnapshot(
+        instruction_origins=((live_ea, 0x401010),),
+        block_bindings=(
+            CurrentMbaBlockIdentityBinding(
+                stable_identity=identity,
+                live_instruction_eas=frozenset({live_ea}),
+            ),
+        ),
+    )
 
 
 def _make_block(
@@ -150,6 +176,7 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
     translator = _FakeTranslator(cfg)
     plan = object()
     published = []
+    snapshot = _current_mba_identity_binding()
 
     class _Gateway:
         def __init__(self, name: str) -> None:
@@ -161,7 +188,7 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
         def publish_semantic_fragment(self, fragment_backend, fragment_plan):
             published.append((self.name, fragment_backend, fragment_plan))
             return SimpleNamespace(
-                current_mba_instruction_origins=((0xF10000, 0x401010),),
+                current_mba_identity_binding=snapshot,
             )
 
     fragment_backend = object()
@@ -180,14 +207,13 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
     assert result is cfg
     assert published == [("fragment", fragment_backend, plan)]
     assert translator.lift_count == 1
-    assert backend.committed_current_mba_instruction_origins() == (
-        (0xF10000, 0x401010),
-    )
+    assert backend.committed_current_mba_identity_binding() is snapshot
 
 
 def test_publish_fragment_exposes_no_prior_origins_after_abort() -> None:
     cfg = _make_cfg([(0, 1)], stop_serials=(1,))
     translator = _FakeTranslator(cfg)
+    snapshot = _current_mba_identity_binding()
 
     class _Gateway:
         fail = False
@@ -199,7 +225,7 @@ def test_publish_fragment_exposes_no_prior_origins_after_abort() -> None:
             if self.fail:
                 raise RuntimeError("publication aborted")
             return SimpleNamespace(
-                current_mba_instruction_origins=((0xF10000, 0x401010),),
+                current_mba_identity_binding=snapshot,
             )
 
     gateway = _Gateway()
@@ -209,13 +235,13 @@ def test_publish_fragment_exposes_no_prior_origins_after_abort() -> None:
         fragment_backend_factory=lambda _live_source, _transaction: object(),
     )
     backend.publish_fragment(object(), live_source=object())
-    assert backend.committed_current_mba_instruction_origins()
+    assert backend.committed_current_mba_identity_binding() is snapshot
 
     gateway.fail = True
     with pytest.raises(RuntimeError, match="publication aborted"):
         backend.publish_fragment(object(), live_source=object())
 
-    assert backend.committed_current_mba_instruction_origins() == ()
+    assert backend.committed_current_mba_identity_binding() is None
 
 
 def test_default_fragment_backend_receives_native_body_materializer(

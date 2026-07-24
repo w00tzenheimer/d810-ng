@@ -27,6 +27,7 @@ from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.ir.block_identity import (
     BoundBlock,
+    CurrentMbaIdentityBindingSnapshot,
     MbaBlockHandle,
     RebindStatus,
     StableBlockIdentity,
@@ -75,7 +76,7 @@ class ResolverSessionState:
     preopt_union_mutated_mbas: set[tuple[int, int, int]] = field(default_factory=set)
     attempted_mbas: set[tuple[int, int, int, int]] = field(default_factory=set)
     current_mba_token: int | None = None
-    current_imported_instruction_origins: tuple[tuple[int, int], ...] = ()
+    current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None
     current_imported_root_handles: tuple[tuple[int, MbaBlockHandle], ...] = ()
 
     @property
@@ -134,12 +135,12 @@ class ResolverSessionState:
             )
         self.identity_index = index
 
-    def bind_current_imported_instruction_origins(
+    def bind_current_imported_publication(
         self,
         mba_token: int,
-        origins: tuple[tuple[int, int], ...],
+        binding: CurrentMbaIdentityBindingSnapshot,
     ) -> bool:
-        """Bind synthetic instruction coordinates to exactly one live MBA.
+        """Bind one receipt-backed imported publication to exactly one live MBA.
 
         Synthetic EAs are maturity-local coordinates, not portable evidence.
         The binding therefore lives beside the current identity index and is
@@ -148,37 +149,43 @@ class ResolverSessionState:
         token = int(mba_token)
         if token <= 0:
             raise ValueError("current MBA token must be positive")
-        native_by_imported: dict[int, int] = {}
-        for imported_ea, native_ea in origins:
-            imported_ea = int(imported_ea)
-            native_ea = int(native_ea)
-            if imported_ea <= 0 or native_ea <= 0:
-                raise ValueError("imported instruction origins require positive EAs")
-            previous = native_by_imported.get(imported_ea)
-            if previous is not None and previous != native_ea:
-                raise ValueError(
-                    "one imported instruction EA cannot have multiple native origins"
-                )
-            native_by_imported[imported_ea] = native_ea
-        normalized = tuple(sorted(native_by_imported.items()))
+        if not isinstance(binding, CurrentMbaIdentityBindingSnapshot):
+            raise TypeError(
+                "current imported publication requires an identity snapshot"
+            )
+        if any(
+            block_binding.stable_identity.native_key != self.native_key
+            for block_binding in binding.block_bindings
+        ):
+            raise ValueError(
+                "current imported publication belongs to another native identity"
+            )
         if self.current_mba_token != token:
             self.current_imported_root_handles = ()
         changed = (
             self.current_mba_token != token
-            or self.current_imported_instruction_origins != normalized
+            or self.current_mba_identity_binding != binding
         )
         self.current_mba_token = token
-        self.current_imported_instruction_origins = normalized
+        self.current_mba_identity_binding = binding
         return changed
+
+    def current_mba_identity_binding_for(
+        self,
+        mba_token: int,
+    ) -> CurrentMbaIdentityBindingSnapshot | None:
+        """Return full imported identity only for the live MBA that published it."""
+        if self.current_mba_token != int(mba_token):
+            return None
+        return self.current_mba_identity_binding
 
     def imported_instruction_origins_for(
         self,
         mba_token: int,
     ) -> tuple[tuple[int, int], ...]:
-        """Return provenance only for the live MBA generation that published it."""
-        if self.current_mba_token != int(mba_token):
-            return ()
-        return self.current_imported_instruction_origins
+        """Project current point origins from the atomic publication binding."""
+        binding = self.current_mba_identity_binding_for(mba_token)
+        return () if binding is None else binding.instruction_origins
 
     def bind_current_imported_root_handles(
         self,
@@ -242,7 +249,7 @@ class ResolverSessionState:
         self.preopt_union_mutated_mbas.clear()
         self.attempted_mbas.clear()
         self.current_mba_token = None
-        self.current_imported_instruction_origins = ()
+        self.current_mba_identity_binding = None
         self.current_imported_root_handles = ()
 
     def invalidate_current_mba_binding(self) -> None:

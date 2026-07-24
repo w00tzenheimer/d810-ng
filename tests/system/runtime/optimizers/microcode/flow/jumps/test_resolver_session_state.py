@@ -36,6 +36,8 @@ from d810.hexrays.mutation.mba_mutation_events import (
     StructuralMutationKind,
 )
 from d810.ir.block_identity import (
+    CurrentMbaBlockIdentityBinding,
+    CurrentMbaIdentityBindingSnapshot,
     MbaBlockHandle,
     NativeEaInterval,
     StableBlockIdentity,
@@ -54,6 +56,27 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
 from tests.native_preanalysis import make_native_key
 
 NATIVE_KEY = make_native_key()
+
+
+def _current_imported_publication(
+    origins: tuple[tuple[int, int], ...],
+) -> CurrentMbaIdentityBindingSnapshot:
+    native_by_live = dict(origins)
+    if not native_by_live:
+        return CurrentMbaIdentityBindingSnapshot((), ())
+    identity = StableBlockIdentity.from_instruction_eas(
+        native_by_live.values(),
+        native_key=NATIVE_KEY,
+    )
+    return CurrentMbaIdentityBindingSnapshot(
+        instruction_origins=tuple(origins),
+        block_bindings=(
+            CurrentMbaBlockIdentityBinding(
+                stable_identity=identity,
+                live_instruction_eas=frozenset(native_by_live),
+            ),
+        ),
+    )
 
 
 def _publish_normalization(state: NativePreanalysisSessionState) -> None:
@@ -142,31 +165,58 @@ def test_imported_instruction_origins_are_current_mba_owned_and_normalized() -> 
         native_preanalysis=NativePreanalysisSessionState(), native_key=NATIVE_KEY
     )
 
-    assert state.bind_current_imported_instruction_origins(
-        0x1234,
+    first_binding = _current_imported_publication(
         (
             (0xFFFFFFFFFFFFFF02, 0x40EAA8),
             (0xFFFFFFFFFFFFFF01, 0x40EAA7),
             (0xFFFFFFFFFFFFFF01, 0x40EAA7),
-        ),
+        )
     )
+    assert state.bind_current_imported_publication(0x1234, first_binding)
+    assert state.current_mba_identity_binding_for(0x1234) is first_binding
     assert state.imported_instruction_origins_for(0x1234) == (
         (0xFFFFFFFFFFFFFF01, 0x40EAA7),
         (0xFFFFFFFFFFFFFF02, 0x40EAA8),
     )
     assert state.imported_instruction_origins_for(0x5678) == ()
-    assert not state.bind_current_imported_instruction_origins(
+    assert state.current_mba_identity_binding_for(0x5678) is None
+    assert not state.bind_current_imported_publication(
         0x1234,
-        (
-            (0xFFFFFFFFFFFFFF02, 0x40EAA8),
-            (0xFFFFFFFFFFFFFF01, 0x40EAA7),
+        _current_imported_publication(
+            (
+                (0xFFFFFFFFFFFFFF02, 0x40EAA8),
+                (0xFFFFFFFFFFFFFF01, 0x40EAA7),
+            )
         ),
     )
 
     state.release_live_bindings()
 
     assert state.current_mba_token is None
-    assert state.current_imported_instruction_origins == ()
+    assert state.current_mba_identity_binding is None
+
+
+def test_current_imported_publication_rejects_another_native_identity() -> None:
+    state = ResolverSessionState(
+        native_preanalysis=NativePreanalysisSessionState(), native_key=NATIVE_KEY
+    )
+    other_key = make_native_key(function_rva=NATIVE_KEY.function_rva + 0x10)
+    identity = StableBlockIdentity.from_instruction_eas(
+        (0x40EAA7,),
+        native_key=other_key,
+    )
+    binding = CurrentMbaIdentityBindingSnapshot(
+        instruction_origins=((0xFFFFFFFFFFFFFF01, 0x40EAA7),),
+        block_bindings=(
+            CurrentMbaBlockIdentityBinding(
+                stable_identity=identity,
+                live_instruction_eas=frozenset({0xFFFFFFFFFFFFFF01}),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="another native identity"):
+        state.bind_current_imported_publication(0x1234, binding)
 
 
 def test_imported_root_handles_are_current_mba_owned_and_serial_free() -> None:
@@ -184,17 +234,25 @@ def test_imported_root_handles_are_current_mba_owned_and_serial_free() -> None:
         token="imported-root",
     )
 
-    assert state.bind_current_imported_instruction_origins(0x1234, ())
+    assert state.bind_current_imported_publication(
+        0x1234,
+        CurrentMbaIdentityBindingSnapshot((), ()),
+    )
     state.bind_current_imported_root_handles(
         0x1234,
-        ((target_ea, handle),),
+        (
+            (target_ea, handle),
+        ),
     )
 
     assert state.imported_root_handles_for(0x1234) == ((target_ea, handle),)
     assert state.imported_root_handles_for(0x5678) == ()
     assert not hasattr(handle, "serial")
 
-    assert state.bind_current_imported_instruction_origins(0x5678, ())
+    assert state.bind_current_imported_publication(
+        0x5678,
+        CurrentMbaIdentityBindingSnapshot((), ()),
+    )
     assert state.current_imported_root_handles == ()
 
 
@@ -213,7 +271,7 @@ def test_imported_root_handles_are_current_mba_owned_and_serial_free() -> None:
         ),
     ),
 )
-def test_current_mba_imported_origins_reject_invalid_coordinates(
+def test_current_mba_imported_publication_rejects_invalid_coordinates(
     mba_token: int,
     origins: tuple[tuple[int, int], ...],
 ) -> None:
@@ -222,7 +280,8 @@ def test_current_mba_imported_origins_reject_invalid_coordinates(
     )
 
     with pytest.raises(ValueError):
-        state.bind_current_imported_instruction_origins(mba_token, origins)
+        binding = CurrentMbaIdentityBindingSnapshot(origins, ())
+        state.bind_current_imported_publication(mba_token, binding)
 
 
 def test_portable_dispatcher_region_merges_without_snapshot_serials() -> None:

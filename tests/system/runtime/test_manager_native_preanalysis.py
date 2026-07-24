@@ -22,7 +22,13 @@ from d810.hexrays.mutation.mba_mutation_events import (
     StructuralMutationKind,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
-from d810.ir.block_identity import MbaBlockHandle
+from d810.ir.block_identity import (
+    CurrentMbaBlockIdentityBinding,
+    CurrentMbaIdentityBindingSnapshot,
+    MbaBlockHandle,
+    NativeEaInterval,
+    StableBlockIdentity,
+)
 from d810.manager.manager import (
     D810Manager,
     _build_current_mba_identity_index,
@@ -38,11 +44,29 @@ from tests.native_preanalysis import make_native_key
 NATIVE_KEY = make_native_key()
 
 
-def test_current_mba_identity_index_uses_only_current_mba_imported_origins(
+def _current_mba_identity_binding() -> CurrentMbaIdentityBindingSnapshot:
+    live_ea = 0xFFFFFFFFFFFFFF01
+    native_ea = 0x40A70E
+    return CurrentMbaIdentityBindingSnapshot(
+        instruction_origins=((live_ea, native_ea),),
+        block_bindings=(
+            CurrentMbaBlockIdentityBinding(
+                stable_identity=StableBlockIdentity.from_intervals(
+                    (NativeEaInterval(0x40A700, 0x40A720),),
+                    native_key=NATIVE_KEY,
+                    exact_instruction_eas=(native_ea,),
+                ),
+                live_instruction_eas=frozenset({live_ea}),
+            ),
+        ),
+    )
+
+
+def test_current_mba_identity_index_uses_only_current_mba_publication_binding(
     monkeypatch,
 ) -> None:
     native_preanalysis = NativePreanalysisSessionState()
-    origins = ((0xFFFFFFFFFFFFFF01, 0x40A70E),)
+    binding = _current_mba_identity_binding()
     session = SimpleNamespace(
         native_preanalysis=native_preanalysis,
         native_key=NATIVE_KEY,
@@ -57,7 +81,7 @@ def test_current_mba_identity_index_uses_only_current_mba_imported_origins(
         this=0x1234,
         build_graph=lambda: events.append("build_graph"),
     )
-    assert state.bind_current_imported_instruction_origins(0x1234, origins)
+    assert state.bind_current_imported_publication(0x1234, binding)
     captured: dict[str, object] = {}
     index = SimpleNamespace(
         evidence_generation=native_preanalysis.evidence_generation,
@@ -78,12 +102,13 @@ def test_current_mba_identity_index_uses_only_current_mba_imported_origins(
 
     assert _build_current_mba_identity_index(session=session, mba=mba) is index
     assert captured["mba"] is mba
-    assert captured["imported_instruction_origins"] == dict(origins)
+    assert captured["current_mba_identity_binding"] is binding
+    assert "imported_instruction_origins" not in captured
     assert state.identity_index is index
     assert events == ["build_graph", "index"]
 
 
-def test_current_mba_identity_index_rejects_previous_mba_origins(monkeypatch) -> None:
+def test_current_mba_identity_index_rejects_previous_mba_binding(monkeypatch) -> None:
     native_preanalysis = NativePreanalysisSessionState()
     session = SimpleNamespace(
         native_preanalysis=native_preanalysis,
@@ -93,9 +118,9 @@ def test_current_mba_identity_index_rejects_previous_mba_origins(monkeypatch) ->
         function_ea=0x40A560,
     )
     state = resolver_session_state(session)
-    assert state.bind_current_imported_instruction_origins(
+    assert state.bind_current_imported_publication(
         0x1234,
-        ((0xFFFFFFFFFFFFFF01, 0x40A70E),),
+        _current_mba_identity_binding(),
     )
     captured: dict[str, object] = {}
     index = SimpleNamespace(evidence_generation=0, generation=0)
@@ -115,7 +140,8 @@ def test_current_mba_identity_index_rejects_previous_mba_origins(monkeypatch) ->
         ),
     )
 
-    assert captured["imported_instruction_origins"] == {}
+    assert captured["current_mba_identity_binding"] is None
+    assert "imported_instruction_origins" not in captured
 
 
 def test_current_mba_mutation_gateway_uses_session_lifecycle_authority() -> None:

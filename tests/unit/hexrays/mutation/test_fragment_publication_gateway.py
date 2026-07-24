@@ -29,7 +29,12 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventoryItem,
 )
 from d810.ir.expressions import ValueOpKind
-from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.block_identity import (
+    CurrentMbaBlockIdentityBinding,
+    CurrentMbaIdentityBindingSnapshot,
+    NativeEaInterval,
+    StableBlockIdentity,
+)
 from d810.ir.flowgraph import BlockKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.manager.fragment_publication_lifecycle import (
@@ -334,7 +339,7 @@ class _FragmentBackend:
         raise_during_publish: bool = False,
         raise_during_rollback: bool = False,
         omit_semantic_edge_record: bool = False,
-        current_mba_instruction_origins: tuple[tuple[int, int], ...] = (),
+        current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None,
     ) -> None:
         self.mba = SimpleNamespace(qty=4)
         self.gateway = gateway
@@ -343,18 +348,22 @@ class _FragmentBackend:
         self.raise_during_publish = raise_during_publish
         self.raise_during_rollback = raise_during_rollback
         self.omit_semantic_edge_record = omit_semantic_edge_record
-        self.current_mba_instruction_origins = current_mba_instruction_origins
+        self.current_mba_identity_binding = (
+            CurrentMbaIdentityBindingSnapshot((), ())
+            if current_mba_identity_binding is None
+            else current_mba_identity_binding
+        )
         self.calls: list[str] = []
         self.root_published = False
         self.projection: ProjectedFragment | None = None
         self.original_handle = None
         self.replacement_handle = None
 
-    def _semantic_fragment_current_mba_instruction_origins(
+    def _semantic_fragment_current_mba_identity_binding(
         self,
         _plan: FragmentPlan,
-    ) -> tuple[tuple[int, int], ...]:
-        return self.current_mba_instruction_origins
+    ) -> CurrentMbaIdentityBindingSnapshot:
+        return self.current_mba_identity_binding
 
     def _plan_semantic_fragment_root_publication_inventory(
         self,
@@ -635,21 +644,35 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     assert aborted == []
 
 
-def test_gateway_receipts_current_mba_instruction_origins_only_after_commit() -> None:
+def test_gateway_receipts_current_mba_identity_binding_only_after_commit() -> None:
     plan = _plan()
     gateway, _committed, _aborted = _gateway(plan)
     origins = (
-        (0xFFFFFFFFFFFFFF01, 0x401010),
-        (0xFFFFFFFFFFFFFF02, 0x401014),
+        (0xFFFFFFFFFFFFFF01, 0x401000),
+        (0xFFFFFFFFFFFFFF02, 0x401004),
+    )
+    identity = plan.block("replacement").stable_identity
+    assert identity is not None
+    snapshot = CurrentMbaIdentityBindingSnapshot(
+        instruction_origins=origins,
+        block_bindings=(
+            CurrentMbaBlockIdentityBinding(
+                stable_identity=identity,
+                live_instruction_eas=frozenset(
+                    live_ea for live_ea, _native_ea in origins
+                ),
+            ),
+        ),
     )
     backend = _FragmentBackend(
         gateway,
-        current_mba_instruction_origins=origins,
+        current_mba_identity_binding=snapshot,
     )
 
     receipt = gateway.publish_semantic_fragment(backend, plan)
 
-    assert receipt.current_mba_instruction_origins == origins
+    assert receipt.current_mba_identity_binding == snapshot
+    assert not hasattr(receipt, "current_mba_instruction_origins")
 
 
 def test_gateway_inventories_terminal_effects_as_first_class_fragment_items() -> None:

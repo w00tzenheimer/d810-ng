@@ -193,9 +193,9 @@ RESOLVER_SESSION_FIELD_INVENTORY = {
         FieldLifetime.CALLBACK_LOCAL,
         "current MBA generation token for imported instruction provenance",
     ),
-    "current_imported_instruction_origins": FieldInventory(
+    "current_mba_identity_binding": FieldInventory(
         FieldLifetime.CALLBACK_LOCAL,
-        "current MBA synthetic-to-native instruction provenance",
+        "receipt-backed current MBA point origins and full imported ranges",
     ),
     "current_imported_root_handles": FieldInventory(
         FieldLifetime.CALLBACK_LOCAL,

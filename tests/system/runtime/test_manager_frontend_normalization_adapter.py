@@ -11,6 +11,12 @@ from d810.analyses.control_flow.frontend_normalization import (
 )
 from d810.core.observability import subscribe, unsubscribe
 from d810.core.observability_events import LifecycleEventObserved
+from d810.ir.block_identity import (
+    CurrentMbaBlockIdentityBinding,
+    CurrentMbaIdentityBindingSnapshot,
+    NativeEaInterval,
+    StableBlockIdentity,
+)
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.manager.decompilation_lifecycle import DecompilationSessionContext
 from d810.manager.frontend_normalization import FrontendNormalizationRunResult
@@ -67,7 +73,9 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
         live_source=mba,
     )
     backend = SimpleNamespace(
-        committed_current_mba_instruction_origins=lambda: (),
+        committed_current_mba_identity_binding=lambda: (
+            CurrentMbaIdentityBindingSnapshot((), ())
+        ),
     )
     captured: dict[str, object] = {}
     monkeypatch.setattr(
@@ -128,7 +136,7 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
     }
 
 
-def test_live_adapter_binds_committed_import_origins_to_current_mba(
+def test_live_adapter_binds_committed_import_identity_to_current_mba(
     monkeypatch,
 ) -> None:
     from d810.hexrays.mutation import detached_handler_island
@@ -141,6 +149,22 @@ def test_live_adapter_binds_committed_import_origins_to_current_mba(
     imported_origins = (
         (0xFFFFFFFFFFFFFF01, 0x40A70E),
         (0xFFFFFFFFFFFFFF02, 0x40A710),
+    )
+    imported_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40A700, 0x40A720),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40A70E, 0x40A710),
+    )
+    imported_binding = CurrentMbaIdentityBindingSnapshot(
+        instruction_origins=imported_origins,
+        block_bindings=(
+            CurrentMbaBlockIdentityBinding(
+                stable_identity=imported_identity,
+                live_instruction_eas=frozenset(
+                    live_ea for live_ea, _native_ea in imported_origins
+                ),
+            ),
+        ),
     )
     monkeypatch.setattr(
         detached_handler_island,
@@ -159,7 +183,7 @@ def test_live_adapter_binds_committed_import_origins_to_current_mba(
         ),
     )
     backend = SimpleNamespace(
-        committed_current_mba_instruction_origins=lambda: imported_origins,
+        committed_current_mba_identity_binding=lambda: imported_binding,
     )
     monkeypatch.setattr(live_normalization, "_new_live_backend", lambda **_kwargs: backend)
     monkeypatch.setattr(
@@ -187,14 +211,28 @@ def test_live_adapter_binds_committed_import_origins_to_current_mba(
         unsubscribe(LifecycleEventObserved, observed.append)
 
     assert state.current_mba_token == 0x1234
+    assert state.current_mba_identity_binding_for(0x1234) is imported_binding
     assert state.imported_instruction_origins_for(0x1234) == imported_origins
     assert len(observed) == 1
-    assert observed[0].event_kind == "current_mba_import_origins_bound"
+    assert observed[0].event_kind == "current_mba_import_identity_bound"
     assert observed[0].payload == {
         "outcome": "bound",
         "origin_count": 2,
         "native_ea_count": 2,
         "native_eas": [0x40A70E, 0x40A710],
+        "block_binding_count": 1,
+        "block_bindings": [
+            {
+                "live_instruction_eas": [
+                    0xFFFFFFFFFFFFFF01,
+                    0xFFFFFFFFFFFFFF02,
+                ],
+                "exact_instruction_eas": [0x40A70E, 0x40A710],
+                "native_ranges": [
+                    {"start_ea": 0x40A700, "end_ea": 0x40A720}
+                ],
+            }
+        ],
     }
 
 
@@ -322,4 +360,4 @@ def test_live_adapter_records_planning_rejection_before_failing_open(
         "reason": "original route corridor is not closed",
     }
     assert state.current_mba_token is None
-    assert state.current_imported_instruction_origins == ()
+    assert state.current_mba_identity_binding is None
