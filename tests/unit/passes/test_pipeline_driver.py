@@ -262,6 +262,7 @@ def _fragment_plan() -> FragmentPlan:
             work_item_id="pipeline-fragment:complete",
             selected_obligation_ids=("normalize-direct",),
             remaining_obligation_ids=(),
+            unreachable_obligation_ids=(),
         ),
     )
 

@@ -28,6 +28,7 @@ from d810.transforms.fragment_plan import (
     FragmentRangeAssumption,
     FragmentRangeObservation,
     FragmentValueSite,
+    FragmentWorkItemScope,
 )
 from tests.native_preanalysis import make_native_key
 
@@ -244,6 +245,24 @@ def test_fragment_operation_supports_explicit_call_fallthrough() -> None:
 
     assert operation.roles == frozenset({SemanticEdgeRole.CALL_FALLTHROUGH})
     assert operation.predicate_anchor_ea is None
+
+
+def test_work_item_scope_keeps_root_unreachable_obligations_disjoint() -> None:
+    scope = FragmentWorkItemScope(
+        work_item_id="frontend-normalization:g1:reachable",
+        selected_obligation_ids=("route@0x401000",),
+        remaining_obligation_ids=("route@0x402000",),
+        unreachable_obligation_ids=("route@0x403000",),
+    )
+
+    assert scope.unreachable_obligation_ids == ("route@0x403000",)
+    with pytest.raises(FragmentPlanRejected, match="root-unreachable.*disjoint"):
+        FragmentWorkItemScope(
+            work_item_id="frontend-normalization:g1:overlap",
+            selected_obligation_ids=("route@0x401000",),
+            remaining_obligation_ids=(),
+            unreachable_obligation_ids=("route@0x401000",),
+        )
 
 
 def test_fragment_operation_carries_typed_computed_branch_normalization() -> None:

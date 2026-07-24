@@ -176,6 +176,7 @@ class _Backend:
                     work_item_id="frontend-normalization:g7:root@0x1100",
                     selected_obligation_ids=("direct@0x1100",),
                     remaining_obligation_ids=("direct@0x1400",),
+                    unreachable_obligation_ids=(),
                 )
             else:
                 self.state._fragment_publication_mark_normalization_published_and_postvalidated()

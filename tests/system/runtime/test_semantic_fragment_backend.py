@@ -1158,6 +1158,7 @@ def _plan_with_imported_conditional(
                 work_item_id="runtime-imported-native-conditional:complete",
                 selected_obligation_ids=("imported-conditional-route",),
                 remaining_obligation_ids=(),
+                unreachable_obligation_ids=(),
             )
             if unresolved_transfer_native_ea is not None
             else None
@@ -1679,6 +1680,7 @@ def _conditional_select_plan(
             work_item_id="conditional-select@0x40A605",
             selected_obligation_ids=("native-indirect-transfer@0x40A605",),
             remaining_obligation_ids=(),
+            unreachable_obligation_ids=(),
         ),
         blocks=plan.blocks + (selected_block,),
         operations=(

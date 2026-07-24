@@ -169,6 +169,7 @@ class SessionFragmentPublicationLifecycleAuthority:
                 work_item_id=scope.work_item_id,
                 selected_obligation_ids=scope.selected_obligation_ids,
                 remaining_obligation_ids=scope.remaining_obligation_ids,
+                unreachable_obligation_ids=scope.unreachable_obligation_ids,
             )
         else:
             self.state._fragment_publication_mark_semantic_fragment_published_and_postvalidated()

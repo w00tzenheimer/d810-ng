@@ -804,6 +804,7 @@ class NativePreanalysisSessionState:
     normalization_last_published_work_item_id: str | None = None
     normalization_last_selected_obligation_ids: tuple[str, ...] = ()
     normalization_last_remaining_obligation_ids: tuple[str, ...] = ()
+    normalization_last_unreachable_obligation_ids: tuple[str, ...] = ()
     canonical_semantic_plan_generation: int | None = None
     semantic_fragment_staged_generation: int | None = None
     semantic_fragment_validated_generation: int | None = None
@@ -892,11 +893,16 @@ class NativePreanalysisSessionState:
             str(value).strip()
             for value in self.normalization_last_remaining_obligation_ids
         )
+        unreachable_obligation_ids = tuple(
+            str(value).strip()
+            for value in self.normalization_last_unreachable_obligation_ids
+        )
         if publication_revision == 0:
             if (
                 work_item_id is not None
                 or selected_obligation_ids
                 or remaining_obligation_ids
+                or unreachable_obligation_ids
             ):
                 raise ValueError(
                     "unpublished normalization work item cannot retain authority"
@@ -907,10 +913,26 @@ class NativePreanalysisSessionState:
             or not selected_obligation_ids
             or any(not value for value in selected_obligation_ids)
             or any(not value for value in remaining_obligation_ids)
+            or any(not value for value in unreachable_obligation_ids)
             or len(set(selected_obligation_ids)) != len(selected_obligation_ids)
             or len(set(remaining_obligation_ids))
             != len(remaining_obligation_ids)
-            or set(selected_obligation_ids) & set(remaining_obligation_ids)
+            or len(set(unreachable_obligation_ids))
+            != len(unreachable_obligation_ids)
+            or (
+                len(
+                    set(
+                        (
+                            *selected_obligation_ids,
+                            *remaining_obligation_ids,
+                            *unreachable_obligation_ids,
+                        )
+                    )
+                )
+                != len(selected_obligation_ids)
+                + len(remaining_obligation_ids)
+                + len(unreachable_obligation_ids)
+            )
         ):
             raise ValueError(
                 "published normalization work item requires disjoint obligations"
@@ -922,6 +944,9 @@ class NativePreanalysisSessionState:
         self.normalization_last_selected_obligation_ids = selected_obligation_ids
         self.normalization_last_remaining_obligation_ids = (
             remaining_obligation_ids
+        )
+        self.normalization_last_unreachable_obligation_ids = (
+            unreachable_obligation_ids
         )
 
         normalization_order = (
@@ -1022,6 +1047,7 @@ class NativePreanalysisSessionState:
         work_item_id: str,
         selected_obligation_ids: tuple[str, ...],
         remaining_obligation_ids: tuple[str, ...],
+        unreachable_obligation_ids: tuple[str, ...],
     ) -> bool:
         """Record one receipted work item without overstating generation authority."""
         generation = self._require_current_portable_evidence()
@@ -1035,13 +1061,18 @@ class NativePreanalysisSessionState:
         work_item_id = str(work_item_id).strip()
         selected = tuple(str(value).strip() for value in selected_obligation_ids)
         remaining = tuple(str(value).strip() for value in remaining_obligation_ids)
+        unreachable = tuple(
+            str(value).strip() for value in unreachable_obligation_ids
+        )
         if (
             not work_item_id
             or not selected
-            or any(not value for value in (*selected, *remaining))
+            or any(not value for value in (*selected, *remaining, *unreachable))
             or len(set(selected)) != len(selected)
             or len(set(remaining)) != len(remaining)
-            or set(selected) & set(remaining)
+            or len(set(unreachable)) != len(unreachable)
+            or len(set((*selected, *remaining, *unreachable)))
+            != len(selected) + len(remaining) + len(unreachable)
         ):
             raise ValueError(
                 "normalization work-item commit requires disjoint obligations"
@@ -1050,6 +1081,7 @@ class NativePreanalysisSessionState:
         self.normalization_last_published_work_item_id = work_item_id
         self.normalization_last_selected_obligation_ids = selected
         self.normalization_last_remaining_obligation_ids = remaining
+        self.normalization_last_unreachable_obligation_ids = unreachable
         if not remaining:
             return self._fragment_publication_mark_normalization_published_and_postvalidated()
 
@@ -1062,7 +1094,8 @@ class NativePreanalysisSessionState:
             evidence_family="frontend_normalization",
             reason=(
                 f"work item {work_item_id} published with {len(selected)} "
-                f"selected and {len(remaining)} remaining obligations"
+                f"selected, {len(remaining)} remaining, and "
+                f"{len(unreachable)} root-unreachable obligations"
             ),
         )
         return False
