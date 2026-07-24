@@ -38,6 +38,7 @@ from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+from d810.hexrays.ir_maturity import HexRaysMaturity
 from d810.core.decompilation_session import DecompilationEvent
 from d810.hexrays.lifecycle import HEXRAYS_MICROCODE_PROVIDER
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
@@ -225,12 +226,28 @@ def _new_current_mba_mutation_gateway(
 def _new_semantic_native_body_materializer(*, session, mba):
     """Construct the sole Hex-Rays native-body materialization capability."""
     from d810.hexrays.mutation.detached_handler_island import (
+        CallsCallFreeSemanticNativeBodyMaterializer,
         PreoptUnionSemanticNativeBodyMaterializer,
     )
 
-    return PreoptUnionSemanticNativeBodyMaterializer(
-        mba=mba,
-        function_ea=int(session.function_ea),
+    maturity = int(mba.maturity)
+    native_maturity = HexRaysMaturity.from_id(maturity)
+    if native_maturity in {
+        HexRaysMaturity.MMAT_GENERATED,
+        HexRaysMaturity.MMAT_PREOPTIMIZED,
+    }:
+        return PreoptUnionSemanticNativeBodyMaterializer(
+            mba=mba,
+            function_ea=int(session.function_ea),
+        )
+    if native_maturity is HexRaysMaturity.MMAT_CALLS:
+        return CallsCallFreeSemanticNativeBodyMaterializer(
+            mba=mba,
+            function_ea=int(session.function_ea),
+        )
+    raise ValueError(
+        "unsupported semantic native-body materializer maturity: "
+        f"{maturity if native_maturity is None else native_maturity.name}"
     )
 
 

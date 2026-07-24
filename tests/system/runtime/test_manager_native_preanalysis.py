@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import ida_hexrays
+import pytest
+
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
@@ -266,7 +269,7 @@ def test_manager_constructs_the_semantic_native_body_materializer() -> None:
         PreoptUnionSemanticNativeBodyMaterializer,
     )
 
-    mba = object()
+    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED)
     materializer = _new_semantic_native_body_materializer(
         session=SimpleNamespace(function_ea=0x40A560),
         mba=mba,
@@ -278,6 +281,38 @@ def test_manager_constructs_the_semantic_native_body_materializer() -> None:
     )
     assert materializer.mba is mba
     assert materializer.function_ea == 0x40A560
+
+
+def test_manager_constructs_the_calls_call_free_native_body_materializer() -> None:
+    from d810.hexrays.mutation.detached_handler_island import (
+        CallsCallFreeSemanticNativeBodyMaterializer,
+    )
+
+    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_CALLS)
+    materializer = _new_semantic_native_body_materializer(
+        session=SimpleNamespace(function_ea=0x40A560),
+        mba=mba,
+    )
+
+    assert isinstance(
+        materializer,
+        CallsCallFreeSemanticNativeBodyMaterializer,
+    )
+    assert materializer.mba is mba
+    assert materializer.function_ea == 0x40A560
+
+
+def test_manager_rejects_unsupported_native_body_materializer_maturity() -> None:
+    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1)
+
+    with pytest.raises(
+        ValueError,
+        match="unsupported semantic native-body materializer maturity",
+    ):
+        _new_semantic_native_body_materializer(
+            session=SimpleNamespace(function_ea=0x40A560),
+            mba=mba,
+        )
 
 
 def test_manager_preserves_applied_work_on_aborted_mutation_receipt(

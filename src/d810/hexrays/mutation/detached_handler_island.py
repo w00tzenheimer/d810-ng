@@ -2411,6 +2411,103 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             )
 
 
+@dataclass(slots=True)
+class CallsCallFreeSemanticNativeBodyMaterializer(
+    PreoptUnionSemanticNativeBodyMaterializer
+):
+    """Populate one call/return-free body during canonical CALLS lowering."""
+
+    @staticmethod
+    def _instruction_tree(instruction: object) -> tuple[object, ...]:
+        pending = [instruction]
+        result: list[object] = []
+        while pending:
+            current = pending.pop()
+            result.append(current)
+            pending.extend(
+                reversed(
+                    tuple(
+                        operand.d
+                        for operand in _instruction_operands(current)
+                        if int(operand.t) == int(ida_hexrays.mop_d)
+                    )
+                )
+            )
+        return tuple(result)
+
+    @classmethod
+    def _require_call_free_instructions(
+        cls,
+        *,
+        rows: Mapping[str, tuple[tuple[int, object], ...]],
+    ) -> None:
+        forbidden_opcodes = {
+            int(ida_hexrays.m_call),
+            int(ida_hexrays.m_icall),
+            int(ida_hexrays.m_ret),
+        }
+        for block_id, instructions in rows.items():
+            for native_ea, instruction in instructions:
+                forbidden = next(
+                    (
+                        nested
+                        for nested in cls._instruction_tree(instruction)
+                        if int(nested.opcode) in forbidden_opcodes
+                    ),
+                    None,
+                )
+                if forbidden is not None:
+                    raise SemanticFragmentBackendRejected(
+                        "CALLS native body must be call/return-free; "
+                        f"block={block_id!r}@0x{int(native_ea):X} "
+                        f"opcode={int(forbidden.opcode)}"
+                    )
+
+    def stage_native_body(
+        self,
+        *,
+        context: object,
+        native_body: FragmentNativeBody,
+    ) -> None:
+        """Populate unpublished CALLS blocks without weakening PREOPT rules."""
+        if int(self.mba.maturity) != int(ida_hexrays.MMAT_CALLS):
+            raise SemanticFragmentBackendRejected(
+                "CALLS native body requires an MMAT_CALLS destination MBA"
+            )
+        template, matched = self._select_template_blocks(context, native_body)
+        self._require_call_free_instructions(
+            rows={
+                block_id: tuple(
+                    (int(instruction.ea), instruction)
+                    for instruction in template_block.instructions
+                )
+                for block_id, template_block in matched.items()
+            },
+        )
+        stack_map, computed_normalizations = self._preflight_stack_rebase(
+            template,
+            matched,
+            native_body,
+            context.plan,
+        )
+        prepared = self._prepare_native_body_instructions(
+            template=template,
+            matched=matched,
+            stack_map=stack_map,
+            computed_normalizations=computed_normalizations,
+        )
+        self._require_call_free_instructions(rows=prepared)
+        for block_id in native_body.block_ids:
+            context.stage_block(block_id)
+        for block_id in native_body.block_ids:
+            template_block = matched[block_id]
+            context.populate_block(
+                block_id=block_id,
+                instructions=prepared[block_id],
+                block_flags=int(template_block.block_flags),
+            )
+
+
 _IMPORTED_DIRECT_BOUNDARY_EVIDENCE: dict[
     int,
     tuple[AppliedDetachedSnippetDirectBoundaryPort, ...],
