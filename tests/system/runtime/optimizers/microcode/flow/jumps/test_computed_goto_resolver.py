@@ -329,16 +329,57 @@ def test_preopt_entry_bridge_publishes_unique_native_stack_consumer() -> None:
         false_target_ea=0x40B9A6,
         selector_state_var_reg=20,
         resolver_kind="preopt_entry_bridge",
+        predicate_stack_ida_stkoff=-0x20,
         predicate_size=4,
         predicate_true_state=0xA0716E5B,
         predicate_false_state=0xEC71CA67,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
         state_carrier_store_ea=0x40A5AE,
         state_carrier_ida_stkoff=0x40,
     )
 
-    bound = computed_goto_resolver._bind_preopt_entry_bridge_consumers(
-        (transfer,),
+    native_cfg = NativeCfg(
+        {0x40BECC: NativeBlock(0x40BECC, 0x40BEE7)}
+    )
+    bound = computed_goto_resolver._project_preopt_entry_consumer_routes(
+        (
+            EntryBridgeEvidence(
+                predicate_ea=0x40A5A0,
+                condition_code=5,
+                predicate_stack_identity=(0x20, 4),
+                stack_cell_identity=(0x80, 4),
+                taken_state_constant=0xA0716E5B,
+                fallthrough_state_constant=0xEC71CA67,
+                source_store_ea=0x40A5AE,
+                canonical_stack_cell_identity=(0x40, 4),
+                canonical_predicate_stack_identity=(-0x20, 4),
+                predicate_block_ea=0x40A59D,
+                conditional_tail_ea=0x40A5AB,
+            ),
+        ),
+        (
+            MaterializedIndirectTransfer(
+                source_jmp_ea=0x40C253,
+                source_block_ea=0x40C253,
+                materialized_anchor_eas=(),
+                target_eas=(0x40C26D,),
+                selector_state_var_reg=20,
+                selector_state_constant=0xA0716E5B,
+                resolver_kind="static_handler_entry_route",
+            ),
+            MaterializedIndirectTransfer(
+                source_jmp_ea=0x40B98C,
+                source_block_ea=0x40B98C,
+                materialized_anchor_eas=(),
+                target_eas=(0x40B9A6,),
+                selector_state_var_reg=20,
+                selector_state_constant=0xEC71CA67,
+                resolver_kind="static_handler_entry_route",
+            ),
+        ),
         consumer_load_eas_by_displacement={0x40: (0x40BECC,)},
+        native_cfg=native_cfg,
         store_displacement_resolver=lambda store_ea: (
             0x40 if int(store_ea) == 0x40A5AE else None
         ),
@@ -346,17 +387,11 @@ def test_preopt_entry_bridge_publishes_unique_native_stack_consumer() -> None:
     assert bound == (
         replace(
             transfer,
+            source_block_ea=0x40A59D,
             state_carrier_stack_displacement=0x40,
             state_carrier_consumer_load_eas=(0x40BECC,),
+            owned_native_ranges=((0x40BECC, 0x40BEE7),),
         ),
-    )
-    assert computed_goto_resolver._bind_preopt_entry_consumer_owned_ranges(
-        bound,
-        native_cfg=NativeCfg(
-            {0x40BECC: NativeBlock(0x40BECC, 0x40BEE7)}
-        ),
-    ) == (
-        replace(bound[0], owned_native_ranges=((0x40BECC, 0x40BEE7),)),
     )
 
 

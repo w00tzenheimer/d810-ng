@@ -6930,6 +6930,29 @@ def _bind_preopt_entry_consumer_owned_ranges(
     return tuple(bound)
 
 
+def _project_preopt_entry_consumer_routes(
+    evidence_rows: tuple[EntryBridgeEvidence, ...],
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    consumer_load_eas_by_displacement: Mapping[int, Sequence[int]],
+    native_cfg: NativeCfg,
+    store_displacement_resolver=None,
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Build complete portable carried choices from one pristine entry proof."""
+    projected = _preopt_entry_bridge_transfers(evidence_rows, transfers)
+    if not projected:
+        return ()
+    bound = _bind_preopt_entry_bridge_consumers(
+        projected,
+        consumer_load_eas_by_displacement=consumer_load_eas_by_displacement,
+        store_displacement_resolver=store_displacement_resolver,
+    )
+    return _bind_preopt_entry_consumer_owned_ranges(
+        bound,
+        native_cfg=native_cfg,
+    )
+
+
 def _without_replaced_imported_dispatcher_ports(
     ports: tuple[DetachedSnippetConditionalBoundaryPort, ...],
     transfers: tuple[MaterializedIndirectTransfer, ...],
@@ -9095,6 +9118,17 @@ def _capture_prepatch_preopt_union_source(
     finally:
         state.finish_snippet_capture()
 
+    entry_consumer_routes = _project_preopt_entry_consumer_routes(
+        state.portable_evidence.preopt_entry_bridges,
+        enriched,
+        consumer_load_eas_by_displacement=(
+            _static_stack_carrier_consumer_load_eas(resolution)
+        ),
+        native_cfg=native_cfg,
+    )
+    published_transfers = tuple(
+        dict.fromkeys((*enriched, *entry_consumer_routes))
+    )
     source = _PrepatchPreoptUnionSource(
         primary_seed_ea=int(region.primary_seed_ea),
         seed_eas=tuple(int(seed_ea) for seed_ea in region.seed_eas),
@@ -9108,7 +9142,11 @@ def _capture_prepatch_preopt_union_source(
         state,
         native_cfg=source.cfg,
         semantic_closure=source.closure,
-        transfers=enriched,
+        transfers=published_transfers,
+    )
+    state.native_preanalysis.merge_entry_consumer_routes(
+        state.native_key,
+        entry_consumer_routes,
     )
     state.native_preanalysis.set_prepatch_preopt_union_source(
         state.native_key,
@@ -10606,7 +10644,6 @@ def prepare_preopt_union_closure(
         seed_eas=tuple(int(seed_ea) for seed_ea in region.seed_eas),
         native_ranges=normalized_ranges,
         imported_block_entry_eas=tuple(effective_closure.included_block_eas),
-        entry_consumer_routes=entry_consumer_routes,
         entry_consumer_port_diagnostic=tuple(
             entry_consumer_port_diagnostic.items()
         ),
@@ -10708,6 +10745,10 @@ def prepare_preopt_union_closure(
         semantic_closure=effective_closure,
         transfers=transfers,
         boundary_ports=boundary_ports,
+    )
+    state.native_preanalysis.merge_entry_consumer_routes(
+        state.native_key,
+        entry_consumer_routes,
     )
     state.native_preanalysis.set_preopt_union_preparation(
         state.native_key,

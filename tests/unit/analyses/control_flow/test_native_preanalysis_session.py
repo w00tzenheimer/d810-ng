@@ -771,14 +771,9 @@ def test_canonical_semantic_evidence_projects_complete_entry_consumer() -> None:
         transfers=(transfer,),
         boundary_ports=DetachedSnippetBoundaryPorts((), ()),
     )
-    assert state.set_preopt_union_preparation(
+    assert state.merge_entry_consumer_routes(
         NATIVE_KEY,
-        PreoptUnionPreparationResult(
-            function_ea=0x1000,
-            prepared=True,
-            published=True,
-            entry_consumer_routes=(transfer,),
-        ),
+        (transfer,),
     )
     _publish_normalization(state)
 
@@ -835,14 +830,9 @@ def test_canonical_semantic_evidence_projects_complete_entry_consumer() -> None:
         transfers=(incomplete,),
         boundary_ports=DetachedSnippetBoundaryPorts((), ()),
     )
-    assert rejected.set_preopt_union_preparation(
+    assert rejected.merge_entry_consumer_routes(
         NATIVE_KEY,
-        PreoptUnionPreparationResult(
-            function_ea=0x1000,
-            prepared=True,
-            published=True,
-            entry_consumer_routes=(incomplete,),
-        ),
+        (incomplete,),
     )
     direct_identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x5000, 0x5010),),
