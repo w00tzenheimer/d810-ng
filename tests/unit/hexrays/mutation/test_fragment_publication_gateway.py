@@ -779,6 +779,7 @@ def test_gateway_advances_only_normalization_for_normalization_plan() -> None:
             work_item_id="gateway-fragment:complete",
             selected_obligation_ids=("route",),
             remaining_obligation_ids=(),
+            unreachable_obligation_ids=("dead-route",),
         ),
     )
     lifecycle = NativePreanalysisSessionState(evidence_generation=1)
@@ -792,6 +793,9 @@ def test_gateway_advances_only_normalization_for_normalization_plan() -> None:
     assert lifecycle.normalization_staged_generation == 1
     assert lifecycle.normalization_validated_generation == 1
     assert lifecycle.normalization_published_postvalidated_generation == 1
+    assert lifecycle.normalization_last_unreachable_obligation_ids == (
+        "dead-route",
+    )
     assert lifecycle.canonical_semantic_plan_generation is None
     assert lifecycle.semantic_fragment_staged_generation is None
     assert lifecycle.receipt_committed_generation is None
@@ -807,6 +811,7 @@ def test_partial_normalization_receipt_does_not_advance_generation_authority() -
             work_item_id="gateway-fragment:root@0x401000",
             selected_obligation_ids=("route@0x401000",),
             remaining_obligation_ids=("route@0x402000",),
+            unreachable_obligation_ids=("route@0x403000",),
         ),
     )
     lifecycle = NativePreanalysisSessionState(evidence_generation=1)
@@ -833,6 +838,9 @@ def test_partial_normalization_receipt_does_not_advance_generation_authority() -
     )
     assert lifecycle.normalization_last_remaining_obligation_ids == (
         "route@0x402000",
+    )
+    assert lifecycle.normalization_last_unreachable_obligation_ids == (
+        "route@0x403000",
     )
 
 
@@ -865,6 +873,7 @@ def test_postpublication_failure_restores_prior_normalization_authority() -> Non
             work_item_id="gateway-fragment:complete",
             selected_obligation_ids=("route",),
             remaining_obligation_ids=(),
+            unreachable_obligation_ids=(),
         ),
     )
     lifecycle = NativePreanalysisSessionState(

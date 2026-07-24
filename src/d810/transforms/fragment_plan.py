@@ -61,6 +61,7 @@ class FragmentWorkItemScope:
     work_item_id: str
     selected_obligation_ids: tuple[str, ...]
     remaining_obligation_ids: tuple[str, ...]
+    unreachable_obligation_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
         work_item_id = _require_identifier(
@@ -75,23 +76,36 @@ class FragmentWorkItemScope:
             _require_identifier(value, "remaining fragment obligation")
             for value in self.remaining_obligation_ids
         )
+        unreachable = tuple(
+            _require_identifier(value, "root-unreachable fragment obligation")
+            for value in self.unreachable_obligation_ids
+        )
         if not selected:
             raise FragmentPlanRejected(
                 "fragment work item requires selected obligations"
             )
-        if len(set(selected)) != len(selected) or len(set(remaining)) != len(
-            remaining
+        if (
+            len(set(selected)) != len(selected)
+            or len(set(remaining)) != len(remaining)
+            or len(set(unreachable)) != len(unreachable)
         ):
             raise FragmentPlanRejected(
                 "fragment work item contains duplicate obligations"
             )
-        if set(selected) & set(remaining):
+        obligation_sets = tuple(map(set, (selected, remaining, unreachable)))
+        if any(
+            left & right
+            for index, left in enumerate(obligation_sets)
+            for right in obligation_sets[index + 1 :]
+        ):
             raise FragmentPlanRejected(
-                "selected and remaining fragment obligations must be disjoint"
+                "selected, remaining, and root-unreachable fragment "
+                "obligations must be disjoint"
             )
         object.__setattr__(self, "work_item_id", work_item_id)
         object.__setattr__(self, "selected_obligation_ids", selected)
         object.__setattr__(self, "remaining_obligation_ids", remaining)
+        object.__setattr__(self, "unreachable_obligation_ids", unreachable)
 
 
 class FragmentDataFlowRole(str, Enum):
