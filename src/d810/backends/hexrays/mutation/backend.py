@@ -55,11 +55,26 @@ class HexRaysMutationBackend:
         self._translator = translator
         self._mutation_gateway = mutation_gateway
         self._semantic_native_body_materializer = semantic_native_body_materializer
+        self._committed_fragment_receipt: object | None = None
         self._fragment_backend_factory = (
             fragment_backend_factory
             if fragment_backend_factory is not None
             else self._new_fragment_backend
         )
+
+    def committed_current_mba_instruction_origins(
+        self,
+    ) -> tuple[tuple[int, int], ...]:
+        """Return only the last successfully committed fragment's live binding."""
+        receipt = self._committed_fragment_receipt
+        if receipt is None:
+            return ()
+        origins = getattr(receipt, "current_mba_instruction_origins", None)
+        if not isinstance(origins, tuple):
+            raise TypeError(
+                "committed fragment receipt has invalid instruction origins"
+            )
+        return origins
 
     def _new_fragment_backend(self, live_source: object, gateway: object) -> object:
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
@@ -132,7 +147,11 @@ class HexRaysMutationBackend:
     ) -> FlowGraph:
         """Publish one complete fragment through an independent gateway batch."""
         del safety_policy
+        self._committed_fragment_receipt = None
         gateway = self._mutation_gateway.new_transaction()
         fragment_backend = self._fragment_backend_factory(live_source, gateway)
-        gateway.publish_semantic_fragment(fragment_backend, fragment_plan)
+        self._committed_fragment_receipt = gateway.publish_semantic_fragment(
+            fragment_backend,
+            fragment_plan,
+        )
         return self._translator.lift(live_source)

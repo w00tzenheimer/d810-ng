@@ -3932,6 +3932,33 @@ class DeferredGraphModifier:
         """Backend-only discard port for unpublished fragment versions."""
         discard_staged_semantic_fragment(self, plan)
 
+    def _semantic_fragment_current_mba_instruction_origins(
+        self,
+        plan: FragmentPlan,
+    ) -> tuple[tuple[int, int], ...]:
+        """Return the staged live/native coordinates owned by one transaction."""
+        state = self._semantic_fragment_state
+        if (
+            state is None
+            or state.plan_id != plan.plan_id
+            or state.atomic_group_id != plan.atomic_group_id
+        ):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment origins have no matching staged state"
+            )
+        native_by_live: dict[int, int] = {}
+        for origins in state.instruction_origins_by_block_id.values():
+            for live_ea, native_ea in origins.items():
+                live_ea = int(live_ea)
+                native_ea = int(native_ea)
+                previous = native_by_live.get(live_ea)
+                if previous is not None and previous != native_ea:
+                    raise SemanticFragmentBackendRejected(
+                        "semantic fragment live instruction has conflicting origins"
+                    )
+                native_by_live[live_ea] = native_ea
+        return tuple(sorted(native_by_live.items()))
+
     @staticmethod
     def _semantic_fragment_publication_token(
         plan: FragmentPlan,

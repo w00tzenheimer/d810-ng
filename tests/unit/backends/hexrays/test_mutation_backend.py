@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+
+import pytest
 
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
@@ -158,6 +160,9 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
 
         def publish_semantic_fragment(self, fragment_backend, fragment_plan):
             published.append((self.name, fragment_backend, fragment_plan))
+            return SimpleNamespace(
+                current_mba_instruction_origins=((0xF10000, 0x401010),),
+            )
 
     fragment_backend = object()
     backend = HexRaysMutationBackend(
@@ -175,6 +180,42 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
     assert result is cfg
     assert published == [("fragment", fragment_backend, plan)]
     assert translator.lift_count == 1
+    assert backend.committed_current_mba_instruction_origins() == (
+        (0xF10000, 0x401010),
+    )
+
+
+def test_publish_fragment_exposes_no_prior_origins_after_abort() -> None:
+    cfg = _make_cfg([(0, 1)], stop_serials=(1,))
+    translator = _FakeTranslator(cfg)
+
+    class _Gateway:
+        fail = False
+
+        def new_transaction(self):
+            return self
+
+        def publish_semantic_fragment(self, _fragment_backend, _fragment_plan):
+            if self.fail:
+                raise RuntimeError("publication aborted")
+            return SimpleNamespace(
+                current_mba_instruction_origins=((0xF10000, 0x401010),),
+            )
+
+    gateway = _Gateway()
+    backend = HexRaysMutationBackend(
+        mutation_gateway=gateway,
+        translator=translator,
+        fragment_backend_factory=lambda _live_source, _transaction: object(),
+    )
+    backend.publish_fragment(object(), live_source=object())
+    assert backend.committed_current_mba_instruction_origins()
+
+    gateway.fail = True
+    with pytest.raises(RuntimeError, match="publication aborted"):
+        backend.publish_fragment(object(), live_source=object())
+
+    assert backend.committed_current_mba_instruction_origins() == ()
 
 
 def test_default_fragment_backend_receives_native_body_materializer(
