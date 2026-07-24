@@ -1848,6 +1848,69 @@ def test_backend_stages_hidden_replacement_and_projects_root_publication() -> No
     assert gateway.active is False
 
 
+def test_backend_projects_positional_entry_boundary_before_semantic_entry() -> None:
+    positional_entry = _Block(
+        0,
+        start=0x401000,
+        block_type=ida_hexrays.BLT_1WAY,
+    )
+    semantic_entry = _Block(
+        1,
+        start=0x401000,
+        block_type=ida_hexrays.BLT_1WAY,
+    )
+    original = _Block(2, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(3, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(4, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(5, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    positional_entry.succset.push_back(semantic_entry.serial)
+    semantic_entry.predset.push_back(positional_entry.serial)
+    _connect(semantic_entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba(
+        (
+            positional_entry,
+            semantic_entry,
+            original,
+            target,
+            dispatcher,
+            stop,
+        )
+    )
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _plan(
+        gateway,
+        entry=semantic_entry.serial,
+        original=original.serial,
+        target=target.serial,
+        dispatcher=dispatcher.serial,
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    result = validate_fragment_projection(plan, projection)
+    assert result.passed, result.failures
+    projected_entry = projection.block(projection.entry_block_id)
+    assert projected_entry.physical_position == 0
+    assert projected_entry.instruction_eas == ()
+    assert projected_entry.predecessors == ()
+    assert projected_entry.successors == ("entry",)
+    entry_binding = projection.binding(projection.entry_block_id)
+    assert entry_binding.state is FragmentBindingState.PUBLISHED
+    assert entry_binding.previous_version is None
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime positional-entry projection test cleanup")
+
+    assert mba.qty == 6
+    assert tuple(positional_entry.succset) == (semantic_entry.serial,)
+    assert tuple(semantic_entry.succset) == (original.serial,)
+    assert gateway.active is False
+
+
 def test_root_inventory_collision_reports_both_logical_identities() -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
