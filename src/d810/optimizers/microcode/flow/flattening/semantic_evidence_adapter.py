@@ -39,5 +39,15 @@ class SessionCanonicalSemanticEvidenceProvider:
             return None
         return self.state.canonical_semantic_evidence_for(self.native_key)
 
+    def candidate_evidence_for(
+        self,
+        function_ea: int,
+    ) -> CanonicalSemanticEvidence | None:
+        if int(function_ea) != self.function_ea:
+            return None
+        return self.state.canonical_semantic_candidate_evidence_for(
+            self.native_key
+        )
+
 
 __all__ = ["SessionCanonicalSemanticEvidenceProvider"]

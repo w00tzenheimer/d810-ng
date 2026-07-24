@@ -22,4 +22,19 @@ class CanonicalSemanticEvidenceCapability(Protocol):
         ...
 
 
-__all__ = ["CanonicalSemanticEvidenceCapability"]
+@runtime_checkable
+class CanonicalSemanticCandidateEvidenceCapability(Protocol):
+    """Supply current route candidates without claiming normalized authority."""
+
+    def candidate_evidence_for(
+        self,
+        function_ea: int,
+    ) -> "CanonicalSemanticEvidence | None":
+        """Return portable planning candidates for exactly one function."""
+        ...
+
+
+__all__ = [
+    "CanonicalSemanticCandidateEvidenceCapability",
+    "CanonicalSemanticEvidenceCapability",
+]
