@@ -218,6 +218,123 @@ class StableBlockIdentity:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class CurrentMbaBlockIdentityBinding:
+    """Tie one full stable identity to surviving current-MBA instruction EAs."""
+
+    stable_identity: StableBlockIdentity
+    live_instruction_eas: frozenset[int]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.stable_identity, StableBlockIdentity):
+            raise TypeError("current-MBA block binding requires stable identity")
+        live_instruction_eas = frozenset(
+            int(ea) for ea in self.live_instruction_eas
+        )
+        if not live_instruction_eas or any(
+            ea <= 0 or ea >= _BADADDR for ea in live_instruction_eas
+        ):
+            raise ValueError(
+                "current-MBA block binding requires valid live instruction EAs"
+            )
+        object.__setattr__(
+            self,
+            "live_instruction_eas",
+            live_instruction_eas,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentMbaIdentityBindingSnapshot:
+    """One receipt-scoped live/native binding with no physical block serials."""
+
+    instruction_origins: tuple[tuple[int, int], ...]
+    block_bindings: tuple[CurrentMbaBlockIdentityBinding, ...]
+
+    def __post_init__(self) -> None:
+        native_by_live: dict[int, int] = {}
+        for row in tuple(self.instruction_origins):
+            if not isinstance(row, tuple) or len(row) != 2:
+                raise TypeError(
+                    "current-MBA identity snapshot requires live/native EA pairs"
+                )
+            live_ea, native_ea = (int(value) for value in row)
+            if (
+                live_ea <= 0
+                or native_ea <= 0
+                or live_ea >= _BADADDR
+                or native_ea >= _BADADDR
+            ):
+                raise ValueError(
+                    "current-MBA identity snapshot requires valid positive EAs"
+                )
+            previous = native_by_live.get(live_ea)
+            if previous is not None and previous != native_ea:
+                raise ValueError(
+                    "one current-MBA instruction cannot have multiple native origins"
+                )
+            native_by_live[live_ea] = native_ea
+
+        block_bindings = tuple(self.block_bindings)
+        if any(
+            not isinstance(binding, CurrentMbaBlockIdentityBinding)
+            for binding in block_bindings
+        ):
+            raise TypeError(
+                "current-MBA identity snapshot contains an invalid block binding"
+            )
+        if len(set(block_bindings)) != len(block_bindings):
+            raise ValueError(
+                "current-MBA identity snapshot contains duplicate block bindings"
+            )
+        native_keys = {
+            binding.stable_identity.native_key for binding in block_bindings
+        }
+        if len(native_keys) > 1:
+            raise ValueError(
+                "current-MBA identity snapshot spans multiple native identities"
+            )
+
+        binding_by_live: dict[int, CurrentMbaBlockIdentityBinding] = {}
+        for binding in block_bindings:
+            for live_ea in binding.live_instruction_eas:
+                if live_ea in binding_by_live:
+                    raise ValueError(
+                        "one current-MBA instruction cannot anchor multiple blocks"
+                    )
+                native_ea = native_by_live.get(live_ea)
+                if native_ea is None or not (
+                    binding.stable_identity.native_ranges.contains(native_ea)
+                ):
+                    raise ValueError(
+                        "current-MBA block anchor lacks matching native ownership"
+                    )
+                binding_by_live[live_ea] = binding
+        if set(binding_by_live) != set(native_by_live):
+            raise ValueError(
+                "current-MBA instruction origins and block anchors must be complete"
+            )
+
+        object.__setattr__(
+            self,
+            "instruction_origins",
+            tuple(sorted(native_by_live.items())),
+        )
+        object.__setattr__(
+            self,
+            "block_bindings",
+            tuple(
+                sorted(
+                    block_bindings,
+                    key=lambda binding: (
+                        min(binding.live_instruction_eas),
+                        binding.stable_identity.diagnostic_label(),
+                    ),
+                )
+            ),
+        )
+
+
 def stable_block_identity_from_snapshot(
     block: BlockSnapshot,
     *,

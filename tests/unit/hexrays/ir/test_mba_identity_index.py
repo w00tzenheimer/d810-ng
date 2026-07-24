@@ -11,6 +11,8 @@ import pytest
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.ir.block_identity import (
     BlockHandleProvenance,
+    CurrentMbaBlockIdentityBinding,
+    CurrentMbaIdentityBindingSnapshot,
     MbaBlockHandle,
     NativeEaInterval,
     RebindStatus,
@@ -279,6 +281,151 @@ def test_live_mba_identity_scan_uses_imported_eas_without_reading_operands() -> 
     assert (
         index.handle_for_serial(0).provenance
         is BlockHandleProvenance.IMPORTED_NATIVE
+    )
+
+
+def test_live_mba_identity_scan_restores_receipted_imported_block_range() -> None:
+    live_ea = 0xFFFFFFFFFFFFFF01
+
+    class Insn:
+        ea = live_ea
+        next = None
+
+    block = type(
+        "Block",
+        (),
+        {
+            "serial": 0,
+            "start": 0xFFFFFFFFFFFFFFFF,
+            "head": Insn(),
+        },
+    )()
+    mba = type(
+        "Mba",
+        (),
+        {"qty": 1, "get_mblock": lambda self, _serial: block},
+    )()
+    imported_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C623, 0x40C696),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C630, 0x40C64B),
+    )
+    snapshot = CurrentMbaIdentityBindingSnapshot(
+        instruction_origins=((live_ea, 0x40C64B),),
+        block_bindings=(
+            CurrentMbaBlockIdentityBinding(
+                stable_identity=imported_identity,
+                live_instruction_eas=frozenset({live_ea}),
+            ),
+        ),
+    )
+
+    index = MbaBlockIdentityIndex.from_mba(
+        mba,
+        generation=3,
+        native_key=NATIVE_KEY,
+        current_mba_identity_binding=snapshot,
+    )
+    handler_region = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C62F, 0x40C64B),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(),
+    )
+
+    rebound = index.rebind_region_entry(handler_region)
+
+    assert rebound.status is RebindStatus.BOUND
+    assert rebound.block is not None
+    assert rebound.block.serial == 0
+    assert rebound.block.handle.stable_identity == StableBlockIdentity.from_intervals(
+        imported_identity.native_ranges.intervals,
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C64B,),
+    )
+    assert (
+        rebound.block.handle.provenance
+        is BlockHandleProvenance.IMPORTED_NATIVE
+    )
+
+
+def test_region_rebind_keeps_overlapping_receipted_ranges_ambiguous() -> None:
+    first_live_ea = 0xFFFFFFFFFFFFFF01
+    second_live_ea = 0xFFFFFFFFFFFFFF02
+
+    class Insn:
+        def __init__(self, ea: int) -> None:
+            self.ea = ea
+            self.next = None
+
+    blocks = (
+        type(
+            "Block",
+            (),
+            {
+                "serial": 0,
+                "start": 0xFFFFFFFFFFFFFFFF,
+                "head": Insn(first_live_ea),
+            },
+        )(),
+        type(
+            "Block",
+            (),
+            {
+                "serial": 1,
+                "start": 0xFFFFFFFFFFFFFFFF,
+                "head": Insn(second_live_ea),
+            },
+        )(),
+    )
+    mba = type(
+        "Mba",
+        (),
+        {
+            "qty": len(blocks),
+            "get_mblock": lambda self, serial: blocks[serial],
+        },
+    )()
+    first_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C623, 0x40C696),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C64B,),
+    )
+    second_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C620, 0x40C690),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C680,),
+    )
+    snapshot = CurrentMbaIdentityBindingSnapshot(
+        instruction_origins=(
+            (first_live_ea, 0x40C64B),
+            (second_live_ea, 0x40C680),
+        ),
+        block_bindings=(
+            CurrentMbaBlockIdentityBinding(
+                stable_identity=first_identity,
+                live_instruction_eas=frozenset({first_live_ea}),
+            ),
+            CurrentMbaBlockIdentityBinding(
+                stable_identity=second_identity,
+                live_instruction_eas=frozenset({second_live_ea}),
+            ),
+        ),
+    )
+    index = MbaBlockIdentityIndex.from_mba(
+        mba,
+        generation=3,
+        native_key=NATIVE_KEY,
+        current_mba_identity_binding=snapshot,
+    )
+    handler_region = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C62F, 0x40C64B),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(),
+    )
+
+    assert (
+        index.rebind_region_entry(handler_region).status
+        is RebindStatus.AMBIGUOUS
     )
 
 
