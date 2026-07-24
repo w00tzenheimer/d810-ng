@@ -407,6 +407,61 @@ def test_canonical_route_composes_live_source_with_detached_target_body() -> Non
     )
 
 
+def test_detached_component_rebinds_published_replacement_boundary_as_external() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    (native_body,) = normalization_plan.native_bodies
+    normalization_plan = replace(
+        normalization_plan,
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="detached-normalization",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="unrelated-replacement",
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(replace(native_body, terminal_block_ids=()),),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    detached_operation = next(
+        operation
+        for operation in plan.operations
+        if operation.operation_id == "detached-normalization"
+    )
+    (detached_edge,) = detached_operation.edges
+    boundary = plan.block(detached_edge.target_block_id)
+    assert boundary.role is FragmentBlockRole.EXTERNAL
+    assert (
+        boundary.materialization
+        is FragmentBlockMaterialization.REUSE_PUBLISHED
+    )
+    assert boundary.semantic_anchor_ea == 0x1300
+    assert boundary.replaces_block_id is None
+    assert tuple(
+        block.semantic_anchor_ea
+        for block in plan.blocks
+        if block.stable_identity == _identity(0x1300)
+    ) == (0x1300,)
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea
+        for block_id in plan.owned_originals
+    ) == (0x1100,)
+
+
 def test_canonical_route_rebinds_retained_corridor_to_live_source_subset() -> None:
     graph, normalization_plan, evidence = _omitted_delivery_source_case()
 
