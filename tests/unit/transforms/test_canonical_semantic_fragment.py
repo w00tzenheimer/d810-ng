@@ -48,9 +48,11 @@ from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentConditionalSelectEnvelope,
     FragmentComputedBranchNormalization,
     FragmentDataFlowRole,
     FragmentEdge,
+    FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
@@ -891,6 +893,148 @@ def test_detached_component_rebinds_published_replacement_boundary_as_external()
         plan.block(block_id).semantic_anchor_ea
         for block_id in plan.owned_originals
     ) == (0x1100,)
+
+
+def test_detached_component_reimports_prohibited_frontend_replacement() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    dispatcher_identity = _wide_identity(0x1400, 0x1408)
+    selected_identity = _identity(0x1406)
+    join_identity = _wide_identity(0x1410, 0x1414)
+    other_target = FragmentBlock(
+        block_id="other-semantic-target",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x1600,
+        stable_identity=_identity(0x1600),
+    )
+    selected_value = FragmentBlock(
+        block_id="dispatcher-selected-value",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x1406,
+        stable_identity=selected_identity,
+    )
+    join = FragmentBlock(
+        block_id="dispatcher-select-join",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x1410,
+        stable_identity=join_identity,
+    )
+    (native_body,) = normalization_plan.native_bodies
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *tuple(
+                replace(
+                    block,
+                    semantic_anchor_ea=0x1400,
+                    stable_identity=dispatcher_identity,
+                )
+                if block.block_id
+                in {"unrelated-original", "unrelated-replacement"}
+                else block
+                for block in normalization_plan.blocks
+            ),
+            selected_value,
+            join,
+            other_target,
+        ),
+        operations=(
+            FragmentOperation(
+                operation_id="dispatcher-normalization",
+                source_block_id="unrelated-replacement",
+                predicate_anchor_ea=0x1402,
+                computed_branch_normalization=(
+                    FragmentComputedBranchNormalization(
+                        predicate_kind=PredicateKind.SLT,
+                        normalization_start_ea=0x1402,
+                        condition_producer_ea=0x1400,
+                        unresolved_transfer_ea=0x1412,
+                        conditional_select_envelope=(
+                            FragmentConditionalSelectEnvelope(
+                                predicate_ea=0x1406,
+                                observed_predicate_kind=PredicateKind.SGE,
+                                selected_value_block_id=selected_value.block_id,
+                                join_block_id=join.block_id,
+                            )
+                        ),
+                    )
+                ),
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        target_block_id="unrelated-exit",
+                    ),
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                        target_block_id=other_target.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="detached-normalization",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="unrelated-replacement",
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(replace(native_body, terminal_block_ids=()),),
+        work_item_scope=replace(
+            normalization_plan.work_item_scope,
+            selected_obligation_ids=("dispatcher-normalization",),
+        ),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        available_evidence=evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    dispatcher_operation = next(
+        operation
+        for operation in plan.operations
+        if operation.operation_id == "dispatcher-normalization"
+    )
+    dispatcher = plan.block(dispatcher_operation.source_block_id)
+    assert dispatcher.role is FragmentBlockRole.IMPORTED
+    assert (
+        dispatcher.materialization
+        is FragmentBlockMaterialization.IMPORT_NATIVE
+    )
+    assert dispatcher.replaces_block_id is None
+    normalization = dispatcher_operation.computed_branch_normalization
+    assert normalization is not None
+    envelope = normalization.conditional_select_envelope
+    assert isinstance(envelope, FragmentImportedConditionalSelectEnvelope)
+    assert envelope.source_branch_ea == 0x1406
+    assert envelope.selected_value_ea == 0x1406
+    assert envelope.selected_value_identity == selected_identity
+    assert envelope.join_identity == join_identity
+    prohibited_ids = frozenset(plan.prohibited_dispatcher_blocks)
+    assert prohibited_ids
+    assert all(
+        edge.target_block_id not in prohibited_ids
+        for operation in plan.operations
+        for edge in operation.edges
+    )
+    (planned_body,) = plan.native_bodies
+    assert dispatcher.block_id in planned_body.block_ids
+    assert dispatcher_operation.operation_id in planned_body.proof_ids
 
 
 def test_detached_component_stops_at_unique_current_imported_successor() -> None:
