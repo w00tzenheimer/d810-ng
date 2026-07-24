@@ -1403,6 +1403,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             f"operation={operation.operation_id!r} "
             f"source=0x{int(template_block.native_entry_ea):X} "
             f"producer=0x{int(normalization.condition_producer_ea):X} "
+            f"normalization_start=0x{int(normalization.normalization_start_ea):X} "
             f"predicate=0x{int(operation.predicate_anchor_ea):X} "
             f"transfer=0x{int(normalization.unresolved_transfer_ea):X} "
             f"predicate_kind={normalization.predicate_kind.value}"
@@ -1417,6 +1418,12 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             index
             for index, instruction in enumerate(instructions)
             if int(instruction.ea) == int(operation.predicate_anchor_ea)
+        )
+        normalization_start_indexes = tuple(
+            index
+            for index, instruction in enumerate(instructions)
+            if int(instruction.ea)
+            == int(normalization.normalization_start_ea)
         )
         oriented_producers = (
             PreoptUnionSemanticNativeBodyMaterializer._oriented_predicate_producers(
@@ -1618,6 +1625,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             PreoptUnionSemanticNativeBodyMaterializer._preflight_split_signed_flag_xor(
                 instructions=instructions,
                 predicate_indexes=predicate_indexes,
+                normalization_start_indexes=normalization_start_indexes,
                 tail=tail,
                 operation=operation,
                 normalization=normalization,
@@ -1660,7 +1668,18 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             else {int(selected_serials[0]), int(join_serial)}
         )
         checks = (
-            ("predicate_anchor_unique", len(predicate_indexes) == 1),
+            (
+                "normalization_start_unique",
+                len(normalization_start_indexes) == 1,
+            ),
+            (
+                "predicate_anchor_bound_or_synthetic",
+                len(predicate_indexes) == 1
+                or (
+                    not predicate_indexes
+                    and signed_split_plan is not None
+                ),
+            ),
             ("oriented_producer_unique", normalization_plan_count == 1),
             (
                 "producer_has_result",
@@ -1678,7 +1697,9 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 or (
                     producer_index is not None
                     and len(predicate_indexes) == 1
-                    and producer_index < int(predicate_indexes[0])
+                    and len(normalization_start_indexes) == 1
+                    and producer_index
+                    < int(normalization_start_indexes[0])
                 ),
             ),
             (
@@ -1780,6 +1801,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 f"portable proof; {label} source_block={source_label} "
                 f"selected_block={selected_label} join_block={join_label} "
                 f"predicate_indexes={predicate_indexes!r} "
+                f"normalization_start_indexes={normalization_start_indexes!r} "
                 f"oriented_producers={len(oriented_producers)} "
                 f"signed_split_normalization={signed_split_plan is not None} "
                 f"source_successors={tuple(int(serial) for serial in template_block.successor_serials)!r} "
@@ -1813,7 +1835,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             )
         return _ComputedBranchNormalizationPlan(
             operation=operation,
-            cut_index=int(predicate_indexes[0]),
+            cut_index=int(normalization_start_indexes[0]),
             result_instruction_index=int(producer_index),
             branch_opcode=int(branch_opcode),
         )
@@ -1974,6 +1996,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         *,
         instructions: tuple[object, ...],
         predicate_indexes: tuple[int, ...],
+        normalization_start_indexes: tuple[int, ...],
         tail: object | None,
         operation: FragmentOperation,
         normalization: FragmentComputedBranchNormalization,
@@ -1981,12 +2004,15 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         """Recognize one exact split ``SLT`` select encoded as ``SF XOR OF``."""
         if (
             normalization.predicate_kind is not PredicateKind.SLT
-            or len(predicate_indexes) != 1
+            or len(predicate_indexes) not in {0, 1}
+            or len(normalization_start_indexes) != 1
             or tail is None
             or int(tail.opcode) != int(ida_hexrays.m_jcnd)
         ):
             return None
-        predicate_index = int(predicate_indexes[0])
+        cut_index = int(normalization_start_indexes[0])
+        if predicate_indexes and int(predicate_indexes[0]) != cut_index:
+            return None
         producer_rows = tuple(
             (index, instruction)
             for index, instruction in enumerate(instructions)
@@ -2003,7 +2029,12 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             tuple(int(instruction.opcode) for _, instruction in producer_rows)
             != expected_flag_opcodes
             or tuple(index for index, _ in producer_rows)
-            != tuple(range(predicate_index - len(expected_flag_opcodes), predicate_index))
+            != tuple(
+                range(
+                    cut_index - len(expected_flag_opcodes),
+                    cut_index,
+                )
+            )
             or not all(
                 PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
                     instruction
@@ -2047,7 +2078,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             return None
         return _ComputedBranchNormalizationPlan(
             operation=operation,
-            cut_index=predicate_index,
+            cut_index=cut_index,
             result_instruction_index=None,
             branch_opcode=int(ida_hexrays.m_jnz),
             branch_condition_template=tail.l.d.l,
