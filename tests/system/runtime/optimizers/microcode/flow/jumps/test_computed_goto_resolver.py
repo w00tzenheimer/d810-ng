@@ -2286,6 +2286,124 @@ def test_static_stack_carried_choice_recognizes_test_zero_cmov_store(
     )
 
 
+def test_static_state_choice_recognizes_stack_compare_cmov(
+    monkeypatch,
+) -> None:
+    """Recover the original stack predicate before dispatcher navigation."""
+    register_ids = {
+        name: reg for reg, name in computed_goto_resolver._SV_REG_NAMES.items()
+    }
+    eax = register_ids["eax"]
+    ebx = register_ids["ebx"]
+    esp = register_ids["esp"]
+
+    idaapi = ModuleType("idaapi")
+    idaapi.o_void = 0
+    idaapi.o_reg = 1
+    idaapi.o_imm = 2
+    idaapi.o_displ = 4
+    idaapi.CF_CHG1 = 0x2
+    mnemonics = {
+        0x40C4B4: "cmp",
+        0x40C4B9: "mov",
+        0x40C4BE: "mov",
+        0x40C4C3: "cmove",
+        0x40C4C6: "jmp",
+    }
+    idaapi.print_insn_mnem = lambda ea: mnemonics.get(int(ea), "")
+    monkeypatch.setitem(sys.modules, "idaapi", idaapi)
+    monkeypatch.setattr(computed_goto_resolver, "idaapi", idaapi)
+
+    class Operand:
+        def __init__(
+            self,
+            kind=0,
+            *,
+            reg=0,
+            value=0,
+            phrase=0,
+            addr=0,
+        ):
+            self.type = kind
+            self.reg = reg
+            self.value = value
+            self.phrase = phrase
+            self.addr = addr
+
+    class Instruction:
+        def __init__(self):
+            self.ops = [Operand(), Operand()]
+            self._feature = 0
+
+        def get_canon_feature(self) -> int:
+            return self._feature
+
+    encoded = {
+        0x40C4B4: (
+            5,
+            0,
+            Operand(idaapi.o_displ, reg=esp, phrase=esp, addr=0x44),
+            Operand(idaapi.o_imm, value=5),
+        ),
+        0x40C4B9: (
+            5,
+            idaapi.CF_CHG1,
+            Operand(idaapi.o_reg, reg=ebx),
+            Operand(idaapi.o_imm, value=0x2B8162DC),
+        ),
+        0x40C4BE: (
+            5,
+            idaapi.CF_CHG1,
+            Operand(idaapi.o_reg, reg=eax),
+            Operand(idaapi.o_imm, value=0x456A4274),
+        ),
+        0x40C4C3: (
+            3,
+            idaapi.CF_CHG1,
+            Operand(idaapi.o_reg, reg=ebx),
+            Operand(idaapi.o_reg, reg=eax),
+        ),
+        0x40C4C6: (2, 0, Operand(), Operand()),
+    }
+
+    ida_ua = ModuleType("ida_ua")
+    ida_ua.insn_t = Instruction
+
+    def decode_insn(insn, ea):
+        length, feature, op0, op1 = encoded[int(ea)]
+        insn._feature = feature
+        insn.ops = [op0, op1]
+        return length
+
+    ida_ua.decode_insn = decode_insn
+    monkeypatch.setitem(sys.modules, "ida_ua", ida_ua)
+
+    ida_bytes = ModuleType("ida_bytes")
+    ida_bytes.get_bytes = lambda ea, size: (
+        b"\x0f\x44\xd8" if int(ea) == 0x40C4C3 else b"\x90" * int(size)
+    )
+    monkeypatch.setitem(sys.modules, "ida_bytes", ida_bytes)
+
+    assert computed_goto_resolver._static_conditional_state_choices(
+        {0x40C4B4: {}},
+        native_stack_frame_offsets_by_ea={0x40C4B4: (84,)},
+    ) == (
+        MaterializedIndirectTransfer(
+            source_jmp_ea=0x40C4C3,
+            source_block_ea=0x40C4B4,
+            materialized_anchor_eas=(0x40C4B4, 0x40C4C3),
+            target_eas=(),
+            condition_code=4,
+            predicate_size=4,
+            predicate_stack_ida_stkoff=84,
+            predicate_compare_constant=5,
+            predicate_true_state=0x456A4274,
+            predicate_false_state=0x2B8162DC,
+            resolver_kind="static_conditional_state_choice",
+        ),
+    )
+
+
 def test_static_materialized_transfer_batch_persists_conditional_state_choice() -> None:
     store_ea = 0x40D269
     consumer_load_ea = 0x40EAA7
