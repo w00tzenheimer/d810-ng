@@ -2180,3 +2180,56 @@ only when that anchor equals the captured conditional tail and belongs to the
 operation's native proof corridor. Do not merely relax successor-count
 validation, infer the tail from block order, special-case A560 EAs, or broaden
 the 171-operation fragment.
+
+**2026-07-24T17:40:00Z**
+
+Execution now follows
+`/Users/mahmoud/src/idapro/d810/_gitless/RHAD_DEOBFU_STRAT_v3.3.md`. Commits
+`1a766ae57`, `f1c4c2d44`, and `25e5595ed` establish the required two-lane
+differential oracle before detached lowering: portable serial-free route
+shapes and schema-v7 DB authority; canonical SDK microcode opcode capture;
+and an isolated capture/compare tool that never starts D810. The reference
+lane uses unchanged reference commit
+`21b0d4783703bc4fb6910cfae51d92cd683d2c65`, patched disposable binary
+SHA-256 `6358957fe74360725b125bdc41b16df9952d95b338792fd3521249e5030ddd8c`,
+and the candidate lane uses fixture SHA-256
+`2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c`.
+Both run under pinned image
+`sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a`
+with D810 disabled and `DECOMP_NO_CACHE`.
+
+Independent DBs
+`.tmp/rhad-oracle-v33.mcFPat/a560-c.diag.sqlite3` and
+`.tmp/rhad-oracle-v33.mcFPat/a560-d.diag.sqlite3` produce identical stable
+comparison rows, SHA-256
+`3a00dcfd979044405b57c3c260db0d83e74a58b798a03f83c7aeb5e7eb4fc562`.
+The first divergence is GENERATED at owner `0x40BB51` and rewrite anchor
+`0x40BB63`: the reachable reference route is `m_goto -> 0x40ACF3`, while the
+unpatched candidate is an unreachable `m_jcnd` with taken target `0x40C6F7`
+and physical fallthrough `0x40BB69`; the candidate owner disappears by CALLS.
+The normalizer accepts same-EA setup instructions only when the final
+instruction owns the rewrite anchor and remains the unique terminator.
+
+Verification is 129/129 local diagnostic/tool/serializer tests, 4/4 pinned
+live-SDK serializer tests, clean Ruff and diff checks, ast-grep, all 14
+worktree-local import contracts, commit hooks, and `graphify update .`.
+
+The mandatory cache-disabled A560 canary at committed HEAD `25e5595ed`
+returned normally in 18.46 seconds with no segfault or INTERR. Log:
+`.tmp/rhad-a560-v33-oracle-canary.txt`; primary DB:
+`.tmp/rhad-a560-v33-oracle-canary/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-oracle-canary/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one `while ( 1 )`.
+
+The highest contiguous main-A560 level remains C3. Canonical plan transaction
+`ad4ee92c7235418bbc56dca5967a8812` plans 171 operations, applies zero, starts
+no prepublication validation, and aborts cleanly without an SDK assertion.
+The first C4 obligation is unchanged but now has differential proof:
+`native[0x40BB51-0x40BB69;exact=0x40BB51]:imported` has a conditional tail at
+`0x40BB63`, while proof-owned operation
+`route:state_assignment@0x40BB63:0xE9795EF` requires one direct edge to
+`0x40ACF3`. Continue v3.3 by carrying the exact direct-transfer rewrite anchor
+in a portable detached rewrite plan, lowering and validating one closed C5
+fragment off to the side, then publishing it once. Do not add a live-backend
+exception or broaden to the 91-route publication.
