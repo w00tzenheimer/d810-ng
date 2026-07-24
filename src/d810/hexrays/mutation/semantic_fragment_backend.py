@@ -2126,8 +2126,9 @@ def _project_fragment(
     root_helper_ids = {
         helper.helper_block_id for helper in state.root_fallthrough_helpers
     }
+    projection_bindings = dict(state.bindings)
     live_by_id = {}
-    for block_id, binding in state.bindings.items():
+    for block_id, binding in projection_bindings.items():
         live = _try_live_block_for_binding(modifier, binding)
         if live is None:
             if block_id not in root_helper_ids:
@@ -2136,6 +2137,45 @@ def _project_fragment(
                 )
             continue
         live_by_id[block_id] = live
+    if not any(int(block.serial) == 0 for block in live_by_id.values()):
+        gateway = _gateway(modifier)
+        entry_handle = gateway.identity_index.handle_for_serial(0)
+        entry = modifier.mba.get_mblock(0)
+        entry_label = _unowned_endpoint(modifier, 0).removeprefix("unowned:")
+        if entry_handle is None or entry is None:
+            raise SemanticFragmentBackendRejected(
+                f"projected function entry {entry_label} has no live logical handle"
+            )
+        entry_proxy = gateway.identity_index.logical_proxy_for_handle(entry_handle)
+        if entry_proxy is None:
+            raise SemanticFragmentBackendRejected(
+                f"projected function entry {entry_label} has no logical owner"
+            )
+        entry_version = entry_proxy.resolve()
+        if entry_version is None:
+            raise SemanticFragmentBackendRejected(
+                f"projected function entry {entry_label} has no published version"
+            )
+        entry_bound = gateway.identity_index.resolve_logical_version(
+            entry_version,
+            transaction_id=_transaction_id(modifier),
+        )
+        if entry_bound is None or int(entry_bound.serial) != 0:
+            raise SemanticFragmentBackendRejected(
+                f"projected function entry {entry_label} changed physical version"
+            )
+        entry_block_id = f"function-entry:{entry_proxy.proxy_token}"
+        if entry_block_id in projection_bindings:
+            raise SemanticFragmentBackendRejected(
+                f"projected function entry {entry_label} collides with a plan block"
+            )
+        projection_bindings[entry_block_id] = SemanticFragmentRuntimeBinding(
+            block_id=entry_block_id,
+            proxy=entry_proxy,
+            version=entry_version,
+            state=FragmentBindingState.PUBLISHED,
+        )
+        live_by_id[entry_block_id] = entry
     ids_by_serial: dict[int, str] = {}
     for block_id, block in live_by_id.items():
         serial = int(block.serial)
@@ -2259,7 +2299,7 @@ def _project_fragment(
                 else binding.version.predecessor_version_id.version
             ),
         )
-        for binding in state.bindings.values()
+        for binding in projection_bindings.values()
     )
     data_flow_relations = _project_data_flow_relations(
         modifier,
