@@ -421,6 +421,20 @@ class _Mba:
         self._relink()
         return clone
 
+    def insert_block(self, destination: int):
+        destination = int(destination)
+        self._shift_coordinates(destination, 1)
+        inserted = _Block(
+            destination,
+            start=self.entry_ea,
+            block_type=ida_hexrays.BLT_0WAY,
+        )
+        inserted.mba = self
+        self.blocks[destination] = inserted
+        self.qty += 1
+        self._relink()
+        return inserted
+
     def remove_block(self, block: _Block) -> None:
         removed_serial = int(block.serial)
         self.blocks.pop(removed_serial)

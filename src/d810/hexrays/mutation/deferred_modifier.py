@@ -11215,13 +11215,13 @@ class DeferredGraphModifier:
         created_handle: MbaBlockHandle | None = None,
         target_handle: MbaBlockHandle | None = None,
     ) -> int | None:
-        """Create a 1-way NOP-goto block immediately after ``blk``.
+        """Create an empty 1-way goto block immediately after ``blk``.
 
         The adjacent helper materializes physical fallthrough for either a
-        one-way call block or a two-way conditional.  ``copy_block_keep`` inserts
-        before ``blk.serial + 1``, so the helper becomes ``blk.nextb`` and its
-        goto can target the requested logical destination without relying on
-        transaction-external helper insertion.
+        one-way call block or a two-way conditional.  ``mba.insert_block``
+        inserts before ``blk.serial + 1``, so the helper becomes ``blk.nextb``
+        without cloning a source body whose fictitious instruction addresses
+        belong to another logical block.
         """
         mba = blk.mba
         gateway = self._mutation_gateway
@@ -11241,11 +11241,25 @@ class DeferredGraphModifier:
             int(blk.tail.ea) if blk.tail is not None else int(self.mba.entry_ea)
         )
         old_qty = int(mba.qty)
-        nop_block = copy_block_keep(mba, blk, blk.serial + 1)
+        nop_block = mba.insert_block(int(blk.serial) + 1)
         if nop_block is None:
             return None
+        self._record_serial_insertion(
+            int(nop_block.serial),
+            old_qty,
+            created=created_handle,
+        )
+        if (
+            nop_block.head is not None
+            or nop_block.tail is not None
+            or int(nop_block.nsucc()) != 0
+            or int(nop_block.npred()) != 0
+        ):
+            raise SemanticEdgeOperationRejected(
+                "Hex-Rays adjacent block insertion returned non-empty structure"
+            )
         # The helper is transaction-owned synthetic structure, not another
-        # native instance of the copied source.  Give it verifier-safe metadata
+        # native instance of the source.  Give it verifier-safe metadata
         # before it becomes instruction-bearing: entry roots can have an empty
         # [start, end) range, which otherwise trips verify.cpp 50870 after the
         # helper receives its explicit goto.
@@ -11258,40 +11272,16 @@ class DeferredGraphModifier:
             end_ea=int(mba.entry_ea) + 1,
         )
         logger.info(
-            "fallthrough helper copy diagnostic: source=blk%d@0x%x "
-            "returned=blk%d@0x%x instructions=%s",
+            "fallthrough helper insertion diagnostic: source=blk%d@0x%x "
+            "returned=blk%d@0x%x",
             int(blk.serial),
             int(blk.start),
             int(nop_block.serial),
             int(nop_block.start),
-            tuple(
-                (int(instruction.ea), int(instruction.opcode))
-                for instruction in self._block_instructions(nop_block)
-            ),
         )
-        self._record_serial_insertion(
-            int(nop_block.serial),
-            old_qty,
-            created=created_handle,
-        )
-        # Strip the cloned body to a single NOP, then append the goto.
-        cur = nop_block.head
-        while cur is not None:
-            nxt = cur.next
-            nop_block.make_nop(cur)
-            cur = nxt
         nop_block.type = ida_hexrays.BLT_1WAY
         nop_block.flags &= ~ida_hexrays.MBL_GOTO
-        # Drop every inherited succ/pred from the clone -- they point at blk's
-        # neighbours, not this helper.
-        for s in [int(x) for x in nop_block.succset]:
-            nop_block.succset._del(s)
-            sblk = mba.get_mblock(s)
-            if sblk is not None:
-                sblk.predset._del(nop_block.serial)
-        for p in [int(x) for x in nop_block.predset]:
-            nop_block.predset._del(p)
-        # SWIG block proxies are not stable across ``copy_block_keep``.  Keep a
+        # SWIG block proxies are not stable across ``insert_block``.  Keep a
         # serial-free live handle through the insertion and reacquire the
         # current C++ target from the gateway-owned identity index.
         target_binding = (
