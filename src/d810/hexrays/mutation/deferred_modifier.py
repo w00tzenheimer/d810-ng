@@ -3034,6 +3034,32 @@ class DeferredGraphModifier:
                 f"tail_opcode={tail_opcode_name}({tail_opcode}) "
                 f"tail_dest_type={tail_dest_type}"
             )
+        owned_call = self._semantic_edge_owned_call(tail)
+        if owned_call is None:
+            owned_call_diagnostic = "owned_call=none"
+        else:
+            owned_call_ea = int(getattr(owned_call, "ea", -1))
+            owned_call_opcode = int(getattr(owned_call, "opcode", -1))
+            owned_call_destination = getattr(owned_call, "d", None)
+            owned_call_native_origin = (
+                f"0x{owned_call_ea:X}"
+                if identity is not None
+                and owned_call_ea in identity.exact_instruction_eas
+                else "unmapped"
+            )
+            owned_call_diagnostic = (
+                f"owned_call_ea=0x{owned_call_ea:X} "
+                f"owned_call_native_origin={owned_call_native_origin} "
+                f"owned_call_opcode="
+                f"{opcode_name(owned_call_opcode) or 'unknown'}"
+                f"({owned_call_opcode}) "
+                "owned_call_dest_type="
+                + (
+                    "none"
+                    if owned_call_destination is None
+                    else str(int(getattr(owned_call_destination, "t", -1)))
+                )
+            )
         return (
             f"operation={operation.description!r} "
             f"stable_identity={stable_identity} "
@@ -3042,8 +3068,39 @@ class DeferredGraphModifier:
             f"nsucc={int(source.nsucc())} "
             f"successors=[{','.join(successors)}] "
             f"{tail_diagnostic} "
-            "expected=zero-way block-closing m_call or m_icall"
+            f"{owned_call_diagnostic} "
+            "expected=zero-way block-closing m_call or m_icall owner"
         )
+
+    @staticmethod
+    def _semantic_edge_owned_call(owner: object | None) -> object | None:
+        """Return one top-level or nested call owned by a closing instruction."""
+        if owner is None:
+            return None
+        pending = [owner]
+        visited: set[int] = set()
+        calls: list[object] = []
+        while pending:
+            instruction = pending.pop()
+            identity = id(instruction)
+            if identity in visited:
+                continue
+            visited.add(identity)
+            if int(getattr(instruction, "opcode", -1)) in {
+                int(ida_hexrays.m_call),
+                int(ida_hexrays.m_icall),
+            }:
+                calls.append(instruction)
+            for operand_name in ("l", "r", "d"):
+                operand = getattr(instruction, operand_name, None)
+                if (
+                    operand is not None
+                    and int(getattr(operand, "t", -1))
+                    == int(ida_hexrays.mop_d)
+                    and getattr(operand, "d", None) is not None
+                ):
+                    pending.append(operand.d)
+        return calls[0] if len(calls) == 1 else None
 
     def _semantic_edge_live_binding(self, proxy):
         gateway = self._mutation_gateway
@@ -3197,9 +3254,7 @@ class DeferredGraphModifier:
         tail = source.tail
         if (
             int(source.nsucc()) != 0
-            or tail is None
-            or int(tail.opcode)
-            not in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}
+            or self._semantic_edge_owned_call(tail) is None
         ):
             raise SemanticEdgeOperationRejected(
                 "call fallthrough requires a zero-way block-closing call; "
@@ -3229,9 +3284,7 @@ class DeferredGraphModifier:
             or int(helper.serial) != int(source.serial) + 1
             or int(source.nextb.serial) != int(helper.serial)
             or int(source.nsucc()) != 0
-            or tail is None
-            or int(tail.opcode)
-            not in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}
+            or self._semantic_edge_owned_call(tail) is None
             or tuple(int(value) for value in helper.succset)
             != (int(target.serial),)
         ):
