@@ -731,3 +731,46 @@ and reject any required operation reachable only from an independent imported
 root. The failed postcondition and anchored unreachable operations must be
 persisted before the receipt aborts and rolls root authority back. Do not alter
 the importer, assertion flags, or Rhad route semantics in this slice.
+
+**2026-07-24T07:12:27Z**
+
+Commit `20bd02a1f` phase-splits fragment reachability authority. Detached
+publication and native-body roots remain valid while proving a closed staged
+fragment, but postpublication validation now starts exclusively at the
+projected function entry. The semantic backend applies that strict validator
+before accepting a publication receipt. The focused portable-validator,
+publication-gateway, and production-backend gate is 141/141 green both locally
+and in the pinned Docker runtime; ast-grep passes, all 14 worktree-local import
+contracts pass, the changed-file Ruff gate passes with only pre-existing
+file-level findings excluded, commit hooks pass, and `graphify update .`
+completes.
+
+The mandatory production A560 diagnostic canary completed in 12.34 seconds.
+Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784877078_11.diag.sqlite3`; log:
+`.tmp/rhad-a560-v31-published-entry-reachability.txt`. The process did not
+segfault and Hex-Rays reported no INTERR. The semantic oracle remains red with
+a short rollback body ending in `JUMPOUT(0x40B6C0)`.
+
+Transaction `e487895abdb4457c84de4712b1ce6e57` stages all 1,390 planned
+operations and passes 3,357 prepublication outcomes. It publishes the one root
+group from predecessor identity anchored at `0x40A5AE` to the replacement
+identity anchored at `0x40A5F0`. Strict postpublication validation then rejects
+385 disconnected imported blocks and 385 unreachable operations, rolls the
+root group and transaction back successfully, and records only an explicit
+`aborted` receipt. No committed mutation receipt exists.
+
+The highest trustworthy canary level remains C4. The first failed C5
+obligation is entry-authoritative connectivity: imported block
+`native[0x40A6B4-0x40A6C0;exact=0x40A6B4]:imported` is disconnected from the
+projected function entry, making
+`native-indirect-transfer@0x40A6BE` unreachable. The former INTERR 51974 is
+therefore eliminated from this canary by rejecting the malformed publication
+before ctree generation; it was a downstream symptom, not evidence that
+`IPROP_ASSERT` should be stripped.
+
+Continue from this explicit C5 failure by proving the published entry corridor
+from the replacement identity anchored at `0x40A5F0` into one semantic imported
+fragment. Reach one complete C5 vertical fragment before broad 91-route
+publication. Do not weaken the postpublication gate, restore detached roots as
+independent authority, clear assertion flags, or special-case A560 addresses.
