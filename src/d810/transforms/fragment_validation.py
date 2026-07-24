@@ -598,6 +598,32 @@ def _reachable(
     return frozenset(visited)
 
 
+def _reachability_witness(
+    blocks: dict[str, ProjectedFragmentBlock],
+    root: str,
+    target: str,
+) -> tuple[str, ...]:
+    """Return one deterministic shortest path through the projected graph."""
+    if root not in blocks or target not in blocks:
+        return ()
+    predecessors: dict[str, str | None] = {root: None}
+    queue = deque((root,))
+    while queue:
+        block_id = queue.popleft()
+        if block_id == target:
+            path: list[str] = []
+            cursor: str | None = target
+            while cursor is not None:
+                path.append(cursor)
+                cursor = predecessors[cursor]
+            return tuple(reversed(path))
+        for successor in blocks[block_id].successors:
+            if successor in blocks and successor not in predecessors:
+                predecessors[successor] = block_id
+                queue.append(successor)
+    return ()
+
+
 def _site_present(
     site: FragmentValueSite,
     blocks: dict[str, ProjectedFragmentBlock],
@@ -864,6 +890,15 @@ def _validate_reachability(
         )
     for dispatcher in plan.prohibited_dispatcher_blocks:
         passed = dispatcher not in entry_reachable
+        witness = (
+            ()
+            if passed
+            else _reachability_witness(
+                blocks,
+                projection.entry_block_id,
+                dispatcher,
+            )
+        )
         _outcome(
             outcomes,
             FragmentValidationPostcondition.DISPATCHER_ABSENCE,
@@ -871,8 +906,11 @@ def _validate_reachability(
             passed,
             "prohibited dispatcher router is unreachable"
             if passed
-            else "reachable route enters a prohibited dispatcher router",
-            dispatcher,
+            else (
+                "reachable route enters a prohibited dispatcher router; "
+                f"witness={' -> '.join(witness)}"
+            ),
+            *(witness or (dispatcher,)),
         )
 
 
