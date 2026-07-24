@@ -54,7 +54,11 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
 from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteBindingEvidence,
 )
+from d810.analyses.control_flow.frontend_normalization import (
+    FrontendNormalizationEvidence,
+)
 from d810.analyses.control_flow.semantic_route_evidence import (
+    CanonicalSemanticEvidence,
     canonical_terminal_state_targets,
 )
 from d810.analyses.control_flow.read_state_cfg import read_dag_from
@@ -244,6 +248,38 @@ def _should_defer_unbound_materialized_preopt(
         isinstance(state, ResolverSessionState)
         and is_computed_goto_materialized(state)
         and state.native_preanalysis.needs_normalization_publication()
+        and not _partial_canonical_composition_ready(state)
+    )
+
+
+def _partial_canonical_composition_ready(
+    state: ResolverSessionState | None,
+) -> bool:
+    """Require one receipted partial normalization before canonical composition."""
+    if not isinstance(state, ResolverSessionState):
+        return False
+    lifecycle = state.native_preanalysis
+    generation = int(lifecycle.evidence_generation)
+    if (
+        generation <= 0
+        or lifecycle.normalization_published_postvalidated_generation
+        == generation
+        or lifecycle.normalization_work_item_publication_revision <= 0
+        or lifecycle.normalization_last_published_work_item_id is None
+        or not lifecycle.normalization_last_selected_obligation_ids
+        or not lifecycle.normalization_last_remaining_obligation_ids
+    ):
+        return False
+    candidate = lifecycle.canonical_semantic_candidate_evidence_for(
+        state.native_key
+    )
+    frontend = lifecycle.frontend_normalization_evidence_for(state.native_key)
+    return bool(
+        isinstance(candidate, CanonicalSemanticEvidence)
+        and isinstance(frontend, FrontendNormalizationEvidence)
+        and candidate.native_key == state.native_key == frontend.native_key
+        and int(candidate.generation) == generation
+        and int(frontend.generation) == generation
     )
 
 
@@ -321,6 +357,7 @@ def _should_defer_incomplete_materialized_identity(
     materialized_computed_goto_profile: bool,
     materialized_evidence_ready: bool,
     uses_tigress_indirect_materialization: bool,
+    canonical_composition_ready: bool = False,
 ) -> bool:
     """Keep partial imported identity read-only until the controlled redo.
 
@@ -331,6 +368,7 @@ def _should_defer_incomplete_materialized_identity(
         materialized_computed_goto_profile
         and not materialized_evidence_ready
         and not uses_tigress_indirect_materialization
+        and not canonical_composition_ready
     )
 
 
@@ -1566,6 +1604,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         resolver_state = self.current_resolver_session_state()
         if not isinstance(resolver_state, ResolverSessionState):
             resolver_state = None
+        canonical_composition_ready = _partial_canonical_composition_ready(
+            resolver_state
+        )
         if _should_defer_unbound_materialized_preopt(resolver_state):
             self._report_recovery_gate_decision(
                 mba,
@@ -1583,7 +1624,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 int(getattr(mba, "entry_ea", 0) or 0),
             )
             return 0
-        proceed, _is_indirect = self._should_recover(mba)
+        proceed, _is_indirect = self._should_recover(
+            mba,
+            canonical_composition_ready=canonical_composition_ready,
+        )
         if not proceed:
             return 0
         func_ea: int = int(mba.entry_ea)
@@ -1619,6 +1663,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             uses_tigress_indirect_materialization=(
                 self._uses_tigress_indirect_materialization(rule_config)
             ),
+            canonical_composition_ready=canonical_composition_ready,
         ):
             logger.info(
                 "unflat: deferring structural mutation until portable "
@@ -1662,6 +1707,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             rule_config,
             backend,
             materialized_evidence_ready=materialized_evidence_ready,
+            canonical_composition_ready=canonical_composition_ready,
         )
         if self._family_defers(mba, family, is_indirect=_is_indirect):
             return 0
@@ -1791,7 +1837,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # dispatcher survives (verified: returning the count regressed approov_real_pattern).
         return 0
 
-    def _should_recover(self, mba: "ida_hexrays.mba_t") -> "tuple[bool, bool]":
+    def _should_recover(
+        self,
+        mba: "ida_hexrays.mba_t",
+        *,
+        canonical_composition_ready: bool = False,
+    ) -> "tuple[bool, bool]":
         """Maturity + bounded-round gate; returns ``(proceed, is_indirect)``."""
         # Profile-scoped recovery maturity (llr-m9r4 + llr-a93i). The Tigress INDIRECT
         # profile recovers ONLY at MMAT_CALLS — its state-write transitions (and the
@@ -1818,6 +1869,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # pass).  The NON-indirect profile now recovers at EVERY maturity from LOCOPT
         # through GLBOPT2 (ticket llr-a93i) so folded equality-chains recover at the
         # pre-fold stage where their dispatcher is still alive.
+        canonical_composition_admission = bool(
+            canonical_composition_ready and not is_indirect
+        )
         if is_indirect:
             if mba.maturity != ida_hexrays.MMAT_CALLS:
                 self._report_recovery_gate_decision(
@@ -1825,6 +1879,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     resolver_state=resolver_state,
                     decision="declined",
                     reason="indirect_profile_requires_calls",
+                    imported_identity_ready=None,
+                    recovery_epoch_phase=0,
+                    rounds_before=0,
+                )
+                return (False, is_indirect)
+        elif canonical_composition_admission:
+            if mba.maturity != ida_hexrays.MMAT_CALLS:
+                self._report_recovery_gate_decision(
+                    mba,
+                    resolver_state=resolver_state,
+                    decision="declined",
+                    reason="canonical_composition_requires_calls",
                     imported_identity_ready=None,
                     recovery_epoch_phase=0,
                     rounds_before=0,
@@ -3288,17 +3354,24 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         backend,
         *,
         materialized_evidence_ready: bool = False,
+        canonical_composition_ready: bool = False,
     ):
         """Poll the family registry (reduced-product bypass on opt-in). Returns family|None."""
         if (
-            materialized_evidence_ready
+            (
+                materialized_evidence_ready
+                or canonical_composition_ready
+            )
             and not self._uses_tigress_indirect_materialization(rule_config)
         ):
             logger.info(
-                "unflat: complete materialized identity evidence resumes "
-                "canonical pipeline for func=0x%x at %s",
+                "unflat: materialized canonical evidence resumes pipeline "
+                "for func=0x%x at %s complete_identity=%s "
+                "partial_composition=%s",
                 int(mba.entry_ea),
                 maturity_to_string(int(mba.maturity)),
+                bool(materialized_evidence_ready),
+                bool(canonical_composition_ready),
             )
             return _MaterializedComputedGotoContinuationFamily()
 

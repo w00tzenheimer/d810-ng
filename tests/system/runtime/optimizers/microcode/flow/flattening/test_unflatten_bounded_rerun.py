@@ -164,15 +164,31 @@ def test_incomplete_materialized_identity_defers_only_non_tigress_profiles() -> 
         materialized_evidence_ready=False,
         uses_tigress_indirect_materialization=True,
     )
+    assert not _should_defer_incomplete_materialized_identity(
+        materialized_computed_goto_profile=True,
+        materialized_evidence_ready=False,
+        uses_tigress_indirect_materialization=False,
+        canonical_composition_ready=True,
+    )
 
 
-def test_materialized_mutation_waits_for_current_preopt_evidence_generation() -> None:
+def test_materialized_mutation_waits_for_current_preopt_evidence_generation(
+    monkeypatch,
+) -> None:
     native = NativePreanalysisSessionState(evidence_generation=1)
     state = ResolverSessionState(
         native_preanalysis=native, materialized=True, native_key=NATIVE_KEY
     )
 
     assert _should_defer_unbound_materialized_preopt(state)
+
+    monkeypatch.setattr(
+        unflattener,
+        "_partial_canonical_composition_ready",
+        lambda candidate: candidate is state,
+        raising=False,
+    )
+    assert not _should_defer_unbound_materialized_preopt(state)
 
     native.normalization_published_postvalidated_generation = 1
     assert not _should_defer_unbound_materialized_preopt(state)
@@ -1423,6 +1439,16 @@ def test_complete_materialized_identity_evidence_reopens_the_family_gate(
         )
         is registered_family
     )
+    composition_family = rule._select_family(
+        mba,
+        source,
+        {},
+        backend,
+        materialized_evidence_ready=False,
+        canonical_composition_ready=True,
+    )
+    assert composition_family is not None
+    assert composition_family.name == "materialized_computed_goto_continuation"
     assert (
         rule._select_family(
             mba,
@@ -1517,6 +1543,62 @@ def test_recovery_gate_reports_session_profile_and_identity_phase() -> None:
         "resolver_session_present": True,
         "rounds_before": 0,
     }
+
+
+def test_partial_canonical_composition_owns_calls_maturity_admission(
+    monkeypatch,
+) -> None:
+    reported = []
+    rule = _fresh_rule()
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    rule.config = {}
+    rule._pass_manager = SimpleNamespace(reset_func=lambda _func_ea: None)
+    rule._pass_manager_session_by_func = {}
+    rule._union_maturities_cache = frozenset({ida_hexrays.MMAT_GLBOPT1})
+    resolver_state = ResolverSessionState(
+        native_preanalysis=NativePreanalysisSessionState(evidence_generation=1),
+        native_key=NATIVE_KEY,
+        materialized=True,
+        indirect_dispatcher_materialized=False,
+    )
+    rule.current_resolver_session_state = lambda: resolver_state
+    monkeypatch.setattr(
+        unflattener,
+        "imported_detached_snippet_target_eas",
+        lambda _mba: (),
+    )
+
+    calls = SimpleNamespace(entry_ea=_EA, maturity=ida_hexrays.MMAT_CALLS)
+    assert rule._should_recover(
+        calls,
+        canonical_composition_ready=True,
+    ) == (True, False)
+    assert reported[-1].decision == "accepted"
+    assert reported[-1].reason == "recovery_round_granted"
+
+    glbopt1 = SimpleNamespace(entry_ea=_EA, maturity=ida_hexrays.MMAT_GLBOPT1)
+    assert rule._should_recover(
+        glbopt1,
+        canonical_composition_ready=True,
+    ) == (False, False)
+    assert reported[-1].decision == "declined"
+    assert reported[-1].reason == "canonical_composition_requires_calls"
+
+    assert rule._should_recover(
+        calls,
+        canonical_composition_ready=False,
+    ) == (False, False)
+    assert reported[-1].reason == "maturity_not_registered"
+
+    rule._unflat_round_count.clear()
+    resolver_state.indirect_dispatcher_materialized = True
+    assert rule._should_recover(
+        calls,
+        canonical_composition_ready=True,
+    ) == (True, True)
+    assert reported[-1].reason == "recovery_round_granted"
 
 
 def test_materialized_handler_completeness_reports_final_native_ea_inventory() -> None:

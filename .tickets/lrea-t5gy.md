@@ -876,3 +876,90 @@ while ambiguous or incomplete identity remains a typed abstention. The next
 A560 DB should then either record that one C3 plan or identify its first
 missing stable-EA obligation; it must not advance whole-generation
 normalization authority or publish a detached body on its own.
+
+**2026-07-24T08:24:10Z**
+
+The partial-canonical-composition checkpoint is committed through
+`60f731a2c`, with one uncommitted two-file maturity-gate slice. Commit
+`db172df44` implements the Phase 6 pure composition transform for one live
+source and one detached target. Commits `e3f8afbed` and `a61497daf` implement
+the Phase 4/6 candidate-evidence lifecycle and adapter capability without
+relaxing whole-generation authority. Commit `60f731a2c` makes canonical
+lowering consume that candidate plus the complete unpublished Phase 5
+normalization inventory and select one deterministic route plan. The dirty
+slice attempts to admit that continuation through the live unflattener.
+
+The mandatory exact A560 canary completed in 34.63 seconds without a process
+segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784881241_11.diag.sqlite3`; focused
+pytest log: `.tmp/rhad-a560-v31-partial-canonical-exact.txt`. The semantic
+oracle remains red with one residual `while ( 1 )`.
+
+The highest contiguous production level remains C2. The DB preserves the
+generation-1 frontend-normalization plan and its 260/260 committed receipt,
+but contains no canonical mutation plan or canonical semantic-fragment
+transaction. The first failed C3 obligation is now the CALLS maturity gate:
+snapshot 3 records `state_machine_cff_unflattener` declining
+`resolver_session:indirect_dispatcher_materialized` with typed reason
+`maturity_not_registered`. Its payload records `evidence_generation=1`,
+`indirect_dispatcher_materialized=false`, no whole-generation postvalidated
+normalization authority, and no imported-identity readiness.
+
+The secondary log confirms the contradictory other half of the gate. At
+GLBOPT1 the same partial-composition evidence selects
+`materialized_computed_goto_continuation`, but that family defers because it
+declares CALLS only. This also causes repeated GLBOPT1 recovery-evidence work:
+the DB records 7,952 identity decisions and the canary exceeds the preceding
+17-second baseline by slightly more than 2x. Do not commit the dirty gate in
+this form.
+
+Next falsifiable hypothesis: receipted partial canonical composition is its
+own CALLS admission authority. Admit that authority at the coarse maturity
+gate without pretending `indirect_dispatcher_materialized` is true, and reject
+it before expensive recovery work at non-CALLS maturities. The focused
+contract must prove CALLS is granted, GLBOPT1 is declined before family
+selection, and unrelated nonmaterialized and Tigress profiles are unchanged.
+Only then rerun A560 and require either one C3 canonical plan or a new typed,
+stable-EA composition obligation from the diagnostic DB.
+
+**2026-07-24T08:29:10Z**
+
+The CALLS-admission hypothesis is confirmed. The focused recovery-gate
+contract proves that receipted partial canonical composition is admitted at
+CALLS without reclassifying the function as an indirect/Tigress profile,
+GLBOPT1 declines early with `canonical_composition_requires_calls`, ordinary
+nonmaterialized CALLS remains unregistered, and Tigress keeps its existing
+one-shot CALLS contract. The nearest lifecycle, capability, canonical-planning,
+and maturity suite is 105/105 green, and Ruff passes.
+
+The mandatory exact A560 canary completed in 12.69 seconds without a process
+segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784881614_11.diag.sqlite3`; log:
+`.tmp/rhad-a560-v31-canonical-calls-admission.txt`. The semantic oracle remains
+red with one residual `while ( 1 )`.
+
+The highest contiguous level remains C2. The DB preserves the generation-1
+260/260 frontend-normalization receipt and records CALLS
+`recovery_round_granted` with `indirect_dispatcher_materialized=false`.
+GLBOPT1 records the new early typed decline. Identity decisions fall from
+7,952 in the rejected gate attempt to 141, and runtime returns below the
+preceding 17-second non-debug baseline. No canonical mutation plan or
+transaction exists.
+
+The first DB-visible CALLS decline after admission is materialized-handler
+completeness: state `0x0872BFF1` has no live owner for target `0x40C62F`.
+That is not the causal blocker for the candidate-composition lane, which
+deliberately composes against the unpublished detached inventory instead of
+requiring all live handlers. The actual scheduler blocker is visible only in
+the secondary log: `lower_state_machine` is rejected because the pass spec
+still requires `bound_canonical_semantic_evidence`. The candidate fallback
+added at `60f731a2c` runs only when that analysis is absent, so the static pass
+contract and implementation are contradictory.
+
+This is also a Phase 8 visibility gap: the scheduler rejection is not persisted
+as a lifecycle event or failed obligation. The next slice must make the
+canonical lowerer accept either bound evidence or the candidate-plus-
+normalization capabilities at its pass-contract boundary, while preserving the
+existing typed rejection inside the pass when neither source is available.
+The next A560 canary must either record one complete C3 plan or persist the
+first stable-EA composition rejection in the diagnostic DB.
