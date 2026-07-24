@@ -28,9 +28,11 @@ from d810.transforms.fragment_plan import (
     FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
     FragmentOperation,
+    FragmentStoragePredicateMaterialization,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from tests.native_preanalysis import make_native_key
 from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
@@ -1761,6 +1763,172 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
         condition_producer_ea,
         predicate_ea,
     }
+
+
+def test_preopt_native_body_materializes_storage_predicate_before_staging(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    consumer_ea = 0x3700
+    dispatcher_compare_ea = 0x3704
+    dispatcher_select_ea = 0x3708
+    unresolved_transfer_ea = 0x3710
+    predicate_ida_stkoff = 0x498
+    destination_stack_delta = 12
+    source = _MBA(
+        (
+            _Block(
+                0,
+                consumer_ea,
+                (
+                    _Instruction(
+                        ida_hexrays.m_mov,
+                        consumer_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_S,
+                            stack_offset=0x40,
+                            size=4,
+                        ),
+                        dest=_Operand(
+                            ida_hexrays.mop_r,
+                            register=12,
+                            size=4,
+                        ),
+                    ),
+                    _Instruction(
+                        ida_hexrays.m_setz,
+                        dispatcher_compare_ea,
+                        dest=_Operand(
+                            ida_hexrays.mop_r,
+                            register=13,
+                            size=1,
+                        ),
+                    ),
+                    _Instruction(
+                        ida_hexrays.m_mov,
+                        dispatcher_select_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_r,
+                            register=12,
+                            size=4,
+                        ),
+                        dest=_Operand(
+                            ida_hexrays.mop_r,
+                            register=14,
+                            size=4,
+                        ),
+                    ),
+                    _Instruction(
+                        ida_hexrays.m_ijmp,
+                        unresolved_transfer_ea,
+                        left=_Operand(
+                            ida_hexrays.mop_r,
+                            register=14,
+                            size=4,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        consumer_ea,
+        source,
+        ((consumer_ea, unresolved_transfer_ea + 1),),
+        owned_block_entry_eas=(consumer_ea,),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        ida_to_vd_delta=destination_stack_delta,
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    body_id = "native-body:storage-predicate"
+    imported = _imported_fragment_block(
+        "imported-storage-predicate",
+        body_id,
+        consumer_ea,
+        unresolved_transfer_ea + 1,
+    )
+    operation_id = "proof:storage-predicate"
+    native_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=(imported.block_id,),
+        entry_block_ids=(imported.block_id,),
+        terminal_block_ids=(),
+        native_ranges=(
+            NativeEaInterval(consumer_ea, unresolved_transfer_ea + 1),
+        ),
+        proof_ids=(operation_id,),
+    )
+    context = _NativeBodyStagingContext(
+        destination,
+        _NativeBodyPlan(
+            (imported,),
+            operations=(
+                FragmentOperation(
+                    operation_id=operation_id,
+                    source_block_id=imported.block_id,
+                    predicate_anchor_ea=consumer_ea,
+                    storage_predicate_materialization=(
+                        FragmentStoragePredicateMaterialization(
+                            predicate_kind=PredicateKind.EQ,
+                            storage_identity=StorageIdentity(
+                                StorageIdentityKind.STACK,
+                                predicate_ida_stkoff,
+                            ),
+                            width=4,
+                            compare_constant=0,
+                            cut_after_ea=consumer_ea,
+                        )
+                    ),
+                    edges=(
+                        FragmentEdge(
+                            role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                            target_block_id="taken",
+                        ),
+                        FragmentEdge(
+                            role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                            target_block_id="fallthrough",
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    _prepare_and_stage_native_body(
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+            mba=destination,
+            function_ea=function_ea,
+        ),
+        context=context,
+        native_body=native_body,
+    )
+
+    staged = context.blocks[imported.block_id].instructions()
+    assert tuple(int(instruction.opcode) for instruction in staged) == (
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_jz),
+    )
+    branch = staged[-1]
+    assert int(branch.l.t) == int(ida_hexrays.mop_S)
+    assert int(branch.l.s.off) == (
+        predicate_ida_stkoff + destination_stack_delta
+    )
+    assert int(branch.l.size) == 4
+    assert int(branch.r.t) == int(ida_hexrays.mop_n)
+    assert int(branch.r.nnn.value) == 0
+    assert int(branch.r.size) == 4
+    assert set(context.instruction_origins.values()) == {consumer_ea}
 
 
 @pytest.mark.parametrize(

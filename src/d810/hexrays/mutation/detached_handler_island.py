@@ -67,6 +67,7 @@ from d810.transforms.fragment_plan import (
     FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
+    FragmentStoragePredicateMaterialization,
 )
 from d810.ir.block_identity import (
     BlockHandleProvenance,
@@ -91,6 +92,15 @@ class _ComputedBranchNormalizationPlan:
     result_instruction_index: int | None
     branch_opcode: int
     branch_condition_template: object | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _StoragePredicateNormalizationPlan:
+    """Backend realization of one proof-owned stable-storage predicate."""
+
+    operation: FragmentOperation
+    cut_index: int
+    predicate: FragmentStoragePredicateMaterialization
 
 
 @dataclass(frozen=True, slots=True)
@@ -1253,7 +1263,11 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         plan: object,
     ) -> tuple[
         dict[int, int],
-        dict[str, _ComputedBranchNormalizationPlan],
+        dict[
+            str,
+            _ComputedBranchNormalizationPlan
+            | _StoragePredicateNormalizationPlan,
+        ],
     ]:
         stack_map = _stack_map_with_positive_identity_overrides(
             _destination_stack_map(self.mba, template),
@@ -1261,7 +1275,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
         computed_normalizations: dict[
             str,
-            _ComputedBranchNormalizationPlan,
+            _ComputedBranchNormalizationPlan
+            | _StoragePredicateNormalizationPlan,
         ] = {}
         terminal_block_ids = set(native_body.terminal_block_ids)
         for block_id, template_block in matched.items():
@@ -1355,32 +1370,46 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 if len(operations) != 1
                 else operations[0].computed_branch_normalization
             )
+            storage_predicate_materialization = (
+                None
+                if len(operations) != 1
+                else operations[0].storage_predicate_materialization
+            )
             if (
                 len(operations) == 1
                 and len(operations[0].edges) == 2
-                and computed_normalization is not None
             ):
-                if not conditional_tail:
+                if storage_predicate_materialization is not None:
                     computed_normalizations[str(block_id)] = (
-                        self._preflight_computed_branch_normalization(
+                        self._preflight_storage_predicate_materialization(
                             template_block,
                             native_body,
                             operations[0],
-                            computed_normalization,
+                            storage_predicate_materialization,
                         )
                     )
-                elif int(template_block.instructions[-1].ea) != int(
-                    operations[0].predicate_anchor_ea
-                ):
-                    computed_normalizations[str(block_id)] = (
-                        self._preflight_split_conditional_select_normalization(
-                            template,
-                            template_block,
-                            native_body,
-                            operations[0],
-                            computed_normalization,
+                elif computed_normalization is not None:
+                    if not conditional_tail:
+                        computed_normalizations[str(block_id)] = (
+                            self._preflight_computed_branch_normalization(
+                                template_block,
+                                native_body,
+                                operations[0],
+                                computed_normalization,
+                            )
                         )
-                    )
+                    elif int(template_block.instructions[-1].ea) != int(
+                        operations[0].predicate_anchor_ea
+                    ):
+                        computed_normalizations[str(block_id)] = (
+                            self._preflight_split_conditional_select_normalization(
+                                template,
+                                template_block,
+                                native_body,
+                                operations[0],
+                                computed_normalization,
+                            )
+                        )
             compatible_conditional = bool(
                 conditional_tail or str(block_id) in computed_normalizations
             )
@@ -1899,6 +1928,115 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
 
     @staticmethod
+    def _preflight_storage_predicate_materialization(
+        template_block: DetachedSnippetBlockTemplate,
+        native_body: FragmentNativeBody,
+        operation: FragmentOperation,
+        predicate: FragmentStoragePredicateMaterialization,
+    ) -> _StoragePredicateNormalizationPlan:
+        """Prove one dispatcher suffix can be replaced while still detached."""
+        label = (
+            f"operation={operation.operation_id!r} "
+            f"source=blk{int(template_block.source_serial)}"
+            f"@0x{int(template_block.native_entry_ea):X} "
+            f"predicate=0x{int(operation.predicate_anchor_ea):X} "
+            f"cut_after=0x{int(predicate.cut_after_ea):X} "
+            f"storage={predicate.storage_identity.key} "
+            f"width={int(predicate.width)} "
+            f"constant=0x{int(predicate.compare_constant):X}"
+        )
+        if operation.operation_id not in native_body.proof_ids:
+            raise SemanticFragmentBackendRejected(
+                "PREOPT storage predicate materialization lacks native-body "
+                f"proof ownership; {label}"
+            )
+        instructions = tuple(template_block.instructions)
+        cut_indexes = tuple(
+            index
+            for index, instruction in enumerate(instructions)
+            if int(instruction.ea) == int(predicate.cut_after_ea)
+        )
+        if not cut_indexes:
+            raise SemanticFragmentBackendRejected(
+                "PREOPT storage predicate cut anchor is absent from its "
+                f"physical source; {label}"
+            )
+        first_cut_index = int(cut_indexes[0])
+        last_cut_index = int(cut_indexes[-1])
+        if cut_indexes != tuple(
+            range(first_cut_index, last_cut_index + 1)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "PREOPT storage predicate cut anchor is not one contiguous "
+                f"instruction group; {label} indexes={cut_indexes!r}"
+            )
+        cut_index = last_cut_index + 1
+        suffix = instructions[cut_index:]
+        if not suffix:
+            raise SemanticFragmentBackendRejected(
+                "PREOPT storage predicate has no dispatcher suffix to "
+                f"supersede; {label}"
+            )
+        terminal = suffix[-1]
+        terminal_is_transfer = bool(
+            ida_hexrays.is_mcode_jcond(int(terminal.opcode))
+            or int(terminal.opcode)
+            in {
+                int(ida_hexrays.m_goto),
+                int(ida_hexrays.m_ijmp),
+            }
+        )
+        unsafe_suffix_rows = tuple(
+            (
+                int(index + cut_index),
+                int(instruction.ea),
+                int(instruction.opcode),
+                int(instruction.d.t),
+            )
+            for index, instruction in enumerate(suffix)
+            if (
+                int(instruction.opcode)
+                in {
+                    int(ida_hexrays.m_call),
+                    int(ida_hexrays.m_icall),
+                    int(ida_hexrays.m_ret),
+                }
+                or (
+                    index != len(suffix) - 1
+                    and (
+                        ida_hexrays.is_mcode_jcond(
+                            int(instruction.opcode)
+                        )
+                        or int(instruction.opcode)
+                        in {
+                            int(ida_hexrays.m_goto),
+                            int(ida_hexrays.m_ijmp),
+                        }
+                    )
+                )
+                or (
+                    index != len(suffix) - 1
+                    and int(instruction.d.t)
+                    not in {
+                        int(ida_hexrays.mop_z),
+                        int(ida_hexrays.mop_r),
+                    }
+                )
+            )
+        )
+        if not terminal_is_transfer or unsafe_suffix_rows:
+            raise SemanticFragmentBackendRejected(
+                "PREOPT storage predicate dispatcher suffix has unowned "
+                f"effects; {label} terminal_transfer={terminal_is_transfer} "
+                f"unsafe_rows={unsafe_suffix_rows!r}"
+            )
+        return _StoragePredicateNormalizationPlan(
+            operation=operation,
+            cut_index=cut_index,
+            predicate=predicate,
+        )
+
+    @staticmethod
     def _preflight_computed_branch_normalization(
         template_block: DetachedSnippetBlockTemplate,
         native_body: FragmentNativeBody,
@@ -2282,7 +2420,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         stack_map: Mapping[int, int],
         computed_normalizations: Mapping[
             str,
-            _ComputedBranchNormalizationPlan,
+            _ComputedBranchNormalizationPlan
+            | _StoragePredicateNormalizationPlan,
         ],
     ) -> dict[str, tuple[tuple[int, object], ...]]:
         """Clone, rebase, and normalize every body before staging any block."""
@@ -2321,58 +2460,93 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 instructions.append((int(captured.ea), instruction))
             if normalization_entry is not None:
                 operation = normalization_entry.operation
-                normalization = operation.computed_branch_normalization
-                if normalization is None:
-                    raise SemanticFragmentBackendRejected(
-                        "PREOPT computed branch normalization disappeared "
-                        "during preparation"
-                    )
                 predicate_ea = int(operation.predicate_anchor_ea)
                 branch = ida_hexrays.minsn_t(predicate_ea)
-                branch.opcode = normalization_entry.branch_opcode
                 branch.l = ida_hexrays.mop_t()
-                branch_condition_template = (
-                    normalization_entry.branch_condition_template
-                )
-                if branch_condition_template is None:
-                    result_index = normalization_entry.result_instruction_index
+                if isinstance(
+                    normalization_entry,
+                    _StoragePredicateNormalizationPlan,
+                ):
+                    predicate = normalization_entry.predicate
                     if (
-                        result_index is None
-                        or not 0 <= int(result_index) < len(instructions)
-                        or not self._has_result_operand(
-                            instructions[int(result_index)][1]
-                        )
+                        operation.storage_predicate_materialization
+                        != predicate
                     ):
                         raise SemanticFragmentBackendRejected(
-                            "PREOPT computed branch result changed during rebase"
+                            "PREOPT storage predicate materialization changed "
+                            "during preparation"
                         )
-                    result = instructions[int(result_index)][1]
-                    branch.l.assign(result.d)
-                else:
-                    branch.l.assign(branch_condition_template)
-                    predicate_stack_map = _stack_map_with_positive_identity_overrides(
-                        dict(stack_map),
-                        _instruction_destination_stack_map(
-                            self.mba,
-                            template,
-                            predicate_ea,
-                        ),
+                    predicate_vd = int(
+                        self.mba.stkoff_ida2vd(
+                            int(predicate.storage_identity.offset)
+                        )
                     )
-                    if not _rebase_template_operand(
-                        self.mba,
-                        branch.l,
-                        predicate_stack_map,
-                    ):
+                    if predicate_vd < 0:
                         raise SemanticFragmentBackendRejected(
-                            "PREOPT computed branch template changed during rebase"
+                            "PREOPT storage predicate cannot bind its live "
+                            "stack coordinate"
                         )
+                    branch.opcode = int(ida_hexrays.m_jz)
+                    branch.l.make_stkvar(self.mba, predicate_vd)
+                    branch.l.size = int(predicate.width)
+                    compare_constant = int(predicate.compare_constant)
+                else:
+                    normalization = operation.computed_branch_normalization
+                    if normalization is None:
+                        raise SemanticFragmentBackendRejected(
+                            "PREOPT computed branch normalization disappeared "
+                            "during preparation"
+                        )
+                    branch.opcode = normalization_entry.branch_opcode
+                    branch_condition_template = (
+                        normalization_entry.branch_condition_template
+                    )
+                    if branch_condition_template is None:
+                        result_index = (
+                            normalization_entry.result_instruction_index
+                        )
+                        if (
+                            result_index is None
+                            or not 0 <= int(result_index) < len(instructions)
+                            or not self._has_result_operand(
+                                instructions[int(result_index)][1]
+                            )
+                        ):
+                            raise SemanticFragmentBackendRejected(
+                                "PREOPT computed branch result changed during "
+                                "rebase"
+                            )
+                        result = instructions[int(result_index)][1]
+                        branch.l.assign(result.d)
+                    else:
+                        branch.l.assign(branch_condition_template)
+                        predicate_stack_map = (
+                            _stack_map_with_positive_identity_overrides(
+                                dict(stack_map),
+                                _instruction_destination_stack_map(
+                                    self.mba,
+                                    template,
+                                    predicate_ea,
+                                ),
+                            )
+                        )
+                        if not _rebase_template_operand(
+                            self.mba,
+                            branch.l,
+                            predicate_stack_map,
+                        ):
+                            raise SemanticFragmentBackendRejected(
+                                "PREOPT computed branch template changed "
+                                "during rebase"
+                            )
+                    compare_constant = 0
                 if int(branch.l.size) <= 0:
                     raise SemanticFragmentBackendRejected(
-                        "PREOPT computed branch condition has no portable width"
+                        "PREOPT branch condition has no portable width"
                     )
                 branch.r = ida_hexrays.mop_t()
                 branch.r.make_number(
-                    0,
+                    compare_constant,
                     int(branch.l.size),
                     predicate_ea,
                 )
