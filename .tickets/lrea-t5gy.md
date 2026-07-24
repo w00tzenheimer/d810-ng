@@ -1911,3 +1911,57 @@ range loses one real call or invents a resolver tail call, and correct range
 construction or component ownership without weakening exact call parity,
 granting another redo in the same evidence generation, or broadening the
 91-route publication.
+
+**2026-07-24T15:14:08Z**
+
+Commit `453eb8910` made the preceding CALLS mismatch first-class diagnostic
+evidence. The canary DB at
+`.tmp/rhad-a560-companion-mismatch-diag/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`
+records pristine PREOPT calls `0x40C2A9` and `0x40C2BE`, isolated CALLS calls
+`0x40C2A9`, `0x40C2BE`, and `0x40C2F9`, and exact
+`mismatch_ea=0x40C2F9`. Native decoding proves `0x40C2F9` is the component's
+terminal `jmp eax`, not a native call, so exact call parity remained the
+authority and no compatibility exception was added.
+
+Commit `c1479d0ae` completes the resolver-tail analysis-boundary slice. The
+portable native CFG now shortens isolated CALLS generation only when the
+unique component-ending block has exclusively resolver-proven indirect edges
+from one terminal instruction EA. The original native component remains the
+PREOPT call-inventory boundary. CALLS generation and replacement capture use
+the shortened range, and the diagnostic event records both boundaries.
+
+The focused runtime suite is 450/450 green locally and 450/450 green in pinned
+`d810-idapro-9.3-test-runtime:py313-v1` Docker. The Docker artifact produced by
+the v3.1-required root invocation with
+`-w lifecycle-resolver-evidence-authority` is
+`.tmp/calls-companion-tail-trim-runtime-root.txt`. Changed-file Ruff, diff
+checks, ast-grep, all 14 worktree-local import contracts, commit hooks, and
+`graphify update .` pass.
+
+The mandatory A560 diagnostic canary also used the root checkout plus
+`-w lifecycle-resolver-evidence-authority` and returned normally in 17.48
+seconds with no OS segfault, verifier event, or numeric `INTERR`. Primary DB:
+`.tmp/rhad-a560-calls-tail-transfer-root/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pytest log: `.tmp/rhad-a560-v31-calls-tail-transfer-root.txt`. The semantic
+oracle remains red with an eight-line stub and one `while ( 1 )`, so this is
+not A560 acceptance.
+
+The DB proves both requested companions now capture with exact parity. Event
+176 preserves PREOPT range `[0x40B9A6,0x40BB75)` while generating CALLS over
+`[0x40B9A6,0x40BB73)`, with matching calls `0x40BA56`, `0x40BA72`,
+`0x40BA8C`, and `0x40BB35`. Event 177 preserves PREOPT range
+`[0x40C26D,0x40C2FB)` while generating CALLS over
+`[0x40C26D,0x40C2F9)`, with matching calls `0x40C2A9` and `0x40C2BE`.
+
+The highest contiguous canary level remains C3. The follow-up canonical
+transaction plans 123 operations but applies zero, stages no fragment,
+attempts no root publication, and rolls back successfully. The first failed C4
+obligation is now exact:
+`CALLS companion stack window cannot be rebound; call=0x40C2A9 top=12 span=24`.
+
+Continue the v3.1 vertical loop at that stable native call EA. Determine why
+the captured CALLS callinfo's destination stack window cannot be represented
+in the live MMAT_GLBOPT1 MBA, and make the diagnostic DB record the source
+window, destination frame coordinates, and failed invariant before changing
+the rebinding rule. Do not clamp offsets, discard arguments, bypass exact call
+ownership, grant another redo, or broaden to the 91-route publication.
