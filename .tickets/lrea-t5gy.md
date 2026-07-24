@@ -508,3 +508,44 @@ endpoints. That proof-owned operation must replace the generic native-body
 operation at the same imported source, so exactly one atomic predicate and
 both semantic arms own the envelope. Do not special-case `0x40C4B4`, weaken
 predicate validation, or retain both operations.
+
+**2026-07-24T05:57:48Z**
+
+Commit `155deb98d` projects only field-complete, non-stack-carried
+`static_conditional_state_choice_bridge` evidence into one portable
+`NativeIndirectTransferProof`. The projection requires an exact original
+predicate, one register or canonical stack predicate identity, two distinct
+state values and mapped native handler targets, the complete bounded native
+envelope through one resolver-proven indirect frontier, and convergence of
+every route on that frontier. The focused pure regression models the exact
+source, selected-value, join, and two-handler shape. Native-preanalysis is
+40/40 green, the combined native-preanalysis/frontend-normalization gate is
+72/72 green, Ruff passes, ast-grep passes, all 14 worktree-local import
+contracts pass, commit hooks pass, and `graphify update .` completes.
+
+The mandatory production A560 diagnostic canary completed in 8.42 seconds
+without a process segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784872494_10.diag.sqlite3`; log:
+`.tmp/rhad-a560-v31-state-choice-envelope.txt`. The highest contiguous level
+remains C1, not C2 or C6. No semantic-fragment transaction row exists because
+portable plan construction rejects the operation before transaction staging.
+The short rollback pseudocode ends in `JUMPOUT(0x40B6C0)` and is not semantic
+acceptance.
+
+The intended supersession is proven: lifecycle event 8 rejects
+`native-state-choice@0x40C4C3`, rather than the former generic
+`native-body-edge@0x40C4B4`. The first failed C2 obligation is:
+`fragment operation 'native-state-choice@0x40C4C3' computed branch anchors do
+not belong to its source identity`. The semantic proof owns native envelope
+`[0x40C4B4,0x40C4DC)` and unresolved transfer `0x40C4DA`, but the imported
+physical source block retains its exact native block identity
+`[0x40C4B4,0x40C4D4)`. The transfer belongs to the downstream join block, so
+requiring every normalization anchor to belong to the physical source block
+conflates semantic-envelope authority with block identity.
+
+Continue the v3.1 vertical loop by representing the participating
+conditional-select envelope explicitly and validating each anchor against its
+exact owned block while retaining one atomic semantic operation. Do not widen
+the imported source block identity across multiple native blocks, admit an
+arbitrary downstream transfer, weaken exact predicate ownership, or reintroduce
+the generic native-body operation.
