@@ -8702,6 +8702,8 @@ def _enrich_preopt_union_route_ranges(
 
 def _plan_frontend_normalization_union_source(
     resolution: ComputedGotoResolution,
+    *,
+    transfers: Sequence[MaterializedIndirectTransfer],
 ) -> _FrontendNormalizationUnionSource | None:
     """Build the detached closure directly from the portable transfer ledger."""
     key = int(resolution.function_ea)
@@ -8739,6 +8741,33 @@ def _plan_frontend_normalization_union_source(
             key,
         )
         return None
+    handler_region = plan_preopt_union_region(transfers)
+    if handler_region.abstentions:
+        logger.info(
+            "frontend normalization source abstained: func=0x%X "
+            "reason=handler_seed_ownership rows=%s",
+            key,
+            tuple(
+                (hex(int(row.target_ea)), row.reason.value)
+                for row in handler_region.abstentions
+            ),
+        )
+        return None
+    handler_entry_eas = tuple(
+        int(seed_ea)
+        for seed_ea, native_ranges in handler_region.seed_native_ranges
+        if any(
+            int(start_ea) <= int(seed_ea) < int(end_ea)
+            for start_ea, end_ea in native_ranges
+        )
+    )
+    if len(handler_entry_eas) != len(handler_region.seed_native_ranges):
+        logger.info(
+            "frontend normalization source abstained: func=0x%X "
+            "reason=handler_seed_outside_owned_range",
+            key,
+        )
+        return None
 
     source_entry_eas = tuple(
         sorted({int(plan.block_entry) for plan in resolution.patch_plans})
@@ -8756,12 +8785,15 @@ def _plan_frontend_normalization_union_source(
         function,
         live_native_eas=frozenset(),
         seed_eas=tuple(
-            dict.fromkeys((key, *source_entry_eas, *target_eas))
+            dict.fromkeys(
+                (key, *source_entry_eas, *target_eas, *handler_entry_eas)
+            )
         ),
         resolver_cut_eas=tuple(sorted(resolver_targets_by_source)),
         resolver_proven_unmarked_entry_eas=(
             *source_entry_eas,
             *target_eas,
+            *handler_entry_eas,
         ),
         resolver_target_eas_by_source=resolver_targets_by_source,
     )
@@ -8781,27 +8813,35 @@ def _plan_frontend_normalization_union_source(
         )
         return None
 
-    provenance_by_entry = {
-        int(entry_ea): "computed_transfer_source"
-        for entry_ea in source_entry_eas
-    }
-    provenance_by_entry.update(
-        {
-            int(entry_ea): "computed_transfer_target"
-            for entry_ea in target_eas
-        }
+    seed_provenance = tuple(
+        ResolverProvenHandlerEntry(
+            entry_ea=int(entry_ea),
+            provenance=provenance,
+        )
+        for entry_ea, provenance in sorted(
+            {
+                *(
+                    (int(entry_ea), "computed_transfer_source")
+                    for entry_ea in source_entry_eas
+                ),
+                *(
+                    (int(entry_ea), "computed_transfer_target")
+                    for entry_ea in target_eas
+                ),
+                *(
+                    (int(entry_ea), "static_handler_entry_route")
+                    for entry_ea in handler_entry_eas
+                ),
+            }
+        )
     )
     closure = plan_native_semantic_closure(
         cfg_result.cfg,
-        tuple(
-            ResolverProvenHandlerEntry(
-                entry_ea=int(entry_ea),
-                provenance=provenance,
-            )
-            for entry_ea, provenance in sorted(provenance_by_entry.items())
-        ),
+        seed_provenance,
     )
-    required_entries = frozenset((*source_entry_eas, *target_eas))
+    required_entries = frozenset(
+        (*source_entry_eas, *target_eas, *handler_entry_eas)
+    )
     missing_entries = required_entries - set(closure.included_block_eas)
     if closure.abstentions or missing_entries or not closure.native_ranges:
         logger.info(
@@ -8870,7 +8910,10 @@ def _capture_prepatch_preopt_union_source(
 
     enriched = _enrich_preopt_union_route_ranges(resolution, transfers)
     _discover_static_state_write_routes(state, resolution, enriched)
-    source_plan = _plan_frontend_normalization_union_source(resolution)
+    source_plan = _plan_frontend_normalization_union_source(
+        resolution,
+        transfers=enriched,
+    )
     if source_plan is None:
         return abstain("portable_union_source")
     region = source_plan.region
