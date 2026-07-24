@@ -1383,6 +1383,163 @@ def test_lifecycle_projects_complete_native_patch_ledger_as_frontend_evidence() 
     assert direct_proof.endpoints[0].anchor_ea == true_target_ea
 
 
+def test_frontend_evidence_projects_complete_static_state_choice_envelope() -> None:
+    compare_ea = 0x1000
+    select_ea = 0x100C
+    raw_dispatch_predicate_ea = 0x101E
+    selected_ea = 0x1020
+    join_ea = 0x1030
+    unresolved_transfer_ea = 0x103E
+    true_target_ea = 0x2000
+    false_target_ea = 0x3000
+    dispatcher_target_ea = 0x4000
+    cfg = NativeCfg(
+        {
+            compare_ea: NativeBlock(
+                start_ea=compare_ea,
+                end_ea=selected_ea,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.CONDITIONAL_TRUE,
+                        target_ea=join_ea,
+                        source_instruction_ea=raw_dispatch_predicate_ea,
+                    ),
+                    NativeEdge(
+                        kind=NativeEdgeKind.CONDITIONAL_FALSE,
+                        target_ea=selected_ea,
+                        source_instruction_ea=raw_dispatch_predicate_ea,
+                    ),
+                ),
+            ),
+            selected_ea: NativeBlock(
+                start_ea=selected_ea,
+                end_ea=join_ea,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.FALLTHROUGH,
+                        target_ea=join_ea,
+                        source_instruction_ea=selected_ea,
+                    ),
+                ),
+            ),
+            join_ea: NativeBlock(
+                start_ea=join_ea,
+                end_ea=0x1040,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.INDIRECT,
+                        target_ea=dispatcher_target_ea,
+                        source_instruction_ea=unresolved_transfer_ea,
+                        resolver_proven=True,
+                    ),
+                ),
+            ),
+            true_target_ea: NativeBlock(
+                start_ea=true_target_ea,
+                end_ea=0x2010,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+            false_target_ea: NativeBlock(
+                start_ea=false_target_ea,
+                end_ea=0x3010,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+        }
+    )
+    closure = NativeSemanticClosure(
+        included_block_eas=(
+            compare_ea,
+            selected_ea,
+            join_ea,
+            true_target_ea,
+            false_target_ea,
+        ),
+        native_ranges=(
+            NativeRange(compare_ea, 0x1040),
+            NativeRange(true_target_ea, 0x2010),
+            NativeRange(false_target_ea, 0x3010),
+        ),
+        proven_internal_edges=(),
+        abstentions=(),
+        seed_provenance=(),
+    )
+    patch_plan = ComputedGotoPatchPlan(
+        jmp_ea=0x5008,
+        block_entry=0x5000,
+        patch_start=0x5000,
+        patch_bytes=b"\x90",
+        region_end=0x5010,
+        insn_heads=(0x5000,),
+        new_block_eas=(0x5000,),
+        target_eas=(true_target_ea,),
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x1000,
+        jmp_targets={patch_plan.jmp_ea: patch_plan.target_eas},
+        reachable_eas=(0x1000,),
+        arch="x86",
+        executed_insns=17,
+        seeds_run=0,
+        patch_plans=(patch_plan,),
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=select_ea,
+        source_block_ea=compare_ea,
+        materialized_anchor_eas=(compare_ea, select_ea),
+        target_eas=(true_target_ea, false_target_ea),
+        condition_code=4,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        selector_state_var_reg=20,
+        predicate_stack_ida_stkoff=0x44,
+        predicate_size=4,
+        predicate_compare_constant=5,
+        predicate_true_state=0x456A4274,
+        predicate_false_state=0x2B8162DC,
+        predicate_true_is_taken=True,
+        predicate_preserve_live=True,
+        resolver_kind="static_conditional_state_choice_bridge",
+    )
+    state = NativePreanalysisSessionState()
+    assert state.set_computed_goto_resolution(NATIVE_KEY, resolution)
+    assert state.merge_native_facts(
+        NATIVE_KEY,
+        native_cfg=cfg,
+        semantic_closure=closure,
+        transfers=(transfer,),
+        boundary_ports=DetachedSnippetBoundaryPorts((), ()),
+    )
+
+    evidence = state.frontend_normalization_evidence_for(NATIVE_KEY)
+
+    assert evidence is not None
+    proofs = {proof.proof_id: proof for proof in evidence.transfer_proofs}
+    proof = proofs["native-state-choice@0x100C"]
+    assert proof.shape is NativeTransferShape.CONDITIONAL
+    assert proof.source_anchor_ea == select_ea
+    assert proof.source_transfer_ea == unresolved_transfer_ea
+    assert proof.predicate_kind is PredicateKind.EQ
+    assert proof.predicate_anchor_ea == select_ea
+    assert proof.condition_producer_ea == compare_ea
+    assert proof.source_identity.exact_instruction_eas == frozenset(
+        {compare_ea, select_ea}
+    )
+    assert proof.source_identity.native_ranges.intervals == (
+        NativeEaInterval(compare_ea, 0x1040),
+    )
+    assert proof.flag_corridor[0].native_ranges.intervals == (
+        NativeEaInterval(compare_ea, selected_ea),
+    )
+    assert proof.permitted_flag_write_eas == frozenset({compare_ea})
+    assert {
+        (endpoint.role, endpoint.anchor_ea)
+        for endpoint in proof.endpoints
+    } == {
+        (SemanticEdgeRole.CONDITIONAL_TAKEN, true_target_ea),
+        (SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, false_target_ea),
+    }
+
+
 def test_frontend_evidence_owns_patch_corridor_and_ledger_target() -> None:
     producer_ea = 0x1005
     patch_start = 0x1010

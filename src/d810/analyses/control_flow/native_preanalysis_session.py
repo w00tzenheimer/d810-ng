@@ -34,6 +34,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
 from d810.analyses.control_flow.native_semantic_closure import (
     NativeBlock,
     NativeCfg,
+    NativeEdgeKind,
     NativeSemanticClosure,
 )
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
@@ -528,6 +529,277 @@ def _patch_plan_frontend_proof(
         diagnostic_provenance=(
             *provenance,
             ("condition_code", str(int(plan.condition_code))),
+        ),
+    )
+
+
+def _field_complete_static_state_choice(
+    transfer: MaterializedIndirectTransfer,
+) -> bool:
+    """Whether one portable bridge owns an original compare/CMOV choice."""
+    predicate_register = transfer.predicate_register
+    predicate_stack = transfer.predicate_stack_ida_stkoff
+    target_eas = (transfer.true_target_ea, transfer.false_target_ea)
+    state_values = (
+        transfer.predicate_true_state,
+        transfer.predicate_false_state,
+    )
+    anchors = tuple(int(ea) for ea in transfer.materialized_anchor_eas)
+    return bool(
+        is_conditional_handler_bridge_kind(str(transfer.resolver_kind))
+        and transfer.predicate_preserve_live
+        and transfer.condition_code in {2, 3, 4, 5, 6, 7, 12, 13, 14, 15}
+        and transfer.predicate_true_is_taken in (True, False)
+        and transfer.selector_state_var_reg is not None
+        and transfer.predicate_size is not None
+        and int(transfer.predicate_size) > 0
+        and transfer.predicate_compare_constant is not None
+        and transfer.predicate_compare_register is None
+        and (predicate_register is None) != (predicate_stack is None)
+        and len(anchors) == 2
+        and anchors[-1] == int(transfer.source_jmp_ea)
+        and all(value is not None for value in target_eas)
+        and all(value is not None for value in state_values)
+        and int(target_eas[0]) != int(target_eas[1])
+        and int(state_values[0]) != int(state_values[1])
+        and set(int(ea) for ea in transfer.target_eas)
+        == {int(target_eas[0]), int(target_eas[1])}
+        and transfer.state_carrier_store_ea is None
+        and not transfer.state_carrier_consumer_load_eas
+    )
+
+
+def _static_state_choice_envelope(
+    native_cfg: NativeCfg,
+    source: NativeBlock,
+) -> tuple[tuple[NativeBlock, ...], int]:
+    """Prove one closed native corridor ending at one indirect frontier."""
+    blocks: dict[int, NativeBlock] = {}
+    successors: dict[int, set[int]] = {}
+    frontier_rows: list[tuple[int, int]] = []
+    pending = [int(source.start_ea)]
+    while pending:
+        entry_ea = pending.pop()
+        if entry_ea in blocks:
+            continue
+        if len(blocks) >= 32:
+            raise FrontendNormalizationEvidenceRejected(
+                "static state-choice envelope exceeds the bounded native corridor"
+            )
+        block = native_cfg.blocks_by_ea.get(entry_ea)
+        if block is None:
+            raise FrontendNormalizationEvidenceRejected(
+                "static state-choice envelope lost a native CFG block"
+            )
+        blocks[entry_ea] = block
+        control_edges = tuple(
+            edge
+            for edge in block.outgoing_edges
+            if edge.kind is not NativeEdgeKind.CALL
+        )
+        if any(edge.kind is NativeEdgeKind.CALL for edge in block.outgoing_edges):
+            raise FrontendNormalizationEvidenceRejected(
+                "static state-choice envelope crosses a native call"
+            )
+        indirect_edges = tuple(
+            edge for edge in control_edges if edge.kind is NativeEdgeKind.INDIRECT
+        )
+        if indirect_edges:
+            if (
+                len(control_edges) != 1
+                or len(indirect_edges) != 1
+                or not indirect_edges[0].resolver_proven
+                or indirect_edges[0].source_instruction_ea is None
+            ):
+                raise FrontendNormalizationEvidenceRejected(
+                    "static state-choice envelope has an ambiguous indirect frontier"
+                )
+            frontier_rows.append(
+                (
+                    entry_ea,
+                    int(indirect_edges[0].source_instruction_ea),
+                )
+            )
+            successors[entry_ea] = set()
+            continue
+        if not control_edges:
+            raise FrontendNormalizationEvidenceRejected(
+                "static state-choice envelope terminates before its indirect frontier"
+            )
+        block_successors: set[int] = set()
+        for edge in control_edges:
+            if (
+                edge.kind
+                not in {
+                    NativeEdgeKind.DIRECT_JUMP,
+                    NativeEdgeKind.FALLTHROUGH,
+                    NativeEdgeKind.CALL_FALLTHROUGH,
+                    NativeEdgeKind.CONDITIONAL_TRUE,
+                    NativeEdgeKind.CONDITIONAL_FALSE,
+                }
+                or edge.target_ea is None
+            ):
+                raise FrontendNormalizationEvidenceRejected(
+                    "static state-choice envelope has an unsupported native edge"
+                )
+            target = _unique_native_block_for_anchor(
+                native_cfg,
+                int(edge.target_ea),
+                description="static state-choice envelope target",
+            )
+            target_entry_ea = int(target.start_ea)
+            block_successors.add(target_entry_ea)
+            if target_entry_ea not in blocks:
+                pending.append(target_entry_ea)
+        successors[entry_ea] = block_successors
+
+    if len(frontier_rows) != 1:
+        raise FrontendNormalizationEvidenceRejected(
+            "static state-choice envelope requires one indirect frontier"
+        )
+    frontier_entry_ea, transfer_ea = frontier_rows[0]
+    reaches_frontier = {frontier_entry_ea}
+    changed = True
+    while changed:
+        changed = False
+        for entry_ea, target_eas in successors.items():
+            if entry_ea in reaches_frontier or not target_eas:
+                continue
+            if all(target_ea in reaches_frontier for target_ea in target_eas):
+                reaches_frontier.add(entry_ea)
+                changed = True
+    if set(blocks) != reaches_frontier:
+        raise FrontendNormalizationEvidenceRejected(
+            "static state-choice envelope has a route outside its indirect frontier"
+        )
+    return (
+        tuple(blocks[entry_ea] for entry_ea in sorted(blocks)),
+        transfer_ea,
+    )
+
+
+def _static_state_choice_frontend_proof(
+    native_key: NativePreanalysisKey,
+    native_cfg: NativeCfg,
+    transfer: MaterializedIndirectTransfer,
+    *,
+    atomic_group_id: str,
+) -> NativeIndirectTransferProof | None:
+    """Project one exact compare/CMOV state choice into frontend authority."""
+    if not _field_complete_static_state_choice(transfer):
+        return None
+    producer_ea, predicate_ea = (
+        int(ea) for ea in transfer.materialized_anchor_eas
+    )
+    source = _unique_native_block_for_anchor(
+        native_cfg,
+        int(transfer.source_block_ea),
+        description="static state-choice source",
+    )
+    if (
+        int(source.start_ea) != int(transfer.source_block_ea)
+        or not int(source.start_ea) <= producer_ea < int(source.end_ea)
+        or not int(source.start_ea) <= predicate_ea < int(source.end_ea)
+    ):
+        raise FrontendNormalizationEvidenceRejected(
+            "static state-choice producer and predicate require one native source"
+        )
+    predicate_kind = condition_code_predicate(int(transfer.condition_code))
+    if predicate_kind is None:
+        raise FrontendNormalizationEvidenceRejected(
+            "static state-choice condition code has no portable predicate"
+        )
+    envelope, unresolved_transfer_ea = _static_state_choice_envelope(
+        native_cfg,
+        source,
+    )
+    source_identity = StableBlockIdentity.from_intervals(
+        tuple(
+            NativeEaInterval(int(block.start_ea), int(block.end_ea))
+            for block in envelope
+        ),
+        native_key=native_key,
+        exact_instruction_eas=(producer_ea, predicate_ea),
+    )
+    flag_identity = _native_block_identity(
+        native_key,
+        source,
+        exact_eas=(producer_ea, predicate_ea),
+    )
+    true_target_ea = int(transfer.true_target_ea)
+    false_target_ea = int(transfer.false_target_ea)
+    true_target = _unique_native_block_for_anchor(
+        native_cfg,
+        true_target_ea,
+        description="static state-choice true target",
+    )
+    false_target = _unique_native_block_for_anchor(
+        native_cfg,
+        false_target_ea,
+        description="static state-choice false target",
+    )
+    true_pair = (SemanticEdgeRole.CONDITIONAL_TAKEN, true_target_ea, true_target)
+    false_pair = (
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        false_target_ea,
+        false_target,
+    )
+    if not bool(transfer.predicate_true_is_taken):
+        true_pair, false_pair = (
+            (
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                true_target_ea,
+                true_target,
+            ),
+            (
+                SemanticEdgeRole.CONDITIONAL_TAKEN,
+                false_target_ea,
+                false_target,
+            ),
+        )
+    return NativeIndirectTransferProof(
+        proof_id=f"native-state-choice@0x{predicate_ea:X}",
+        atomic_group_id=atomic_group_id,
+        shape=NativeTransferShape.CONDITIONAL,
+        source_identity=source_identity,
+        source_anchor_ea=predicate_ea,
+        source_transfer_ea=unresolved_transfer_ea,
+        endpoints=tuple(
+            NativeTransferEndpoint(
+                role=role,
+                identity=_native_block_identity(
+                    native_key,
+                    target,
+                    exact_eas=(target_ea,),
+                ),
+                anchor_ea=target_ea,
+            )
+            for role, target_ea, target in (true_pair, false_pair)
+        ),
+        predicate_kind=predicate_kind,
+        predicate_anchor_ea=predicate_ea,
+        condition_producer_ea=producer_ea,
+        flag_corridor=(flag_identity,),
+        permitted_flag_write_eas=frozenset({producer_ea}),
+        diagnostic_provenance=(
+            ("provider", str(transfer.resolver_kind)),
+            (
+                "predicate_storage",
+                (
+                    f"reg:{int(transfer.predicate_register)}"
+                    if transfer.predicate_register is not None
+                    else f"stack:{int(transfer.predicate_stack_ida_stkoff)}"
+                ),
+            ),
+            (
+                "predicate_constant",
+                f"0x{int(transfer.predicate_compare_constant):X}",
+            ),
+            ("predicate_true_state", f"0x{int(transfer.predicate_true_state):X}"),
+            (
+                "predicate_false_state",
+                f"0x{int(transfer.predicate_false_state):X}",
+            ),
         ),
     )
 
@@ -1294,7 +1566,7 @@ class NativePreanalysisSessionState:
                 key=lambda item: int(item.jmp_ea),
             )
         )
-        proofs = tuple(
+        patch_proofs = tuple(
             _patch_plan_frontend_proof(
                 key,
                 plan,
@@ -1302,11 +1574,28 @@ class NativePreanalysisSessionState:
             )
             for plan in patch_plans
         )
+        state_choice_proofs = (
+            ()
+            if facts is None
+            else tuple(
+                proof
+                for transfer in facts.transfers
+                for proof in (
+                    _static_state_choice_frontend_proof(
+                        key,
+                        facts.native_cfg,
+                        transfer,
+                        atomic_group_id=atomic_group_id,
+                    ),
+                )
+                if proof is not None
+            )
+        )
         return FrontendNormalizationEvidence(
             native_key=key,
             generation=int(self.evidence_generation),
             atomic_group_id=atomic_group_id,
-            transfer_proofs=proofs,
+            transfer_proofs=(*patch_proofs, *state_choice_proofs),
             semantic_closure=semantic_closure,
             native_cfg=native_cfg,
         )
