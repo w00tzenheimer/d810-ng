@@ -314,6 +314,34 @@ def test_direct_fragment_operation_rejects_computed_branch_normalization() -> No
         )
 
 
+def test_canonical_live_replacement_rejects_frontend_branch_normalization() -> None:
+    plan = _valid_plan()
+    (operation,) = plan.operations
+    normalization = FragmentComputedBranchNormalization(
+        predicate_kind=PredicateKind.EQ,
+        normalization_start_ea=0x40BECE,
+        condition_producer_ea=0x40BECF,
+        unresolved_transfer_ea=0x40BED0,
+    )
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match=(
+            "canonical computed branch normalization requires "
+            "imported native-body proof"
+        ),
+    ):
+        replace(
+            plan,
+            operations=(
+                replace(
+                    operation,
+                    computed_branch_normalization=normalization,
+                ),
+            ),
+        )
+
+
 def test_fragment_block_materialization_is_explicit_and_role_complete() -> None:
     plan = _valid_plan()
 

@@ -1191,3 +1191,35 @@ the composed plan has canonical-semantic publication purpose. The next slice
 must decide how the already-proven branch normalization becomes canonical
 direct-route intent without granting the canonical plan generic frontend
 normalization authority.
+
+**2026-07-24T10:09:04Z**
+
+The imported-branch construction-proof slice is verified and ready for its own
+commit. Computed-branch normalization is not optional metadata: the detached
+native-body materializer uses it before staging to cut the unresolved `m_ijmp`
+suffix and synthesize the proven conditional branch. Removing it would expose
+unresolved imported control flow to the canonical operation.
+
+Canonical plans may now carry this proof only when the operation source is an
+imported block, that block belongs to a native body in the same plan, and the
+operation id is named by that body's proof set. A canonical operation on a live
+replacement still rejects. This does not grant canonical plans generic
+frontend-normalization authority or create a compatibility path.
+
+The fragment-plan, canonical-transform, frontend-normalization, and
+canonical-lowering suites are 79/79 green, and changed-file Ruff and diff checks
+pass. The mandatory exact A560 canary completed without a process segfault or
+INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784887699_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-canonical-imported-normalization.txt`. The semantic oracle
+remains red with one residual `while ( 1 )`.
+
+The phase-purpose rejection is gone, but the highest contiguous level remains
+C2 because the canonical plan is stopped before publication recording. The next
+C3 obligation is `RuntimeError: canonical semantic planning requires current
+normalized authority`. The current lifecycle requires global
+`normalization_published_postvalidated_generation == evidence_generation`,
+although the candidate is backed by one committed normalization work item with
+other obligations intentionally remaining. The next slice must model
+receipt-scoped normalized authority for that selected obligation set; it must
+not mark the entire generation normalized or bypass lifecycle authority.
