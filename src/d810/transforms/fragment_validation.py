@@ -652,10 +652,9 @@ def _validate_graph(
     }
 
     def permits_opaque_boundary(block_id: str, endpoint: str) -> bool:
-        return (
-            binding_states.get(block_id) is FragmentBindingState.PUBLISHED
-            and _is_opaque_boundary_endpoint(endpoint)
-        )
+        return binding_states.get(
+            block_id
+        ) is FragmentBindingState.PUBLISHED and _is_opaque_boundary_endpoint(endpoint)
 
     references_closed = (
         len(blocks) == len(projection.blocks)
@@ -741,9 +740,7 @@ def _validate_graph(
         *sorted(asymmetric),
     )
 
-    blocks_by_position = {
-        block.physical_position: block for block in projection.blocks
-    }
+    blocks_by_position = {block.physical_position: block for block in projection.blocks}
     entry_reachable = _reachable(blocks, (projection.entry_block_id,))
     for block in projection.blocks:
         if block.kind is not BlockKind.TWO_WAY:
@@ -762,9 +759,7 @@ def _validate_graph(
             )
             continue
         adjacent = blocks_by_position.get(block.physical_position + 1)
-        fallthrough_target = (
-            None if not block.successors else block.successors[0]
-        )
+        fallthrough_target = None if not block.successors else block.successors[0]
         opaque_adjacent = bool(
             fallthrough_target is not None
             and permits_opaque_boundary(block.block_id, fallthrough_target)
@@ -773,10 +768,7 @@ def _validate_graph(
             len(block.successors) == 2
             and block.adjacent_fallthrough_target_id == fallthrough_target
             and (
-                (
-                    adjacent is not None
-                    and fallthrough_target == adjacent.block_id
-                )
+                (adjacent is not None and fallthrough_target == adjacent.block_id)
                 or (adjacent is None and opaque_adjacent)
             )
         )
@@ -856,8 +848,7 @@ def _validate_reachability(
             f"staged fragment block is connected to {connectivity_authority}"
             if passed
             else (
-                "staged fragment block is disconnected from "
-                f"{disconnected_authority}"
+                f"staged fragment block is disconnected from {disconnected_authority}"
             ),
             block.block_id,
         )
@@ -870,10 +861,7 @@ def _validate_reachability(
             passed,
             f"required operation is reachable from {connectivity_authority}"
             if passed
-            else (
-                "required operation is unreachable from "
-                f"{disconnected_authority}"
-            ),
+            else (f"required operation is unreachable from {disconnected_authority}"),
             operation.source_block_id,
         )
     for original in plan.owned_originals:
@@ -1090,15 +1078,13 @@ def _validate_terminal_effects(
 
     planned_carrier_ids = {carrier.carrier_id for carrier in plan.return_carriers}
     planned_return_ids = {
-        terminal_return.return_id
-        for terminal_return in plan.terminal_returns
+        terminal_return.return_id for terminal_return in plan.terminal_returns
     }
     observed_carrier_ids = {
         carrier.carrier_id for carrier in projection.return_carriers
     }
     observed_return_ids = {
-        terminal_return.return_id
-        for terminal_return in projection.terminal_returns
+        terminal_return.return_id for terminal_return in projection.terminal_returns
     }
     scope_valid = bool(
         len(observed_carrier_ids) == len(projection.return_carriers)
@@ -1121,13 +1107,8 @@ def _validate_terminal_effects(
             f"observed_returns={sorted(observed_return_ids)!r}"
         ),
         *sorted(
-            {
-                carrier.block_id for carrier in plan.return_carriers
-            }
-            | {
-                terminal_return.block_id
-                for terminal_return in plan.terminal_returns
-            }
+            {carrier.block_id for carrier in plan.return_carriers}
+            | {terminal_return.block_id for terminal_return in plan.terminal_returns}
         ),
     )
 
@@ -1145,13 +1126,10 @@ def _validate_terminal_effects(
                 pass
             else:
                 corridor_present = (
-                    instructions[start : end + 1]
-                    == carrier.corridor_instruction_eas
+                    instructions[start : end + 1] == carrier.corridor_instruction_eas
                 )
         passed = bool(
-            len(observed) == 1
-            and observed[0] == carrier
-            and corridor_present
+            len(observed) == 1 and observed[0] == carrier and corridor_present
         )
         carrier_integrity[carrier.carrier_id] = passed
         _outcome(
@@ -1175,9 +1153,7 @@ def _validate_terminal_effects(
 
     return_integrity: dict[str, bool] = {}
     for terminal_return in plan.terminal_returns:
-        observed = tuple(
-            observed_returns_by_id.get(terminal_return.return_id, ())
-        )
+        observed = tuple(observed_returns_by_id.get(terminal_return.return_id, ()))
         block = blocks.get(terminal_return.block_id)
         passed = bool(
             len(observed) == 1
@@ -1217,8 +1193,7 @@ def _validate_terminal_effects(
     operation_integrity = {
         outcome.subject_id: outcome.passed
         for outcome in outcomes
-        if outcome.postcondition
-        is FragmentValidationPostcondition.OPERATION_TOPOLOGY
+        if outcome.postcondition is FragmentValidationPostcondition.OPERATION_TOPOLOGY
     }
     for terminal_route in plan.terminal_routes:
         passed = bool(
@@ -1561,9 +1536,7 @@ def _validate_identity(
             else "fallthrough helper lacks staged synthetic ownership",
             helper.helper_block_id,
         )
-        lineage_valid = bool(
-            binding is not None and binding.previous_version is None
-        )
+        lineage_valid = bool(binding is not None and binding.previous_version is None)
         _outcome(
             outcomes,
             FragmentValidationPostcondition.VERSION_LINEAGE,
@@ -1592,9 +1565,7 @@ def _validate_identity(
             else "root fallthrough helper lacks staged synthetic ownership",
             helper.helper_block_id,
         )
-        lineage_valid = bool(
-            binding is not None and binding.previous_version is None
-        )
+        lineage_valid = bool(binding is not None and binding.previous_version is None)
         _outcome(
             outcomes,
             FragmentValidationPostcondition.VERSION_LINEAGE,
@@ -1878,8 +1849,7 @@ def validate_published_fragment_observation(
         operation.operation_id for operation in observation.observable_operations
     )
     observed_carrier_ids = tuple(
-        carrier.carrier_id
-        for carrier in observation.observable_return_carriers
+        carrier.carrier_id for carrier in observation.observable_return_carriers
     )
     observed_return_ids = tuple(
         terminal_return.return_id
@@ -1896,10 +1866,7 @@ def validate_published_fragment_observation(
         and set(observed_carrier_ids)
         == {carrier.carrier_id for carrier in plan.return_carriers}
         and set(observed_return_ids)
-        == {
-            terminal_return.return_id
-            for terminal_return in plan.terminal_returns
-        }
+        == {terminal_return.return_id for terminal_return in plan.terminal_returns}
     )
     _outcome(
         outcomes,

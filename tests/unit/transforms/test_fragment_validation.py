@@ -770,10 +770,9 @@ def test_call_fallthrough_projection_requires_one_adjacent_helper() -> None:
     result = validate_fragment_projection(plan, projection)
 
     assert result.passed
-    assert (
-        FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY
-        in {outcome.postcondition for outcome in result.outcomes}
-    )
+    assert FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY in {
+        outcome.postcondition for outcome in result.outcomes
+    }
 
 
 def test_unreachable_replacement_root_is_rejected() -> None:
@@ -974,8 +973,7 @@ def test_reachable_residual_dispatcher_route_is_rejected() -> None:
     failure = next(
         outcome
         for outcome in validate_fragment_projection(_plan(), projection).failures
-        if outcome.postcondition
-        is FragmentValidationPostcondition.DISPATCHER_ABSENCE
+        if outcome.postcondition is FragmentValidationPostcondition.DISPATCHER_ABSENCE
     )
     assert failure.block_ids == (
         "entry",
@@ -1073,8 +1071,7 @@ def test_reachable_published_conditional_rejects_missing_fallthrough_witness() -
     result = validate_fragment_projection(_plan(), projection)
 
     failures = {
-        (outcome.postcondition, outcome.subject_id)
-        for outcome in result.failures
+        (outcome.postcondition, outcome.subject_id) for outcome in result.failures
     }
     assert (
         FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
