@@ -2057,3 +2057,24 @@ diagnostics and tests. Separately, enforce restart-safe failure semantics so a
 failed staged operation cannot roll back through stale serials or continue on
 an MBA whose restoration was not proved. Do not broaden the 123-operation
 fragment, weaken predicate validation, or treat partial operation count as C4.
+
+**2026-07-24T16:01:00Z — SDK assertion correction**
+
+The preceding rollback summary compressed two distinct failures. Diagnostic
+transaction `abb2bd5bcb724549a73bdbb005d2a304` first records a
+`stage_failure` for the predicate mismatch at native `0x40BECC`. Its first
+cleanup failure is then `INTERR 50856` during the
+`staged semantic fragment rollback sweep`. The bundled SDK defines 50856 at
+`.ida-sdk/src/verifier/verify.cpp:1155` as a block whose successor-set size
+does not match its block type. Only after that malformed staged CFG reaches
+cleanup does rollback encounter `INTERR 52719`; the SDK defines 52719 at
+`.ida-sdk/src/include/hexrays.hpp:5570` as `mba_t::get_mblock(n)` asserting
+`n < qty`, which is a stale or out-of-range maturity-local serial.
+
+The first rollback-correctness obligation is therefore the malformed
+successor cardinality, not the later stale lookup. The implementation must
+either leave each partially staged block locally verifier-valid before an
+operation can reject, or discard it through stable logical handles without
+running a verifier over a half-realized conditional. It must not catch or
+ignore either numeric error, scan for a replacement serial, or report a bare
+block number without its native EA anchor.
