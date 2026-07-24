@@ -1694,6 +1694,7 @@ def _make_static_conditional_state_choice(
     select_ea: int,
     condition_code: int | None,
     predicate_register: int | None,
+    predicate_stack_ida_stkoff: int | None = None,
     predicate_size: int,
     predicate_constant: int,
     true_values: frozenset[int] | None,
@@ -1707,7 +1708,7 @@ def _make_static_conditional_state_choice(
         or int(compare_ea) <= 0
         or int(select_ea) <= 0
         or condition_code not in {2, 3, 4, 5, 6, 7, 12, 13, 14, 15}
-        or predicate_register is None
+        or (predicate_register is None) == (predicate_stack_ida_stkoff is None)
         or int(predicate_size) <= 0
         or true_values is None
         or false_values is None
@@ -1729,7 +1730,14 @@ def _make_static_conditional_state_choice(
         ),
         target_eas=(),
         condition_code=int(condition_code),
-        predicate_register=int(predicate_register),
+        predicate_register=(
+            None if predicate_register is None else int(predicate_register)
+        ),
+        predicate_stack_ida_stkoff=(
+            None
+            if predicate_stack_ida_stkoff is None
+            else int(predicate_stack_ida_stkoff)
+        ),
         predicate_size=int(predicate_size),
         predicate_compare_constant=int(predicate_constant) & _MASK32,
         predicate_true_state=true_state,
@@ -1903,19 +1911,27 @@ def _bind_static_stack_carrier_consumers(
 
 def _static_conditional_state_choices(
     entry_state: Mapping[int, Mapping[str, frozenset[int] | None]],
+    *,
+    native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]] | None = None,
 ) -> tuple[MaterializedIndirectTransfer, ...]:
     """Recover exact compare/CMOV state choices before byte materialization.
 
-    Only a register-vs-immediate compare followed by flag-neutral instructions
-    and a CMOV with two singleton values qualifies.  The selected constants are
-    evidence only; a later stage must map both through the dispatcher.
+    Only an exact register or canonical stack predicate followed by flag-neutral
+    instructions and a CMOV with two singleton values qualifies.  The selected
+    constants are evidence only; a later stage must map both through the
+    dispatcher.
     """
     import ida_ua  # type: ignore[import-untyped]
 
+    stack_offsets_by_ea = (
+        {}
+        if native_stack_frame_offsets_by_ea is None
+        else native_stack_frame_offsets_by_ea
+    )
     choices: set[MaterializedIndirectTransfer] = set()
     for block_entry, block_state in sorted(entry_state.items()):
         state = dict(block_state)
-        pending_compare: tuple[int, int, int, bool] | None = None
+        pending_compare: tuple[int, int | None, int | None, int, bool] | None = None
         pending_choice: tuple[MaterializedIndirectTransfer, str] | None = None
         instruction = ida_ua.insn_t()
         ea = int(block_entry)
@@ -1973,7 +1989,21 @@ def _static_conditional_state_choices(
                     pending_compare = (
                         int(ea),
                         int(left_mreg),
+                        None,
                         (int(right.value) & _MASK32 if mnemonic == "cmp" else 0),
+                        False,
+                    )
+                elif (
+                    mnemonic == "cmp"
+                    and _sv_stack_pointer_displacement(left) is not None
+                    and right.type == idaapi.o_imm
+                    and len(stack_offsets_by_ea.get(int(ea), ())) == 1
+                ):
+                    pending_compare = (
+                        int(ea),
+                        None,
+                        int(stack_offsets_by_ea[int(ea)][0]),
+                        int(right.value) & _MASK32,
                         False,
                     )
                 elif (
@@ -1996,6 +2026,7 @@ def _static_conditional_state_choices(
                         pending_compare = (
                             int(ea),
                             predicate_register,
+                            None,
                             predicate_constant,
                             swapped,
                         )
@@ -2012,6 +2043,7 @@ def _static_conditional_state_choices(
                     (
                         compare_ea,
                         predicate_register,
+                        predicate_stack_ida_stkoff,
                         predicate_constant,
                         swapped,
                     ) = pending_compare
@@ -2024,6 +2056,7 @@ def _static_conditional_state_choices(
                         select_ea=int(ea),
                         condition_code=condition_code,
                         predicate_register=predicate_register,
+                        predicate_stack_ida_stkoff=predicate_stack_ida_stkoff,
                         predicate_size=4,
                         predicate_constant=predicate_constant,
                         true_values=source_values,
@@ -3113,6 +3146,23 @@ def resolve_computed_gotos_static(function_ea: int) -> ComputedGotoResolution | 
         return None
 
     reachable = tuple(sorted(set(entry_state) | all_targets))
+    stack_envelope_end = (
+        max(
+            (
+                int(ea)
+                for ea in (
+                    *reachable,
+                    *entry_state,
+                )
+            ),
+            default=int(function_ea),
+        )
+        + 0x100
+    )
+    native_stack_offsets = native_stack_frame_offsets_for_ranges(
+        int(function_ea),
+        ((int(function_ea), int(stack_envelope_end)),),
+    )
     return ComputedGotoResolution(
         function_ea=int(function_ea),
         jmp_targets={
@@ -3135,10 +3185,14 @@ def resolve_computed_gotos_static(function_ea: int) -> ComputedGotoResolution | 
             entry_state,
             tuple(int(plan.block_entry) for plan in plans),
         ),
+        native_stack_frame_offsets=tuple(sorted(native_stack_offsets.items())),
         conditional_state_choices=tuple(
             sorted(
                 {
-                    *_static_conditional_state_choices(entry_state),
+                    *_static_conditional_state_choices(
+                        entry_state,
+                        native_stack_frame_offsets_by_ea=native_stack_offsets,
+                    ),
                     *_static_branch_state_choices(entry_state),
                 },
                 key=lambda row: (
