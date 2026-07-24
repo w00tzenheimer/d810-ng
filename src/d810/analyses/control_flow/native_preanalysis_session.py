@@ -327,8 +327,7 @@ def _native_block_identity(
 ) -> StableBlockIdentity:
     normalized_exact_eas = tuple(sorted({int(ea) for ea in exact_eas}))
     if not normalized_exact_eas or any(
-        not int(block.start_ea) <= ea < int(block.end_ea)
-        for ea in normalized_exact_eas
+        not int(block.start_ea) <= ea < int(block.end_ea) for ea in normalized_exact_eas
     ):
         raise FrontendNormalizationEvidenceRejected(
             "native block identity exact anchors escaped their CFG owner"
@@ -689,9 +688,7 @@ def _static_state_choice_frontend_proof(
     """Project one exact compare/CMOV state choice into frontend authority."""
     if not _field_complete_static_state_choice(transfer):
         return None
-    producer_ea, predicate_ea = (
-        int(ea) for ea in transfer.materialized_anchor_eas
-    )
+    producer_ea, predicate_ea = (int(ea) for ea in transfer.materialized_anchor_eas)
     source = _unique_native_block_for_anchor(
         native_cfg,
         int(transfer.source_block_ea),
@@ -822,10 +819,8 @@ def _without_superseded_frontier_patch_proofs(
             owner.native_key == candidate.native_key
             and all(
                 any(
-                    int(owner_interval.start_ea)
-                    <= int(candidate_interval.start_ea)
-                    and int(candidate_interval.end_ea)
-                    <= int(owner_interval.end_ea)
+                    int(owner_interval.start_ea) <= int(candidate_interval.start_ea)
+                    and int(candidate_interval.end_ea) <= int(owner_interval.end_ea)
                     for owner_interval in owner.native_ranges.intervals
                 )
                 for candidate_interval in candidate.native_ranges.intervals
@@ -870,9 +865,7 @@ def _without_superseded_frontier_patch_proofs(
                     *(
                         ("superseded_patch_proof", proof_id)
                         for proof_id in sorted(
-                            superseded_by_state_choice[
-                                state_choice_proof.proof_id
-                            ]
+                            superseded_by_state_choice[state_choice_proof.proof_id]
                         )
                     ),
                 ),
@@ -1220,9 +1213,7 @@ class NativePreanalysisSessionState:
             if value <= 0:
                 raise ValueError("lifecycle generation markers must be positive")
             if value > generation:
-                raise ValueError(
-                    "lifecycle generation cannot exceed portable evidence"
-                )
+                raise ValueError("lifecycle generation cannot exceed portable evidence")
             setattr(self, name, value)
         if (
             self.portable_evidence_ready_generation is not None
@@ -1231,9 +1222,7 @@ class NativePreanalysisSessionState:
             raise ValueError(
                 "portable evidence-ready generation must equal current evidence"
             )
-        publication_revision = int(
-            self.normalization_work_item_publication_revision
-        )
+        publication_revision = int(self.normalization_work_item_publication_revision)
         if publication_revision < 0:
             raise ValueError(
                 "normalization work-item publication revision cannot be negative"
@@ -1269,10 +1258,8 @@ class NativePreanalysisSessionState:
             or any(not value for value in remaining_obligation_ids)
             or any(not value for value in unreachable_obligation_ids)
             or len(set(selected_obligation_ids)) != len(selected_obligation_ids)
-            or len(set(remaining_obligation_ids))
-            != len(remaining_obligation_ids)
-            or len(set(unreachable_obligation_ids))
-            != len(unreachable_obligation_ids)
+            or len(set(remaining_obligation_ids)) != len(remaining_obligation_ids)
+            or len(set(unreachable_obligation_ids)) != len(unreachable_obligation_ids)
             or (
                 len(
                     set(
@@ -1296,12 +1283,8 @@ class NativePreanalysisSessionState:
             None if work_item_id is None else str(work_item_id).strip()
         )
         self.normalization_last_selected_obligation_ids = selected_obligation_ids
-        self.normalization_last_remaining_obligation_ids = (
-            remaining_obligation_ids
-        )
-        self.normalization_last_unreachable_obligation_ids = (
-            unreachable_obligation_ids
-        )
+        self.normalization_last_remaining_obligation_ids = remaining_obligation_ids
+        self.normalization_last_unreachable_obligation_ids = unreachable_obligation_ids
         canonical_normalization_authority = (
             self.canonical_semantic_normalization_authority
         )
@@ -1358,10 +1341,7 @@ class NativePreanalysisSessionState:
 
     def _require_current_portable_evidence(self) -> int:
         generation = int(self.evidence_generation)
-        if (
-            generation <= 0
-            or self.portable_evidence_ready_generation != generation
-        ):
+        if generation <= 0 or self.portable_evidence_ready_generation != generation:
             raise RuntimeError(
                 "lifecycle transition requires the current portable evidence generation"
             )
@@ -1448,9 +1428,7 @@ class NativePreanalysisSessionState:
         work_item_id = str(work_item_id).strip()
         selected = tuple(str(value).strip() for value in selected_obligation_ids)
         remaining = tuple(str(value).strip() for value in remaining_obligation_ids)
-        unreachable = tuple(
-            str(value).strip() for value in unreachable_obligation_ids
-        )
+        unreachable = tuple(str(value).strip() for value in unreachable_obligation_ids)
         if (
             not work_item_id
             or not selected
@@ -1730,9 +1708,7 @@ class NativePreanalysisSessionState:
             if facts.semantic_closure is not None:
                 semantic_closure = facts.semantic_closure
                 native_cfg = facts.native_cfg
-        atomic_group_id = (
-            f"frontend-normalization:g{int(self.evidence_generation)}"
-        )
+        atomic_group_id = f"frontend-normalization:g{int(self.evidence_generation)}"
         patch_plans = tuple(
             sorted(
                 resolution.patch_plans,
@@ -1764,11 +1740,9 @@ class NativePreanalysisSessionState:
                 if proof is not None
             )
         )
-        patch_proofs, state_choice_proofs = (
-            _without_superseded_frontier_patch_proofs(
-                patch_proofs,
-                state_choice_proofs,
-            )
+        patch_proofs, state_choice_proofs = _without_superseded_frontier_patch_proofs(
+            patch_proofs,
+            state_choice_proofs,
         )
         return FrontendNormalizationEvidence(
             native_key=key,
@@ -1787,8 +1761,7 @@ class NativePreanalysisSessionState:
         generation = int(self.evidence_generation)
         if (
             generation <= 0
-            or self.normalization_published_postvalidated_generation
-            != generation
+            or self.normalization_published_postvalidated_generation != generation
         ):
             return None
         return self.canonical_semantic_candidate_evidence_for(key)
@@ -1803,9 +1776,8 @@ class NativePreanalysisSessionState:
         entry_consumer_routes = tuple(
             dict.fromkeys(resolver_evidence.entry_consumer_routes)
         )
-        if (
-            generation <= 0
-            or (not resolver_evidence.state_write_routes and not entry_consumer_routes)
+        if generation <= 0 or (
+            not resolver_evidence.state_write_routes and not entry_consumer_routes
         ):
             return None
 
@@ -2145,10 +2117,7 @@ class NativePreanalysisSessionState:
         previous = self._resolver_evidence_for(key).computed_goto_resolution
         changes_frontend_authority = bool(
             resolution.patch_plans
-            or (
-                isinstance(previous, ComputedGotoResolution)
-                and previous.patch_plans
-            )
+            or (isinstance(previous, ComputedGotoResolution) and previous.patch_plans)
         )
         return self._replace_resolver_evidence(
             key,
@@ -2250,10 +2219,7 @@ class NativePreanalysisSessionState:
         routes: tuple[MaterializedIndirectTransfer, ...],
     ) -> bool:
         """Publish complete carried choices independently of import state."""
-        if any(
-            not isinstance(route, MaterializedIndirectTransfer)
-            for route in routes
-        ):
+        if any(not isinstance(route, MaterializedIndirectTransfer) for route in routes):
             raise TypeError("entry-consumer routes must be portable evidence")
         current = self._resolver_evidence_for(key)
         merged = tuple(

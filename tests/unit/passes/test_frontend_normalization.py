@@ -112,9 +112,7 @@ def _insn(
         opcode=max(1, int(ea) & 0xFF),
         ea=int(ea),
         operands=tuple(
-            operand
-            for operand in (left, destination)
-            if operand is not None
+            operand for operand in (left, destination) if operand is not None
         ),
         l=left,
         d=destination,
@@ -764,8 +762,7 @@ def test_next_work_item_selects_one_connected_missing_body_component() -> None:
     native_body = plan.native_bodies[0]
     assert native_body.proof_ids == ("direct@0x1100",)
     assert tuple(
-        plan.block(block_id).semantic_anchor_ea
-        for block_id in native_body.block_ids
+        plan.block(block_id).semantic_anchor_ea for block_id in native_body.block_ids
     ) == (0x1300,)
     assert native_body.native_ranges == (NativeEaInterval(0x1300, 0x1310),)
 
@@ -876,9 +873,7 @@ def test_next_work_item_dispositions_detached_root_unreachable_proofs() -> None:
     assert plan.work_item_scope is not None
     assert plan.work_item_scope.selected_obligation_ids == ("direct@0x1100",)
     assert plan.work_item_scope.remaining_obligation_ids == ()
-    assert plan.work_item_scope.unreachable_obligation_ids == (
-        "direct@0x1600",
-    )
+    assert plan.work_item_scope.unreachable_obligation_ids == ("direct@0x1600",)
     assert len(plan.native_bodies) == 1
     assert tuple(
         plan.block(block_id).semantic_anchor_ea
@@ -915,8 +910,7 @@ def test_next_work_item_defers_resolver_proven_detached_body_root() -> None:
         for block_id in native_body.entry_block_ids
     ) == (0x1300,)
     assert tuple(
-        plan.block(block_id).semantic_anchor_ea
-        for block_id in native_body.block_ids
+        plan.block(block_id).semantic_anchor_ea for block_id in native_body.block_ids
     ) == (0x1300,)
 
 
@@ -1031,8 +1025,7 @@ def _handler_prefix_before_required_exit_case(
     return graph, evidence
 
 
-def test_next_work_item_defers_range_owned_handler_prefix_until_connected(
-) -> None:
+def test_next_work_item_defers_range_owned_handler_prefix_until_connected() -> None:
     graph, evidence = _handler_prefix_before_required_exit_case(
         owned_native_ranges=(NativeRange(0x1600, 0x1620),),
     )
@@ -1053,8 +1046,7 @@ def test_next_work_item_defers_range_owned_handler_prefix_until_connected(
         for block_id in native_body.entry_block_ids
     ) == (0x1300,)
     assert tuple(
-        plan.block(block_id).semantic_anchor_ea
-        for block_id in native_body.block_ids
+        plan.block(block_id).semantic_anchor_ea for block_id in native_body.block_ids
     ) == (0x1300,)
 
 
@@ -1072,17 +1064,14 @@ def test_next_work_item_does_not_promote_range_less_handler_prefix() -> None:
     assert plan.work_item_scope is not None
     assert plan.work_item_scope.selected_obligation_ids == ("direct@0x1100",)
     assert plan.work_item_scope.remaining_obligation_ids == ()
-    assert plan.work_item_scope.unreachable_obligation_ids == (
-        "direct@0x1610",
-    )
+    assert plan.work_item_scope.unreachable_obligation_ids == ("direct@0x1610",)
     native_body = plan.native_bodies[0]
     assert tuple(
         plan.block(block_id).semantic_anchor_ea
         for block_id in native_body.entry_block_ids
     ) == (0x1300,)
     assert tuple(
-        plan.block(block_id).semantic_anchor_ea
-        for block_id in native_body.block_ids
+        plan.block(block_id).semantic_anchor_ea for block_id in native_body.block_ids
     ) == (0x1300,)
 
 
@@ -1216,8 +1205,7 @@ def test_next_work_item_selects_smallest_complete_root_component() -> None:
     assert len(plan.native_bodies) == 1
     native_body = plan.native_bodies[0]
     assert tuple(
-        plan.block(block_id).semantic_anchor_ea
-        for block_id in native_body.block_ids
+        plan.block(block_id).semantic_anchor_ea for block_id in native_body.block_ids
     ) == (0x1600,)
 
 
@@ -1432,9 +1420,7 @@ def test_missing_downstream_transfer_source_is_normalized_inside_the_same_fragme
         is PredicateKind.EQ
     )
     assert (
-        imported_operation[
-            0
-        ].computed_branch_normalization.normalization_start_ea
+        imported_operation[0].computed_branch_normalization.normalization_start_ea
         == imported_proof.source_anchor_ea
     )
     assert (
@@ -2139,13 +2125,16 @@ def test_normalization_ids_distinguish_same_range_topology_and_instruction_block
     )
     assert len(same_anchor_blocks) == 2
     assert len({block.block_id for block in same_anchor_blocks}) == 2
-    assert len(
-        {
-            block.stable_identity.exact_instruction_eas
-            for block in same_anchor_blocks
-            if block.stable_identity is not None
-        }
-    ) == 2
+    assert (
+        len(
+            {
+                block.stable_identity.exact_instruction_eas
+                for block in same_anchor_blocks
+                if block.stable_identity is not None
+            }
+        )
+        == 2
+    )
 
 
 def test_normalization_abstains_when_live_graph_already_preserves_both_arms() -> None:
