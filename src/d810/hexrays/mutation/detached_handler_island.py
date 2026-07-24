@@ -5428,6 +5428,7 @@ def capture_preopt_union_call_companion_template(
     calls_mba: object,
     native_range: tuple[int, int],
     *,
+    calls_native_ranges: tuple[tuple[int, int], ...],
     owned_block_entry_eas: Collection[int] | None = None,
     native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]] | None = None,
 ) -> DetachedSnippetCompanionCaptureResult:
@@ -5463,6 +5464,37 @@ def capture_preopt_union_call_companion_template(
             captured=False,
             replacement_required=True,
             reason="component_range_invalid",
+        )
+    normalized_calls_ranges = tuple(
+        sorted(
+            (int(start_ea), int(end_ea))
+            for start_ea, end_ea in calls_native_ranges
+        )
+    )
+    if (
+        not normalized_calls_ranges
+        or any(
+            start_ea < normalized_range[0]
+            or end_ea > normalized_range[1]
+            or end_ea <= start_ea
+            for start_ea, end_ea in normalized_calls_ranges
+        )
+        or any(
+            previous_end_ea > next_start_ea
+            for (_, previous_end_ea), (next_start_ea, _) in zip(
+                normalized_calls_ranges,
+                normalized_calls_ranges[1:],
+            )
+        )
+        or not _ea_in_ranges(
+            int(component_target_ea),
+            normalized_calls_ranges,
+        )
+    ):
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=True,
+            reason="calls_component_ranges_invalid",
         )
 
     raw_calls, raw_duplicate = _template_call_signatures_in_range(
@@ -5548,7 +5580,7 @@ def capture_preopt_union_call_companion_template(
         function_key,
         int(component_target_ea),
         calls_mba,
-        (normalized_range,),
+        normalized_calls_ranges,
         owned_block_entry_eas=owned_block_entry_eas,
         native_stack_frame_offsets_by_ea=native_stack_frame_offsets_by_ea,
     ):

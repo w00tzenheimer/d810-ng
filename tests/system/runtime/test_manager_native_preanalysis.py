@@ -603,6 +603,7 @@ def test_preflight_records_complete_call_companion_mismatch(
     )
     mismatch = computed_goto_resolver.CallCompanionPreparationOutcome(
         native_range=(0x40C26D, 0x40C2FB),
+        calls_native_ranges=((0x40C26D, 0x40C2F9),),
         component_target_ea=0x40C26D,
         captured=False,
         preopt_call_eas=(0x40C2A9, 0x40C2BE),
@@ -638,6 +639,9 @@ def test_preflight_records_complete_call_companion_mismatch(
     assert len(events) == 1
     event = events[0]
     assert event.event_kind == "semantic_native_body_companion_prepared"
+    assert event.payload["calls_native_ranges"] == [
+        {"start_ea": 0x40C26D, "end_ea": 0x40C2F9}
+    ]
     assert event.payload["preopt_call_eas"] == [0x40C2A9, 0x40C2BE]
     assert event.payload["calls_call_eas"] == [0x40C2A9, 0x40C2F0]
     assert event.payload["mismatch_ea"] == 0x40C2BE

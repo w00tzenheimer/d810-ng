@@ -964,6 +964,7 @@ def test_preopt_union_call_companion_reports_both_mismatched_inventories(
             native_range[0],
             calls_mba,
             native_range,
+            calls_native_ranges=(native_range,),
         )
     )
 
@@ -972,6 +973,77 @@ def test_preopt_union_call_companion_reports_both_mismatched_inventories(
     assert result.call_eas == (first_call_ea, second_call_ea)
     assert result.observed_call_eas == (first_call_ea, invented_call_ea)
     assert result.mismatch_ea == second_call_ea
+
+
+def test_preopt_union_call_companion_captures_only_calls_analysis_ranges(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    union_target_ea = 0x3300
+    native_range = (0x3340, 0x3380)
+    calls_native_ranges = ((0x3340, 0x337E),)
+    call_ea = 0x3350
+    signature = detached_handler_island._DetachedCallSignature(
+        opcode=ida_hexrays.m_call,
+        direct_callee_ea=0x500000,
+        has_arglist=True,
+    )
+    raw_template = object()
+    monkeypatch.setitem(
+        detached_handler_island._PREOPT_UNION_SNIPPET_TEMPLATES,
+        (function_ea, union_target_ea),
+        raw_template,
+    )
+    inventory_queries: list[tuple[str, tuple[int, int]]] = []
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_template_call_signatures_in_range",
+        lambda template, candidate_range: (
+            inventory_queries.append(("preopt", candidate_range))
+            or ({call_ea: signature}, None)
+        ),
+    )
+    calls_mba = SimpleNamespace(maturity=ida_hexrays.MMAT_CALLS)
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_mba_call_signatures_in_range",
+        lambda mba, candidate_range: (
+            inventory_queries.append(("calls", candidate_range))
+            or ({call_ea: signature}, None)
+        ),
+    )
+    captured_ranges: list[tuple[tuple[int, int], ...]] = []
+    monkeypatch.setattr(
+        detached_handler_island,
+        "capture_detached_replacement_snippet_template",
+        lambda _function_ea, _target_ea, _mba, ranges, **_kwargs: (
+            captured_ranges.append(ranges) or True
+        ),
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_analyzed_replacement_calls_by_ea",
+        lambda _function_ea, _target_ea: {call_ea: object()},
+    )
+
+    result = (
+        detached_handler_island.capture_preopt_union_call_companion_template(
+            function_ea,
+            union_target_ea,
+            native_range[0],
+            calls_mba,
+            native_range,
+            calls_native_ranges=calls_native_ranges,
+        )
+    )
+
+    assert result.captured
+    assert inventory_queries == [
+        ("preopt", native_range),
+        ("calls", native_range),
+    ]
+    assert captured_ranges == [calls_native_ranges]
 
 
 def _calls_native_body_with_raw_call(
@@ -1073,6 +1145,7 @@ def _calls_native_body_with_raw_call(
                 entry_ea,
                 calls_source,
                 component_range,
+                calls_native_ranges=(component_range,),
                 owned_block_entry_eas=(entry_ea, continuation_ea),
             )
         )
