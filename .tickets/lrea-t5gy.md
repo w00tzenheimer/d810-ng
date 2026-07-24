@@ -1522,3 +1522,50 @@ published by PREOPT or needs a distinct current-maturity detached
 materializer. Do not weaken the PREOPT-only invariant, clone through a
 compatibility path, broaden publication, or treat the secondary rollback
 failure as the initiating obligation.
+
+**2026-07-24T12:24:03Z**
+
+Commit `da823b267` completes the canonical published-import boundary slice.
+Canonical component traversal now stops at a uniquely current native identity
+that covers an imported successor and projects the complete current identity
+as a `REUSE_PUBLISHED` boundary. Multiple covering current owners reject with
+typed reason
+`published_imported_boundary_current_owner_ambiguous`; the planner never
+selects by serial order or treats an ambiguous binding as missing.
+
+The focused portable canonical suite is 26/26 green. The nearby local
+canonical and semantic-fragment runtime suites are 144/144 green, and the
+pinned Docker transform, lowering, unflatten, and backend gate is 170/170;
+artifact: `.tmp/canonical-current-boundary-runtime.txt`. Changed-file Ruff,
+diff checks, ast-grep, all 14 worktree-local import contracts, commit hooks,
+and `graphify update .` pass. The local and Docker SWIG deprecation warnings
+are unchanged baseline noise.
+
+The mandatory exact A560 diagnostic canary completed in 19.79 seconds without
+a process segfault. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784895731_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-current-boundary.txt`. The semantic oracle remains red
+with one residual `while ( 1 )`, so this is not A560 acceptance.
+
+The DB proves the intended ownership move. The canonical plan shrank from 102
+blocks, 94 operations, and a 94-block native body to 38 blocks, 24 operations,
+and a 23-block native body. Fourteen uniquely surviving current identities are
+now explicit published boundaries, including the normalized successor at
+native `0x40A613`. The 23 remaining imported blocks are the actually missing
+closed component rooted at native `0x40BECC`; no already-rebound suffix is
+scheduled for rematerialization.
+
+The highest contiguous canary level remains C3. The first C4 obligation is
+unchanged and now narrowly scoped:
+
+`stage_failure / stage / SemanticFragmentBackendRejected: PREOPT native body
+requires the hxe_preoptimized destination MBA`.
+
+Rollback still separately records `INTERR 50856` in
+`staged semantic fragment rollback sweep`, followed by the failed entry/stop
+discard. SDK 9.3 `verify.cpp` defines 50856 as a block
+successor-count/type mismatch; it remains secondary. The next vertical slice
+must give the 23-block missing component one explicit GLBOPT1-safe realization
+contract or move its canonical publication to a maturity with matching
+analyzed authority. It must not relax the PREOPT materializer invariant,
+rematerialize the 71 blocks already cut away, or add a dual-authority fallback.
