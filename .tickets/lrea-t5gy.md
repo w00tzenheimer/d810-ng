@@ -1471,3 +1471,54 @@ manager/lifecycle-owned imported native-body materializer into canonical
 publication without constructing an adapter locally, adding a fallback, or
 publishing the broad 91-route transaction. It must rerun this exact canary and
 reach C4 before any broader publication.
+
+**2026-07-24T12:10:00Z**
+
+Commits `39d5510f2` and `fc9789efc` complete the manager-owned native-body
+materializer injection slice as two logical checkpoints. The lifecycle
+coordinator owns construction for the active function and current MBA;
+`FlowMaturityContext` retains a factory rather than a live SWIG wrapper so a
+refreshed callback resolves against its current `mba_t`. PREOPT normalization
+and canonical lowering now receive that capability explicitly. The frontend
+adapter's duplicate `PreoptUnionSemanticNativeBodyMaterializer` constructor is
+deleted, and neither consumer has a fallback or compatibility path.
+
+Focused verification is 183/183 lifecycle, hook, and canonical tests plus
+138/138 semantic-fragment and diagnostic tests locally. The pinned
+`d810-idapro-9.3-test-runtime:py313-v1` Docker gate is 238/238; artifact:
+`.tmp/canonical-materializer-injection-runtime.txt`. Ast-grep, all 14
+worktree-local import contracts, changed-file Ruff, diff checks, commit hooks,
+and `graphify update .` pass.
+
+The mandatory exact A560 diagnostic canary completed without a process
+segfault. The wrapper completed in 18.33 seconds and pytest in 16.02 seconds.
+Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784894802_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-lifecycle-materializer.txt`. The semantic oracle remains
+red with one residual `while ( 1 )`, so this is not A560 acceptance.
+
+The highest contiguous canary level remains C3. The committed PREOPT
+normalization transaction still applies all 260 operations, passes 639
+prepublication and 1180 postpublication outcomes, publishes its root, and
+commits its receipt. The canonical 264-item transaction now receives the
+injected materializer, applies one item, and exposes the next first C4
+obligation:
+
+`stage_failure / stage / SemanticFragmentBackendRejected: PREOPT native body
+requires the hxe_preoptimized destination MBA`.
+
+The canonical publication runs at `MMAT_GLBOPT1`; the injected capability is
+therefore present but its destination-maturity contract is wrong for this
+consumer. The same aborted transaction separately records rollback-time
+`INTERR 50856` in `staged semantic fragment rollback sweep`, followed by
+`rollback_failure: staged semantic fragment discard cannot remove entry or
+stop blocks`. Matching IDA SDK 9.3 `verify.cpp` defines 50856 as a block
+successor-count/type mismatch. Those recovery defects remain secondary to the
+stage rejection.
+
+Continue the v3.1 vertical loop by deciding from the plan and receipt-backed
+identity whether canonical lowering should reuse the native bodies already
+published by PREOPT or needs a distinct current-maturity detached
+materializer. Do not weaken the PREOPT-only invariant, clone through a
+compatibility path, broaden publication, or treat the secondary rollback
+failure as the initiating obligation.
