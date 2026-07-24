@@ -7,6 +7,13 @@ from pathlib import Path
 PANEL = (
     Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "workbench_panel.py"
 )
+CASE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "src"
+    / "d810"
+    / "manager"
+    / "deobfuscation_case_workflow.py"
+)
 
 
 def _method_source(name: str) -> str:
@@ -47,3 +54,11 @@ def test_deobfuscate_function_preserves_refresh_before_comparison() -> None:
     assert source.index("if transition.compare:") < source.index(
         "self._run_comparison()"
     )
+
+
+def test_workbench_uses_algorithm_entry_point_labels() -> None:
+    source = CASE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Build Deobfuscator" in source
+    assert "Deobfuscate Function" in source
+    assert "Deobfuscate this function" not in source

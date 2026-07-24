@@ -8,6 +8,10 @@
 
 **Tech Stack:** Python 3.13, IDA PluginForm, PyQt5/PyQt6 through `d810.qt_shim`, pytest, ast-grep, import-linter, XQuartz Docker IDA.
 
+> Superseded for new UI work by
+> `2026-07-23-algorithm-driven-deobfuscation-workbench.md`.
+> Its direct-run identity/freshness/comparison rules remain in force.
+
 ## Global Constraints
 
 - Call the established `WorkbenchCommandAdapter.deobfuscate` action; do not add a direct mutation path.
