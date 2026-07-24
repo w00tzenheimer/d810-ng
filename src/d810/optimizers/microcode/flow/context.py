@@ -144,6 +144,11 @@ class FlowMaturityContext:
         # Resolver facts are callback-local.  A missing injected port means a
         # flow rule must abstain; it must never consult an EA-keyed registry.
         self._resolver_session_state: object | None = None
+        # The manager constructs this current-MBA capability.  Canonical
+        # passes consume it but never instantiate Hex-Rays import machinery.
+        self._semantic_native_body_materializer_factory: (
+            Callable[[], object | None] | None
+        ) = None
 
     @property
     def hint_summary(self) -> FlowContextHintSummary | None:
@@ -241,6 +246,18 @@ class FlowMaturityContext:
     def new_mba_mutation_gateway(self) -> object | None:
         """Return one current-MBA transaction gateway, or fail closed."""
         factory = self._mutation_gateway_factory
+        return None if factory is None else factory()
+
+    def set_semantic_native_body_materializer_factory(
+        self,
+        factory: Callable[[], object | None] | None,
+    ) -> None:
+        """Attach manager-owned current-MBA materializer construction."""
+        self._semantic_native_body_materializer_factory = factory
+
+    def semantic_native_body_materializer(self) -> object | None:
+        """Return the current-MBA native-body capability, or fail closed."""
+        factory = self._semantic_native_body_materializer_factory
         return None if factory is None else factory()
 
     def set_resolver_session_state(self, state: object | None) -> None:

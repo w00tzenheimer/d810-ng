@@ -97,10 +97,12 @@ class _FakeRuleScopeService:
 
 
 class _MutationGatewayLifecycle:
-    def __init__(self, gateway: object) -> None:
+    def __init__(self, gateway: object, materializer: object) -> None:
         self.gateway = gateway
+        self.materializer = materializer
         self.build_calls: list[tuple[int, object]] = []
         self.gateway_calls: list[tuple[int, int]] = []
+        self.materializer_calls: list[tuple[int, object]] = []
 
     def build_current_mba_identity_index(self, *, function_ea: int, mba: object) -> object:
         self.build_calls.append((function_ea, mba))
@@ -114,6 +116,15 @@ class _MutationGatewayLifecycle:
     ) -> object:
         self.gateway_calls.append((function_ea, maturity))
         return self.gateway
+
+    def new_semantic_native_body_materializer(
+        self,
+        *,
+        function_ea: int,
+        mba: object,
+    ) -> object:
+        self.materializer_calls.append((function_ea, mba))
+        return self.materializer
 
 
 def _make_block(func_ea: int = 0x401000, maturity=None):
@@ -152,7 +163,8 @@ def test_block_optimizer_injects_the_session_mutation_gateway_port() -> None:
     rule = _DummyRule("mutation_port")
     scope_service = _FakeRuleScopeService((rule,))
     gateway = object()
-    lifecycle = _MutationGatewayLifecycle(gateway)
+    materializer = object()
+    lifecycle = _MutationGatewayLifecycle(gateway, materializer)
     manager.configure(
         rule_scope_service=scope_service,
         rule_scope_project_name="proj",
@@ -166,6 +178,11 @@ def test_block_optimizer_injects_the_session_mutation_gateway_port() -> None:
     assert lifecycle.build_calls == [(0x401000, block.mba)]
     assert rule.flow_context.new_mba_mutation_gateway() is gateway
     assert lifecycle.gateway_calls == [(0x401000, ida_hexrays.MMAT_GLBOPT1)]
+    assert (
+        rule.flow_context.semantic_native_body_materializer()
+        is materializer
+    )
+    assert lifecycle.materializer_calls == [(0x401000, block.mba)]
 
 
 def test_flow_rule_constructs_a_modifier_from_its_injected_gateway_port() -> None:
@@ -182,6 +199,23 @@ def test_flow_rule_constructs_a_modifier_from_its_injected_gateway_port() -> Non
     modifier = rule.new_deferred_modifier(context.mba)
 
     assert modifier.mutation_gateway is gateway
+
+
+def test_flow_context_materializer_factory_uses_the_refreshed_mba() -> None:
+    first_mba = SimpleNamespace(entry_ea=0x401000)
+    second_mba = SimpleNamespace(entry_ea=0x401000)
+    context = FlowMaturityContext(
+        mba=first_mba,
+        func_ea=0x401000,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+    )
+    context.set_semantic_native_body_materializer_factory(
+        lambda: context.mba,
+    )
+
+    assert context.semantic_native_body_materializer() is first_mba
+    context.refresh_mba(second_mba)
+    assert context.semantic_native_body_materializer() is second_mba
 
 
 def test_flow_rule_fails_closed_without_an_injected_gateway_port() -> None:

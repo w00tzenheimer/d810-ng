@@ -741,6 +741,42 @@ def test_session_gateway_reuses_the_active_current_mba_identity_index() -> None:
     assert session.current_mba_identity_index is index
 
 
+def test_session_materializer_factory_is_scoped_to_the_active_function() -> None:
+    calls: list[dict[str, object]] = []
+    materializer = object()
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=None,
+        analysis_runtime=None,
+        rule_scope_service=None,
+        native_preanalysis_key_provider=lambda _function_ea: NATIVE_KEY,
+        semantic_native_body_materializer_factory=lambda **kwargs: (
+            calls.append(kwargs) or materializer
+        ),
+    )
+    session, _created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    mba = object()
+
+    assert (
+        coordinator.new_semantic_native_body_materializer(
+            function_ea=0x401000,
+            mba=mba,
+        )
+        is materializer
+    )
+    assert calls == [{"session": session, "mba": mba}]
+    assert (
+        coordinator.new_semantic_native_body_materializer(
+            function_ea=0x402000,
+            mba=mba,
+        )
+        is None
+    )
+    assert calls == [{"session": session, "mba": mba}]
+
+
 def test_nested_different_function_gets_a_new_epoch_and_restores_parent() -> None:
     calls: list[tuple[str, object]] = []
     coordinator, _runtime = _coordinator(calls)
