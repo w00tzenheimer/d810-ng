@@ -549,3 +549,41 @@ exact owned block while retaining one atomic semantic operation. Do not widen
 the imported source block identity across multiple native blocks, admit an
 arbitrary downstream transfer, weaken exact predicate ownership, or reintroduce
 the generic native-body operation.
+
+**2026-07-24T06:16:19Z**
+
+Commit `ab152917a` represents an imported conditional-select as one physical
+source plus proof-only selected-value and join identities. The planner validates
+the exact native source/select/join topology, excludes the consumed routing
+blocks from publication, retains their ranges in the scoped native body, and
+emits no generic native-body operations for them. The detached PREOPT
+materializer independently binds the source and consumed identities, validates
+the complete split envelope, and stages only the semantic source operation.
+The pure native-preanalysis/planner gate is 99/99 green, the pinned-Docker
+detached-import and semantic-backend gate is 241/241 green, and Ruff, ast-grep,
+all 14 worktree-local import contracts, commit hooks, and `graphify update .`
+pass.
+
+The mandatory production A560 diagnostic canary completed in 8.56 seconds
+without a process segfault or reported INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784873600_11.diag.sqlite3`; log:
+`.tmp/rhad-a560-v31-imported-state-choice-envelope.txt`. The highest contiguous
+level remains C1, not C2 or C6. No semantic-fragment transaction or mutation
+receipt exists because portable evidence planning rejects before staging. The
+rollback pseudocode remains the short `JUMPOUT(0x40B6C0)` stub.
+
+Lifecycle event 8 records the first failed C2 obligation:
+`imported conditional-select routing blocks overlap transfer sources
+('0x40c4d4',)`. The competing persisted resolver fact is
+`resolver_transfer:generation=1:revision=1:proof=91ec0baa895b4bbd8bd8`, a
+`static_fixpoint` proof with physical source `0x40C4D4`, unresolved transfer
+`0x40C4DA`, and dispatcher target `0x40A607`. That lower-level proof owns the
+same selected/join routing envelope as `native-state-choice@0x40C4C3`; the
+overlap rejection is therefore correct, but the proof inventory has not yet
+expressed semantic supersession.
+
+Continue by filtering a lower direct patch proof only when exactly one
+field-complete state-choice proof owns the same unresolved transfer and fully
+contains the patch source identity. Reject ambiguous or partial overlap and
+retain unrelated patch proofs. Do not permit shared mutation ownership, add an
+overlap exception in the planner, or key the rule to A560 sample addresses.
