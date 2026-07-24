@@ -11,7 +11,9 @@ from d810.ui.workbench_diagnostics_logic import (
     SnapshotSort,
     cleanup_confirmation_matches,
     cleanup_execution_options,
+    compare_case_runs,
     diagnostic_action_states,
+    filter_cleanup_candidate_paths,
     filter_databases,
     filter_records,
     filter_snapshots,
@@ -19,10 +21,12 @@ from d810.ui.workbench_diagnostics_logic import (
     latest_snapshot_for_function,
     project_cleanup_plan,
     project_cleanup_result,
+    project_case_timeline,
     project_record_rows,
     record_jump_ea,
     sort_databases,
     sort_snapshots,
+    select_case_baseline,
 )
 
 logger = getLogger("D810.ui")
@@ -133,6 +137,7 @@ if IDA_AVAILABLE:
             ("Conflicts", "conflicts"),
             ("Provenance", "provenance"),
             ("Rendered programs", "rendered_programs"),
+            ("Deobfuscation case", "case"),
         )
 
         def __init__(
@@ -156,6 +161,10 @@ if IDA_AVAILABLE:
             self._records: tuple[typing.Any, ...] = ()
             self._record_rows: tuple[typing.Any, ...] = ()
             self._record_identity: tuple[str, int, str] | None = None
+            self._case_evidence: typing.Any = None
+            self._case_baseline_evidence: typing.Any = None
+            self._case_baseline_path: str | None = None
+            self._case_comparison: typing.Any = None
             self._cleanup_plan: typing.Any = None
             self._closed = False
             self._rendering = False
@@ -232,6 +241,11 @@ if IDA_AVAILABLE:
             self.record_detail.setPlaceholderText(
                 "Select a structured diagnostic record"
             )
+            self.case_summary = QtWidgets.QLabel("No deobfuscation case selected")
+            self.case_summary.setWordWrap(True)
+            self.case_summary.setVisible(False)
+            self.compare_case_button = QtWidgets.QPushButton("Compare selected run")
+            self.compare_case_button.setEnabled(False)
             self.jump_function_button = QtWidgets.QPushButton("Jump to function")
             self.jump_record_button = QtWidgets.QPushButton("Jump to record anchor")
             self.open_graph_button = QtWidgets.QPushButton("Open graph")
@@ -303,6 +317,7 @@ if IDA_AVAILABLE:
             self.jump_function_button.clicked.connect(self._jump_to_function)
             self.jump_record_button.clicked.connect(self._jump_to_record)
             self.open_graph_button.clicked.connect(self._open_graph)
+            self.compare_case_button.clicked.connect(self._compare_selected_case_run)
             self.refresh_button.clicked.connect(self.refresh)
             self.cleanup_action_combo.currentIndexChanged.connect(
                 self._cleanup_action_changed
@@ -368,6 +383,10 @@ if IDA_AVAILABLE:
             record_controls.addWidget(self.record_filter)
             record_controls.addWidget(self.view_combo)
             record_layout.addLayout(record_controls)
+            case_controls = QtWidgets.QHBoxLayout()
+            case_controls.addWidget(self.case_summary, stretch=1)
+            case_controls.addWidget(self.compare_case_button)
+            record_layout.addLayout(case_controls)
             record_layout.addWidget(self.record_tree, stretch=3)
             record_layout.addWidget(self.record_detail, stretch=2)
             jump_row = QtWidgets.QHBoxLayout()
@@ -739,7 +758,40 @@ if IDA_AVAILABLE:
                 return
             self._record_identity = identity
             self._records = ()
-            if database is not None and snapshot is not None:
+            case_mode = kind == "case"
+            if not case_mode:
+                self._case_evidence = None
+                self._case_baseline_evidence = None
+                self._case_baseline_path = None
+                self._case_comparison = None
+                self.case_summary.setVisible(False)
+                self.compare_case_button.setEnabled(False)
+            elif database is not None and snapshot is not None:
+                try:
+                    self._case_evidence = self._adapter.case(
+                        database.path,
+                        int(snapshot.function_ea),
+                    )
+                    self._case_baseline_evidence = None
+                    self._case_baseline_path = None
+                    self._case_comparison = None
+                except Exception as exc:
+                    logger.warning("Deobfuscation case view failed: %s", exc)
+                    self._case_evidence = None
+                    self.record_detail.setPlainText(f"Case view failed: {exc}")
+                timeline = project_case_timeline(
+                    self._case_evidence,
+                    snapshot_id=int(snapshot.snapshot_id),
+                )
+                self._records = tuple(row.record for row in timeline.rows)
+                self._render_case_summary(timeline)
+            elif case_mode:
+                self._case_evidence = None
+                self._case_baseline_evidence = None
+                self._case_baseline_path = None
+                self._case_comparison = None
+                self._render_case_summary(project_case_timeline(None))
+            elif database is not None and snapshot is not None:
                 try:
                     self._records = tuple(
                         self._adapter.records(
@@ -754,6 +806,118 @@ if IDA_AVAILABLE:
             filtered = filter_records(self._records, self.record_filter.text())
             self._apply_record_projection(filtered)
             self._publish_graph_context()
+
+        def _render_case_summary(self, timeline: typing.Any) -> None:
+            self.case_summary.setVisible(True)
+            if self._case_evidence is None:
+                self.case_summary.setText(
+                    "No v7 deobfuscation case exists for the selected database/function."
+                )
+                self.compare_case_button.setEnabled(False)
+                return
+            lines = [
+                f"Case: {timeline.highest_level_label}",
+                "Case source: latest v7 session for the selected database/function",
+                (
+                    "Semantic output: explicitly witnessed"
+                    if timeline.semantic_verified
+                    else "Semantic output: not yet witnessed"
+                ),
+            ]
+            if timeline.first_blocked_obligation:
+                lines.append(
+                    f"First blocked obligation: {timeline.first_blocked_obligation}"
+                )
+            comparison = self._case_comparison
+            if comparison is not None:
+                lines.append(f"Baseline: {self._case_baseline_path}")
+                lines.append(comparison.reason)
+                lines.append(
+                    "Added/Lost: "
+                    f"{len(comparison.added_finding_ids)}/"
+                    f"{len(comparison.lost_finding_ids)}"
+                )
+                lines.append(
+                    "Plans/Validation/Receipts: "
+                    f"{len(comparison.plan_ids)}/"
+                    f"{len(comparison.validation_outcome_ids)}/"
+                    f"{len(comparison.receipt_ids)}"
+                )
+                if comparison.first_regression:
+                    lines.append(
+                        f"First regression: {comparison.first_regression}"
+                    )
+                if comparison.timing_delta_seconds is not None:
+                    lines.append(
+                        "Timing delta (current-baseline): "
+                        f"{comparison.timing_delta_seconds:+.3f}s"
+                    )
+                if comparison.maturity_delta is not None:
+                    lines.append(f"Maturity: {comparison.maturity_delta}")
+            self.case_summary.setText("\n".join(lines))
+            self.compare_case_button.setEnabled(
+                self._case_baseline_candidate() is not None
+            )
+
+        def _case_baseline_candidate(self) -> typing.Any:
+            database = self._current_database()
+            snapshot = self._current_snapshot()
+            if database is None or snapshot is None:
+                return None
+            return select_case_baseline(
+                self._databases,
+                current_path=str(database.path),
+                current_recorded_at=database.recorded_at,
+                function_ea=int(snapshot.function_ea),
+            )
+
+        def _compare_selected_case_run(self, checked: bool = False) -> None:
+            del checked
+            database = self._current_database()
+            snapshot = self._current_snapshot()
+            if self._case_evidence is None or database is None or snapshot is None:
+                return
+            baseline = self._case_baseline_candidate()
+            if baseline is None:
+                self._case_comparison = compare_case_runs(None, self._case_evidence)
+                self._render_case_summary(
+                    project_case_timeline(
+                        self._case_evidence,
+                        snapshot_id=int(snapshot.snapshot_id),
+                    )
+                )
+                return
+            try:
+                baseline_evidence = self._adapter.case(
+                    baseline.path,
+                    int(snapshot.function_ea),
+                )
+                baseline_snapshot = latest_snapshot_for_function(
+                    tuple(self._adapter.snapshots(baseline.path)),
+                    int(snapshot.function_ea),
+                )
+            except Exception as exc:
+                logger.warning("Diagnostic case comparison failed: %s", exc)
+                baseline_evidence = None
+                baseline_snapshot = None
+            self._case_baseline_path = str(baseline.path)
+            self._case_baseline_evidence = baseline_evidence
+            self._case_comparison = compare_case_runs(
+                baseline_evidence,
+                self._case_evidence,
+                baseline_recorded_at=baseline.recorded_at,
+                current_recorded_at=database.recorded_at,
+                baseline_maturity=(
+                    None if baseline_snapshot is None else baseline_snapshot.maturity
+                ),
+                current_maturity=snapshot.maturity,
+            )
+            self._render_case_summary(
+                project_case_timeline(
+                    self._case_evidence,
+                    snapshot_id=int(snapshot.snapshot_id),
+                )
+            )
 
         def _refilter_records(self, *args: typing.Any) -> None:
             del args
@@ -816,6 +980,11 @@ if IDA_AVAILABLE:
                 or database is None
                 or not database.readable
                 or snapshot is None
+            ):
+                return None
+            if (
+                str(self.view_combo.currentData() or "") == "case"
+                and self._case_evidence is None
             ):
                 return None
             return controller.context_for_explorer(
@@ -954,11 +1123,32 @@ if IDA_AVAILABLE:
             path = None if database is None else database.path
             selected_paths = self._selected_database_paths()
             all_paths = tuple(item.path for item in self._databases)
-            paths = (
+            protected_paths = (
+                ()
+                if self._case_baseline_path is None
+                else (self._case_baseline_path,)
+            )
+            candidate_paths = (
                 all_paths
                 if action_id == "delete_all_closed_databases"
                 else selected_paths
             )
+            paths = filter_cleanup_candidate_paths(
+                candidate_paths,
+                protected_paths=protected_paths,
+            )
+            if (
+                path is not None
+                and str(path) in protected_paths
+                and action_id in {"delete_selected_snapshots", "keep_latest"}
+            ):
+                self.cleanup_plan_view.setPlainText(
+                    "Comparison baseline dependency: "
+                    f"{path}\nThis database is retained while its case comparison is selected. "
+                    "Choose a non-baseline database, then use the normal reviewed-plan "
+                    "and confirmation path."
+                )
+                return
             try:
                 plan = self._adapter.plan(
                     action_id,
@@ -973,7 +1163,15 @@ if IDA_AVAILABLE:
                 self.cleanup_plan_view.setPlainText(f"Plan failed: {exc}")
                 return
             self._cleanup_plan = plan
-            self.cleanup_plan_view.setPlainText(view.text)
+            protected_note = ""
+            if protected_paths:
+                protected_note = (
+                    "\n\nComparison baseline dependency retained (not a cleanup candidate):\n"
+                    + "\n".join(f"- {item}" for item in protected_paths)
+                    + "\nUse the existing reviewed-plan and typed-confirmation path for "
+                    "all remaining destructive targets."
+                )
+            self.cleanup_plan_view.setPlainText(view.text + protected_note)
             options = cleanup_execution_options(plan)
             self.vacuum_after_checkbox.setVisible(options.show_vacuum_after)
             self.confirmation_controls.setVisible(True)

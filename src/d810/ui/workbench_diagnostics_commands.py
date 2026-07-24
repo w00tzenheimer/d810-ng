@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
+from d810.core.deobfuscation_case import DeobfuscationCaseEvidence
 from d810.diagnostics.workbench_models import DiagnosticRecord, DiagnosticViewKind
 
 
@@ -41,6 +42,10 @@ class WorkbenchDiagnosticsAdapter:
         return tuple(
             self._state.get_diagnostic_records(path, int(snapshot_id), view_kind)
         )
+
+    def case(self, path: str, function_ea: int) -> DeobfuscationCaseEvidence | None:
+        """Load only the selected database/function's immutable evidence case."""
+        return self._state.get_diagnostic_case_evidence(path, int(function_ea))
 
     def plan(
         self,

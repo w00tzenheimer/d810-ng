@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from d810.core.deobfuscation_case import DeobfuscationCaseEvidence
 from d810.core.logging import getLogger
 from d810.core.typing import Callable, Protocol
 from d810.diagnostics.workbench_graph_models import (
@@ -28,6 +29,12 @@ class DiagnosticGraphRecordPort(Protocol):
         snapshot_id: int,
         kind: str,
     ) -> tuple[DiagnosticRecord, ...]: ...
+
+    def case(
+        self,
+        path: str,
+        function_ea: int,
+    ) -> DeobfuscationCaseEvidence | None: ...
 
 
 class DiagnosticGraphNavigationPort(Protocol):
@@ -92,6 +99,7 @@ class DiagnosticGraphController:
         kinds = {
             "blocks": DiagnosticGraphKind.BLOCK_CFG,
             "state_machine": DiagnosticGraphKind.STATE_MACHINE,
+            "case": DiagnosticGraphKind.CASE_LINEAGE,
         }
         kind = kinds.get(view_value)
         if kind is None:
@@ -201,44 +209,49 @@ class DiagnosticGraphController:
         ):
             self._expanded_state_model_id = None
 
-    def _records_for_context(
+    def _request_for_context(
         self, context: DiagnosticGraphContext
-    ) -> tuple[tuple[DiagnosticRecord, ...], tuple[DiagnosticRecord, ...]]:
+    ) -> DiagnosticGraphProjectionRequest:
         if context.kind is DiagnosticGraphKind.BLOCK_CFG:
-            return (
-                self._records.records(
+            return DiagnosticGraphProjectionRequest(
+                context=context,
+                primary_records=self._records.records(
                     context.database_path,
                     context.snapshot_id,
                     "blocks",
                 ),
-                (),
+                expanded_state_model_id=self._expanded_state_model_id,
             )
         if context.kind is DiagnosticGraphKind.STATE_MACHINE:
-            return (
-                self._records.records(
+            return DiagnosticGraphProjectionRequest(
+                context=context,
+                primary_records=self._records.records(
                     context.database_path,
                     context.snapshot_id,
                     "state_machine",
                 ),
-                self._records.records(
+                block_records=self._records.records(
                     context.database_path,
                     context.snapshot_id,
                     "blocks",
+                ),
+                expanded_state_model_id=self._expanded_state_model_id,
+            )
+        if context.kind is DiagnosticGraphKind.CASE_LINEAGE:
+            return DiagnosticGraphProjectionRequest(
+                context=context,
+                primary_records=(),
+                expanded_state_model_id=self._expanded_state_model_id,
+                case_evidence=self._records.case(
+                    context.database_path,
+                    context.function_ea,
                 ),
             )
         raise ValueError("No graph for this view")
 
     def _rebuild(self, context: DiagnosticGraphContext) -> None:
         try:
-            primary_records, block_records = self._records_for_context(context)
-            graph = project_diagnostic_graph(
-                DiagnosticGraphProjectionRequest(
-                    context=context,
-                    primary_records=primary_records,
-                    block_records=block_records,
-                    expanded_state_model_id=self._expanded_state_model_id,
-                )
-            )
+            graph = project_diagnostic_graph(self._request_for_context(context))
         except Exception as error:
             self._graph = None
             self._view.clear(f"Graph unavailable: {error}")

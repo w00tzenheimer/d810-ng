@@ -21,6 +21,7 @@ from d810.core.config_v2_defaults import (
     format_config_v2_default_selection_status,
     select_config_v2_default_project,
 )
+from d810.core.deobfuscation_case import DeobfuscationCaseEvidence
 from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core.platform import resolve_arch_config
 from d810.core.project import (
@@ -358,6 +359,13 @@ class D810State(metaclass=SingletonMeta):
         kind: DiagnosticViewKind,
     ) -> tuple[DiagnosticRecord, ...]:
         return self.manager.get_diagnostic_records(path, snapshot_id, kind)
+
+    def get_diagnostic_case_evidence(
+        self,
+        path: pathlib.Path | str,
+        function_ea: int,
+    ) -> DeobfuscationCaseEvidence | None:
+        return self.manager.get_diagnostic_case_evidence(path, function_ea)
 
     def plan_diagnostic_selected_snapshots(
         self, path: pathlib.Path | str, snapshot_ids: typing.Sequence[int]

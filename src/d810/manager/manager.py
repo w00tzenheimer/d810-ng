@@ -10,6 +10,7 @@ from d810.core import (
     MOP_TO_AST_CACHE,
     typing,
 )
+from d810.core.deobfuscation_case import DeobfuscationCaseEvidence
 from d810.core.logging import getLogger
 from d810.core.observability import get_active_diag_path
 from d810.core.project import (
@@ -317,6 +318,17 @@ class D810Manager:
         kind: DiagnosticViewKind,
     ) -> tuple[DiagnosticRecord, ...]:
         return self.diagnostic_inventory_service.records(path, snapshot_id, kind)
+
+    def get_diagnostic_case_evidence(
+        self,
+        path: pathlib.Path | str,
+        function_ea: int,
+    ) -> DeobfuscationCaseEvidence | None:
+        """Read one selected diagnostic database as an immutable case session."""
+        repository = DeobfuscationCaseRepository(
+            SqliteCaseDiagnosticReader((pathlib.Path(path),))
+        )
+        return repository.load(int(function_ea), None)
 
     def plan_diagnostic_selected_snapshots(
         self, path: pathlib.Path | str, snapshot_ids: typing.Sequence[int]

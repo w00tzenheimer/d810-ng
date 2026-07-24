@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from d810.core.deobfuscation_case import CaseFindingKind
 from d810.diagnostics.workbench_graph_models import (
     DiagnosticGraph,
     DiagnosticGraphContext,
@@ -465,6 +466,117 @@ def project_state_machine(request: DiagnosticGraphProjectionRequest) -> Diagnost
     )
 
 
+def project_case_lineage_graph(
+    request: DiagnosticGraphProjectionRequest,
+) -> DiagnosticGraph:
+    """Project one selected portable case into an anchored evidence lineage."""
+
+    context = request.context
+    if context.kind is not DiagnosticGraphKind.CASE_LINEAGE:
+        raise ValueError(f"Case lineage request has kind: {context.kind.value}")
+    evidence = request.case_evidence
+    if evidence is None:
+        warning = "No deobfuscation case record exists for this selected database/function"
+        return DiagnosticGraph(
+            context=context,
+            nodes=(),
+            edges=(),
+            expanded_group=None,
+            warnings=(warning,),
+            status=_context_status(context, (warning,), "Deobfuscation case"),
+        )
+
+    root_id = f"case:function@0x{context.function_ea:X}"
+    nodes: list[DiagnosticGraphNode] = [
+        DiagnosticGraphNode(
+            model_id=root_id,
+            label=f"Function @ 0x{context.function_ea:X}",
+            category="case_function",
+            anchor_ea=context.function_ea,
+            hint_fields=(
+                ("run identity", evidence.run_identity),
+                ("runtime", evidence.runtime_identity),
+                ("fingerprint", evidence.function_fingerprint),
+                ("verdict", evidence.verdict.level.value),
+                ("semantic verified", str(evidence.verdict.semantic_verified).lower()),
+            ),
+            record_refs=(),
+            requires_anchor=True,
+        )
+    ]
+    edges: list[DiagnosticGraphEdge] = []
+    previous_id = root_id
+    for ordinal, finding in enumerate(evidence.findings):
+        finding_id = f"case:{finding.finding_id}"
+        anchor = finding.native_ea if finding.native_ea is not None else context.function_ea
+        label_anchor = (
+            f"0x{finding.native_ea:X}"
+            if finding.native_ea is not None
+            else f"function@0x{context.function_ea:X}"
+        )
+        reference = DiagnosticRecordRef(
+            source_table="deobfuscation_case",
+            snapshot_id=context.snapshot_id,
+            ordinal=ordinal,
+        )
+        nodes.append(
+            DiagnosticGraphNode(
+                model_id=finding_id,
+                label=f"{finding.kind.value}: {finding.summary}\\n{label_anchor}",
+                category=f"case_{finding.kind.value}",
+                anchor_ea=anchor,
+                hint_fields=(
+                    ("finding", finding.finding_id),
+                    ("detail", finding.detail),
+                    (
+                        "confidence",
+                        "unavailable"
+                        if finding.confidence is None
+                        else f"{finding.confidence:.2f}",
+                    ),
+                    ("provenance", ", ".join(finding.provenance)),
+                ),
+                record_refs=(reference,),
+                requires_anchor=(
+                    finding.kind
+                    in {
+                        CaseFindingKind.PORTABLE_EVIDENCE,
+                        CaseFindingKind.FRAGMENT_PLAN,
+                        CaseFindingKind.RECEIPT,
+                        CaseFindingKind.SEMANTIC_RESULT,
+                    }
+                ),
+            )
+        )
+        edges.append(
+            DiagnosticGraphEdge(
+                model_id=f"case-lineage:{previous_id}->{finding_id}",
+                source_model_id=previous_id,
+                target_model_id=finding_id,
+                category="case_lineage",
+                label=None,
+                hint_fields=(("finding", finding.finding_id),),
+                record_refs=(reference,),
+            )
+        )
+        previous_id = finding_id
+
+    warnings: list[str] = []
+    if not evidence.findings:
+        warnings.append("Case record has no findings")
+    if not evidence.verdict.semantic_verified:
+        warnings.append("No C6 semantic witness recorded")
+    ordered_warnings = tuple(warnings)
+    return DiagnosticGraph(
+        context=context,
+        nodes=tuple(nodes),
+        edges=tuple(edges),
+        expanded_group=None,
+        warnings=ordered_warnings,
+        status=_context_status(context, ordered_warnings, "Deobfuscation case"),
+    )
+
+
 def project_diagnostic_graph(request: DiagnosticGraphProjectionRequest) -> DiagnosticGraph:
     """Dispatch a supported pure diagnostic graph projection."""
 
@@ -472,11 +584,14 @@ def project_diagnostic_graph(request: DiagnosticGraphProjectionRequest) -> Diagn
         return project_block_cfg(request)
     if request.context.kind is DiagnosticGraphKind.STATE_MACHINE:
         return project_state_machine(request)
+    if request.context.kind is DiagnosticGraphKind.CASE_LINEAGE:
+        return project_case_lineage_graph(request)
     raise ValueError(f"Unsupported diagnostic graph kind: {request.context.kind.value}")
 
 
 __all__ = [
     "project_block_cfg",
+    "project_case_lineage_graph",
     "project_diagnostic_graph",
     "project_state_machine",
 ]

@@ -5,12 +5,19 @@ from __future__ import annotations
 import dataclasses
 import enum
 
+from d810.core.deobfuscation_case import (
+    CaseEvidenceLevel,
+    CaseFindingKind,
+    DeobfuscationCaseEvidence,
+)
 from d810.core.typing import Callable, Sequence, TypeVar
 from d810.diagnostics.workbench_models import (
     DiagnosticCleanupScope,
     DiagnosticDatabaseSummary,
     DiagnosticRecord,
     DiagnosticSnapshotSummary,
+    DiagnosticField,
+    DiagnosticViewKind,
 )
 
 
@@ -55,6 +62,32 @@ class DiagnosticRecordRow:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class CaseTimelineView:
+    """A read-only record projection for one selected case session."""
+
+    highest_level_label: str
+    semantic_verified: bool
+    first_blocked_obligation: str | None
+    rows: tuple[DiagnosticRecordRow, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class CaseCanaryComparison:
+    """Current-vs-baseline case comparison without interpreting semantic success."""
+
+    comparable: bool
+    reason: str
+    added_finding_ids: tuple[str, ...]
+    lost_finding_ids: tuple[str, ...]
+    plan_ids: tuple[str, ...]
+    validation_outcome_ids: tuple[str, ...]
+    receipt_ids: tuple[str, ...]
+    first_regression: str | None
+    timing_delta_seconds: float | None
+    maturity_delta: str | None
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class DiagnosticCleanupPlanView:
     text: str
     required_phrase: str
@@ -71,6 +104,17 @@ class DiagnosticCleanupExecutionOptions:
 
 
 _T = TypeVar("_T")
+
+
+_CASE_LEVEL_LABELS = {
+    CaseEvidenceLevel.C0_ENVIRONMENT: "Environment evidence recorded",
+    CaseEvidenceLevel.C1_DISCOVERY: "Discovery evidence recorded",
+    CaseEvidenceLevel.C2_NORMALIZATION: "Normalization evidence recorded",
+    CaseEvidenceLevel.C3_CANONICAL_PLAN: "Canonical plan recorded",
+    CaseEvidenceLevel.C4_STAGED_PROOF: "Staged proof recorded",
+    CaseEvidenceLevel.C5_PUBLICATION: "Publication receipt recorded",
+    CaseEvidenceLevel.C6_SEMANTIC_OUTPUT: "Semantic output witness recorded",
+}
 
 
 def _stable_primary_sort(
@@ -279,6 +323,176 @@ def project_record_rows(
             )
         )
     return tuple(rows)
+
+
+def project_case_timeline(
+    evidence: DeobfuscationCaseEvidence | None,
+    *,
+    snapshot_id: int = 0,
+) -> CaseTimelineView:
+    """Render portable evidence as traceable structured rows, never as success."""
+
+    if evidence is None:
+        return CaseTimelineView(
+            highest_level_label="No case evidence recorded",
+            semantic_verified=False,
+            first_blocked_obligation=None,
+            rows=(),
+        )
+    records = []
+    for ordinal, finding in enumerate(evidence.findings):
+        confidence = (
+            "unavailable"
+            if finding.confidence is None
+            else f"{finding.confidence:.2f}"
+        )
+        fields = (
+            DiagnosticField("finding", finding.finding_id, finding.finding_id),
+            DiagnosticField("kind", finding.kind.value, finding.kind.value),
+            DiagnosticField("summary", finding.summary, finding.summary),
+            DiagnosticField("confidence", confidence, confidence),
+            DiagnosticField(
+                "provenance",
+                finding.provenance,
+                ", ".join(finding.provenance),
+            ),
+        )
+        records.append(
+            DiagnosticRecord(
+                kind=DiagnosticViewKind.FACTS,
+                source_table="deobfuscation_case",
+                snapshot_id=int(snapshot_id),
+                ordinal=ordinal,
+                fields=fields,
+                warnings=(),
+                anchor_ea=finding.native_ea,
+            )
+        )
+    return CaseTimelineView(
+        highest_level_label=_CASE_LEVEL_LABELS[evidence.verdict.level],
+        semantic_verified=evidence.verdict.semantic_verified,
+        first_blocked_obligation=evidence.verdict.first_blocked_obligation,
+        rows=project_record_rows(tuple(records)),
+    )
+
+
+def compare_case_runs(
+    baseline: DeobfuscationCaseEvidence | None,
+    current: DeobfuscationCaseEvidence | None,
+    *,
+    baseline_recorded_at: float | None = None,
+    current_recorded_at: float | None = None,
+    baseline_maturity: str | None = None,
+    current_maturity: str | None = None,
+) -> CaseCanaryComparison:
+    """Compare literal finding identities only when their case identity matches."""
+
+    unavailable = CaseCanaryComparison(
+        comparable=False,
+        reason="Select a compatible prior case run to compare",
+        added_finding_ids=(),
+        lost_finding_ids=(),
+        plan_ids=(),
+        validation_outcome_ids=(),
+        receipt_ids=(),
+        first_regression=None,
+        timing_delta_seconds=None,
+        maturity_delta=None,
+    )
+    if baseline is None or current is None:
+        return unavailable
+    if baseline.function_fingerprint != current.function_fingerprint:
+        return dataclasses.replace(
+            unavailable,
+            reason="Case function fingerprints differ; comparison is unavailable",
+        )
+    if baseline.runtime_identity != current.runtime_identity:
+        return dataclasses.replace(
+            unavailable,
+            reason="Case runtime identities differ; comparison is unavailable",
+        )
+    previous_ids = tuple(finding.finding_id for finding in baseline.findings)
+    current_ids = tuple(finding.finding_id for finding in current.findings)
+    previous_set = set(previous_ids)
+    current_set = set(current_ids)
+    lost = tuple(finding_id for finding_id in previous_ids if finding_id not in current_set)
+    added = tuple(finding_id for finding_id in current_ids if finding_id not in previous_set)
+    plan_ids = tuple(
+        finding.finding_id
+        for finding in current.findings
+        if finding.kind is CaseFindingKind.FRAGMENT_PLAN
+    )
+    outcomes = tuple(
+        finding.finding_id
+        for finding in current.findings
+        if finding.kind in {CaseFindingKind.VALIDATION, CaseFindingKind.REJECTION}
+    )
+    receipts = tuple(
+        finding.finding_id
+        for finding in current.findings
+        if finding.kind is CaseFindingKind.RECEIPT
+    )
+    first_regression = lost[0] if lost else (outcomes[0] if outcomes else None)
+    timing_delta = (
+        None
+        if baseline_recorded_at is None or current_recorded_at is None
+        else float(current_recorded_at) - float(baseline_recorded_at)
+    )
+    maturity_delta = (
+        None
+        if baseline_maturity is None or current_maturity is None
+        else f"{baseline_maturity} -> {current_maturity}"
+    )
+    return CaseCanaryComparison(
+        comparable=True,
+        reason="Compatible case evidence compared by immutable finding identity",
+        added_finding_ids=added,
+        lost_finding_ids=lost,
+        plan_ids=plan_ids,
+        validation_outcome_ids=outcomes,
+        receipt_ids=receipts,
+        first_regression=first_regression,
+        timing_delta_seconds=timing_delta,
+        maturity_delta=maturity_delta,
+    )
+
+
+def filter_cleanup_candidate_paths(
+    paths: Sequence[str],
+    *,
+    protected_paths: Sequence[str] = (),
+) -> tuple[str, ...]:
+    """Omit active canary baselines from destructive cleaner candidates."""
+
+    protected = {str(path) for path in protected_paths}
+    return tuple(str(path) for path in paths if str(path) not in protected)
+
+
+def select_case_baseline(
+    values: Sequence[DiagnosticDatabaseSummary],
+    *,
+    current_path: str,
+    current_recorded_at: float | None,
+    function_ea: int,
+) -> DiagnosticDatabaseSummary | None:
+    """Choose the nearest earlier readable closed database for a case canary."""
+
+    if current_recorded_at is None:
+        return None
+    candidates = tuple(
+        item
+        for item in values
+        if (
+            item.path != current_path
+            and item.readable
+            and not item.active
+            and int(function_ea) in item.function_eas
+            and item.recorded_at is not None
+            and item.recorded_at < current_recorded_at
+        )
+    )
+    ordered = sort_databases(candidates)
+    return ordered[0] if ordered else None
 
 
 def latest_database_for_function(
