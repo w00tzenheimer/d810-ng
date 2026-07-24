@@ -673,3 +673,61 @@ backward-compatible schema path, then rerun the exact A560 canary and query the
 DB for the first `blkN@EA` assertion owner. Do not clear assertion flags
 generically, bypass ctree generation, infer ownership from text logs, or alter
 semantic publication until the DB proves the instruction's origin.
+
+**2026-07-24T07:03:03Z**
+
+Commit `d1f9ee282` makes microinstruction assertion state first-class in
+diagnostic schema v6. The live Hex-Rays adapter captures the raw `iprops`
+bitmask and exact `IPROP_ASSERT` classification, the `instructions` table
+persists indexed `iprops` and `is_assert` columns, and schema v5 is rejected
+without migration. The pinned-Docker focused gate is 89/89 green, ast-grep
+passes, all 14 worktree-local import contracts pass, the changed-file Ruff gate
+passes with only the two pre-existing file-level findings excluded, commit
+hooks pass, and `graphify update .` completes.
+
+The mandatory production A560 diagnostic canary completed in 131.24 seconds.
+Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784876298_11.diag.sqlite3`; log:
+`.tmp/rhad-a560-v31-assertion-state-diag.txt`. The process did not segfault and
+reproduced `hexrays_failure(code=-1, ea=0x40A560,
+description='INTERR: 51974')`.
+
+The new DB evidence rejects the proposed generic assertion-hygiene fix.
+Assertion moves are normal Hex-Rays constraints throughout the captured
+maturities: the two GLBOPT2 pre-D810 snapshots each contain 49. At the failing
+snapshot 15, the only assertion reachable from function entry is the original
+native `mov #0, %arg_4` in `blk2@0x40A5AB`; it predates normalization and is not
+owned by an imported body or semantic operation. Do not clear or omit
+`IPROP_ASSERT` instructions.
+
+The actual postpublication anomaly is global entry reachability. Snapshot 15
+contains 381 blocks, but entry reaches only five:
+`blk0@0x40A560`, `blk1@0x40A560`, `blk2@0x40A5AB`,
+`blk3@0x40A5AE`, and the self-loop `blk4@0x40A5F0`. The imported body and
+semantic routes are detached from entry.
+
+Nevertheless, transactions `45f7a38c98d54511b0c28bfcd3e6edff` and
+`b67d34f0e324489a8c702809643fa1dd` each report 1,390/1,390 applied operations,
+3,357 passing prepublication outcomes, 6,263 passing postpublication outcomes,
+root publication, and a committed receipt. Their single publication group
+redirects predecessor identity anchored at `0x40A5AE` to a replacement
+identity anchored at `0x40A5F0`. Postpublication `operation_reachability`
+incorrectly accepts 478 operations as reachable from either a publication root
+or an independent native-body root, so detached imported roots satisfy the
+check after publication.
+
+The pipeline therefore reached nominal C5 instrumentation, but the highest
+trustworthy level is C4 because C5 postvalidation is unsound. The first failed
+C5 obligation is that every required operation must be reachable from the
+published function entry after root authority changes; detached
+prepublication/native-body roots may not remain independent reachability
+authorities. Treat INTERR 51974 as a downstream symptom of that disconnected
+publication unless later DB evidence disproves the link.
+
+Continue the v3.1 vertical loop with one focused postpublication validator
+contract. Prepublication may validate a closed fragment from detached staging
+roots. Postpublication must start at the actual projected/live function entry
+and reject any required operation reachable only from an independent imported
+root. The failed postcondition and anchored unreachable operations must be
+persisted before the receipt aborts and rolls root authority back. Do not alter
+the importer, assertion flags, or Rhad route semantics in this slice.
