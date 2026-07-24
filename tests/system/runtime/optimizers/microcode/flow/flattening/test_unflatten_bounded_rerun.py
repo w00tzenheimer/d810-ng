@@ -1648,6 +1648,41 @@ def test_canonical_composition_rejection_reports_stable_route_obligation() -> No
     }
 
 
+def test_unexpected_canonical_pipeline_exception_is_reported_and_reraised() -> None:
+    reported = []
+    rule = _fresh_rule()
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    mba = SimpleNamespace(entry_ea=_EA, maturity=_MAT2)
+    failure = RuntimeError("canonical composition exploded")
+
+    def run_pipeline() -> None:
+        raise failure
+
+    with pytest.raises(RuntimeError) as caught:
+        rule._run_pipeline_with_canonical_diagnostics(
+            mba,
+            canonical_composition_ready=True,
+            run_pipeline=run_pipeline,
+        )
+
+    assert caught.value is failure
+    assert len(reported) == 1
+    record = reported[0]
+    assert record.consumer == "state_machine_cff_unflattener"
+    assert record.strategy == "canonical_semantic_composition"
+    assert record.fact_id == f"canonical_pipeline:0x{_EA:X}"
+    assert record.maturity == "MMAT_CALLS"
+    assert record.decision == "declined"
+    assert record.reason == "canonical_pipeline_exception"
+    assert record.payload == {
+        "anchor_ea": f"0x{_EA:X}",
+        "exception_detail": "canonical composition exploded",
+        "exception_type": "builtins.RuntimeError",
+    }
+
+
 def test_materialized_handler_completeness_reports_final_native_ea_inventory() -> None:
     reported = []
     rule = _fresh_rule()
