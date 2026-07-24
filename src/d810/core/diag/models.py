@@ -19,6 +19,7 @@ whose original DDL used a composite ``PRIMARY KEY (...)``; the CompositeKey
 The equivalence with the original DDL is pinned by
 ``tests/unit/core/diag/test_models_schema_equivalence.py``.
 """
+
 from __future__ import annotations
 
 from d810._vendor.peewee import (
@@ -62,9 +63,7 @@ class DiagnosticSession(BaseModel):
     native_key_json = TextField()
     started_at = FloatField()
     finished_at = FloatField(null=True)
-    status = TextField(
-        constraints=[Check("status IN ('active','finished','failed')")]
-    )
+    status = TextField(constraints=[Check("status IN ('active','finished','failed')")])
     diagnostic_error_count = IntegerField(default=0)
 
     class Meta:
@@ -103,6 +102,140 @@ class Snapshot(BaseModel):
 
     class Meta:
         table_name = "snapshots"
+
+
+class SemanticRouteOracleRunRecord(BaseModel):
+    run_id = TextField(primary_key=True)
+    func_ea_hex = TextField()
+    func_ea_i64 = IntegerField()
+    fixture_sha256 = TextField()
+    reference_binary_sha256 = TextField()
+    candidate_binary_sha256 = TextField()
+    reference_commit = TextField()
+    runtime_image = TextField()
+    runtime_image_id = TextField()
+    cache_disabled = IntegerField(constraints=[Check("cache_disabled IN (0,1)")])
+    created_at = FloatField()
+    metadata_json = TextField(default="{}")
+
+    class Meta:
+        table_name = "semantic_route_oracle_runs"
+        indexes = ((("func_ea_i64", "created_at"), False),)
+
+
+class SemanticRouteReferenceRewriteRecord(BaseModel):
+    run = ForeignKeyField(
+        SemanticRouteOracleRunRecord,
+        field="run_id",
+        column_name="run_id",
+        index=False,
+        null=False,
+    )
+    route_id = TextField()
+    func_ea_hex = TextField()
+    func_ea_i64 = IntegerField()
+    phase = TextField()
+    owner_ea_hex = TextField()
+    owner_ea_i64 = IntegerField()
+    rewrite_anchor_ea_hex = TextField()
+    rewrite_anchor_ea_i64 = IntegerField()
+    corridor_json = TextField()
+    original_transfer_kind = TextField()
+    final_transfer_kind = TextField()
+    direct_target_ea_hex = TextField(null=True)
+    direct_target_ea_i64 = IntegerField(null=True)
+    true_target_ea_hex = TextField(null=True)
+    true_target_ea_i64 = IntegerField(null=True)
+    false_target_ea_hex = TextField(null=True)
+    false_target_ea_i64 = IntegerField(null=True)
+    predicate_kind = TextField(null=True)
+    reference_ledger_identity = TextField()
+    reference_ledger_json = TextField()
+
+    class Meta:
+        table_name = "semantic_route_reference_rewrites"
+        primary_key = CompositeKey("run", "route_id")
+        indexes = (
+            (("func_ea_i64", "route_id"), False),
+            (("rewrite_anchor_ea_i64",), False),
+        )
+
+
+class SemanticRouteOracleCaptureRecord(BaseModel):
+    run = ForeignKeyField(
+        SemanticRouteOracleRunRecord,
+        field="run_id",
+        column_name="run_id",
+        index=False,
+        null=False,
+    )
+    lane = TextField(constraints=[Check("lane IN ('reference','candidate')")])
+    candidate_variant = TextField()
+    maturity = TextField()
+    snapshot = ForeignKeyField(
+        Snapshot,
+        field="id",
+        column_name="snapshot_id",
+        index=False,
+        null=False,
+    )
+    binary_sha256 = TextField()
+    d810_enabled = IntegerField(constraints=[Check("d810_enabled IN (0,1)")])
+    cache_disabled = IntegerField(constraints=[Check("cache_disabled IN (0,1)")])
+    metadata_json = TextField(default="{}")
+
+    class Meta:
+        table_name = "semantic_route_oracle_captures"
+        primary_key = CompositeKey("run", "lane", "candidate_variant", "maturity")
+        indexes = ((("snapshot",), False),)
+
+
+class SemanticRouteOracleComparisonRecord(BaseModel):
+    run = ForeignKeyField(
+        SemanticRouteOracleRunRecord,
+        field="run_id",
+        column_name="run_id",
+        index=False,
+        null=False,
+    )
+    route_id = TextField()
+    maturity = TextField()
+    candidate_variant = TextField()
+    reference_snapshot = ForeignKeyField(
+        Snapshot,
+        field="id",
+        column_name="reference_snapshot_id",
+        index=False,
+        null=False,
+    )
+    candidate_snapshot = ForeignKeyField(
+        Snapshot,
+        field="id",
+        column_name="candidate_snapshot_id",
+        index=False,
+        null=False,
+    )
+    outcome = TextField(
+        constraints=[Check("outcome IN ('matched','diverged','rejected')")]
+    )
+    first_divergence = IntegerField(constraints=[Check("first_divergence IN (0,1)")])
+    failed_invariant = TextField(null=True)
+    owner_ea_hex = TextField()
+    owner_ea_i64 = IntegerField()
+    rewrite_anchor_ea_hex = TextField()
+    rewrite_anchor_ea_i64 = IntegerField()
+    oracle_shape_json = TextField(null=True)
+    candidate_shape_json = TextField(null=True)
+    reason = TextField()
+
+    class Meta:
+        table_name = "semantic_route_oracle_comparisons"
+        primary_key = CompositeKey("run", "route_id", "maturity", "candidate_variant")
+        indexes = (
+            (("first_divergence", "outcome"), False),
+            (("route_id", "maturity"), False),
+            (("rewrite_anchor_ea_i64", "outcome"), False),
+        )
 
 
 class LifecycleEvent(BaseModel):
@@ -223,7 +356,7 @@ class MutationPlanItem(BaseModel):
     class Meta:
         table_name = "mutation_plan_items"
         primary_key = CompositeKey("event", "item_index")
-        indexes = ((('mutation_batch_id', 'item_index'), True),)
+        indexes = ((("mutation_batch_id", "item_index"), True),)
 
 
 class MutationReceipt(BaseModel):
@@ -372,9 +505,7 @@ class SemanticFragmentValidationOutcome(BaseModel):
     mutation_batch_id = TextField()
     outcome_index = IntegerField()
     phase = TextField(
-        constraints=[
-            Check("phase IN ('prepublication','postpublication')")
-        ]
+        constraints=[Check("phase IN ('prepublication','postpublication')")]
     )
     postcondition = TextField()
     subject_id = TextField()
@@ -385,9 +516,7 @@ class SemanticFragmentValidationOutcome(BaseModel):
     class Meta:
         table_name = "semantic_fragment_validation_outcomes"
         primary_key = CompositeKey("event", "outcome_index")
-        indexes = (
-            (("mutation_batch_id", "phase", "postcondition"), False),
-        )
+        indexes = ((("mutation_batch_id", "phase", "postcondition"), False),)
 
 
 class LogicalBlockVersionTransitionRecord(BaseModel):
@@ -405,29 +534,21 @@ class LogicalBlockVersionTransitionRecord(BaseModel):
     physical_handle_token = TextField()
     generation = IntegerField()
     provenance = TextField(
-        constraints=[
-            Check("provenance IN ('native','imported_native','synthetic')")
-        ]
+        constraints=[Check("provenance IN ('native','imported_native','synthetic')")]
     )
     stable_identity_json = TextField(null=True)
     anchor_ea_hex = TextField(null=True)
     anchor_ea_i64 = IntegerField(null=True)
     predecessor_version = IntegerField(null=True)
-    from_state = TextField(
-        constraints=[Check("from_state IN ('staged','published')")]
-    )
+    from_state = TextField(constraints=[Check("from_state IN ('staged','published')")])
     to_state = TextField(
-        constraints=[
-            Check("to_state IN ('published','retired','aborted')")
-        ]
+        constraints=[Check("to_state IN ('published','retired','aborted')")]
     )
 
     class Meta:
         table_name = "logical_block_version_transitions"
         primary_key = CompositeKey("event", "transition_index")
-        indexes = (
-            (("mutation_batch_id", "proxy_token", "version"), False),
-        )
+        indexes = ((("mutation_batch_id", "proxy_token", "version"), False),)
 
 
 class SemanticFragmentTransactionEvent(BaseModel):
@@ -640,9 +761,7 @@ class StateCfgLocalEdge(BaseModel):
 
     class Meta:
         table_name = "state_cfg_local_edges"
-        primary_key = CompositeKey(
-            "snapshot", "state_hex", "entry_block", "edge_index"
-        )
+        primary_key = CompositeKey("snapshot", "state_hex", "entry_block", "edge_index")
         # Original DDL declares an index over the full PK column set.
         indexes = ((("snapshot", "state_hex", "entry_block", "edge_index"), False),)
 
@@ -919,9 +1038,7 @@ class StateCfgEdgeAlternateCorrelation(BaseModel):
 
     class Meta:
         table_name = "state_cfg_edge_alternate_correlations"
-        primary_key = CompositeKey(
-            "snapshot", "collapsed_edge_id", "alternate_edge_id"
-        )
+        primary_key = CompositeKey("snapshot", "collapsed_edge_id", "alternate_edge_id")
         indexes = ((("snapshot", "collapsed_edge_id"), False),)
 
 
@@ -938,9 +1055,7 @@ class StateCfgEdgeAlternateSelection(BaseModel):
 
     class Meta:
         table_name = "state_cfg_edge_alternate_selections"
-        primary_key = CompositeKey(
-            "snapshot", "collapsed_edge_id", "alternate_edge_id"
-        )
+        primary_key = CompositeKey("snapshot", "collapsed_edge_id", "alternate_edge_id")
         indexes = ((("snapshot", "selected"), False),)
 
 
@@ -1039,9 +1154,7 @@ class RenderedProgramLine(BaseModel):
     class Meta:
         table_name = "rendered_program_lines"
         primary_key = CompositeKey("snapshot_id", "variant_name", "line_no")
-        indexes = (
-            (("snapshot_id", "variant_name", "node_index", "line_no"), False),
-        )
+        indexes = ((("snapshot_id", "variant_name", "node_index", "line_no"), False),)
 
 
 class WatchBlockTransition(BaseModel):
@@ -1237,9 +1350,7 @@ class RegionShapeFeature(BaseModel):
 
     class Meta:
         table_name = "region_shape_features"
-        primary_key = CompositeKey(
-            "func_ea_hex", "source", "snapshot_id", "feature"
-        )
+        primary_key = CompositeKey("func_ea_hex", "source", "snapshot_id", "feature")
         indexes = ((("source", "region"), False),)
 
 
@@ -1268,6 +1379,10 @@ MODELS = (
     DiagnosticSchemaVersion,
     DiagnosticSession,
     Snapshot,
+    SemanticRouteOracleRunRecord,
+    SemanticRouteReferenceRewriteRecord,
+    SemanticRouteOracleCaptureRecord,
+    SemanticRouteOracleComparisonRecord,
     LifecycleEvent,
     EvidenceGenerationEvent,
     IdentityDecision,
