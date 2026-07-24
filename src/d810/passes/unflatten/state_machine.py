@@ -809,6 +809,26 @@ def _compose_candidate_semantic_fragment(
             anchor_ea=first_route_anchor,
         )
     normalization_plan, normalization_authority = normalization_binding
+    current_identity_index = _analysis(
+        context,
+        "current_block_identity_index",
+    )
+    identity_for_serial = getattr(
+        current_identity_index,
+        "identity_for_serial",
+        None,
+    )
+    if not callable(identity_for_serial):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition requires current identity authority",
+            reason_code="current_identity_authority_missing",
+            anchor_ea=function_ea,
+        )
+    current_identity_by_serial = {
+        int(serial): identity
+        for serial in context.graph.blocks
+        if (identity := identity_for_serial(int(serial))) is not None
+    }
 
     plans: list[FragmentPlan] = []
     first_rejection: CanonicalSemanticFragmentRejected | None = None
@@ -820,6 +840,7 @@ def _compose_candidate_semantic_fragment(
                 context.graph,
                 normalization_plan,
                 route_candidate,
+                current_identity_by_serial=current_identity_by_serial,
                 normalization_authority=normalization_authority,
                 prohibited_dispatcher_serials=(
                     prohibited_dispatcher_serials

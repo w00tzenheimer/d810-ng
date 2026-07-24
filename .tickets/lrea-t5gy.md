@@ -1386,3 +1386,43 @@ vertical slice must trace why root-inventory composition unions those two
 owners into one required identity and preserve their lineage as separate
 logical roles. It must not select one physical candidate, relax uniqueness, or
 collapse the identity back to one EA.
+
+**2026-07-24T11:29:28Z**
+
+The canonical current-identity and dispatcher-SCC witness slice is verified and
+ready for its own commit. Candidate composition now requires an explicit
+current `serial -> StableBlockIdentity` authority exported by the live identity
+index. Route sources, projected boundaries, predecessors, and prohibited
+dispatcher roles consume that authority instead of re-deriving identity from
+physical block starts. Equivalent prohibited roles in one unchanged dispatcher
+SCC use one uniquely owned portable witness; if the SCC has no unique identity,
+composition keeps every role so the backend still fails closed.
+
+The focused canonical transform, lowering, and plan suite is 51/51 green both
+locally and in the pinned Docker runtime. Changed-file Ruff and diff checks
+pass. The first mandatory A560 canary after current-identity authority used DB
+`.tmp/logs/d810_logs/000000000040a560_1784892046_11.diag.sqlite3`; event 160
+then bound the `0x40A5D0` role to `blk6@0x40A5CA`, and the first failure moved
+to synthetic dispatcher entry identity shared by 26 `blkN@0x40A560` blocks.
+
+The final SCC-witness canary used DB
+`.tmp/logs/d810_logs/000000000040a560_1784892735_11.diag.sqlite3` and pytest log
+`.tmp/rhad-a560-v31-dispatcher-scc-witness-final.txt`. It completed in 13.03 seconds
+without a process segfault. Event 164 records a 264-operation canonical plan;
+all seven required current roles rebind uniquely, including
+`blk4@0x40A5F0`, `blk6@0x40A5CA`, `blk35@0x40AE2E`, and
+`blk41@0x40B334`. The gateway then aborts before fragment staging completes, so
+the highest contiguous canary level remains C3.
+
+The initiating staging failure is
+`SemanticFragmentBackendRejected: fragment plan requires an imported
+native-body materializer`. Rollback subsequently leaves
+`blk66@0xF1C00880` with a block-type/successor-count mismatch. The matching IDA
+SDK 9.3 verifier identifies `INTERR 50856` as “wrong size of a block successor
+set”; it is a rollback-time IR invariant failure, not an OS segfault and not
+the initiating staging error. The DB currently combines the secondary INTERR
+and rollback failure in the aborted receipt while omitting the initiating
+stage error from `fragment_staged` detail. The next slice must persist stage,
+rollback, and verifier causes separately before wiring the materializer port,
+then retry the same fragment. It must not treat rollback verification as the
+primary semantic failure or claim C4.

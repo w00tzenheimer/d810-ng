@@ -287,6 +287,16 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
             dispatch_map=SimpleNamespace(dispatcher_blocks=frozenset({30})),
         ),
     )
+    current_identity_by_serial = {
+        int(serial): _identity(int(block.start_ea))
+        for serial, block in graph.blocks.items()
+    }
+    analyses.put_analysis(
+        "current_block_identity_index",
+        SimpleNamespace(
+            identity_for_serial=current_identity_by_serial.get,
+        ),
+    )
     capabilities = (
         CapabilitySet()
         .with_capability(
@@ -322,6 +332,7 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
         candidate,
     )
     assert calls[1][4] == {
+        "current_identity_by_serial": current_identity_by_serial,
         "normalization_authority": normalization_authority,
         "prohibited_dispatcher_serials": (30,),
     }
