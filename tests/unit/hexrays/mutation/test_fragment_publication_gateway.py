@@ -63,7 +63,7 @@ from d810.transforms.fragment_validation import (
     ProjectedFragmentBlock,
     ProjectedIdentityBinding,
     PublishedFragmentObservation,
-    validate_fragment_projection,
+    validate_published_fragment_projection,
 )
 from tests.native_preanalysis import make_native_key
 
@@ -339,6 +339,7 @@ class _FragmentBackend:
         raise_during_publish: bool = False,
         raise_during_rollback: bool = False,
         omit_semantic_edge_record: bool = False,
+        disconnect_root_after_publication: bool = False,
         current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None,
     ) -> None:
         self.mba = SimpleNamespace(qty=4)
@@ -348,6 +349,7 @@ class _FragmentBackend:
         self.raise_during_publish = raise_during_publish
         self.raise_during_rollback = raise_during_rollback
         self.omit_semantic_edge_record = omit_semantic_edge_record
+        self.disconnect_root_after_publication = disconnect_root_after_publication
         self.current_mba_identity_binding = (
             CurrentMbaIdentityBindingSnapshot((), ())
             if current_mba_identity_binding is None
@@ -542,8 +544,32 @@ class _FragmentBackend:
         assert self.root_published
         assert self.gateway.receipts == ()
         assert self.projection is not None
-        validation = validate_fragment_projection(plan, self.projection)
-        assert validation.passed
+        projection = self.projection
+        if self.disconnect_root_after_publication:
+            replacements = {
+                "entry": replace(
+                    projection.block("entry"),
+                    successors=("target",),
+                ),
+                "replacement": replace(
+                    projection.block("replacement"),
+                    predecessors=(),
+                ),
+                "target": replace(
+                    projection.block("target"),
+                    predecessors=("entry", "replacement"),
+                ),
+            }
+            projection = replace(
+                projection,
+                blocks=tuple(
+                    replacements.get(block.block_id, block)
+                    for block in projection.blocks
+                ),
+            )
+        validation = validate_published_fragment_projection(plan, projection)
+        if not self.disconnect_root_after_publication:
+            assert validation.passed
         outcomes = validation.outcomes
         if self.invalid_postobservation:
             outcomes = tuple(
@@ -561,8 +587,8 @@ class _FragmentBackend:
             published_root_ids=plan.roots,
             observable_operations=plan.operations,
             semantic_outcomes=outcomes,
-            fallthrough_helpers=self.projection.fallthrough_helpers,
-            root_fallthrough_helpers=self.projection.root_fallthrough_helpers,
+            fallthrough_helpers=projection.fallthrough_helpers,
+            root_fallthrough_helpers=projection.root_fallthrough_helpers,
         )
 
     def _rollback_semantic_fragment_roots(
@@ -1081,6 +1107,49 @@ def test_postpublication_failure_restores_roots_then_discards_stage() -> None:
     assert gateway.generation == 5
     assert committed == []
     assert len(aborted) == 1
+
+
+def test_postpublication_detached_operation_rolls_back_before_receipt() -> None:
+    plan = _plan()
+    gateway, committed, aborted = _gateway(plan)
+    backend = _FragmentBackend(
+        gateway,
+        disconnect_root_after_publication=True,
+    )
+
+    with pytest.raises(
+        SemanticFragmentPublicationRejected,
+        match="postpublication.*operation_reachability:direct-route",
+    ):
+        gateway.publish_semantic_fragment(backend, plan)
+
+    assert backend.calls == [
+        "plan-roots",
+        "stage",
+        "prepare-roots",
+        "publish-roots",
+        "rebuild",
+        "observe",
+        "rollback-roots",
+        "rebuild",
+        "discard",
+    ]
+    assert committed == []
+    assert gateway.receipts == ()
+    assert len(aborted) == 1
+    assert aborted[0].postpublication_validation is not None
+    failures = {
+        (outcome.postcondition, outcome.subject_id): outcome
+        for outcome in aborted[0].postpublication_validation.failures
+    }
+    operation_failure = failures[
+        (
+            FragmentValidationPostcondition.OPERATION_REACHABILITY,
+            "direct-route",
+        )
+    ]
+    assert operation_failure.block_ids == ("replacement",)
+    assert aborted[0].rollback_succeeded
 
 
 def test_partial_root_publication_exception_still_rolls_back() -> None:
