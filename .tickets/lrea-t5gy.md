@@ -2078,3 +2078,60 @@ operation can reject, or discard it through stable logical handles without
 running a verifier over a half-realized conditional. It must not catch or
 ignore either numeric error, scan for a replacement serial, or report a bare
 block number without its native EA anchor.
+
+**2026-07-24T16:14:26Z**
+
+Commits `711f963c6`, `a9df2a272`, and `72f45e46c` complete the portable
+storage-predicate slice. Canonical composition retains the stack identity,
+predicate kind, width, constant, and proof-owned cut; detached preparation
+materializes the predicate before staging; and transaction-local
+operation-to-live-EA binding disambiguates a preserved consumer and synthesized
+branch that intentionally share native EA `0x40BECC`. The focused pure,
+backend, and detached-import suites used for those commits are green.
+
+The first follow-up canary moved past predicate realization and exposed an
+unidentified call-fallthrough shape at `blk81@0x40A560`. Commit `ac4163758`
+makes that failure DB-first: every rejection now carries the portable
+operation, stable native identity, live block with EA anchor, block type,
+successors, tail opcode/destination, and owned-call details. Commit
+`88fa93632` then fixes the generic representation mismatch: at MMAT_CALLS an
+analyzed call may be the exactly-one nested `m_call` owned by a block-closing
+`m_mov`, so call-fallthrough realization no longer requires the top-level
+instruction itself to be `m_call` or `m_icall`. All 14 semantic-edge gateway
+runtime tests pass, including top-level call, analyzed nested call, and
+pre-helper rejection cases. Commit hooks preserve ast-grep, import-cycle,
+all 14 import-linter contracts, and the portable shape gate.
+
+The mandatory cache-disabled A560 canary at committed HEAD `88fa93632` returns
+normally in 26.57 seconds and remains semantically red with one
+`while ( 1 )`. Pytest log:
+`.tmp/rhad-a560-v31-analyzed-call-owner.txt`; primary DB:
+`.tmp/rhad-a560-analyzed-call-owner/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-analyzed-call-owner/test_real_loader_matches_reach0/sub_40A560.c`.
+
+Diagnostic transaction `5b75485409f74c1085cc944bf013da3b` plans 123
+operations, records 120 applied mutation operations, and completes detached
+fragment staging. Root publication is not attempted. The highest contiguous
+canary level remains C3 because C4 requires pre-publication validation to pass.
+The first failed C4 obligation is outcome 107:
+`dispatcher_absence` for
+`native[0x40A5F0-0x40A5F1,0x40A5F6-0x40A5F7,0x40A5F8-0x40A5F9,0x40A5FE-0x40A5FF;exact=0x40A5F0,0x40A5F6,0x40A5F8,0x40A5FE]`,
+because a reachable planned route still enters that prohibited dispatcher
+router. Later failures are predicate and carrier use-def integrity at native
+consumer `0x40BECC`, followed by identity ownership for the same prohibited
+dispatcher identity.
+
+Rollback then fails with `INTERR 50856`, the SDK-defined wrong-successor-
+cardinality assertion in `.ida-sdk/src/verifier/verify.cpp:1155`. This canary
+does not record a subsequent `52719`; that stale-block assertion remains a
+known earlier double-cleanup symptom, not the first current failure.
+
+Continue the v3.1 vertical loop from outcome 107. Determine which staged edge
+keeps the prohibited dispatcher identity reachable and whether the plan omitted
+its supersession or the projected reachability validator is observing a
+staged-but-unpublished boundary. Do not weaken dispatcher absence, ignore the
+later use-def failures, broaden the fragment, or claim C4 from completed staging
+alone. In parallel with the semantic correction, rollback must restore
+successor cardinality before verification or force a fresh-MBA restart; the
+current MBA is not safe to reuse after restoration cannot be proved.
