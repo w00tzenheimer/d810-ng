@@ -63,6 +63,8 @@ from d810.transforms.fragment_plan import (
     FragmentBlockRole,
     FragmentConditionalSelectEnvelope,
     FragmentEdge,
+    FragmentImportedConditionalSelectEnvelope,
+    FragmentPlanRejected,
     FragmentPublicationPurpose,
 )
 from d810.transforms.frontend_normalization import (
@@ -1460,6 +1462,216 @@ def test_missing_downstream_transfer_source_is_normalized_inside_the_same_fragme
         if corridor.consumer.instruction_ea == imported_predicate_ea
     )
     assert imported_corridor.block_path == (imported_source.block_id,)
+
+
+def test_imported_state_choice_consumes_its_exact_three_block_envelope() -> None:
+    source_ea = 0x1400
+    condition_ea = 0x1400
+    predicate_ea = 0x140C
+    raw_branch_ea = 0x141E
+    selected_ea = 0x1420
+    join_ea = 0x1430
+    unresolved_transfer_ea = 0x143E
+    true_target_ea = 0x1500
+    false_target_ea = 0x1600
+    live_proof = replace(
+        _conditional_proof(),
+        endpoints=(
+            _conditional_proof().endpoints[0],
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                identity=_identity(source_ea, 0x1440),
+                anchor_ea=source_ea,
+            ),
+        ),
+    )
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(source_ea, 0x1440),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(condition_ea, predicate_ea),
+    )
+    source_block_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(source_ea, selected_ea),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(condition_ea, predicate_ea),
+    )
+    imported_proof = NativeIndirectTransferProof(
+        proof_id=f"native-state-choice@0x{predicate_ea:X}",
+        atomic_group_id="frontend-normalization:g7",
+        shape=NativeTransferShape.CONDITIONAL,
+        source_identity=source_identity,
+        source_anchor_ea=predicate_ea,
+        source_transfer_ea=unresolved_transfer_ea,
+        endpoints=(
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                identity=_identity(true_target_ea),
+                anchor_ea=true_target_ea,
+            ),
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                identity=_identity(false_target_ea),
+                anchor_ea=false_target_ea,
+            ),
+        ),
+        predicate_kind=PredicateKind.EQ,
+        predicate_anchor_ea=predicate_ea,
+        condition_producer_ea=condition_ea,
+        flag_corridor=(source_block_identity,),
+        permitted_flag_write_eas=frozenset({condition_ea}),
+    )
+    closure = NativeSemanticClosure(
+        included_block_eas=(
+            source_ea,
+            selected_ea,
+            join_ea,
+            true_target_ea,
+            false_target_ea,
+        ),
+        native_ranges=(
+            NativeRange(source_ea, 0x1440),
+            NativeRange(true_target_ea, 0x1510),
+            NativeRange(false_target_ea, 0x1610),
+        ),
+        proven_internal_edges=(),
+        abstentions=(),
+        seed_provenance=(),
+    )
+    native_cfg = NativeCfg(
+        {
+            source_ea: NativeBlock(
+                start_ea=source_ea,
+                end_ea=selected_ea,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.CONDITIONAL_TRUE,
+                        target_ea=join_ea,
+                        source_instruction_ea=raw_branch_ea,
+                    ),
+                    NativeEdge(
+                        kind=NativeEdgeKind.CONDITIONAL_FALSE,
+                        target_ea=selected_ea,
+                        source_instruction_ea=raw_branch_ea,
+                    ),
+                ),
+            ),
+            selected_ea: NativeBlock(
+                start_ea=selected_ea,
+                end_ea=join_ea,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.FALLTHROUGH,
+                        target_ea=join_ea,
+                        source_instruction_ea=selected_ea,
+                    ),
+                ),
+            ),
+            join_ea: NativeBlock(
+                start_ea=join_ea,
+                end_ea=0x1440,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.INDIRECT,
+                        target_ea=0x1700,
+                        resolver_proven=True,
+                        source_instruction_ea=unresolved_transfer_ea,
+                    ),
+                ),
+            ),
+            true_target_ea: NativeBlock(
+                start_ea=true_target_ea,
+                end_ea=0x1510,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+            false_target_ea: NativeBlock(
+                start_ea=false_target_ea,
+                end_ea=0x1610,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+        }
+    )
+    evidence = replace(
+        _evidence(closure=closure, native_cfg=native_cfg),
+        transfer_proofs=(live_proof, imported_proof),
+    )
+
+    plan = plan_frontend_computed_branch_normalization(
+        _graph(faithful=False, include_false_target=False),
+        evidence,
+    )
+
+    imported_source = next(
+        block
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+        and block.semantic_anchor_ea == source_ea
+    )
+    assert imported_source.stable_identity is not None
+    assert imported_source.stable_identity.native_ranges.intervals == (
+        NativeEaInterval(source_ea, selected_ea),
+    )
+    imported_operation = plan.operation(imported_proof.proof_id)
+    assert imported_operation.source_block_id == imported_source.block_id
+    normalization = imported_operation.computed_branch_normalization
+    assert normalization is not None
+    assert normalization.conditional_select_envelope == (
+        FragmentImportedConditionalSelectEnvelope(
+            source_branch_ea=raw_branch_ea,
+            selected_value_ea=selected_ea,
+            selected_value_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(selected_ea, join_ea),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=(selected_ea,),
+            ),
+            join_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(join_ea, 0x1440),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=(join_ea, unresolved_transfer_ea),
+            ),
+        )
+    )
+    assert {
+        block.semantic_anchor_ea
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+    }.isdisjoint({selected_ea, join_ea})
+    assert all(
+        operation.operation_id
+        not in {
+            f"native-body-edge@0x{selected_ea:X}",
+            f"native-body-edge@0x{join_ea:X}",
+        }
+        for operation in plan.operations
+    )
+    overlapping_envelope = replace(
+        normalization.conditional_select_envelope,
+        selected_value_ea=source_ea + 0x10,
+        selected_value_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(source_ea + 0x10, selected_ea),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(source_ea + 0x10,),
+        ),
+    )
+    invalid_operation = replace(
+        imported_operation,
+        computed_branch_normalization=replace(
+            normalization,
+            conditional_select_envelope=overlapping_envelope,
+        ),
+    )
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="three distinct physical block identities",
+    ):
+        replace(
+            plan,
+            operations=tuple(
+                invalid_operation
+                if operation.operation_id == invalid_operation.operation_id
+                else operation
+                for operation in plan.operations
+            ),
+        )
 
 
 def test_imported_call_continuation_keeps_its_portable_fallthrough_role() -> None:

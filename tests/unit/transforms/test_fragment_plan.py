@@ -21,6 +21,7 @@ from d810.transforms.fragment_plan import (
     FragmentDataFlowRole,
     FragmentEdge,
     FragmentFlagCorridor,
+    FragmentImportedConditionalSelectEnvelope,
     FragmentOperation,
     FragmentPlan,
     FragmentPlanRejected,
@@ -215,6 +216,7 @@ def test_fragment_plan_is_serial_free_and_groups_complete_conditional() -> None:
     model_types = (
         FragmentBlock,
         FragmentEdge,
+        FragmentImportedConditionalSelectEnvelope,
         FragmentOperation,
         fragment_plan.FragmentReturnSource,
         fragment_plan.FragmentReturnCarrier,

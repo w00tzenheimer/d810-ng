@@ -148,6 +148,32 @@ def _require_native_ea(value: int, description: str) -> int:
     return value
 
 
+def _stable_identities_overlap(
+    left: StableBlockIdentity,
+    right: StableBlockIdentity,
+) -> bool:
+    return any(
+        max(int(left_interval.start_ea), int(right_interval.start_ea))
+        < min(int(left_interval.end_ea), int(right_interval.end_ea))
+        for left_interval in left.native_ranges.intervals
+        for right_interval in right.native_ranges.intervals
+    )
+
+
+def _identity_belongs_to_native_body(
+    identity: StableBlockIdentity,
+    native_body: FragmentNativeBody,
+) -> bool:
+    return all(
+        any(
+            int(body_range.start_ea) <= int(interval.start_ea)
+            and int(interval.end_ea) <= int(body_range.end_ea)
+            for body_range in native_body.native_ranges
+        )
+        for interval in identity.native_ranges.intervals
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FragmentBlock:
     """One plan-local block representation with portable identity."""
@@ -377,6 +403,59 @@ class FragmentConditionalSelectEnvelope:
 
 
 @dataclass(frozen=True, slots=True)
+class FragmentImportedConditionalSelectEnvelope:
+    """Portable ownership of routing blocks consumed by one imported branch."""
+
+    source_branch_ea: int
+    selected_value_ea: int
+    selected_value_identity: StableBlockIdentity
+    join_identity: StableBlockIdentity
+
+    def __post_init__(self) -> None:
+        source_branch_ea = _require_native_ea(
+            self.source_branch_ea,
+            "imported conditional-select source branch",
+        )
+        selected_value_ea = _require_native_ea(
+            self.selected_value_ea,
+            "imported conditional-select selected value",
+        )
+        if not isinstance(self.selected_value_identity, StableBlockIdentity):
+            raise TypeError(
+                "imported conditional-select selected value requires stable identity"
+            )
+        if not isinstance(self.join_identity, StableBlockIdentity):
+            raise TypeError(
+                "imported conditional-select join requires stable identity"
+            )
+        if (
+            self.selected_value_identity.native_key
+            != self.join_identity.native_key
+        ):
+            raise FragmentPlanRejected(
+                "imported conditional-select envelope requires one native key"
+            )
+        if (
+            not self.selected_value_identity.native_ranges.contains(
+                selected_value_ea
+            )
+            or selected_value_ea
+            not in self.selected_value_identity.exact_instruction_eas
+        ):
+            raise FragmentPlanRejected(
+                "imported conditional-select selected value requires an exact "
+                "owned anchor"
+            )
+        if self.selected_value_identity == self.join_identity:
+            raise FragmentPlanRejected(
+                "imported conditional-select requires distinct selected-value "
+                "and join identities"
+            )
+        object.__setattr__(self, "source_branch_ea", source_branch_ea)
+        object.__setattr__(self, "selected_value_ea", selected_value_ea)
+
+
+@dataclass(frozen=True, slots=True)
 class FragmentComputedBranchNormalization:
     """Typed proof for replacing one unresolved imported computed branch."""
 
@@ -384,7 +463,11 @@ class FragmentComputedBranchNormalization:
     normalization_start_ea: int
     condition_producer_ea: int
     unresolved_transfer_ea: int
-    conditional_select_envelope: FragmentConditionalSelectEnvelope | None = None
+    conditional_select_envelope: (
+        FragmentConditionalSelectEnvelope
+        | FragmentImportedConditionalSelectEnvelope
+        | None
+    ) = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.predicate_kind, PredicateKind):
@@ -415,7 +498,10 @@ class FragmentComputedBranchNormalization:
         conditional_select_envelope = self.conditional_select_envelope
         if conditional_select_envelope is not None and not isinstance(
             conditional_select_envelope,
-            FragmentConditionalSelectEnvelope,
+            (
+                FragmentConditionalSelectEnvelope,
+                FragmentImportedConditionalSelectEnvelope,
+            ),
         ):
             raise TypeError(
                 "computed branch conditional-select envelope is invalid"
@@ -1232,7 +1318,10 @@ class FragmentPlan:
                             "computed branch normalization lacks native-body "
                             "proof ownership"
                         )
-                else:
+                elif isinstance(
+                    envelope,
+                    FragmentConditionalSelectEnvelope,
+                ):
                     if source.role is not FragmentBlockRole.REPLACEMENT:
                         raise FragmentPlanRejected(
                             f"fragment operation {operation.operation_id!r} "
@@ -1276,6 +1365,95 @@ class FragmentPlan:
                             f"fragment operation {operation.operation_id!r} "
                             "conditional-select envelope does not own its "
                             "published copy and join anchors"
+                        )
+                else:
+                    if source.role is not FragmentBlockRole.IMPORTED:
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "imported conditional-select normalization requires "
+                            "an imported source"
+                        )
+                    source_anchors = (
+                        computed_normalization.normalization_start_ea,
+                        computed_normalization.condition_producer_ea,
+                        operation.predicate_anchor_ea,
+                        envelope.source_branch_ea,
+                    )
+                    if any(
+                        ea is None or not identity.native_ranges.contains(ea)
+                        for ea in source_anchors
+                    ):
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "imported conditional-select source anchors do not "
+                            "belong to its physical source identity"
+                        )
+                    if any(
+                        ea not in identity.exact_instruction_eas
+                        for ea in (
+                            computed_normalization.condition_producer_ea,
+                            operation.predicate_anchor_ea,
+                        )
+                    ):
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "imported conditional-select semantic anchors require "
+                            "exact physical source ownership"
+                        )
+                    if (
+                        envelope.selected_value_identity.native_key
+                        != self.native_key
+                        or envelope.join_identity.native_key != self.native_key
+                        or not envelope.join_identity.native_ranges.contains(
+                            computed_normalization.unresolved_transfer_ea
+                        )
+                        or computed_normalization.unresolved_transfer_ea
+                        not in envelope.join_identity.exact_instruction_eas
+                    ):
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "imported conditional-select envelope does not own "
+                            "its selected-value and join anchors"
+                        )
+                    native_body = native_body_by_id.get(
+                        str(source.native_body_id)
+                    )
+                    if (
+                        native_body is None
+                        or operation.operation_id not in native_body.proof_ids
+                    ):
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "imported conditional-select normalization lacks "
+                            "native-body proof ownership"
+                        )
+                    envelope_identities = (
+                        envelope.selected_value_identity,
+                        envelope.join_identity,
+                    )
+                    if (
+                        any(
+                            _stable_identities_overlap(identity, member)
+                            for member in envelope_identities
+                        )
+                        or _stable_identities_overlap(*envelope_identities)
+                    ):
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "imported conditional-select envelope requires "
+                            "three distinct physical block identities"
+                        )
+                    if any(
+                        not _identity_belongs_to_native_body(
+                            member,
+                            native_body,
+                        )
+                        for member in envelope_identities
+                    ):
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "imported conditional-select envelope escapes its "
+                            "native body"
                         )
             for edge in operation.edges:
                 if edge.target_block_id not in block_by_id:
@@ -1701,6 +1879,7 @@ __all__ = [
     "FragmentDataFlowRole",
     "FragmentEdge",
     "FragmentFlagCorridor",
+    "FragmentImportedConditionalSelectEnvelope",
     "FragmentNativeBody",
     "FragmentOperation",
     "FragmentPlan",
