@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import ida_hexrays
+import ida_range
 
 from d810.core.typing import Protocol, TYPE_CHECKING, runtime_checkable
 from d810.hexrays.ir.exact_data_flow import (
@@ -192,6 +193,9 @@ class SemanticFragmentBackendState:
     instruction_origins_by_block_id: dict[str, dict[int, int]] = field(
         default_factory=dict
     )
+    original_mba_outline_ranges: tuple[tuple[int, int], ...] | None = None
+    staged_mba_outline_ranges: tuple[tuple[int, int], ...] = ()
+    original_mba_had_outlines: bool | None = None
     projection: ProjectedFragment | None = None
 
     def binding(self, block_id: str) -> SemanticFragmentRuntimeBinding:
@@ -422,6 +426,23 @@ class SemanticNativeBodyStagingContext:
                     f"native body {self.native_body.body_id!r} has an "
                     f"unbound live instruction in {block_id!r}"
                 )
+            for live_ea, native_ea in (
+                self.state.instruction_origins_by_block_id.get(
+                    block_id,
+                    {},
+                ).items()
+            ):
+                mapped_ea = int(self._modifier.mba.map_fict_ea(int(live_ea)))
+                if mapped_ea != int(native_ea) or not _ranges_cover_interval(
+                    _mba_outline_ranges(self._modifier.mba),
+                    int(native_ea),
+                    int(native_ea) + 1,
+                ):
+                    raise SemanticFragmentBackendRejected(
+                        "native body instruction address is outside live MBA "
+                        f"ownership: {block_id}@0x{int(native_ea):X} "
+                        f"live=0x{int(live_ea):X} mapped=0x{mapped_ea:X}"
+                    )
         gateway = _gateway(self._modifier)
         if gateway.active_batch_id != self.transaction_id:
             raise SemanticFragmentBackendRejected(
@@ -456,6 +477,134 @@ def _transaction_id(modifier: DeferredGraphModifier) -> str:
     return batch_id
 
 
+def _mba_outline_ranges(mba: object) -> tuple[tuple[int, int], ...]:
+    ranges = mba.mbr.ranges
+    return tuple(
+        (
+            int(ranges[index].start_ea),
+            int(ranges[index].end_ea),
+        )
+        for index in range(int(ranges.size()))
+    )
+
+
+def _merge_native_ranges(
+    ranges: tuple[tuple[int, int], ...],
+) -> tuple[tuple[int, int], ...]:
+    merged: list[tuple[int, int]] = []
+    for start_ea, end_ea in sorted(
+        (int(start_ea), int(end_ea))
+        for start_ea, end_ea in ranges
+    ):
+        if start_ea < 0 or end_ea <= start_ea or end_ea >= _BADADDR:
+            raise SemanticFragmentBackendRejected(
+                "semantic native-body range is invalid"
+            )
+        if not merged or start_ea > merged[-1][1]:
+            merged.append((start_ea, end_ea))
+            continue
+        previous_start, previous_end = merged[-1]
+        merged[-1] = (
+            previous_start,
+            max(previous_end, end_ea),
+        )
+    return tuple(merged)
+
+
+def _replace_mba_outline_ranges(
+    mba: object,
+    ranges: tuple[tuple[int, int], ...],
+) -> None:
+    mba.mbr.ranges.clear()
+    for start_ea, end_ea in ranges:
+        mba.mbr.ranges.push_back(
+            ida_range.range_t(int(start_ea), int(end_ea))
+        )
+
+
+def _ranges_cover_interval(
+    ranges: tuple[tuple[int, int], ...],
+    start_ea: int,
+    end_ea: int,
+) -> bool:
+    return any(
+        int(owned_start) <= int(start_ea)
+        and int(end_ea) <= int(owned_end)
+        for owned_start, owned_end in ranges
+    )
+
+
+def _stage_native_body_address_ranges(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+) -> None:
+    requested = tuple(
+        (int(native_range.start_ea), int(native_range.end_ea))
+        for native_body in plan.native_bodies
+        for native_range in native_body.native_ranges
+    )
+    if not requested:
+        return
+    if (
+        state.original_mba_outline_ranges is not None
+        or state.original_mba_had_outlines is not None
+    ):
+        raise SemanticFragmentBackendRejected(
+            "semantic native-body ranges were staged more than once"
+        )
+    original = _mba_outline_ranges(modifier.mba)
+    merged = _merge_native_ranges((*original, *requested))
+    had_outlines = bool(
+        int(modifier.mba.get_mba_flags2())
+        & int(ida_hexrays.MBA2_HAS_OUTLINES)
+    )
+    state.original_mba_outline_ranges = original
+    state.original_mba_had_outlines = had_outlines
+    try:
+        _replace_mba_outline_ranges(modifier.mba, merged)
+        modifier.mba.set_mba_flags2(int(ida_hexrays.MBA2_HAS_OUTLINES))
+        observed = _mba_outline_ranges(modifier.mba)
+        if observed != merged or any(
+            not _ranges_cover_interval(
+                observed,
+                int(start_ea),
+                int(end_ea),
+            )
+            for start_ea, end_ea in requested
+        ):
+            raise SemanticFragmentBackendRejected(
+                "semantic native-body range publication was incomplete"
+            )
+    except Exception:
+        _replace_mba_outline_ranges(modifier.mba, original)
+        if had_outlines:
+            modifier.mba.set_mba_flags2(int(ida_hexrays.MBA2_HAS_OUTLINES))
+        else:
+            modifier.mba.clr_mba_flags2(int(ida_hexrays.MBA2_HAS_OUTLINES))
+        raise
+    state.staged_mba_outline_ranges = merged
+
+
+def _restore_native_body_address_ranges(
+    modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
+) -> None:
+    original = state.original_mba_outline_ranges
+    had_outlines = state.original_mba_had_outlines
+    if original is None or had_outlines is None:
+        return
+    _replace_mba_outline_ranges(modifier.mba, original)
+    if had_outlines:
+        modifier.mba.set_mba_flags2(int(ida_hexrays.MBA2_HAS_OUTLINES))
+    else:
+        modifier.mba.clr_mba_flags2(int(ida_hexrays.MBA2_HAS_OUTLINES))
+    if _mba_outline_ranges(modifier.mba) != original:
+        raise SemanticFragmentBackendRejected(
+            "semantic native-body range rollback was incomplete"
+        )
+
+
 def _stage_native_bodies(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
@@ -476,6 +625,7 @@ def _stage_native_bodies(
         )
     gateway = _gateway(modifier)
     transaction_id = _transaction_id(modifier)
+    _stage_native_body_address_ranges(modifier, plan, state)
     for native_body in plan.native_bodies:
         context = SemanticNativeBodyStagingContext(
             _modifier=modifier,
@@ -2877,6 +3027,7 @@ def discard_staged_semantic_fragment(
     modifier._discard_detached_semantic_versions(
         tuple(state.binding(block_id).version for block_id in state.staged_block_ids)
     )
+    _restore_native_body_address_ranges(modifier, state)
     modifier._semantic_fragment_state = None
 
 
