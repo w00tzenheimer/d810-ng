@@ -2917,7 +2917,7 @@ def test_stkpnts_merges_detached_call_push_delta_exactly_once(
         lambda _function_ea: ((native_call_ea, -4),),
         raising=False,
     )
-    function = object()
+    function = SimpleNamespace(frsize=1164, frregs=4)
     monkeypatch.setattr(
         ida_funcs,
         "get_func",
@@ -2949,7 +2949,7 @@ def test_stkpnts_merges_detached_call_push_delta_exactly_once(
 
     computed_goto_resolver._on_stkpnts(
         function_ea=function_ea,
-        mba=SimpleNamespace(entry_ea=function_ea, frsize=1168, frregs=0),
+        mba=SimpleNamespace(entry_ea=function_ea, frsize=0, frregs=0),
         stack_points=stack_points,
         decision=decision,
     )

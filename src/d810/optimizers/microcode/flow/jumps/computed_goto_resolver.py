@@ -11411,8 +11411,11 @@ def _on_stkpnts(
             if route_call_delta is None:
                 spd = native_spd
             else:
+                # hxe_stkpnts runs before this MBA's frame fields are populated.
+                # The native function already owns the authoritative frame size.
                 canonical_spd = -(
-                    int(getattr(mba, "frsize")) + int(getattr(mba, "frregs"))
+                    int(getattr(function, "frsize"))
+                    + int(getattr(function, "frregs"))
                 )
                 resolved_spd = project_detached_call_stack_point(
                     native_spd=native_spd,
