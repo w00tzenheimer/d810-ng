@@ -1113,6 +1113,7 @@ def _plan_with_imported_conditional(
     dispatcher: int,
     predicate_native_ea: int,
     condition_producer_native_ea: int | None = None,
+    unresolved_transfer_native_ea: int | None = None,
 ) -> FragmentPlan:
     plan = _plan(
         gateway,
@@ -1122,10 +1123,18 @@ def _plan_with_imported_conditional(
         dispatcher=dispatcher,
     )
     native_range = NativeEaInterval(0x500000, 0x500010)
+    exact_instruction_eas = {
+        0x500000,
+        int(predicate_native_ea),
+    }
+    if condition_producer_native_ea is not None:
+        exact_instruction_eas.add(int(condition_producer_native_ea))
+    if unresolved_transfer_native_ea is not None:
+        exact_instruction_eas.add(int(unresolved_transfer_native_ea))
     imported_identity = StableBlockIdentity.from_intervals(
         (native_range,),
         native_key=gateway.native_key,
-        exact_instruction_eas=(0x500000, int(predicate_native_ea)),
+        exact_instruction_eas=tuple(sorted(exact_instruction_eas)),
     )
     imported = FragmentBlock(
         block_id="imported-conditional",
@@ -1139,6 +1148,20 @@ def _plan_with_imported_conditional(
     return replace(
         plan,
         plan_id="runtime-imported-native-conditional",
+        publication_purpose=(
+            FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+            if unresolved_transfer_native_ea is not None
+            else plan.publication_purpose
+        ),
+        work_item_scope=(
+            FragmentWorkItemScope(
+                work_item_id="runtime-imported-native-conditional:complete",
+                selected_obligation_ids=("imported-conditional-route",),
+                remaining_obligation_ids=(),
+            )
+            if unresolved_transfer_native_ea is not None
+            else None
+        ),
         blocks=plan.blocks + (imported,),
         prohibited_dispatcher_blocks=(),
         operations=(
@@ -1155,6 +1178,19 @@ def _plan_with_imported_conditional(
                 operation_id="imported-conditional-route",
                 source_block_id=imported.block_id,
                 predicate_anchor_ea=int(predicate_native_ea),
+                computed_branch_normalization=(
+                    None
+                    if unresolved_transfer_native_ea is None
+                    else FragmentComputedBranchNormalization(
+                        predicate_kind=PredicateKind.NE,
+                        condition_producer_ea=int(
+                            condition_producer_native_ea
+                        ),
+                        unresolved_transfer_ea=int(
+                            unresolved_transfer_native_ea
+                        ),
+                    )
+                ),
                 edges=(
                     FragmentEdge(
                         role=SemanticEdgeRole.CONDITIONAL_TAKEN,
@@ -1174,7 +1210,14 @@ def _plan_with_imported_conditional(
                 entry_block_ids=(imported.block_id,),
                 terminal_block_ids=(),
                 native_ranges=(native_range,),
-                proof_ids=("proof:native-body",),
+                proof_ids=(
+                    "proof:native-body",
+                    *(
+                        ("imported-conditional-route",)
+                        if unresolved_transfer_native_ea is not None
+                        else ()
+                    ),
+                ),
             ),
         ),
         flag_corridors=(
@@ -2656,6 +2699,147 @@ def test_cached_preopt_body_materializes_through_the_fragment_transaction(
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="runtime cached PREOPT body cleanup")
+
+
+def test_cached_preopt_body_binds_one_native_block_split_into_select_microblocks(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    condition_producer_ea = 0x500001
+    predicate_ea = 0x500004
+    select_ea = 0x500008
+    unresolved_transfer_ea = 0x50000C
+    plan = _plan_with_imported_conditional(
+        gateway,
+        entry=0,
+        original=1,
+        target=2,
+        dispatcher=3,
+        predicate_native_ea=predicate_ea,
+        condition_producer_native_ea=condition_producer_ea,
+        unresolved_transfer_native_ea=unresolved_transfer_ea,
+    )
+
+    producer = _Instruction(ida_hexrays.m_setz, condition_producer_ea)
+    producer.d.make_reg(2, 1)
+    producer.d.writes_ccflags = True
+    predicate = _Instruction(ida_hexrays.m_mov, predicate_ea)
+    source_tail = _Instruction(ida_hexrays.m_jcnd, select_ea)
+    source_tail.l.assign(producer.d)
+    source_tail.d.make_blkref(2)
+    selected_value = _Instruction(ida_hexrays.m_mov, select_ea)
+    template = dhi.DetachedSnippetTemplate(
+        function_ea=int(gateway.function_ea),
+        target_ea=0x500000,
+        maturity=int(ida_hexrays.MMAT_PREOPTIMIZED),
+        root_source_serial=0,
+        blocks=(
+            dhi.DetachedSnippetBlockTemplate(
+                source_serial=0,
+                native_entry_ea=0x500000,
+                native_end_ea=0x500010,
+                instructions=(producer, predicate, source_tail),
+                block_type=int(ida_hexrays.BLT_2WAY),
+                block_flags=0,
+                successor_serials=(1, 2),
+                external_successor_eas=(),
+            ),
+            dhi.DetachedSnippetBlockTemplate(
+                source_serial=1,
+                native_entry_ea=select_ea,
+                native_end_ea=0x500010,
+                instructions=(selected_value,),
+                block_type=int(ida_hexrays.BLT_1WAY),
+                block_flags=0,
+                successor_serials=(2,),
+                external_successor_eas=(),
+            ),
+            dhi.DetachedSnippetBlockTemplate(
+                source_serial=2,
+                native_entry_ea=unresolved_transfer_ea,
+                native_end_ea=0x500010,
+                instructions=(
+                    _Instruction(
+                        ida_hexrays.m_ijmp,
+                        unresolved_transfer_ea,
+                    ),
+                ),
+                block_type=int(ida_hexrays.BLT_0WAY),
+                block_flags=0,
+                successor_serials=(),
+                external_successor_eas=(),
+            ),
+        ),
+        stack_vd_to_ida=(),
+        owned_ranges=((0x500000, 0x500010),),
+    )
+    monkeypatch.setattr(
+        dhi,
+        "_PREOPT_UNION_SNIPPET_TEMPLATES",
+        {(int(gateway.function_ea), 0x500000): template},
+    )
+    monkeypatch.setattr(
+        _BlockReference,
+        "equal_mops",
+        lambda left, right, _flags: (
+            int(left.t),
+            int(left.size),
+            int(left.r),
+        )
+        == (
+            int(right.t),
+            int(right.size),
+            int(right.r),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        dhi.ida_hexrays,
+        "minsn_t",
+        lambda value: (
+            _Instruction(ida_hexrays.m_nop, value)
+            if isinstance(value, int)
+            else deepcopy(value)
+        ),
+    )
+    monkeypatch.setattr(dhi.ida_hexrays, "mop_t", _BlockReference)
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=gateway,
+        semantic_native_body_materializer=(
+            dhi.PreoptUnionSemanticNativeBodyMaterializer(
+                mba=mba,
+                function_ea=int(gateway.function_ea),
+            )
+        ),
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    imported = projection.block("imported-conditional")
+    assert imported.instruction_eas == (
+        condition_producer_ea,
+        predicate_ea,
+    )
+    assert set(imported.successors) == {
+        "target",
+        "fallthrough-helper:imported-conditional-route",
+    }
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime split PREOPT select cleanup")
 
 
 def test_cached_preopt_call_materializes_with_gateway_owned_fallthrough(
