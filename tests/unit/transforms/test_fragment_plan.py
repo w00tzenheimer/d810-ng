@@ -19,6 +19,7 @@ from d810.transforms.fragment_plan import (
     FragmentComputedBranchNormalization,
     FragmentDataFlowObligation,
     FragmentDataFlowRole,
+    FragmentDirectTransferRewrite,
     FragmentEdge,
     FragmentFlagCorridor,
     FragmentImportedConditionalSelectEnvelope,
@@ -217,6 +218,7 @@ def test_fragment_plan_is_serial_free_and_groups_complete_conditional() -> None:
         FragmentBlock,
         FragmentEdge,
         FragmentImportedConditionalSelectEnvelope,
+        FragmentDirectTransferRewrite,
         FragmentOperation,
         fragment_plan.FragmentReturnSource,
         fragment_plan.FragmentReturnCarrier,
@@ -247,6 +249,203 @@ def test_fragment_operation_supports_explicit_call_fallthrough() -> None:
 
     assert operation.roles == frozenset({SemanticEdgeRole.CALL_FALLTHROUGH})
     assert operation.predicate_anchor_ea is None
+
+
+def test_direct_transfer_rewrite_owns_reference_delivery_corridor() -> None:
+    rewrite = FragmentDirectTransferRewrite(
+        route_proof_id="flow_route:0x40BB63",
+        rewrite_anchor_ea=0x40BB63,
+        proof_corridor_instruction_eas=(0x40BB44, 0x40BB4B, 0x40BB63),
+        superseded_instruction_eas=(0x40BB63,),
+    )
+    operation = FragmentOperation(
+        operation_id="route:state_assignment@0x40BB63:0xE9795EF",
+        source_block_id="native@0x40BB51",
+        direct_transfer_rewrite=rewrite,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id="native@0x40ACF3",
+            ),
+        ),
+    )
+
+    assert operation.direct_transfer_rewrite is rewrite
+    assert rewrite.rewrite_anchor_ea == 0x40BB63
+    assert rewrite.proof_corridor_instruction_eas[-1] == 0x40BB63
+    assert rewrite.superseded_instruction_eas == (0x40BB63,)
+
+
+def test_direct_transfer_rewrite_rejects_incomplete_or_conditional_ownership() -> None:
+    with pytest.raises(FragmentPlanRejected, match="end at its rewrite anchor"):
+        FragmentDirectTransferRewrite(
+            route_proof_id="flow_route:0x40BB63",
+            rewrite_anchor_ea=0x40BB63,
+            proof_corridor_instruction_eas=(0x40BB44, 0x40BB4B),
+            superseded_instruction_eas=(0x40BB63,),
+        )
+
+    with pytest.raises(FragmentPlanRejected, match="proof-corridor subset"):
+        FragmentDirectTransferRewrite(
+            route_proof_id="flow_route:0x40BB63",
+            rewrite_anchor_ea=0x40BB63,
+            proof_corridor_instruction_eas=(0x40BB44, 0x40BB63),
+            superseded_instruction_eas=(0x40BB4B, 0x40BB63),
+        )
+
+    with pytest.raises(FragmentPlanRejected, match="only to one direct edge"):
+        FragmentOperation(
+            operation_id="conditional-with-direct-rewrite",
+            source_block_id="native@0x40BB51",
+            predicate_anchor_ea=0x40BB63,
+            direct_transfer_rewrite=FragmentDirectTransferRewrite(
+                route_proof_id="flow_route:0x40BB63",
+                rewrite_anchor_ea=0x40BB63,
+                proof_corridor_instruction_eas=(0x40BB44, 0x40BB63),
+                superseded_instruction_eas=(0x40BB63,),
+            ),
+            edges=(
+                FragmentEdge(
+                    role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                    target_block_id="native@0x40C6F7",
+                ),
+                FragmentEdge(
+                    role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                    target_block_id="native@0x40BB69",
+                ),
+            ),
+        )
+
+
+def test_fragment_plan_rejects_competing_semantic_transfer_envelopes() -> None:
+    plan = _valid_plan()
+    direct_original = _native_block(
+        "direct.original",
+        FragmentBlockRole.ORIGINAL,
+        0x40BEC0,
+    )
+    direct_replacement = FragmentBlock(
+        block_id="direct.replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=0x40BEC0,
+        stable_identity=direct_original.stable_identity,
+        replaces_block_id=direct_original.block_id,
+    )
+    direct_operation = FragmentOperation(
+        operation_id="route:flow-route@0x40BECD",
+        source_block_id=direct_replacement.block_id,
+        direct_transfer_rewrite=FragmentDirectTransferRewrite(
+            route_proof_id="flow-route@0x40BECD",
+            rewrite_anchor_ea=0x40BECD,
+            proof_corridor_instruction_eas=(0x40BECC, 0x40BECD),
+            superseded_instruction_eas=(0x40BECD,),
+        ),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id="handler.true",
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="semantic transfer envelopes compete at 0x40BECD",
+    ):
+        replace(
+            plan,
+            blocks=plan.blocks + (direct_original, direct_replacement),
+            owned_originals=plan.owned_originals + (direct_original.block_id,),
+            operations=plan.operations + (direct_operation,),
+        )
+
+
+def test_fragment_plan_allows_preserved_proof_corridor_overlap() -> None:
+    plan = _valid_plan()
+    direct_original = _native_block(
+        "direct.original",
+        FragmentBlockRole.ORIGINAL,
+        0x40BEC0,
+    )
+    direct_replacement = FragmentBlock(
+        block_id="direct.replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=0x40BEC0,
+        stable_identity=direct_original.stable_identity,
+        replaces_block_id=direct_original.block_id,
+    )
+    direct_operation = FragmentOperation(
+        operation_id="route:flow-route@0x40BECF",
+        source_block_id=direct_replacement.block_id,
+        direct_transfer_rewrite=FragmentDirectTransferRewrite(
+            route_proof_id="flow-route@0x40BECF",
+            rewrite_anchor_ea=0x40BECF,
+            proof_corridor_instruction_eas=(
+                0x40BECC,
+                0x40BECD,
+                0x40BECF,
+            ),
+            superseded_instruction_eas=(0x40BECF,),
+        ),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id="handler.true",
+            ),
+        ),
+    )
+
+    rebuilt = replace(
+        plan,
+        blocks=plan.blocks + (direct_original, direct_replacement),
+        owned_originals=plan.owned_originals + (direct_original.block_id,),
+        operations=plan.operations + (direct_operation,),
+    )
+
+    assert rebuilt.operations[-1] is direct_operation
+
+
+def test_fragment_plan_rejects_direct_rewrite_outside_canonical_lowering() -> None:
+    plan = _valid_plan()
+    direct_operation = FragmentOperation(
+        operation_id="route:flow-route@0x40BECC",
+        source_block_id="predicate.replacement",
+        direct_transfer_rewrite=FragmentDirectTransferRewrite(
+            route_proof_id="flow-route@0x40BECC",
+            rewrite_anchor_ea=0x40BECC,
+            proof_corridor_instruction_eas=(0x40BECC,),
+            superseded_instruction_eas=(0x40BECC,),
+        ),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id="handler.true",
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="requires owned canonical route proof",
+    ):
+        replace(
+            plan,
+            publication_purpose=(
+                FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+            ),
+            work_item_scope=FragmentWorkItemScope(
+                work_item_id="frontend-normalization:g1:direct",
+                selected_obligation_ids=("route@0x40BECC",),
+                remaining_obligation_ids=(),
+                unreachable_obligation_ids=(),
+            ),
+            operations=(direct_operation,),
+            data_flow_obligations=(),
+            flag_corridors=(),
+            value_range_assumptions=(),
+        )
 
 
 def test_work_item_scope_keeps_root_unreachable_obligations_disjoint() -> None:

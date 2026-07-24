@@ -576,6 +576,71 @@ class FragmentStoragePredicateMaterialization:
 
 
 @dataclass(frozen=True, slots=True)
+class FragmentDirectTransferRewrite:
+    """Proof-owned native envelope for one detached direct-route rewrite."""
+
+    route_proof_id: str
+    rewrite_anchor_ea: int
+    proof_corridor_instruction_eas: tuple[int, ...]
+    superseded_instruction_eas: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        route_proof_id = _require_identifier(
+            self.route_proof_id,
+            "direct transfer route proof id",
+        )
+        rewrite_anchor_ea = _require_native_ea(
+            self.rewrite_anchor_ea,
+            "direct transfer rewrite anchor",
+        )
+        proof_corridor_instruction_eas = tuple(
+            _require_native_ea(ea, "direct transfer corridor instruction")
+            for ea in self.proof_corridor_instruction_eas
+        )
+        if (
+            not proof_corridor_instruction_eas
+            or proof_corridor_instruction_eas
+            != tuple(sorted(set(proof_corridor_instruction_eas)))
+        ):
+            raise FragmentPlanRejected(
+                "direct transfer corridor must be non-empty, ordered, and unique"
+            )
+        if proof_corridor_instruction_eas[-1] != rewrite_anchor_ea:
+            raise FragmentPlanRejected(
+                "direct transfer corridor must end at its rewrite anchor"
+            )
+        superseded_instruction_eas = tuple(
+            _require_native_ea(ea, "superseded direct transfer instruction")
+            for ea in self.superseded_instruction_eas
+        )
+        if (
+            not superseded_instruction_eas
+            or superseded_instruction_eas
+            != tuple(sorted(set(superseded_instruction_eas)))
+            or not set(superseded_instruction_eas).issubset(
+                proof_corridor_instruction_eas
+            )
+            or superseded_instruction_eas[-1] != rewrite_anchor_ea
+        ):
+            raise FragmentPlanRejected(
+                "superseded direct transfer instructions must be an ordered "
+                "proof-corridor subset ending at the rewrite anchor"
+            )
+        object.__setattr__(self, "route_proof_id", route_proof_id)
+        object.__setattr__(self, "rewrite_anchor_ea", rewrite_anchor_ea)
+        object.__setattr__(
+            self,
+            "proof_corridor_instruction_eas",
+            proof_corridor_instruction_eas,
+        )
+        object.__setattr__(
+            self,
+            "superseded_instruction_eas",
+            superseded_instruction_eas,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class FragmentOperation:
     """One complete semantic control-flow operation inside a fragment."""
 
@@ -583,6 +648,7 @@ class FragmentOperation:
     source_block_id: str
     edges: tuple[FragmentEdge, ...]
     predicate_anchor_ea: int | None = None
+    direct_transfer_rewrite: FragmentDirectTransferRewrite | None = None
     computed_branch_normalization: FragmentComputedBranchNormalization | None = None
     storage_predicate_materialization: (
         FragmentStoragePredicateMaterialization | None
@@ -617,6 +683,7 @@ class FragmentOperation:
             }
         )
         predicate_anchor_ea = self.predicate_anchor_ea
+        direct_transfer_rewrite = self.direct_transfer_rewrite
         computed_branch_normalization = self.computed_branch_normalization
         storage_predicate_materialization = (
             self.storage_predicate_materialization
@@ -628,6 +695,11 @@ class FragmentOperation:
             raise TypeError(
                 "fragment operation computed branch normalization is invalid"
             )
+        if direct_transfer_rewrite is not None and not isinstance(
+            direct_transfer_rewrite,
+            FragmentDirectTransferRewrite,
+        ):
+            raise TypeError("fragment operation direct transfer rewrite is invalid")
         if (
             storage_predicate_materialization is not None
             and not isinstance(
@@ -668,6 +740,13 @@ class FragmentOperation:
                     "storage predicate materialization belongs only to a "
                     "complete conditional"
                 )
+            if (
+                direct_transfer_rewrite is not None
+                and edges[0].role is not SemanticEdgeRole.DIRECT
+            ):
+                raise FragmentPlanRejected(
+                    "direct transfer rewrite belongs only to one direct edge"
+                )
         else:
             if frozenset(roles) != conditional_roles:
                 raise FragmentPlanRejected(
@@ -681,6 +760,10 @@ class FragmentOperation:
                 raise FragmentPlanRejected(
                     "fragment conditional requires distinct destinations"
                 )
+            if direct_transfer_rewrite is not None:
+                raise FragmentPlanRejected(
+                    "direct transfer rewrite belongs only to one direct edge"
+                )
             predicate_anchor_ea = _require_native_ea(
                 predicate_anchor_ea,
                 "fragment predicate anchor",
@@ -690,6 +773,11 @@ class FragmentOperation:
         object.__setattr__(self, "source_block_id", source_block_id)
         object.__setattr__(self, "edges", edges)
         object.__setattr__(self, "predicate_anchor_ea", predicate_anchor_ea)
+        object.__setattr__(
+            self,
+            "direct_transfer_rewrite",
+            direct_transfer_rewrite,
+        )
 
     @property
     def roles(self) -> frozenset[SemanticEdgeRole]:
@@ -1337,6 +1425,7 @@ class FragmentPlan:
             (operation.source_block_id for operation in operations),
             "fragment operation source",
         )
+        semantic_envelope_owner_by_ea: dict[int, str] = {}
         for operation in operations:
             source = block_by_id.get(operation.source_block_id)
             if source is None:
@@ -1360,6 +1449,64 @@ class FragmentPlan:
                     raise FragmentPlanRejected(
                         f"fragment operation {operation.operation_id!r} predicate "
                         "anchor does not belong to its source identity"
+                    )
+            direct_rewrite = operation.direct_transfer_rewrite
+            if direct_rewrite is not None:
+                native_body = native_body_by_id.get(
+                    str(source.native_body_id)
+                )
+                canonical_imported_rewrite = bool(
+                    source.role is FragmentBlockRole.IMPORTED
+                    and source.materialization
+                    is FragmentBlockMaterialization.IMPORT_NATIVE
+                    and native_body is not None
+                    and operation.operation_id in native_body.proof_ids
+                )
+                if (
+                    self.publication_purpose
+                    is not FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+                    or source.stable_identity is None
+                    or operation.operation_id
+                    != f"route:{direct_rewrite.route_proof_id}"
+                    or (
+                        source.role is FragmentBlockRole.IMPORTED
+                        and not canonical_imported_rewrite
+                    )
+                ):
+                    raise FragmentPlanRejected(
+                        f"fragment operation {operation.operation_id!r} direct "
+                        "transfer rewrite requires owned canonical route proof"
+                    )
+                if (
+                    source.role is FragmentBlockRole.IMPORTED
+                    and not source.stable_identity.native_ranges.contains(
+                        direct_rewrite.rewrite_anchor_ea
+                    )
+                ):
+                    raise FragmentPlanRejected(
+                        f"fragment operation {operation.operation_id!r} direct "
+                        "transfer anchor is outside its imported source"
+                    )
+
+            semantic_envelope_eas = (
+                direct_rewrite.superseded_instruction_eas
+                if direct_rewrite is not None
+                else (
+                    ()
+                    if operation.predicate_anchor_ea is None
+                    else (operation.predicate_anchor_ea,)
+                )
+            )
+            for envelope_ea in semantic_envelope_eas:
+                existing_owner = semantic_envelope_owner_by_ea.setdefault(
+                    envelope_ea,
+                    operation.operation_id,
+                )
+                if existing_owner != operation.operation_id:
+                    raise FragmentPlanRejected(
+                        "fragment semantic transfer envelopes compete at "
+                        f"0x{envelope_ea:X}: {existing_owner!r} and "
+                        f"{operation.operation_id!r}"
                     )
             storage_materialization = (
                 operation.storage_predicate_materialization
@@ -2021,6 +2168,7 @@ __all__ = [
     "FragmentComputedBranchNormalization",
     "FragmentDataFlowObligation",
     "FragmentDataFlowRole",
+    "FragmentDirectTransferRewrite",
     "FragmentEdge",
     "FragmentFlagCorridor",
     "FragmentImportedConditionalSelectEnvelope",

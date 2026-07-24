@@ -801,6 +801,18 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
     assert "native-body-edge@0x1210" not in operations
     nested_operation = operations[f"route:{nested_proof.proof_id}"]
     assert nested_operation.source_block_id == route_source.block_id
+    assert nested_operation.direct_transfer_rewrite is not None
+    assert nested_operation.direct_transfer_rewrite.route_proof_id == (
+        nested_proof.proof_id
+    )
+    assert nested_operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x1218
+    assert (
+        nested_operation.direct_transfer_rewrite.proof_corridor_instruction_eas
+        == (0x1210, 0x1218)
+    )
+    assert nested_operation.direct_transfer_rewrite.superseded_instruction_eas == (
+        0x1218,
+    )
     assert tuple(
         (
             edge.role,
@@ -1290,6 +1302,20 @@ def test_canonical_route_rebinds_retained_corridor_to_live_source_subset() -> No
     assert (
         normalization_plan.block("live-route-source").stable_identity
         != root.stable_identity
+    )
+    route_operation = next(
+        operation
+        for operation in plan.operations
+        if operation.operation_id.startswith("route:state-assignment@0x1110")
+    )
+    assert route_operation.direct_transfer_rewrite is not None
+    assert route_operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x1110
+    assert route_operation.direct_transfer_rewrite.proof_corridor_instruction_eas == (
+        0x1100,
+        0x1110,
+    )
+    assert route_operation.direct_transfer_rewrite.superseded_instruction_eas == (
+        0x1110,
     )
 
 
