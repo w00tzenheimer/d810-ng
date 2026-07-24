@@ -374,10 +374,21 @@ def stable_block_identity_from_snapshot(
     resulting identity is independent of the current block serial.
     """
     instruction_eas = frozenset(
-        int(insn.ea) for insn in block.insn_snapshots if 0 <= int(insn.ea) < _BADADDR
+        native_ea
+        for insn in block.insn_snapshots
+        for native_ea in (
+            int(insn.ea)
+            if insn.native_ea is None
+            else int(insn.native_ea),
+        )
+        if 0 <= native_ea < _BADADDR
     )
     native_anchors = set(instruction_eas)
-    start_ea = int(block.start_ea)
+    start_ea = (
+        int(block.start_ea)
+        if block.native_start_ea is None
+        else int(block.native_start_ea)
+    )
     if 0 <= start_ea < _BADADDR:
         native_anchors.add(start_ea)
     if not native_anchors:
