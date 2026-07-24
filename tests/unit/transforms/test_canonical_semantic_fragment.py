@@ -28,7 +28,11 @@ from d810.analyses.control_flow.terminal_return_carrier_evidence import (
     TerminalReturnCarrierSourceKind,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
-from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.block_identity import (
+    NativeEaInterval,
+    StableBlockIdentity,
+    stable_block_identity_from_snapshot,
+)
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -97,6 +101,20 @@ def _block(
             for insn_ea in insn_eas
         ),
     )
+
+
+def _current_identity_authority(
+    graph: FlowGraph,
+) -> dict[int, StableBlockIdentity]:
+    authority = {}
+    for serial, block in graph.blocks.items():
+        identity = stable_block_identity_from_snapshot(
+            block,
+            native_key=NATIVE_KEY,
+        )
+        assert identity is not None
+        authority[int(serial)] = identity
+    return authority
 
 
 def _direct_bound_evidence() -> tuple[FlowGraph, object]:
@@ -386,6 +404,7 @@ def test_canonical_route_composes_live_source_with_detached_target_body() -> Non
         graph,
         normalization_plan,
         evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
             evidence,
@@ -460,6 +479,7 @@ def test_detached_component_rebinds_published_replacement_boundary_as_external()
         graph,
         normalization_plan,
         evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
             evidence,
@@ -551,6 +571,7 @@ def test_projected_boundary_reuses_its_unique_current_owner_role() -> None:
         graph,
         normalization_plan,
         evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
             evidence,
@@ -605,7 +626,7 @@ def test_projected_boundary_rejects_multiple_current_owner_roles(
     monkeypatch.setattr(
         canonical_fragment,
         "_current_owners_contained_by_identity",
-        lambda _graph, _identity: (
+        lambda _graph, _identity, **_kwargs: (
             (90, 0x1400),
             (91, 0x1410),
         ),
@@ -619,6 +640,7 @@ def test_projected_boundary_rejects_multiple_current_owner_roles(
             graph,
             normalization_plan,
             evidence,
+            current_identity_by_serial=_current_identity_authority(graph),
             normalization_authority=_normalization_authority(
                 normalization_plan,
                 evidence,
@@ -686,6 +708,7 @@ def test_detached_component_keeps_proof_owned_imported_branch_normalization() ->
         graph,
         normalization_plan,
         evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
             evidence,
@@ -709,6 +732,7 @@ def test_canonical_route_rebinds_retained_corridor_to_live_source_subset() -> No
         graph,
         normalization_plan,
         evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
             evidence,
@@ -754,6 +778,7 @@ def test_canonical_composition_ids_external_blocks_by_stable_identity() -> None:
         graph,
         normalization_plan,
         evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
             evidence,
@@ -772,6 +797,159 @@ def test_canonical_composition_ids_external_blocks_by_stable_identity() -> None:
         sorted(block.semantic_anchor_ea for block in external_blocks)
     ) == (0x1001, 0x1400)
     assert all("serial" not in block.block_id for block in external_blocks)
+
+
+def test_canonical_composition_uses_current_external_identity_authority() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            90: _block(
+                90,
+                0x40A560,
+                succs=(20,),
+                preds=(20,),
+                insn_eas=(0x40A5D0,),
+            ),
+        },
+    )
+    imported_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40A5CA, 0x40A5E5),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40A5D0,),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
+        current_identity_by_serial={
+            10: _identity(0x1000),
+            20: _identity(0x1100),
+            90: imported_identity,
+        },
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    (prohibited_block_id,) = plan.prohibited_dispatcher_blocks
+    prohibited = plan.block(prohibited_block_id)
+    assert prohibited.stable_identity == imported_identity
+    assert prohibited.semantic_anchor_ea == 0x40A5D0
+    assert "0x40A560" not in prohibited.block_id
+
+
+def test_canonical_composition_uses_one_portable_dispatcher_scc_witness() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            90: _block(
+                90,
+                0x40A560,
+                succs=(91,),
+                preds=(20, 91),
+            ),
+            91: _block(
+                91,
+                0x40A5F0,
+                succs=(90,),
+                preds=(90,),
+            ),
+            92: _block(
+                92,
+                0x40A560,
+                succs=(),
+                preds=(),
+            ),
+        },
+    )
+    shared_entry_identity = _identity(0x40A560)
+    portable_router_identity = _identity(0x40A5F0)
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        current_identity_by_serial={
+            10: _identity(0x1000),
+            20: _identity(0x1100),
+            90: shared_entry_identity,
+            91: portable_router_identity,
+            92: shared_entry_identity,
+        },
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
+        prohibited_dispatcher_serials=(90, 91),
+    )
+
+    (prohibited_block_id,) = plan.prohibited_dispatcher_blocks
+    prohibited = plan.block(prohibited_block_id)
+    assert prohibited.stable_identity == portable_router_identity
+    assert prohibited.semantic_anchor_ea == 0x40A5F0
+
+
+def test_canonical_composition_does_not_guess_dispatcher_scc_witness() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            90: _block(
+                90,
+                0x40A560,
+                succs=(91,),
+                preds=(20, 91),
+            ),
+            91: _block(
+                91,
+                0x40A5F0,
+                succs=(90,),
+                preds=(90,),
+            ),
+            92: _block(92, 0x40A560, succs=(), preds=()),
+            93: _block(93, 0x40A5F0, succs=(), preds=()),
+        },
+    )
+    shared_entry_identity = _identity(0x40A560)
+    shared_router_identity = _identity(0x40A5F0)
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        current_identity_by_serial={
+            10: _identity(0x1000),
+            20: _identity(0x1100),
+            90: shared_entry_identity,
+            91: shared_router_identity,
+            92: shared_entry_identity,
+            93: shared_router_identity,
+        },
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
+        prohibited_dispatcher_serials=(90, 91),
+    )
+
+    assert tuple(
+        plan.block(block_id).stable_identity
+        for block_id in plan.prohibited_dispatcher_blocks
+    ) == (shared_entry_identity, shared_router_identity)
 
 
 def test_canonical_composition_rejects_shared_external_stable_identity() -> None:
@@ -807,6 +985,7 @@ def test_canonical_composition_rejects_shared_external_stable_identity() -> None
             graph,
             normalization_plan,
             evidence,
+            current_identity_by_serial=_current_identity_authority(graph),
             normalization_authority=_normalization_authority(
                 normalization_plan,
                 evidence,
@@ -844,6 +1023,7 @@ def test_canonical_route_rejects_split_materialized_delivery_ownership() -> None
             graph,
             normalization_plan,
             evidence,
+            current_identity_by_serial=_current_identity_authority(graph),
             normalization_authority=_normalization_authority(
                 normalization_plan,
                 evidence,
@@ -893,6 +1073,7 @@ def test_canonical_composition_rejects_ambiguous_detached_target_owner() -> None
             graph,
             ambiguous,
             evidence,
+            current_identity_by_serial=_current_identity_authority(graph),
             normalization_authority=_normalization_authority(
                 normalization_plan,
                 evidence,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 
@@ -21,6 +22,7 @@ from d810.ir.block_identity import (
     stable_block_identity_from_snapshot,
     stable_block_identity_token,
 )
+from d810.ir.directed_graph import tarjan_scc
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.fragment_plan import (
     FragmentBlock,
@@ -116,6 +118,7 @@ def _unique_plan_block(
 def _current_route_source(
     graph: FlowGraph,
     *,
+    current_identity_by_serial: Mapping[int, StableBlockIdentity],
     retained_identity: StableBlockIdentity,
     state_write_identity: StableBlockIdentity,
     state_write_ea: int,
@@ -126,14 +129,8 @@ def _current_route_source(
     delivery_ea = int(delivery_ea)
     current_blocks = tuple(
         (block, identity)
-        for block in graph.blocks.values()
-        if (
-            identity := stable_block_identity_from_snapshot(
-                block,
-                native_key=retained_identity.native_key,
-            )
-        )
-        is not None
+        for serial, block in graph.blocks.items()
+        if (identity := current_identity_by_serial.get(int(serial))) is not None
     )
     matches = tuple(
         (block, identity)
@@ -224,14 +221,13 @@ def _claim_current_external_identity(
 def _current_owners_contained_by_identity(
     graph: FlowGraph,
     identity: StableBlockIdentity,
+    *,
+    current_identity_by_serial: Mapping[int, StableBlockIdentity],
 ) -> tuple[tuple[int, int], ...]:
     """Return current block serials and anchors wholly owned by one identity."""
     owners = []
-    for block in graph.blocks.values():
-        current_identity = stable_block_identity_from_snapshot(
-            block,
-            native_key=identity.native_key,
-        )
+    for serial, block in graph.blocks.items():
+        current_identity = current_identity_by_serial.get(int(serial))
         if current_identity is None or not _identity_contains(
             identity,
             current_identity,
@@ -239,6 +235,68 @@ def _current_owners_contained_by_identity(
             continue
         owners.append((int(block.serial), int(block.start_ea)))
     return tuple(owners)
+
+
+def _portable_dispatcher_scc_witnesses(
+    graph: FlowGraph,
+    prohibited_serials: tuple[int, ...],
+    *,
+    current_identity_by_serial: Mapping[int, StableBlockIdentity],
+    modified_current_serials: frozenset[int],
+) -> tuple[int, ...]:
+    """Keep one uniquely rebound witness for equivalent dispatcher SCC roles.
+
+    If any current node in an unchanged dispatcher SCC remains entry-reachable,
+    every node in that SCC remains reachable.  One portable witness therefore
+    proves absence for the whole component.  A component without a uniquely
+    owned stable identity is left unchanged so the backend still rejects it
+    rather than selecting a snapshot-local block.
+    """
+    identity_counts = Counter(current_identity_by_serial.values())
+    selected: set[int] = set()
+    adjacency = {
+        int(serial): tuple(int(successor) for successor in graph.successors(serial))
+        for serial in graph.blocks
+    }
+    prohibited_set = frozenset(int(serial) for serial in prohibited_serials)
+    for component in tarjan_scc(adjacency):
+        members = tuple(
+            serial
+            for serial in prohibited_serials
+            if int(serial) in component
+        )
+        if component.intersection(modified_current_serials):
+            selected.update(int(serial) for serial in members)
+            continue
+        if len(members) <= 1:
+            selected.update(int(serial) for serial in members)
+            continue
+        candidates = tuple(
+            int(serial)
+            for serial in members
+            if (
+                (identity := current_identity_by_serial.get(int(serial)))
+                is not None
+                and identity_counts[identity] == 1
+            )
+        )
+        if not candidates:
+            selected.update(int(serial) for serial in members)
+            continue
+        selected.add(
+            min(
+                candidates,
+                key=lambda serial: stable_block_identity_token(
+                    current_identity_by_serial[serial]
+                ),
+            )
+        )
+    selected.update(prohibited_set.difference(adjacency))
+    return tuple(
+        int(serial)
+        for serial in prohibited_serials
+        if int(serial) in selected
+    )
 
 
 def _merged_imported_ranges(
@@ -453,6 +511,7 @@ def compose_canonical_semantic_fragment_plan(
     normalization_plan: FragmentPlan,
     evidence: CanonicalSemanticEvidence,
     *,
+    current_identity_by_serial: Mapping[int, StableBlockIdentity],
     normalization_authority: NormalizationWorkItemAuthority,
     prohibited_dispatcher_serials: Iterable[int] = (),
 ) -> FragmentPlan:
@@ -470,6 +529,36 @@ def compose_canonical_semantic_fragment_plan(
         )
     if not isinstance(evidence, CanonicalSemanticEvidence):
         raise TypeError("canonical composition requires canonical evidence")
+    current_identity_by_serial = {
+        int(serial): identity
+        for serial, identity in current_identity_by_serial.items()
+    }
+    if any(
+        not isinstance(identity, StableBlockIdentity)
+        for identity in current_identity_by_serial.values()
+    ):
+        raise TypeError(
+            "canonical composition current identity authority is invalid"
+        )
+    unknown_serials = frozenset(current_identity_by_serial).difference(
+        int(serial) for serial in graph.blocks
+    )
+    if unknown_serials:
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition current identity authority is stale",
+            reason_code="current_identity_authority_stale",
+            anchor_ea=int(graph.func_ea),
+            payload={"unknown_serials": tuple(sorted(unknown_serials))},
+        )
+    if any(
+        identity.native_key != evidence.native_key
+        for identity in current_identity_by_serial.values()
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition current identity authority drifted",
+            reason_code="current_identity_authority_native_key_drift",
+            anchor_ea=int(graph.func_ea),
+        )
     if evidence.native_key != normalization_plan.native_key:
         raise CanonicalSemanticFragmentRejected(
             "canonical composition native authority does not match"
@@ -543,6 +632,7 @@ def compose_canonical_semantic_fragment_plan(
         )
     source_serial, source_identity = _current_route_source(
         graph,
+        current_identity_by_serial=current_identity_by_serial,
         retained_identity=retained_source_identity,
         state_write_identity=state_write.identity,
         state_write_ea=state_write.instruction_ea,
@@ -596,6 +686,7 @@ def compose_canonical_semantic_fragment_plan(
         current_owners = _current_owners_contained_by_identity(
             graph,
             identity,
+            current_identity_by_serial=current_identity_by_serial,
         )
         if len(current_owners) > 1:
             raise CanonicalSemanticFragmentRejected(
@@ -648,11 +739,16 @@ def compose_canonical_semantic_fragment_plan(
             raise CanonicalSemanticFragmentRejected(
                 f"canonical composition references absent block {serial}"
             )
-        identity = _external_identity(
-            graph,
-            serial,
-            native_key=evidence.native_key,
-        )
+        identity = current_identity_by_serial.get(serial)
+        if identity is None:
+            raise CanonicalSemanticFragmentRejected(
+                "canonical fragment external block lacks current identity authority",
+                reason_code="current_external_identity_missing",
+                anchor_ea=int(block.start_ea),
+                payload={
+                    "block": f"blk{serial}@0x{int(block.start_ea):X}",
+                },
+            )
         _claim_current_external_identity(
             serial,
             identity,
@@ -702,10 +798,16 @@ def compose_canonical_semantic_fragment_plan(
         external_id_by_serial[serial] = block_id
         return block_id
 
-    prohibited_serials = tuple(
+    all_prohibited_serials = tuple(
         dict.fromkeys(int(value) for value in prohibited_dispatcher_serials)
     )
-    prohibited_serial_set = frozenset(prohibited_serials)
+    prohibited_serial_set = frozenset(all_prohibited_serials)
+    prohibited_witness_serials = _portable_dispatcher_scc_witnesses(
+        graph,
+        all_prohibited_serials,
+        current_identity_by_serial=current_identity_by_serial,
+        modified_current_serials=frozenset({source_serial}),
+    )
     outside_predecessors = tuple(
         int(predecessor)
         for predecessor in graph.predecessors(source_serial)
@@ -718,7 +820,7 @@ def compose_canonical_semantic_fragment_plan(
     for predecessor in outside_predecessors:
         external_block_id(predecessor)
     prohibited_ids = tuple(
-        external_block_id(serial) for serial in prohibited_serials
+        external_block_id(serial) for serial in prohibited_witness_serials
     )
 
     blocks.extend(
