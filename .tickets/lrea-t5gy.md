@@ -2287,3 +2287,55 @@ by making the detached rewriter consume this portable envelope for one closed
 route, validating that unpublished fragment through C5, and only then
 publishing one root. Do not add a live-backend exception or broaden to the
 91-route transaction.
+
+**2026-07-24T22:15:41Z**
+
+Commit `9385ceef9` completes detached realization of the portable direct-route
+envelope before publication. The native-body preflight proves exact proof,
+corridor, superseded-instruction, source-owner, and tail-anchor ownership;
+detached preparation replaces only the superseded delivery instruction with
+an unbound `m_goto`; and unpublished staging binds the target and consumes the
+operation before generic semantic realization. No compatibility default or
+live-EA special case was added.
+
+Focused verification is 171/171 detached-import runtime tests, 86/86 semantic
+backend runtime tests, 360/360 combined portable/canonical/validation/backend
+tests, and 269/269 surviving resolver/session runtime tests. Ruff, diff check,
+ast-grep, all 14 worktree-local import contracts, commit hooks, and
+`graphify update .` are green.
+
+The mandatory cache-disabled A560 canary at committed HEAD `9385ceef9`
+returned normally in 18.66 seconds with no process crash. Log:
+`.tmp/rhad-a560-v33-detached-direct-canary.txt`; primary DB:
+`.tmp/rhad-a560-v33-detached-direct-canary/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-detached-direct-canary/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one `while ( 1 )`; this is not A560
+acceptance.
+
+Canonical transaction `14d1b41ce74e4608bd1300d3cdb89c02` records
+`fragment_staged=1`, no root-publication attempt, and 168 applied operations
+out of 171 planned. The earlier owner `0x40BB51` / rewrite anchor `0x40BB63`
+is no longer the first failure. The highest contiguous main-A560 level remains
+C3 because the first failed C4 obligation is prepublication outcome 145:
+`dispatcher_absence` for
+`native[0x40A5F0-0x40A5F1,0x40A5F6-0x40A5F7,0x40A5F8-0x40A5F9,0x40A5FE-0x40A5FF;exact=0x40A5F0,0x40A5F6,0x40A5F8,0x40A5FE]`.
+Its witness enters that prohibited identity from the imported native route at
+`0x40C4B2`. Later predicate/carrier use-def and identity-ownership failures
+are not treated as the first obligation.
+
+Rollback then fails with `INTERR 50856`, which the bundled SDK defines at
+`.ida-sdk/src/verifier/verify.cpp:1155` as successor cardinality disagreeing
+with block type. That cleanup defect is separate from the semantic closure
+failure. Numeric `INTERR` triage must continue to resolve the SDK assertion
+first; `52719`, if observed again, is the out-of-range `mba_t::get_mblock(n)`
+assertion at `.ida-sdk/src/include/hexrays.hpp:5570`, not an opaque Hex-Rays
+crash.
+
+Continue the v3.3 vertical loop from the `0x40C4B2 -> 0x40A5F0` witness. The
+persisted canonical plan still represents `native-indirect-transfer@0x40C4B2`
+as a raw edge to a reused published dispatcher, with no detached semantic
+rewrite envelope. Determine whether the smallest closed fragment must retain
+that imported normalization and its dispatcher dependency rather than cutting
+at the uniquely published owner. Do not weaken dispatcher absence, add another
+live-backend exception, or claim C4 from completed staging.
