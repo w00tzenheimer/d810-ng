@@ -29,8 +29,8 @@ def test_workbench_composes_diagnostics_graph_outside_the_adapter_boundary() -> 
     assert "function_name=self._func_name or None" in source
 
 
-def test_recommended_attack_refreshes_before_automatic_comparison() -> None:
-    source = _method_source("_run_recommended_attack")
+def test_deobfuscate_function_refreshes_before_automatic_comparison() -> None:
+    source = _method_source("_run_deobfuscate_function")
 
     assert 'self._run_command("deobfuscate", refresh_after=False)' in source
     assert "recommended_attack_transition(snapshot, result)" in source
@@ -43,8 +43,8 @@ def test_recommended_attack_refreshes_before_automatic_comparison() -> None:
     )
 
 
-def test_recommended_attack_delegates_the_transition_decision_to_pure_logic() -> None:
-    source = _method_source("_run_recommended_attack")
+def test_deobfuscate_function_delegates_transition_to_pure_logic() -> None:
+    source = _method_source("_run_deobfuscate_function")
     panel_source = PANEL.read_text(encoding="utf-8")
 
     assert "recommended_attack_transition" in panel_source
@@ -53,14 +53,14 @@ def test_recommended_attack_delegates_the_transition_decision_to_pure_logic() ->
     assert "result.refresh_requested" not in source
 
 
-def test_attack_card_renders_the_pure_workflow_projection() -> None:
+def test_case_panel_renders_the_pure_workflow_projection() -> None:
     panel_source = PANEL.read_text(encoding="utf-8")
-    render_source = _method_source("_render_workflow")
+    render_source = _method_source("_render_case_workflow")
 
     assert (
-        "from d810.ui.workbench_workflow_logic import project_workbench_workflow"
+        "from d810.manager.deobfuscation_case_workflow import project_case_workflow"
         in panel_source
     )
-    assert "view = project_workbench_workflow(" in render_source
-    assert "self.workflow_headline.setText(view.headline)" in render_source
-    assert "self.workflow_detail.setText(view.detail)" in render_source
+    assert "view = project_case_workflow(" in render_source
+    assert "self.case_headline.setText(view.headline)" in render_source
+    assert "self.case_detail.setText(view.detail)" in render_source

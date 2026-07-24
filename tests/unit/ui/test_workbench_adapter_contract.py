@@ -162,8 +162,6 @@ def test_close_disconnects_only_buttons_that_have_connected_handlers() -> None:
     connected_action_ids = {
         "refresh",
         "export",
-        "analyze",
-        "deobfuscate",
         "function_override",
         "compare",
         "recipe",
@@ -178,7 +176,9 @@ def test_close_disconnects_only_buttons_that_have_connected_handlers() -> None:
     }
 
     assert connected_action_ids.issubset(loop_literals)
-    assert connected_action_ids.issubset(loop_literals)
+    source = ast.unparse(method)
+    assert "build_deobfuscator_button.clicked.disconnect()" in source
+    assert "deobfuscate_function_button.clicked.disconnect()" in source
 
 
 def test_panel_dispatches_diagnostics_through_owned_companion_panel() -> None:

@@ -207,6 +207,20 @@ def test_running_commands_name_the_correct_non_mutating_or_direct_phase() -> Non
     assert direct.primary.enabled is False
 
 
+def test_running_command_remains_readable_while_the_panel_marks_its_snapshot_stale() -> None:
+    view = project_case_workflow(
+        _snapshot(
+            case=_case(evidence=_evidence()),
+            freshness=SnapshotFreshness.STALE,
+        ),
+        running_command="build_deobfuscator",
+    )
+
+    assert view.phase is CaseWorkflowPhase.BUILD
+    assert view.build.label == "Building Deobfuscator..."
+    assert view.build.enabled is False
+
+
 def test_rejected_case_surfaces_the_first_blocked_obligation() -> None:
     snapshot = _snapshot(
         case=_case(
