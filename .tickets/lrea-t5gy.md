@@ -774,3 +774,52 @@ from the replacement identity anchored at `0x40A5F0` into one semantic imported
 fragment. Reach one complete C5 vertical fragment before broad 91-route
 publication. Do not weaken the postpublication gate, restore detached roots as
 independent authority, clear assertion flags, or special-case A560 addresses.
+
+**2026-07-24T07:26:23Z**
+
+Commit `2d5c77947` re-establishes the required vertical-fragment milestone
+under the strict entry-authoritative postpublication validator. Resolver proof
+ownership and exact owned native ranges retain detached components as future
+obligations, but no longer merge those components into the current live-root
+publication. The complete portable inventory still validates and dispositions
+them, so no proof is forgotten or reclassified as generic unreachable work.
+
+The planner contract was red while proof-owned detached roots were selected and
+green once they were deferred. The affected local and pinned-Docker planner,
+manager, validator, gateway, and live semantic-backend gate is 185/185 green.
+Ruff passes both changed files, ast-grep passes, all 14 worktree-local import
+contracts pass, commit hooks pass, and `graphify update .` completes.
+
+The mandatory production A560 diagnostic canary completed in 17.00 seconds
+without a process segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784877620_11.diag.sqlite3`; log:
+`.tmp/rhad-a560-v31-deferred-detached-roots.txt`. The semantic oracle remains
+red because the generated pseudocode contains one residual `while ( 1 )`.
+
+Transaction `e7675afc0b1340369106cb352ac75415` is the first trustworthy C5
+vertical publication after strict postpublication entry reachability became
+mandatory. Its plan contains 102 blocks and 93 semantic operations, with one
+93-block native body. It selects 40 portable transfer obligations, retains 188
+as remaining work, and records zero unreachable obligations. All 639
+prepublication and 1,180 postpublication outcomes pass. The one root group
+publishes from predecessor identity anchored at `0x40A5AE` to the replacement
+identity anchored at `0x40A5F0`; the 260/260 receipt commits without rollback.
+
+The highest canary level is therefore C5, not C6. This satisfies v3.1's
+real-fragment milestone and permits work on the broader route inventory, but it
+does not make A560 semantically green. The DB identifies the first post-C5
+obligation at MMAT_CALLS: `state_machine_cff_unflattener` declines
+`resolver_session:indirect_dispatcher_materialized` with typed reason
+`preopt_evidence_generation_unbound`. The payload records evidence generation
+1, no postvalidated normalization generation, and no imported dispatcher
+authority; the same decline repeats at MMAT_GLBOPT1. By GLBOPT1 post-D810, the
+entry-reachable replacement has collapsed to the self-loop
+`blk2@0x40A5F0`, which explains the residual infinite loop downstream.
+
+Continue the v3.1 vertical loop from the 188 retained obligations and the
+unbound-generation handoff. Broad publication must give each additional
+component real entry-derived or canonical semantic publication authority; it
+must not restore detached native-body roots as independent postpublication
+reachability authorities. Preserve the committed strict C5 fragment as the
+regression baseline while deciding how normalization hands the retained body
+inventory to canonical state-route ownership.
