@@ -323,12 +323,79 @@ def _detached_target_component(
     scoped_body_id = (
         f"{native_body.body_id}:canonical:{canonical_proof_id}"
     )
-    selected_blocks = tuple(
-        replace(block, native_body_id=scoped_body_id)
-        if block.block_id in selected_imported_ids
-        else block
-        for block in plan.blocks
-        if block.block_id in selected_ids
+    boundary_id_by_source_id: dict[str, str] = {}
+    projected_boundary_by_id: dict[str, FragmentBlock] = {}
+    for block in plan.blocks:
+        if (
+            block.block_id not in selected_ids
+            or block.block_id in selected_imported_ids
+        ):
+            continue
+        identity = block.stable_identity
+        if (
+            block.role
+            not in {
+                FragmentBlockRole.EXTERNAL,
+                FragmentBlockRole.REPLACEMENT,
+            }
+            or identity is None
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "detached canonical target has an unpublished boundary role",
+                reason_code="detached_boundary_role_unsupported",
+                anchor_ea=int(block.semantic_anchor_ea),
+                payload={
+                    "block_id": block.block_id,
+                    "block_role": block.role.value,
+                },
+            )
+        projected_id = f"native[{stable_block_identity_token(identity)}]"
+        projected = FragmentBlock(
+            block_id=projected_id,
+            role=FragmentBlockRole.EXTERNAL,
+            materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+            semantic_anchor_ea=(
+                stable_block_identity_semantic_anchor(identity)
+            ),
+            stable_identity=identity,
+        )
+        existing = projected_boundary_by_id.get(projected_id)
+        if existing is not None and existing != projected:
+            raise CanonicalSemanticFragmentRejected(
+                "detached canonical target boundary identity is ambiguous",
+                reason_code="detached_boundary_identity_ambiguous",
+                anchor_ea=int(projected.semantic_anchor_ea),
+                payload={
+                    "candidate_block_id": block.block_id,
+                    "projected_block_id": projected_id,
+                },
+            )
+        projected_boundary_by_id[projected_id] = projected
+        boundary_id_by_source_id[block.block_id] = projected_id
+
+    selected_operations = tuple(
+        replace(
+            operation,
+            edges=tuple(
+                replace(
+                    edge,
+                    target_block_id=boundary_id_by_source_id.get(
+                        edge.target_block_id,
+                        edge.target_block_id,
+                    ),
+                )
+                for edge in operation.edges
+            ),
+        )
+        for operation in selected_operations
+    )
+    selected_blocks = (
+        *tuple(projected_boundary_by_id.values()),
+        *tuple(
+            replace(block, native_body_id=scoped_body_id)
+            for block in plan.blocks
+            if block.block_id in selected_imported_ids
+        ),
     )
     selected_native_body = FragmentNativeBody(
         body_id=scoped_body_id,
@@ -453,10 +520,26 @@ def compose_canonical_semantic_fragment_plan(
             canonical_proof_id=proof.proof_id,
         )
     )
+    target_external_blocks = tuple(
+        block
+        for block in target_blocks
+        if block.role is FragmentBlockRole.EXTERNAL
+    )
+    target_imported_blocks = tuple(
+        block
+        for block in target_blocks
+        if block.role is FragmentBlockRole.IMPORTED
+    )
+    if len(target_external_blocks) + len(target_imported_blocks) != len(
+        target_blocks
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "detached canonical target projection retained an unpublished block"
+        )
 
     original_id = f"route:{proof.proof_id}:original"
     replacement_id = f"route:{proof.proof_id}:replacement"
-    blocks: list[FragmentBlock] = []
+    blocks: list[FragmentBlock] = list(target_external_blocks)
     external_id_by_serial: dict[int, str] = {}
     external_owner_serial_by_identity: dict[StableBlockIdentity, int] = {}
 
@@ -484,6 +567,32 @@ def compose_canonical_semantic_fragment_plan(
         )
         semantic_anchor_ea = stable_block_identity_semantic_anchor(identity)
         block_id = f"native[{stable_block_identity_token(identity)}]"
+        existing_block = next(
+            (
+                item
+                for item in blocks
+                if item.block_id == block_id
+            ),
+            None,
+        )
+        if existing_block is not None:
+            if (
+                existing_block.role is not FragmentBlockRole.EXTERNAL
+                or existing_block.stable_identity != identity
+            ):
+                raise CanonicalSemanticFragmentRejected(
+                    "canonical external identity conflicts with target boundary",
+                    reason_code="external_identity_conflict",
+                    anchor_ea=semantic_anchor_ea,
+                    payload={
+                        "block_id": block_id,
+                        "current_owner": (
+                            f"blk{serial}@0x{semantic_anchor_ea:X}"
+                        ),
+                    },
+                )
+            external_id_by_serial[serial] = block_id
+            return block_id
         blocks.append(
             FragmentBlock(
                 block_id=block_id,
@@ -540,7 +649,7 @@ def compose_canonical_semantic_fragment_plan(
             ),
         )
     )
-    blocks.extend(target_blocks)
+    blocks.extend(target_imported_blocks)
     operations = (
         FragmentOperation(
             operation_id=f"route:{proof.proof_id}",

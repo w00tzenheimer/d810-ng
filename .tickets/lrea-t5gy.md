@@ -1159,3 +1159,35 @@ does not include the original block it names. The next slice must close the
 selected detached component over replacement-to-original ownership before
 constructing the canonical plan; it must not weaken the plan invariant or
 deduplicate blocks afterward.
+
+**2026-07-24T10:03:41Z**
+
+The detached-component boundary-ownership slice is verified and ready for its
+own commit. The earlier checkpoint's wording was too loose: copying the
+normalization replacement's original into the canonical plan would make the
+canonical transaction re-own and republish an already published PREOPT block.
+That would overlap authority rather than close the component.
+
+The composer now projects every non-imported edge leaving the selected detached
+native body into one stable-identity external block. A PREOPT replacement
+therefore rebinds as current published authority at CALLS, with no
+`replaces_block_id` and no extra owned original. The projection is performed
+before plan construction; it does not deduplicate an invalid finished plan or
+weaken replacement validation.
+
+The canonical-transform, canonical-lowering, and frontend-normalization suites
+are 51/51 green, and changed-file Ruff and diff checks pass. The mandatory exact
+A560 canary completed in 16.39 seconds without a process segfault or INTERR.
+Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784887378_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-detached-boundary.txt`. The semantic oracle remains red with
+one residual `while ( 1 )`.
+
+The missing-original failure is gone, but the highest contiguous level remains
+C2 because no canonical plan is yet published. The next C3 obligation is a new
+`FragmentPlanRejected`: imported operation
+`native-indirect-transfer@0x40A5E3` retains computed-branch normalization while
+the composed plan has canonical-semantic publication purpose. The next slice
+must decide how the already-proven branch normalization becomes canonical
+direct-route intent without granting the canonical plan generic frontend
+normalization authority.
