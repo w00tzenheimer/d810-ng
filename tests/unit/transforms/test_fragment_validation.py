@@ -17,6 +17,7 @@ from d810.transforms.fragment_plan import (
     FragmentDataFlowRole,
     FragmentEdge,
     FragmentFlagCorridor,
+    FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
     FragmentPublicationPurpose,
@@ -835,6 +836,87 @@ def test_operation_disconnected_from_fragment_roots_is_rejected() -> None:
 
     assert FragmentValidationPostcondition.INTERNAL_CONNECTIVITY in failed
     assert FragmentValidationPostcondition.OPERATION_REACHABILITY in failed
+
+
+def test_detached_native_body_entry_is_an_internal_connectivity_root() -> None:
+    plan = _plan()
+    body_id = "detached-native-body"
+    imported = FragmentBlock(
+        block_id="detached.imported",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x6000,
+        stable_identity=_identity(0x6000),
+        native_body_id=body_id,
+    )
+    plan = replace(
+        plan,
+        blocks=plan.blocks + (imported,),
+        operations=plan.operations
+        + (
+            FragmentOperation(
+                operation_id="detached-native-operation",
+                source_block_id=imported.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="true",
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id=body_id,
+                block_ids=(imported.block_id,),
+                entry_block_ids=(imported.block_id,),
+                terminal_block_ids=(),
+                native_ranges=(NativeEaInterval(0x6000, 0x6010),),
+                proof_ids=("detached-native-operation",),
+            ),
+        ),
+    )
+    projection = _projection(plan)
+    projection = _replace_blocks(
+        projection,
+        replace(
+            projection.block("true"),
+            predecessors=("replacement", imported.block_id),
+        ),
+    )
+    projection = replace(
+        projection,
+        blocks=projection.blocks
+        + (
+            _projected_block(
+                imported.block_id,
+                BlockKind.ONE_WAY,
+                ("true",),
+                (),
+                7,
+                instruction_eas=(0x6000,),
+            ),
+        ),
+        identity_bindings=projection.identity_bindings
+        + (
+            ProjectedIdentityBinding(
+                block_id=imported.block_id,
+                logical_owner_id="logical:detached-imported",
+                version=0,
+                generation=3,
+                state=FragmentBindingState.STAGED,
+                stable_identity=imported.stable_identity,
+            ),
+        ),
+    )
+
+    result = validate_fragment_projection(plan, projection)
+
+    assert result.passed
+    assert not {
+        FragmentValidationPostcondition.INTERNAL_CONNECTIVITY,
+        FragmentValidationPostcondition.OPERATION_REACHABILITY,
+    }.intersection(outcome.postcondition for outcome in result.failures)
 
 
 def test_reachable_owned_original_is_rejected() -> None:
