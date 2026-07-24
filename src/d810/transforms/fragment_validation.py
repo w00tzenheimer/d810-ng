@@ -95,6 +95,7 @@ class ProjectedFragmentBlock:
     successors: tuple[str, ...]
     predecessors: tuple[str, ...]
     physical_position: int
+    adjacent_fallthrough_target_id: str | None
     instruction_eas: tuple[int, ...] = ()
     flag_write_eas: frozenset[int] = frozenset()
 
@@ -111,6 +112,14 @@ class ProjectedFragmentBlock:
         physical_position = int(self.physical_position)
         if physical_position < 0:
             raise ValueError("projected physical position must be non-negative")
+        adjacent_fallthrough_target_id = (
+            None
+            if self.adjacent_fallthrough_target_id is None
+            else _identifier(
+                self.adjacent_fallthrough_target_id,
+                "projected adjacent fallthrough target",
+            )
+        )
         instruction_eas = tuple(
             _native_ea(value, "projected instruction") for value in self.instruction_eas
         )
@@ -125,6 +134,11 @@ class ProjectedFragmentBlock:
         object.__setattr__(self, "successors", successors)
         object.__setattr__(self, "predecessors", predecessors)
         object.__setattr__(self, "physical_position", physical_position)
+        object.__setattr__(
+            self,
+            "adjacent_fallthrough_target_id",
+            adjacent_fallthrough_target_id,
+        )
         object.__setattr__(self, "instruction_eas", instruction_eas)
         object.__setattr__(self, "flag_write_eas", flag_write_eas)
 
@@ -722,19 +736,35 @@ def _validate_graph(
             )
             continue
         adjacent = blocks_by_position.get(block.physical_position + 1)
+        fallthrough_target = (
+            None if not block.successors else block.successors[0]
+        )
+        opaque_adjacent = bool(
+            fallthrough_target is not None
+            and permits_opaque_boundary(block.block_id, fallthrough_target)
+        )
         passed = bool(
             len(block.successors) == 2
-            and adjacent is not None
-            and block.successors[0] == adjacent.block_id
+            and block.adjacent_fallthrough_target_id == fallthrough_target
+            and (
+                (
+                    adjacent is not None
+                    and fallthrough_target == adjacent.block_id
+                )
+                or (adjacent is None and opaque_adjacent)
+            )
         )
         _outcome(
             outcomes,
             FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
             block.block_id,
             passed,
-            "two-way physical fallthrough is the adjacent first successor"
+            "two-way physical fallthrough witness matches the adjacent first successor"
             if passed
-            else "two-way physical fallthrough is missing, nonadjacent, or misordered",
+            else (
+                "two-way physical fallthrough witness is missing, "
+                "nonadjacent, or misordered"
+            ),
             block.block_id,
             "" if adjacent is None else adjacent.block_id,
         )

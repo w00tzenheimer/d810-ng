@@ -174,15 +174,23 @@ def _projected_block(
     predecessors: tuple[str, ...],
     position: int,
     *,
+    adjacent_fallthrough_target_id: str | None = None,
     instruction_eas: tuple[int, ...] = (),
     flag_write_eas: frozenset[int] = frozenset(),
 ) -> ProjectedFragmentBlock:
+    if (
+        adjacent_fallthrough_target_id is None
+        and kind is BlockKind.TWO_WAY
+        and successors
+    ):
+        adjacent_fallthrough_target_id = successors[0]
     return ProjectedFragmentBlock(
         block_id=block_id,
         kind=kind,
         successors=successors,
         predecessors=predecessors,
         physical_position=position,
+        adjacent_fallthrough_target_id=adjacent_fallthrough_target_id,
         instruction_eas=instruction_eas,
         flag_write_eas=flag_write_eas,
     )
@@ -1014,6 +1022,51 @@ def test_published_block_may_observe_opaque_boundary_edges() -> None:
     result = validate_fragment_projection(_plan(), projection)
 
     assert result.passed, result.failures
+
+
+def _reachable_opaque_published_conditional_projection(
+    *,
+    witness: str | None,
+) -> ProjectedFragment:
+    projection = _projection()
+    opaque_fallthrough = "unowned:blk9@0x401100"
+    opaque_taken = "unowned:blk14@0x401140"
+    return _replace_blocks(
+        projection,
+        replace(
+            projection.block("true"),
+            kind=BlockKind.TWO_WAY,
+            successors=(opaque_fallthrough, opaque_taken),
+            adjacent_fallthrough_target_id=witness,
+        ),
+        replace(projection.block("original"), physical_position=6),
+        replace(projection.block("dispatcher"), physical_position=7),
+    )
+
+
+def test_reachable_published_conditional_uses_opaque_fallthrough_witness() -> None:
+    projection = _reachable_opaque_published_conditional_projection(
+        witness="unowned:blk9@0x401100",
+    )
+
+    result = validate_fragment_projection(_plan(), projection)
+
+    assert result.passed, result.failures
+
+
+def test_reachable_published_conditional_rejects_missing_fallthrough_witness() -> None:
+    projection = _reachable_opaque_published_conditional_projection(witness=None)
+
+    result = validate_fragment_projection(_plan(), projection)
+
+    failures = {
+        (outcome.postcondition, outcome.subject_id)
+        for outcome in result.failures
+    }
+    assert (
+        FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY,
+        "true",
+    ) in failures
 
 
 def test_unreachable_published_conditional_keeps_same_ea_boundaries_distinct() -> None:

@@ -461,6 +461,7 @@ class _FragmentBackend:
                     successors=(entry_successor,),
                     predecessors=(),
                     physical_position=0,
+                    adjacent_fallthrough_target_id=None,
                 ),
                 ProjectedFragmentBlock(
                     block_id="replacement",
@@ -468,6 +469,7 @@ class _FragmentBackend:
                     successors=("target",),
                     predecessors=replacement_predecessors,
                     physical_position=1,
+                    adjacent_fallthrough_target_id=None,
                 ),
                 ProjectedFragmentBlock(
                     block_id="target",
@@ -475,6 +477,7 @@ class _FragmentBackend:
                     successors=(),
                     predecessors=("replacement",),
                     physical_position=2,
+                    adjacent_fallthrough_target_id=None,
                 ),
                 ProjectedFragmentBlock(
                     block_id="original",
@@ -482,6 +485,7 @@ class _FragmentBackend:
                     successors=(),
                     predecessors=original_predecessors,
                     physical_position=3,
+                    adjacent_fallthrough_target_id=None,
                 ),
                 ProjectedFragmentBlock(
                     block_id="dispatcher",
@@ -489,6 +493,7 @@ class _FragmentBackend:
                     successors=(),
                     predecessors=(),
                     physical_position=4,
+                    adjacent_fallthrough_target_id=None,
                 ),
             ),
             identity_bindings=(

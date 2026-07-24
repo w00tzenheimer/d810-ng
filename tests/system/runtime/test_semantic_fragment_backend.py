@@ -1911,6 +1911,74 @@ def test_backend_projects_positional_entry_boundary_before_semantic_entry() -> N
     assert gateway.active is False
 
 
+def test_backend_projects_opaque_published_fallthrough_witness() -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_2WAY)
+    opaque_fallthrough = _Block(
+        3,
+        start=0x401030,
+        block_type=ida_hexrays.BLT_0WAY,
+    )
+    opaque_taken = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(5, start=0x401050, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(6, start=0x401060, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    _connect_conditional(
+        target,
+        taken=opaque_taken,
+        fallthrough=opaque_fallthrough,
+    )
+    mba = _Mba(
+        (
+            entry,
+            original,
+            target,
+            opaque_fallthrough,
+            opaque_taken,
+            dispatcher,
+            stop,
+        )
+    )
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _plan(
+        gateway,
+        entry=entry.serial,
+        original=original.serial,
+        target=target.serial,
+        dispatcher=dispatcher.serial,
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    projected_target = projection.block("target")
+    assert projected_target.successors == (
+        "unowned:blk3@0x401030",
+        "unowned:blk4@0x401040",
+    )
+    assert (
+        projected_target.adjacent_fallthrough_target_id
+        == "unowned:blk3@0x401030"
+    )
+    result = validate_fragment_projection(plan, projection)
+    assert result.passed, result.failures
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime opaque-fallthrough projection test cleanup")
+
+    assert mba.qty == 7
+    assert tuple(entry.succset) == (original.serial,)
+    assert tuple(target.succset) == (
+        opaque_fallthrough.serial,
+        opaque_taken.serial,
+    )
+    assert gateway.active is False
+
+
 def test_root_inventory_collision_reports_both_logical_identities() -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
