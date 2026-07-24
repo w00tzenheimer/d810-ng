@@ -1599,7 +1599,7 @@ def _select_frontend_root_component(
     plan: FragmentPlan,
     evidence: FrontendNormalizationEvidence,
 ) -> FragmentPlan:
-    """Select one live root plus every proof-owned detached body component."""
+    """Select one live-root component and defer detached proof-owned siblings."""
     if (
         plan.publication_purpose
         is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
@@ -1701,15 +1701,17 @@ def _select_frontend_root_component(
                     "is not declared by its body"
                 )
             proof_owned_native_body_entry_ids.add(matches[0])
-    native_body_root_components = tuple(
+    proof_owned_native_body_components = tuple(
         (entry_block_id, *root_component(entry_block_id))
         for entry_block_id in sorted(proof_owned_native_body_entry_ids)
     )
-    actionable_operation_ids = {
+    # Proof ownership keeps a detached component as a future obligation. It
+    # does not give that component authority to join the current publication.
+    dispositioned_operation_ids = {
         operation_id
         for _root_block_id, _block_ids, operation_ids, _corridors in (
             *publication_root_components,
-            *native_body_root_components,
+            *proof_owned_native_body_components,
         )
         for operation_id in operation_ids
     }
@@ -1727,25 +1729,6 @@ def _select_frontend_root_component(
             int(plan.block(component[0]).semantic_anchor_ea),
             str(component[0]),
         ),
-    )
-    selected_flag_corridor_ids = {
-        corridor.corridor_id for corridor in selected_flag_corridors
-    }
-    for (
-        _entry_block_id,
-        native_body_block_ids,
-        native_body_operation_ids,
-        native_body_flag_corridors,
-    ) in native_body_root_components:
-        selected_block_ids.update(native_body_block_ids)
-        selected_operation_ids.update(native_body_operation_ids)
-        selected_flag_corridor_ids.update(
-            corridor.corridor_id for corridor in native_body_flag_corridors
-        )
-    selected_flag_corridors = tuple(
-        corridor
-        for corridor in plan.flag_corridors
-        if corridor.corridor_id in selected_flag_corridor_ids
     )
 
     selected_replacements = {
@@ -1785,12 +1768,12 @@ def _select_frontend_root_component(
         proof_id
         for proof_id in pending_proof_ids
         if proof_id not in selected_proof_ids
-        and proof_id in actionable_operation_ids
+        and proof_id in dispositioned_operation_ids
     )
     unreachable_proof_ids = tuple(
         proof_id
         for proof_id in pending_proof_ids
-        if proof_id not in actionable_operation_ids
+        if proof_id not in dispositioned_operation_ids
     )
 
     selected_operations = tuple(

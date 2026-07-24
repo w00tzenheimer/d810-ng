@@ -884,7 +884,7 @@ def test_next_work_item_dispositions_detached_root_unreachable_proofs() -> None:
     ) == (0x1300,)
 
 
-def test_next_work_item_retains_resolver_proven_detached_body_root() -> None:
+def test_next_work_item_defers_resolver_proven_detached_body_root() -> None:
     graph, evidence = _detached_root_normalization_case(
         seed_provenance=(
             ResolverProvenHandlerEntry(
@@ -901,25 +901,21 @@ def test_next_work_item_retains_resolver_proven_detached_body_root() -> None:
     assert plan.block(plan.roots[0]).semantic_anchor_ea == 0x1100
     assert tuple(operation.operation_id for operation in plan.operations) == (
         "direct@0x1100",
-        "direct@0x1600",
     )
     assert plan.work_item_scope is not None
-    assert plan.work_item_scope.selected_obligation_ids == (
-        "direct@0x1100",
-        "direct@0x1600",
-    )
-    assert plan.work_item_scope.remaining_obligation_ids == ()
+    assert plan.work_item_scope.selected_obligation_ids == ("direct@0x1100",)
+    assert plan.work_item_scope.remaining_obligation_ids == ("direct@0x1600",)
     assert plan.work_item_scope.unreachable_obligation_ids == ()
     assert len(plan.native_bodies) == 1
     native_body = plan.native_bodies[0]
     assert tuple(
         plan.block(block_id).semantic_anchor_ea
         for block_id in native_body.entry_block_ids
-    ) == (0x1300, 0x1600)
+    ) == (0x1300,)
     assert tuple(
         plan.block(block_id).semantic_anchor_ea
         for block_id in native_body.block_ids
-    ) == (0x1300, 0x1600, 0x1700)
+    ) == (0x1300,)
 
 
 def _handler_prefix_before_required_exit_case(
@@ -1033,7 +1029,7 @@ def _handler_prefix_before_required_exit_case(
     return graph, evidence
 
 
-def test_next_work_item_retains_range_owned_handler_prefix_before_required_exit(
+def test_next_work_item_defers_range_owned_handler_prefix_until_connected(
 ) -> None:
     graph, evidence = _handler_prefix_before_required_exit_case(
         owned_native_ranges=(NativeRange(0x1600, 0x1620),),
@@ -1042,27 +1038,22 @@ def test_next_work_item_retains_range_owned_handler_prefix_before_required_exit(
     plan = plan_next_frontend_normalization_work_item(graph, evidence)
 
     assert plan is not None
-    assert {operation.operation_id for operation in plan.operations} == {
+    assert tuple(operation.operation_id for operation in plan.operations) == (
         "direct@0x1100",
-        "direct@0x1610",
-        "native-body-edge@0x1600",
-    }
-    assert plan.work_item_scope is not None
-    assert plan.work_item_scope.selected_obligation_ids == (
-        "direct@0x1100",
-        "direct@0x1610",
     )
-    assert plan.work_item_scope.remaining_obligation_ids == ()
+    assert plan.work_item_scope is not None
+    assert plan.work_item_scope.selected_obligation_ids == ("direct@0x1100",)
+    assert plan.work_item_scope.remaining_obligation_ids == ("direct@0x1610",)
     assert plan.work_item_scope.unreachable_obligation_ids == ()
     native_body = plan.native_bodies[0]
     assert tuple(
         plan.block(block_id).semantic_anchor_ea
         for block_id in native_body.entry_block_ids
-    ) == (0x1300, 0x1600)
+    ) == (0x1300,)
     assert tuple(
         plan.block(block_id).semantic_anchor_ea
         for block_id in native_body.block_ids
-    ) == (0x1300, 0x1600, 0x1610)
+    ) == (0x1300,)
 
 
 def test_next_work_item_does_not_promote_range_less_handler_prefix() -> None:
