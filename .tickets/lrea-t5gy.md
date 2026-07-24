@@ -1696,3 +1696,67 @@ Reconstruct the projected physical neighbors, semantic successor order, and
 binding states from the plan and DB, then write a focused red test for the
 generic shape. Do not reorder or suppress validation, drop the dispatcher
 failures, or broaden publication before this selected fragment reaches C4.
+
+**2026-07-24T13:03:03Z**
+
+Commit `46dee7e12` completes the serial-free opaque-fallthrough witness slice.
+The preceding DB showed that published conditional `blk8@0x40A607`, anchored
+by exact instruction `0x40A613`, had live successors `blk9@0x40A560` and
+`blk14@0x40A560`; `blk9@0x40A560` was the actual adjacent first successor.
+Validation failed only because the intentionally opaque neighbor was absent
+from the serial-free projected block set.
+
+`ProjectedFragmentBlock` now requires an
+`adjacent_fallthrough_target_id`. The live backend derives that identifier
+from `nextb` and maps it to either a projected block id or an EA-anchored
+opaque endpoint. Validation requires the witness to equal the first semantic
+successor and additionally requires either the corresponding projected block
+at the next physical position or a published-boundary opaque endpoint. This
+does not exempt published conditionals, parse serials in portable code, or
+recursively import the remaining opaque corridor.
+
+The focused test was red before the model change because no serial-free
+adjacency witness existed. Positive portable and live-backend tests now prove
+the opaque case, and a negative portable test proves that a reachable
+published conditional without the witness still fails
+`FALLTHROUGH_TOPOLOGY`.
+
+The nearby backend, validation, publication-gateway, canonical, manager, and
+detached-import suite is 346/346 green locally and 346/346 green in pinned
+`d810-idapro-9.3-test-runtime:py313-v1` Docker; artifact:
+`.tmp/opaque-fallthrough-witness-runtime.txt`. Changed-file Ruff, diff checks,
+ast-grep, all 14 worktree-local import contracts, commit hooks, and
+`graphify update .` pass.
+
+The mandatory A560 canary completed with pytest in 17.37 seconds. The worker
+returned normally and there was no OS segfault. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784898095_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-opaque-fallthrough.txt`. The semantic oracle remains red
+with one residual `while ( 1 )`, so this is not A560 acceptance.
+
+The selected obligation advanced exactly as intended:
+`FALLTHROUGH_TOPOLOGY` at `0x40A613` now passes. Canonical transaction
+`982730eb6ffc4391b032d8bdd96dc290` still plans 73 items, applies the 70
+prepublication items, stages the fragment, and runs 198 prepublication
+outcomes; the pass count rises from 195 to 196 and the failure count falls
+from three to two. The highest contiguous canary level remains C3 because
+prepublication validation still aborts before C4.
+
+The first remaining C4 obligation is:
+
+`dispatcher_absence /
+native[0x40A5F0-0x40A5F1,0x40A5F6-0x40A5F7,0x40A5F8-0x40A5F9,0x40A5FE-0x40A5FF;exact=0x40A5F0,0x40A5F6,0x40A5F8,0x40A5FE]:
+reachable route enters a prohibited dispatcher router`.
+
+The only sibling failure is `IDENTITY_OWNERSHIP` for that same block:
+`projected identity or authority state differs from the plan`. This
+co-location is evidence for one ownership-alias cause, but it is not yet
+proof. Reconstruct the plan block, live binding, predecessor route, and stable
+identity before choosing a fix.
+
+Rollback still fails verification with SDK 9.3 `INTERR 50856`, the
+block-type/tail versus successor-count invariant, in
+`staged semantic fragment rollback sweep`. No `INTERR 52719` is present.
+Continue from the `0x40A5F0` dispatcher-absence obligation, preserve the
+identity mismatch as evidence, and do not suppress the prohibited-dispatcher
+check or relabel the block merely to pass validation.
