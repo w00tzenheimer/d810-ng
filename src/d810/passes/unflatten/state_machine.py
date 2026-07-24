@@ -63,6 +63,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 )
 from d810.analyses.control_flow.frontend_normalization import (
     FrontendNormalizationEvidence,
+    FrontendNormalizationEvidenceRejected,
 )
 from d810.analyses.control_flow.transition_builder import (
     transition_result_from_resolutions,
@@ -681,6 +682,37 @@ def _single_route_candidate(
     )
 
 
+def _plan_candidate_normalization(
+    context: FunctionPipelineContext,
+    candidate: CanonicalSemanticEvidence,
+    frontend_evidence: FrontendNormalizationEvidence,
+) -> FragmentPlan | None:
+    """Plan candidate prerequisites while retaining its stable route identity."""
+    try:
+        return plan_frontend_computed_branch_normalization(
+            context.graph,
+            frontend_evidence,
+        )
+    except FrontendNormalizationEvidenceRejected as exc:
+        first_proof = (
+            candidate.route_proofs[0] if candidate.route_proofs else None
+        )
+        anchor_ea = (
+            int(first_proof.source_anchor_ea)
+            if first_proof is not None
+            else int(context.graph.func_ea)
+        )
+        payload = {"normalization_reason": str(exc)}
+        if first_proof is not None:
+            payload["route_proof_id"] = first_proof.proof_id
+        raise CanonicalSemanticFragmentRejected(
+            f"candidate route 0x{anchor_ea:X} normalization rejected: {exc}",
+            reason_code="frontend_normalization_plan_rejected",
+            anchor_ea=anchor_ea,
+            payload=payload,
+        ) from exc
+
+
 def _compose_candidate_semantic_fragment(
     context: FunctionPipelineContext,
     *,
@@ -694,38 +726,59 @@ def _compose_candidate_semantic_fragment(
     )
     if candidate_provider is None or frontend_provider is None:
         raise CanonicalSemanticFragmentRejected(
-            "canonical composition requires candidate and normalization evidence"
+            "canonical composition requires candidate and normalization evidence",
+            reason_code="canonical_composition_capability_missing",
+            anchor_ea=int(context.graph.func_ea),
         )
     function_ea = int(context.graph.func_ea)
     candidate = candidate_provider.candidate_evidence_for(function_ea)
     frontend_evidence = frontend_provider.evidence_for(function_ea)
     if not isinstance(candidate, CanonicalSemanticEvidence):
         raise CanonicalSemanticFragmentRejected(
-            "canonical composition has no current candidate evidence"
+            "canonical composition has no current candidate evidence",
+            reason_code="canonical_candidate_evidence_missing",
+            anchor_ea=function_ea,
         )
     if not isinstance(frontend_evidence, FrontendNormalizationEvidence):
         raise CanonicalSemanticFragmentRejected(
-            "canonical composition has no current normalization evidence"
+            "canonical composition has no current normalization evidence",
+            reason_code="frontend_normalization_evidence_missing",
+            anchor_ea=function_ea,
         )
     if (
         candidate.native_key != frontend_evidence.native_key
         or candidate.generation != frontend_evidence.generation
     ):
         raise CanonicalSemanticFragmentRejected(
-            "canonical composition evidence generation drifted"
+            "canonical composition evidence generation drifted",
+            reason_code="canonical_composition_generation_drift",
+            anchor_ea=function_ea,
+            payload={
+                "candidate_generation": int(candidate.generation),
+                "normalization_generation": int(frontend_evidence.generation),
+            },
         )
-    normalization_plan = plan_frontend_computed_branch_normalization(
-        context.graph,
+    normalization_plan = _plan_candidate_normalization(
+        context,
+        candidate,
         frontend_evidence,
     )
     if normalization_plan is None:
+        first_route_anchor = (
+            int(candidate.route_proofs[0].source_anchor_ea)
+            if candidate.route_proofs
+            else function_ea
+        )
         raise CanonicalSemanticFragmentRejected(
-            "canonical composition has no unpublished normalization plan"
+            "canonical composition has no unpublished normalization plan",
+            reason_code="unpublished_normalization_plan_missing",
+            anchor_ea=first_route_anchor,
         )
 
     plans: list[FragmentPlan] = []
-    first_rejection: str | None = None
-    for route_index, _proof in enumerate(candidate.route_proofs):
+    first_rejection: CanonicalSemanticFragmentRejected | None = None
+    first_rejected_proof = None
+    for route_index, proof in enumerate(candidate.route_proofs):
         route_candidate = _single_route_candidate(candidate, route_index)
         try:
             plan = compose_canonical_semantic_fragment_plan(
@@ -738,17 +791,47 @@ def _compose_candidate_semantic_fragment(
             )
         except CanonicalSemanticFragmentRejected as exc:
             if first_rejection is None:
-                first_rejection = str(exc)
+                first_rejection = exc
+                first_rejected_proof = proof
             continue
         plans.append(plan)
     if not plans:
+        first_route_anchor = (
+            int(first_rejection.anchor_ea)
+            if first_rejection is not None
+            and first_rejection.anchor_ea is not None
+            else (
+                int(first_rejected_proof.source_anchor_ea)
+                if first_rejected_proof is not None
+                else function_ea
+            )
+        )
+        first_rejection_payload = (
+            {}
+            if first_rejection is None
+            else {
+                "cause_detail": str(first_rejection),
+                "cause_payload": dict(first_rejection.payload),
+            }
+        )
+        if first_rejected_proof is not None:
+            first_rejection_payload["route_proof_id"] = (
+                first_rejected_proof.proof_id
+            )
         raise CanonicalSemanticFragmentRejected(
             "canonical composition found no complete route"
             + (
                 ""
                 if first_rejection is None
                 else f": {first_rejection}"
-            )
+            ),
+            reason_code=(
+                "canonical_route_incomplete"
+                if first_rejection is None
+                else first_rejection.reason_code
+            ),
+            anchor_ea=first_route_anchor,
+            payload=first_rejection_payload,
         )
     plan = min(
         plans,
@@ -809,7 +892,9 @@ class LowerCanonicalSemanticFragment(PipelinePass):
                 )
         if not dispatcher_serials:
             raise CanonicalSemanticFragmentRejected(
-                "canonical semantic lowering requires residual dispatcher identity"
+                "canonical semantic lowering requires residual dispatcher identity",
+                reason_code="residual_dispatcher_identity_missing",
+                anchor_ea=int(context.graph.func_ea),
             )
 
         if bound is None:

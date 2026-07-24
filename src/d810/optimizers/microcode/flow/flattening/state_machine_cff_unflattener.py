@@ -213,6 +213,9 @@ from d810.families.state_machine_cff.pipeline import (
 from d810.passes.state_machine_spine import (
     semantic_evidence_state_machine_passes,
 )
+from d810.transforms.canonical_semantic_fragment import (
+    CanonicalSemanticFragmentRejected,
+)
 from d810.transforms.minimal_unflatten_emit import (
     TERMINAL_CARRIER_CONVERGENCE_METADATA,
 )
@@ -1215,7 +1218,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self._unflat_done_eas.discard(func_ea)
 
     def _should_run_unflatten_round(
-        self, func_ea: int, *, is_indirect: bool, maturity: int
+        self,
+        func_ea: int,
+        *,
+        is_indirect: bool,
+        maturity: int,
+        one_shot: bool = False,
     ) -> bool:
         """Bounded re-run gate (ticket llr-3gn4): may the unflatten run on ``func_ea`` now?
 
@@ -1238,8 +1246,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             return False
         key = (int(func_ea), int(maturity))
         rounds = self._unflat_round_count.get(key, 0)
-        if is_indirect and rounds >= 1:
-            return False  # INDIRECT keeps the historical one-shot contract
+        if (is_indirect or one_shot) and rounds >= 1:
+            return False
         if rounds >= self._MAX_UNFLATTEN_ROUNDS:
             # This (ea, maturity) hit the cap -- stop re-running it here, but DON'T mark
             # the whole ea done: a later maturity may still recover a dispatcher this
@@ -1306,6 +1314,42 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         ),
                         "rounds_before": int(rounds_before),
                     },
+                ),
+            )
+        )
+
+    def _report_canonical_composition_rejection(
+        self,
+        mba: object,
+        rejection: CanonicalSemanticFragmentRejected,
+    ) -> None:
+        """Persist one typed, stable-EA canonical planning obligation."""
+        flow_context = getattr(self, "flow_context", None)
+        report = getattr(flow_context, "report_fact_consumers", None)
+        if not callable(report):
+            return
+        anchor_ea = (
+            int(rejection.anchor_ea)
+            if rejection.anchor_ea is not None
+            else int(getattr(mba, "entry_ea", 0) or 0)
+        )
+        payload = {
+            "anchor_ea": f"0x{anchor_ea:X}",
+            "detail": str(rejection),
+            **dict(rejection.payload),
+        }
+        report(
+            (
+                FactConsumerRecord(
+                    consumer="state_machine_cff_unflattener",
+                    strategy="canonical_semantic_composition",
+                    fact_id=f"canonical_route:0x{anchor_ea:X}",
+                    maturity=maturity_to_string(
+                        int(getattr(mba, "maturity", 0))
+                    ),
+                    decision="declined",
+                    reason=rejection.reason_code,
+                    payload=payload,
                 ),
             )
         )
@@ -1777,17 +1821,30 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     "pipeline_v2_shadow_registry": state_machine_pass_registry(),
                     "require_pipeline_v2_shadow_match": True,
                 }
-            self._pass_manager.run(
-                source=source,
-                family=family,
-                backend=backend,
-                project_config=rule_config,
-                maturity=current_ir_maturity,
-                capabilities=capabilities,
-                input_facts=fact_view,
-                analysis_seeds=analysis_seeds,
-                **shadow_gate_kwargs,
-            )
+            try:
+                self._pass_manager.run(
+                    source=source,
+                    family=family,
+                    backend=backend,
+                    project_config=rule_config,
+                    maturity=current_ir_maturity,
+                    capabilities=capabilities,
+                    input_facts=fact_view,
+                    analysis_seeds=analysis_seeds,
+                    **shadow_gate_kwargs,
+                )
+            except CanonicalSemanticFragmentRejected as rejection:
+                if not canonical_composition_ready:
+                    raise
+                self._report_canonical_composition_rejection(mba, rejection)
+                logger.warning(
+                    "unflat: canonical composition declined for func=0x%x "
+                    "anchor=0x%x reason=%s",
+                    int(mba.entry_ea),
+                    int(rejection.anchor_ea or mba.entry_ea),
+                    rejection.reason_code,
+                )
+                return 0
             facts = self._pass_manager.analysis_manager_for(func_ea) or facts
         # Iteration diagnostics: where does the unflatten chain stand for this function?
         rec = facts.get_analysis("recover_dispatcher")
@@ -1951,17 +2008,24 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         round_key = (int(mba.entry_ea), int(mba.maturity))
         rounds_before = int(self._unflat_round_count.get(round_key, 0))
         if not self._should_run_unflatten_round(
-            int(mba.entry_ea), is_indirect=is_indirect, maturity=int(mba.maturity)
+            int(mba.entry_ea),
+            is_indirect=is_indirect,
+            maturity=int(mba.maturity),
+            one_shot=canonical_composition_admission,
         ):
+            if int(mba.entry_ea) in self._unflat_done_eas:
+                decline_reason = "function_converged"
+            elif canonical_composition_admission and rounds_before >= 1:
+                decline_reason = "canonical_composition_already_attempted"
+            elif is_indirect and rounds_before >= 1:
+                decline_reason = "indirect_profile_already_attempted"
+            else:
+                decline_reason = "round_budget_exhausted"
             self._report_recovery_gate_decision(
                 mba,
                 resolver_state=resolver_state,
                 decision="declined",
-                reason=(
-                    "function_converged"
-                    if int(mba.entry_ea) in self._unflat_done_eas
-                    else "round_budget_exhausted"
-                ),
+                reason=decline_reason,
                 imported_identity_ready=has_imported_identity,
                 recovery_epoch_phase=recovery_epoch_phase,
                 rounds_before=rounds_before,
