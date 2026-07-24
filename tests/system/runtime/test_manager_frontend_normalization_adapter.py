@@ -15,6 +15,9 @@ from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.manager.decompilation_lifecycle import DecompilationSessionContext
 from d810.manager.frontend_normalization import FrontendNormalizationRunResult
 from d810.manager import hexrays_frontend_normalization as live_normalization
+from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+    resolver_session_state,
+)
 from d810.transforms.fragment_plan import FragmentPlanRejected
 from tests.native_preanalysis import make_native_key
 
@@ -52,7 +55,11 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
     session = _session()
     session.native_preanalysis.evidence_generation = 3
     session.native_preanalysis.portable_evidence_ready_generation = 3
-    mba = object()
+    mba = SimpleNamespace(
+        this=0x5678,
+        qty=0,
+        get_mblock=lambda _serial: None,
+    )
     gateway = object()
     source = SimpleNamespace(
         flow_graph=GRAPH,
@@ -117,6 +124,62 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
             "remaining_obligation_count": 0,
         }
     }
+
+
+def test_live_adapter_binds_committed_import_origins_to_current_mba(
+    monkeypatch,
+) -> None:
+    from d810.hexrays.mutation import detached_handler_island
+
+    session = _session()
+    session.native_preanalysis.evidence_generation = 3
+    session.native_preanalysis.portable_evidence_ready_generation = 3
+    state = resolver_session_state(session)
+    mba = SimpleNamespace(this=0x1234)
+    imported_origins = (
+        (0xFFFFFFFFFFFFFF01, 0x40A70E),
+        (0xFFFFFFFFFFFFFF02, 0x40A710),
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "imported_detached_snippet_instruction_origins",
+        lambda live_mba: imported_origins if live_mba is mba else (),
+    )
+    monkeypatch.setattr(
+        live_normalization,
+        "_lift_live_function",
+        lambda live_mba: SimpleNamespace(
+            flow_graph=GRAPH,
+            func_ea=0x1000,
+            live_source=live_mba,
+        ),
+    )
+    monkeypatch.setattr(
+        live_normalization,
+        "_new_live_backend",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        live_normalization,
+        "run_frontend_normalization_pipeline",
+        lambda **_kwargs: FrontendNormalizationRunResult(
+            graph=GRAPH,
+            microcode_modified=True,
+            published_generation=3,
+        ),
+    )
+
+    live_normalization.run_live_frontend_normalization(
+        function_ea=0x1000,
+        mba=mba,
+        decision={
+            "session": session,
+            "mutation_gateway": object(),
+        },
+    )
+
+    assert state.current_mba_token == 0x1234
+    assert state.imported_instruction_origins_for(0x1234) == imported_origins
 
 
 def test_live_adapter_abstains_without_manager_injected_gateway(
@@ -195,6 +258,7 @@ def test_live_adapter_records_planning_rejection_before_failing_open(
         func_ea=0x1000,
         live_source=object(),
     )
+    state = resolver_session_state(session)
     monkeypatch.setattr(
         live_normalization,
         "_lift_live_function",
@@ -241,3 +305,5 @@ def test_live_adapter_records_planning_rejection_before_failing_open(
         "outcome": "rejected",
         "reason": "original route corridor is not closed",
     }
+    assert state.current_mba_token is None
+    assert state.current_imported_instruction_origins == ()
