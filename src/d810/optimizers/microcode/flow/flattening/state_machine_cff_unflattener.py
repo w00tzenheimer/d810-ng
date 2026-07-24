@@ -15,7 +15,7 @@ The legacy HCC fork is removed and unflatten runs unconditionally — there is n
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping as ABCMapping
+from collections.abc import Callable, Mapping as ABCMapping
 
 import ida_hexrays
 from d810.analyses.control_flow.block_ownership_domain import analyze_block_ownership
@@ -1355,6 +1355,80 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
         )
 
+    def _report_canonical_pipeline_exception(
+        self,
+        mba: object,
+        error: Exception,
+    ) -> None:
+        """Persist one unexpected canonical-pipeline failure without consuming it."""
+        flow_context = getattr(self, "flow_context", None)
+        report = getattr(flow_context, "report_fact_consumers", None)
+        if not callable(report):
+            return
+        error_anchor_ea = getattr(error, "anchor_ea", None)
+        anchor_ea = (
+            int(error_anchor_ea)
+            if error_anchor_ea is not None
+            else int(getattr(mba, "entry_ea", 0) or 0)
+        )
+        error_type = type(error)
+        report(
+            (
+                FactConsumerRecord(
+                    consumer="state_machine_cff_unflattener",
+                    strategy="canonical_semantic_composition",
+                    fact_id=f"canonical_pipeline:0x{anchor_ea:X}",
+                    maturity=maturity_to_string(
+                        int(getattr(mba, "maturity", 0))
+                    ),
+                    decision="declined",
+                    reason="canonical_pipeline_exception",
+                    payload={
+                        "anchor_ea": f"0x{anchor_ea:X}",
+                        "exception_detail": str(error),
+                        "exception_type": (
+                            f"{error_type.__module__}.{error_type.__qualname__}"
+                        ),
+                    },
+                ),
+            )
+        )
+
+    def _run_pipeline_with_canonical_diagnostics(
+        self,
+        mba: object,
+        *,
+        canonical_composition_ready: bool,
+        run_pipeline: Callable[[], object],
+    ) -> bool:
+        """Run the pipeline while preserving typed declines and unexpected failures."""
+        try:
+            run_pipeline()
+        except CanonicalSemanticFragmentRejected as rejection:
+            if not canonical_composition_ready:
+                raise
+            self._report_canonical_composition_rejection(mba, rejection)
+            logger.warning(
+                "unflat: canonical composition declined for func=0x%x "
+                "anchor=0x%x reason=%s",
+                int(mba.entry_ea),
+                int(rejection.anchor_ea or mba.entry_ea),
+                rejection.reason_code,
+            )
+            return False
+        except Exception as error:
+            if canonical_composition_ready:
+                try:
+                    self._report_canonical_pipeline_exception(mba, error)
+                except Exception:
+                    logger.exception(
+                        "unflat: failed to persist canonical pipeline exception "
+                        "for func=0x%x",
+                        int(mba.entry_ea),
+                    )
+            raise
+        return True
+
     def _report_materialized_handler_completeness(
         self,
         mba: object,
@@ -1822,7 +1896,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     "pipeline_v2_shadow_registry": state_machine_pass_registry(),
                     "require_pipeline_v2_shadow_match": True,
                 }
-            try:
+
+            def run_pipeline() -> None:
                 self._pass_manager.run(
                     source=source,
                     family=family,
@@ -1834,17 +1909,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     analysis_seeds=analysis_seeds,
                     **shadow_gate_kwargs,
                 )
-            except CanonicalSemanticFragmentRejected as rejection:
-                if not canonical_composition_ready:
-                    raise
-                self._report_canonical_composition_rejection(mba, rejection)
-                logger.warning(
-                    "unflat: canonical composition declined for func=0x%x "
-                    "anchor=0x%x reason=%s",
-                    int(mba.entry_ea),
-                    int(rejection.anchor_ea or mba.entry_ea),
-                    rejection.reason_code,
-                )
+
+            if not self._run_pipeline_with_canonical_diagnostics(
+                mba,
+                canonical_composition_ready=canonical_composition_ready,
+                run_pipeline=run_pipeline,
+            ):
                 return 0
             facts = self._pass_manager.analysis_manager_for(func_ea) or facts
         # Iteration diagnostics: where does the unflatten chain stand for this function?

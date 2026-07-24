@@ -1096,3 +1096,32 @@ pipeline exception as a typed canonical diagnostic and then re-raise it; it must
 not swallow an unexpected exception or claim a semantic failure. Only after the
 DB exposes the underlying cause should the v3.1 vertical loop change planning or
 publication behavior.
+
+**2026-07-24T09:49:33Z**
+
+The Phase 8/C3 diagnostic-completeness slice is verified and ready for its own
+commit. The canonical pipeline boundary now records every unexpected exception
+as a stable-EA fact-consumer decision and then re-raises the original exception
+object. Existing typed `CanonicalSemanticFragmentRejected` declines retain their
+previous behavior; a diagnostic-write failure cannot replace the underlying
+pipeline exception.
+
+The complete bounded-rerun runtime file is 62/62 green, and changed-file Ruff
+checks pass. The mandatory exact A560 canary completed in 15.38 seconds without
+a process segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784886519_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-canonical-exception.txt`. The semantic oracle remains red
+with one residual `while ( 1 )`.
+
+The highest contiguous production level remains C2. At MMAT_CALLS, the new DB
+record identifies the first failed C3 obligation exactly:
+`d810.transforms.fragment_plan.FragmentPlanRejected` with detail
+`fragment plan contains duplicate block ids`, anchored at function EA
+`0x40A560`. No canonical mutation plan or transaction is published before this
+failure.
+
+The next vertical-loop slice must identify the colliding portable block
+identities in the candidate-scoped fragment plan, preserve both native EA
+anchors in the rejection, and correct the composition at its identity source.
+It must not deduplicate after construction, weaken `FragmentPlan` validation, or
+attempt the broad 91-route publication.
