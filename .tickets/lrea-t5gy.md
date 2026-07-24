@@ -587,3 +587,43 @@ field-complete state-choice proof owns the same unresolved transfer and fully
 contains the patch source identity. Reject ambiguous or partial overlap and
 retain unrelated patch proofs. Do not permit shared mutation ownership, add an
 overlap exception in the planner, or key the rule to A560 sample addresses.
+
+**2026-07-24T06:24:21Z**
+
+Commit `3b19a2d03` makes a field-complete conditional state-choice proof
+supersede a lower direct patch proof only when both own the same unresolved
+transfer, the state-choice source fully contains the patch source, and the
+owner is unique. Unrelated and partial-overlap proofs remain, ambiguous
+ownership rejects, and the surviving semantic proof records the superseded
+proof ID as diagnostic provenance. The pure native-preanalysis gate is 100/100
+green, the pinned-Docker resolver/session gate is 262/262 green, Ruff passes,
+ast-grep passes, all 14 worktree-local import contracts pass, commit hooks
+pass, and `graphify update .` completes.
+
+The mandatory production A560 diagnostic canary completed in 8.03 seconds
+without a process segfault or reported INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784874057_11.diag.sqlite3`; log:
+`.tmp/rhad-a560-v31-frontier-supersession.txt`. The highest contiguous level
+remains C1, not C2 or C6. The portable plan now succeeds and records one
+frontend-normalization transaction with 1,390 planned items. Its mutation plan
+contains the atomic state-choice operation at source `0x40C4B4`, including the
+fallthrough helper and both semantic handler arms to `0x40B199` and
+`0x40ADA2`.
+
+The transaction aborts during staging before root publication:
+`fragment_staged=0`, publication is not attempted, rollback succeeds, and the
+receipt records one applied operation followed by
+`conditional-select normalization source has no replaced original`. This is
+not INTERR 52719 or another Hex-Rays verifier failure; SDK decoding remains the
+required first step for any future INTERR.
+
+The first failed C2 obligation is backend envelope ownership. The imported
+conditional-select envelope is already owned and realized by the detached
+native-body materializer, but
+`_normalize_conditional_select_replacement` treats it as the live replacement
+envelope and requires `replaces_block_id`. Continue with an explicit
+envelope-type dispatch: imported envelopes remain materializer-owned, live
+replacement envelopes retain the existing replacement normalization, and
+unknown ownership rejects. Prove this first with a focused red semantic-backend
+contract. Do not add a compatibility fallback, manufacture a replaced original,
+weaken fragment validation, or special-case A560 addresses.
