@@ -2135,3 +2135,48 @@ later use-def failures, broaden the fragment, or claim C4 from completed staging
 alone. In parallel with the semantic correction, rollback must restore
 successor cardinality before verification or force a fresh-MBA restart; the
 current MBA is not safe to reuse after restoration cannot be proved.
+
+**2026-07-24T16:42:09Z**
+
+Commit `68a455818` made the residual dispatcher route queryable and commit
+`dd3a2eb27` then closed that specific composition gap without broadening the
+selected publication. The diagnostic witness from
+`.tmp/rhad-a560-dispatcher-witness/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`
+proved that the route entering prohibited dispatcher identity `0x40A5F0` was
+downstream of omitted, same-generation state-assignment routes inside the
+selected imported component. Canonical composition now replaces those raw
+dispatcher operations with their proof-owned direct semantic routes before
+reprojecting the component.
+
+The mandatory cache-disabled A560 canary at committed HEAD `dd3a2eb27`
+returned normally in 32.34 seconds and remains semantically red with a
+143-byte pseudocode body and one `while ( 1 )`. Pytest log:
+`.tmp/rhad-a560-v31-nested-routes.txt`; primary DB:
+`.tmp/rhad-a560-nested-routes/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-nested-routes/test_real_loader_matches_reach0/sub_40A560.c`.
+
+The DB records two committed 260-operation frontend-normalization
+transactions. The first canonical attempt requests ten proof-owned CALLS
+companions and rolls back successfully with zero applied operations. The
+follow-up canonical transaction `57acb31119504025a8fb9457124562db` plans 171
+operations, applies zero, attempts no root publication, and rolls back
+successfully. No segfault or INTERR occurs.
+
+The highest contiguous canary level remains C3 because canonical planning
+exists but C4 pre-publication validation does not start. The first failed C4
+obligation is the imported native identity anchored at `0x40BB51`, whose
+captured template has a conditional tail at native `0x40BB63`. Canonical
+operation `route:state_assignment@0x40BB63:0xE9795EF` intentionally replaces
+that dispatcher tail with one direct semantic edge to `0x40ACF3`, but the
+portable operation does not yet carry the exact delivery instruction that must
+be rewritten. Backend preflight therefore rejects the one-edge operation
+against the two-successor captured template before staging.
+
+Continue the v3.1 vertical loop by adding a typed, proof-owned direct-transfer
+rewrite anchor to the portable operation and using it in both exact preflight
+and live realization. Accept a conditional-template-to-direct-route collapse
+only when that anchor equals the captured conditional tail and belongs to the
+operation's native proof corridor. Do not merely relax successor-count
+validation, infer the tail from block order, special-case A560 EAs, or broaden
+the 171-operation fragment.
