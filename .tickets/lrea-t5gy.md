@@ -1819,3 +1819,41 @@ Docker tests at `.tmp/semantic-consumer-refinement-runtime.txt`. Changed-file
 Ruff, diff checks, ast-grep, all 14 worktree-local import contracts, commit
 hooks, and `graphify update .` pass. The semantic oracle remains red with one
 residual `while ( 1 )`; this is a diagnostic canary, not A560 acceptance.
+
+**2026-07-24T14:06:13Z**
+
+Commit `2b619c18c` makes native-body admissibility a transaction-wide
+preparation phase. Every materializer must now implement the explicit
+two-phase contract: prepare a complete body from the immutable `FragmentPlan`
+without changing the destination MBA, then stage only that exact preparation.
+The gateway prepares all native bodies before it clones a replacement, changes
+outline ranges, creates a logical version, or allocates a standalone block.
+The old one-step materializer interface was deleted rather than retained as a
+compatibility path.
+
+The focused runtime test was red against the old ordering because the gateway
+cloned the root replacement before invoking the rejecting materializer. It now
+proves that a preparation rejection leaves `mba.qty`, outline ranges, identity
+generation, staging state, and materializer stage-call count unchanged. The
+complete local backend/importer suite is 250/250 green, and the pinned Docker
+gate is also 250/250 green at
+`.tmp/native-body-prepare-before-stage-runtime.txt`. Changed-file Ruff, diff
+checks, ast-grep, all 14 worktree-local import contracts, commit hooks, and
+`graphify update .` pass.
+
+The mandatory A560 canary completed without a process segfault. Primary DB:
+`.tmp/rhad-a560-native-body-preflight/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pytest log: `.tmp/rhad-a560-v31-native-body-preflight.txt`. Highest level
+remains C3. The same first C4 obligation is preserved exactly:
+`CALLS native body must be call/return-free` for the imported block anchored at
+`0x40B9A6`, with forbidden opcode 56 at native `0x40BA56`.
+
+The failure is now restart-safe. Transaction
+`65e731204c06479aa63e763ee27fd584` records 123 planned operations, zero applied
+operations, `fragment_staged=0`, no root-publication attempt, successful
+rollback, and an aborted receipt containing only the initiating typed reason.
+There is no verifier-failure event, no `INTERR 50856`, and no `INTERR 52719`.
+Continue from ownership of the call-bearing `0x40B9A6` component: prove whether
+it has a uniquely surviving published CALLS boundary or must be kept reachable
+by faithful frontend normalization. Do not import calls through the call-free
+materializer and do not broaden the selected fragment.
