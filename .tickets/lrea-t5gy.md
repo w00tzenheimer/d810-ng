@@ -1857,3 +1857,57 @@ Continue from ownership of the call-bearing `0x40B9A6` component: prove whether
 it has a uniquely surviving published CALLS boundary or must be kept reachable
 by faithful frontend normalization. Do not import calls through the call-free
 materializer and do not broaden the selected fragment.
+
+**2026-07-24T14:54:37Z**
+
+Commit `3974e22be` completes the restart-safe analyzed-CALLS-companion slice.
+The canonical CALLS materializer now rejects a call-bearing native body before
+staging unless every raw PREOPT-union call EA has exactly one matching analyzed
+CALLS owner. Missing authority queues only portable native ranges on the
+session attachment, requests the existing controller-owned generated restart,
+and records both the request and manager-preflight outcome in the diagnostic
+database. Manager preflight generates each requested range at `MMAT_CALLS`,
+matches it against the pristine PREOPT-union call inventory, caches the exact
+analyzed owner, and acknowledges the range only after successful capture. The
+old call-free materializer name was deleted rather than retained as an alias.
+
+The first requested component `[0x40B9A6,0x40BB75)` now captures four analyzed
+call owners at `0x40BA56`, `0x40BA72`, `0x40BA8C`, and `0x40BB35`. Import
+preserves each complete analyzed owner, including `m_mov(m_call(...))` result
+definitions, rebases its callinfo stack window, removes subsumed PREOPT
+`m_push`/outgoing-stack setup, and clears `MBL_PUSH` only when setup was
+removed. Preparation remains transaction-wide: neither a missing companion nor
+a capture mismatch changes the destination MBA before the gateway receipt.
+
+The focused suite is 443/443 green locally and 443/443 green in pinned
+`d810-idapro-9.3-test-runtime:py313-v1` Docker; artifact:
+`.tmp/calls-companion-runtime.txt`. Changed-file Ruff, diff checks, ast-grep,
+all 14 worktree-local import contracts, the portable-core shape gate, commit
+hooks, and `graphify update .` pass.
+
+The mandatory A560 canary returned normally in 19.95 seconds with no OS
+segfault, verifier event, or numeric `INTERR`. Primary DB:
+`.tmp/rhad-a560-calls-companion/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pytest log: `.tmp/rhad-a560-v31-calls-companion.txt`. The semantic oracle
+remains red and renders an eight-line stub with one `while ( 1 )`, so this is
+not A560 acceptance.
+
+The highest contiguous canary level remains C3. Transaction
+`7d8bc544dc934027853b39ae1b5226aa` plans 123 operations, applies zero, stages
+no fragment, attempts no root publication, and rolls back successfully after
+requesting two portable companion ranges. Manager preflight then captures
+`[0x40B9A6,0x40BB75)` but abstains for `[0x40C26D,0x40C2FB)` with
+`call_ea_set_mismatch`; the pristine union owns calls `0x40C2A9` and
+`0x40C2BE`. The follow-up transaction
+`34f869bc75454aa681be73a76982411e` again applies zero operations and aborts
+cleanly because the one controlled redo for evidence generation 1 has already
+been consumed.
+
+Continue the v3.1 vertical loop from that exact mismatch. The next diagnostic
+slice must put the mismatching EA and both PREOPT/CALLS call inventories into
+the manager-preflight DB event, because event 177 currently records only the
+PREOPT inventory and generic reason. Then determine whether the isolated CALLS
+range loses one real call or invents a resolver tail call, and correct range
+construction or component ownership without weakening exact call parity,
+granting another redo in the same evidence generation, or broadening the
+91-route publication.
