@@ -25,6 +25,7 @@ from d810.analyses.control_flow.native_semantic_closure import (
     NativeSemanticClosure,
     NativeTerminalKind,
     ProvenInternalEdge,
+    ResolverProvenHandlerEntry,
 )
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
@@ -765,7 +766,10 @@ def test_next_work_item_selects_one_connected_missing_body_component() -> None:
     assert native_body.native_ranges == (NativeEaInterval(0x1300, 0x1310),)
 
 
-def test_next_work_item_dispositions_detached_root_unreachable_proofs() -> None:
+def _detached_root_normalization_case(
+    *,
+    seed_provenance: tuple[ResolverProvenHandlerEntry, ...] = (),
+) -> tuple[FlowGraph, FrontendNormalizationEvidence]:
     graph = FlowGraph(
         blocks={
             0: _block(
@@ -808,7 +812,7 @@ def test_next_work_item_dispositions_detached_root_unreachable_proofs() -> None:
             ),
         ),
         abstentions=(),
-        seed_provenance=(),
+        seed_provenance=seed_provenance,
     )
     native_cfg = NativeCfg(
         {
@@ -853,6 +857,11 @@ def test_next_work_item_dispositions_detached_root_unreachable_proofs() -> None:
         semantic_closure=closure,
         native_cfg=native_cfg,
     )
+    return graph, evidence
+
+
+def test_next_work_item_dispositions_detached_root_unreachable_proofs() -> None:
+    graph, evidence = _detached_root_normalization_case()
 
     plan = plan_next_frontend_normalization_work_item(graph, evidence)
 
@@ -871,6 +880,44 @@ def test_next_work_item_dispositions_detached_root_unreachable_proofs() -> None:
         plan.block(block_id).semantic_anchor_ea
         for block_id in plan.native_bodies[0].block_ids
     ) == (0x1300,)
+
+
+def test_next_work_item_retains_resolver_proven_detached_body_root() -> None:
+    graph, evidence = _detached_root_normalization_case(
+        seed_provenance=(
+            ResolverProvenHandlerEntry(
+                entry_ea=0x1600,
+                provenance="portable-handler-entry-proof",
+            ),
+        ),
+    )
+
+    plan = plan_next_frontend_normalization_work_item(graph, evidence)
+
+    assert plan is not None
+    assert len(plan.roots) == 1
+    assert plan.block(plan.roots[0]).semantic_anchor_ea == 0x1100
+    assert tuple(operation.operation_id for operation in plan.operations) == (
+        "direct@0x1100",
+        "direct@0x1600",
+    )
+    assert plan.work_item_scope is not None
+    assert plan.work_item_scope.selected_obligation_ids == (
+        "direct@0x1100",
+        "direct@0x1600",
+    )
+    assert plan.work_item_scope.remaining_obligation_ids == ()
+    assert plan.work_item_scope.unreachable_obligation_ids == ()
+    assert len(plan.native_bodies) == 1
+    native_body = plan.native_bodies[0]
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea
+        for block_id in native_body.entry_block_ids
+    ) == (0x1300, 0x1600)
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea
+        for block_id in native_body.block_ids
+    ) == (0x1300, 0x1600, 0x1700)
 
 
 def test_next_work_item_selects_smallest_complete_root_component() -> None:
