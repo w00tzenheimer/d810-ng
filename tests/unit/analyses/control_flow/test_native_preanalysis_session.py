@@ -1315,12 +1315,23 @@ def test_lifecycle_projects_complete_native_patch_ledger_as_frontend_evidence() 
             ),
             direct_ea: NativeBlock(
                 start_ea=direct_ea,
+                end_ea=0x1108,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.FALLTHROUGH,
+                        target_ea=0x1108,
+                        source_instruction_ea=0x1106,
+                    ),
+                ),
+            ),
+            0x1108: NativeBlock(
+                start_ea=0x1108,
                 end_ea=0x1110,
                 outgoing_edges=(
                     NativeEdge(
                         kind=NativeEdgeKind.DIRECT_JUMP,
                         target_ea=true_target_ea,
-                        source_instruction_ea=direct_ea,
+                        source_instruction_ea=0x1108,
                     ),
                 ),
             ),
@@ -1435,8 +1446,14 @@ def test_lifecycle_projects_complete_native_patch_ledger_as_frontend_evidence() 
     }
     direct_proof = proofs["native-indirect-transfer@0x1108"]
     assert direct_proof.shape is NativeTransferShape.DIRECT
-    assert direct_proof.source_anchor_ea == direct_ea
+    assert direct_proof.source_anchor_ea == direct.jmp_ea
     assert direct_proof.source_transfer_ea == direct.jmp_ea
+    assert direct_proof.source_identity.exact_instruction_eas == frozenset(
+        {direct.jmp_ea}
+    )
+    assert direct_proof.source_identity.native_ranges.intervals == (
+        NativeEaInterval(direct.patch_start, direct.region_end),
+    )
     assert direct_proof.endpoints[0].role is SemanticEdgeRole.DIRECT
     assert direct_proof.endpoints[0].anchor_ea == true_target_ea
 
@@ -1801,7 +1818,7 @@ def test_frontend_evidence_owns_patch_corridor_and_ledger_target() -> None:
     assert taken_endpoint.identity.native_ranges.intervals == (
         NativeEaInterval(true_target_ea, true_target_ea + 1),
     )
-    assert downstream_proof.source_anchor_ea == true_target_ea
+    assert downstream_proof.source_anchor_ea == downstream.jmp_ea
 
 
 def test_frontend_evidence_rejects_the_whole_ledger_without_a_flag_producer() -> None:

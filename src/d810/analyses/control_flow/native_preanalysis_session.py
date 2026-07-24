@@ -432,7 +432,7 @@ def _patch_plan_frontend_proof(
         ("patch_region_end_ea", f"0x{int(plan.region_end):X}"),
     )
     if len(target_eas) == 1:
-        source_anchor_ea = int(plan.patch_start)
+        source_anchor_ea = int(plan.jmp_ea)
         source_identity = _patch_plan_source_identity(
             native_key,
             plan,

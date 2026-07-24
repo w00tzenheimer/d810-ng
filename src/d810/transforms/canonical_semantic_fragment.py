@@ -500,6 +500,15 @@ def _detached_target_component(
         prohibited_dispatcher_serials=prohibited_dispatcher_serials,
         current_identity_by_serial=current_identity_by_serial,
     )
+    proof_owned_reimport_source_ids = frozenset(
+        operation.source_block_id
+        for operation in plan.operations
+        if operation.operation_id in native_body.proof_ids
+        and any(
+            edge.target_block_id in reimportable_replacement_ids
+            for edge in operation.edges
+        )
+    )
     selected_ids: set[str] = set()
     selected_operation_ids: set[str] = set()
     published_imported_identity_by_id: dict[str, StableBlockIdentity] = {}
@@ -586,6 +595,9 @@ def _detached_target_component(
                         },
                     )
                 if edge_target.block_id != target.block_id and len(current_owners) == 1:
+                    if edge_target.block_id in proof_owned_reimport_source_ids:
+                        pending.append(edge_target.block_id)
+                        continue
                     selected_ids.add(edge_target.block_id)
                     published_imported_identity_by_id[edge_target.block_id] = (
                         current_owners[0][2]

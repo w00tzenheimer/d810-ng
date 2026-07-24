@@ -881,6 +881,12 @@ def test_detached_component_reimports_prohibited_frontend_replacement() -> None:
         graph,
         blocks={
             **graph.blocks,
+            30: _block(
+                30,
+                0x1250,
+                succs=(),
+                preds=(),
+            ),
             90: _block(
                 90,
                 0x1400,
@@ -893,6 +899,14 @@ def test_detached_component_reimports_prohibited_frontend_replacement() -> None:
     dispatcher_identity = _wide_identity(0x1400, 0x1408)
     selected_identity = _identity(0x1406)
     join_identity = _wide_identity(0x1410, 0x1414)
+    proof_owned_transfer = FragmentBlock(
+        block_id="proof-owned-transfer",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=_identity(0x1250),
+        native_body_id=normalization_plan.native_bodies[0].body_id,
+    )
     other_target = FragmentBlock(
         block_id="other-semantic-target",
         role=FragmentBlockRole.EXTERNAL,
@@ -928,6 +942,7 @@ def test_detached_component_reimports_prohibited_frontend_replacement() -> None:
                 else block
                 for block in normalization_plan.blocks
             ),
+            proof_owned_transfer,
             selected_value,
             join,
             other_target,
@@ -970,15 +985,39 @@ def test_detached_component_reimports_prohibited_frontend_replacement() -> None:
                 edges=(
                     FragmentEdge(
                         role=SemanticEdgeRole.DIRECT,
+                        target_block_id=proof_owned_transfer.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="proof-owned-transfer",
+                source_block_id=proof_owned_transfer.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
                         target_block_id="unrelated-replacement",
                     ),
                 ),
             ),
         ),
-        native_bodies=(replace(native_body, terminal_block_ids=()),),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(*native_body.block_ids, proof_owned_transfer.block_id),
+                terminal_block_ids=(),
+                native_ranges=(
+                    *native_body.native_ranges,
+                    NativeEaInterval(0x1250, 0x1251),
+                ),
+                proof_ids=(*native_body.proof_ids, "proof-owned-transfer"),
+            ),
+        ),
         work_item_scope=replace(
             normalization_plan.work_item_scope,
-            selected_obligation_ids=("dispatcher-normalization",),
+            selected_obligation_ids=(
+                "dispatcher-normalization",
+                "proof-owned-transfer",
+            ),
         ),
     )
 
@@ -1022,6 +1061,13 @@ def test_detached_component_reimports_prohibited_frontend_replacement() -> None:
     (planned_body,) = plan.native_bodies
     assert dispatcher.block_id in planned_body.block_ids
     assert dispatcher_operation.operation_id in planned_body.proof_ids
+    planned_transfer = next(
+        block
+        for block in plan.blocks
+        if block.semantic_anchor_ea == 0x1250
+        and block.role is FragmentBlockRole.IMPORTED
+    )
+    assert planned_transfer.block_id in planned_body.block_ids
 
 
 def test_detached_component_stops_at_unique_current_imported_successor() -> None:
