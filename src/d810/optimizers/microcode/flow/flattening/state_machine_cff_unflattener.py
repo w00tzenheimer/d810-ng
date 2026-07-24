@@ -1372,6 +1372,22 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             else int(getattr(mba, "entry_ea", 0) or 0)
         )
         error_type = type(error)
+        structured_payload = getattr(error, "payload", None)
+        if not isinstance(structured_payload, ABCMapping):
+            structured_payload = {}
+        reason_code = getattr(error, "reason_code", None)
+        if not isinstance(reason_code, str) or not reason_code.strip():
+            reason_code = "canonical_pipeline_exception"
+        payload = dict(structured_payload)
+        payload.update(
+            {
+                "anchor_ea": f"0x{anchor_ea:X}",
+                "exception_detail": str(error),
+                "exception_type": (
+                    f"{error_type.__module__}.{error_type.__qualname__}"
+                ),
+            }
+        )
         report(
             (
                 FactConsumerRecord(
@@ -1382,14 +1398,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         int(getattr(mba, "maturity", 0))
                     ),
                     decision="declined",
-                    reason="canonical_pipeline_exception",
-                    payload={
-                        "anchor_ea": f"0x{anchor_ea:X}",
-                        "exception_detail": str(error),
-                        "exception_type": (
-                            f"{error_type.__module__}.{error_type.__qualname__}"
-                        ),
-                    },
+                    reason=reason_code,
+                    payload=payload,
                 ),
             )
         )
