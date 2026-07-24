@@ -133,6 +133,24 @@ def _build_current_mba_identity_index(*, session, mba):
             default=identity.native_ranges.intervals[0].start_ea,
         )
         block = observation.result.block
+        candidates = []
+        for candidate in observation.candidates:
+            candidate_identity = candidate.handle.stable_identity
+            candidate_anchor_ea = candidate.anchor_ea
+            if candidate_identity is None or candidate_anchor_ea is None:
+                continue
+            candidates.append(
+                {
+                    "block": (
+                        f"blk{int(candidate.serial)}@"
+                        f"0x{int(candidate_anchor_ea):X}"
+                    ),
+                    "serial": int(candidate.serial),
+                    "anchor_ea": int(candidate_anchor_ea),
+                    "provenance": candidate.handle.provenance.value,
+                    "stable_identity": candidate_identity.to_dict(),
+                }
+            )
         emit_diagnostic(
             IdentityDecisionObserved(
                 session_id=session.identity_key,
@@ -158,7 +176,7 @@ def _build_current_mba_identity_index(*, session, mba):
                 evidence_generation=int(observation.evidence_generation),
                 maturity=maturity,
                 outcome=observation.result.status.name.lower(),
-                candidates_json="[]",
+                candidates_json=json.dumps(candidates, sort_keys=True),
                 reason="current MBA stable-identity lookup",
             )
         )

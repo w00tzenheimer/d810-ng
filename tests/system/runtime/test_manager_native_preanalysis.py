@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
-from d810.core.observability_events import MutationReceiptObserved
+from d810.core.observability_events import (
+    IdentityDecisionObserved,
+    MutationReceiptObserved,
+)
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.ir.logical_block_proxy import (
     LogicalBlockVersion,
@@ -160,6 +164,62 @@ def test_current_mba_identity_index_rejects_previous_mba_binding(monkeypatch) ->
 
     assert captured["current_mba_identity_binding"] is None
     assert "imported_instruction_origins" not in captured
+
+
+def test_current_mba_identity_index_reports_ambiguous_candidate_owners(
+    monkeypatch,
+) -> None:
+    import d810.core.observability as observability
+
+    native_preanalysis = NativePreanalysisSessionState()
+    session = SimpleNamespace(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        resolver_attachment=None,
+        identity_key="test-session",
+        function_ea=0x40A560,
+    )
+
+    class Insn:
+        ea = 0x40D348
+        next = None
+
+    blocks = tuple(
+        SimpleNamespace(
+            serial=serial,
+            start=0x40D348,
+            head=Insn(),
+        )
+        for serial in (0, 1)
+    )
+    mba = SimpleNamespace(
+        qty=len(blocks),
+        maturity=0,
+        this=0x1234,
+        build_graph=lambda: None,
+        get_mblock=lambda serial: blocks[int(serial)],
+        map_fict_ea=lambda ea: int(ea),
+    )
+    events: list[object] = []
+    monkeypatch.setattr(observability, "emit", events.append)
+
+    index = _build_current_mba_identity_index(session=session, mba=mba)
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40D348,),
+    )
+
+    assert index.rebind_identity(identity).status.name == "AMBIGUOUS"
+    (event,) = tuple(
+        event for event in events if isinstance(event, IdentityDecisionObserved)
+    )
+    candidates = json.loads(event.candidates_json)
+    assert tuple(candidate["block"] for candidate in candidates) == (
+        "blk0@0x40D348",
+        "blk1@0x40D348",
+    )
+    assert all(candidate["stable_identity"] == identity.to_dict() for candidate in candidates)
 
 
 def test_current_mba_mutation_gateway_uses_session_lifecycle_authority() -> None:

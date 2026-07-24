@@ -802,6 +802,36 @@ def test_rebind_observer_receives_portable_identity_and_generations() -> None:
     assert row.evidence_generation == 3
 
 
+def test_ambiguous_rebind_observer_receives_every_current_candidate() -> None:
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40D348,),
+    )
+    observed = []
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=5,
+        evidence_generation=3,
+        bindings=((source, 17), (source, 18)),
+        native_key=NATIVE_KEY,
+        decision_observer=observed.append,
+    )
+
+    assert index.rebind_identity(source).status is RebindStatus.AMBIGUOUS
+    assert len(observed) == 1
+    assert tuple(
+        (
+            candidate.serial,
+            candidate.anchor_ea,
+            candidate.handle.stable_identity,
+        )
+        for candidate in observed[0].candidates
+    ) == (
+        (17, 0x40D348, source),
+        (18, 0x40D348, source),
+    )
+
+
 def test_ea_rebind_prefers_unique_exact_instruction_owner_over_shared_range() -> None:
     exact_owner = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x401000, 0x401010),),
