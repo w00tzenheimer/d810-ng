@@ -1349,6 +1349,7 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
             )
         if int(join_opcode) == int(ida_hexrays.m_icall):
             reason = str(raised.value)
+            assert "source_instruction_shapes=" in reason
             assert "join_successors=('blk3@0x40A5E3',)" in reason
             assert "join_successor_shapes=" in reason
             assert f"join_flags=0x{int(join_flags):X}" in reason

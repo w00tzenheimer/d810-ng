@@ -90,6 +90,25 @@ class _ComputedBranchNormalizationPlan:
     branch_opcode: int
 
 
+def _diagnostic_operand_shape(operand: object, *, depth: int = 2) -> tuple:
+    """Return a serial-free operand shape suitable for diagnostic receipts."""
+    operand_type = int(operand.t)
+    detail: object | None = None
+    if operand_type == int(ida_hexrays.mop_r):
+        detail = ("reg", int(operand.r))
+    elif operand_type == int(ida_hexrays.mop_n):
+        detail = ("number", int(operand.nnn.value))
+    elif operand_type == int(ida_hexrays.mop_d) and depth > 0:
+        detail = (
+            "nested",
+            int(operand.d.opcode),
+            _diagnostic_operand_shape(operand.d.l, depth=depth - 1),
+            _diagnostic_operand_shape(operand.d.r, depth=depth - 1),
+            _diagnostic_operand_shape(operand.d.d, depth=depth - 1),
+        )
+    return (operand_type, int(operand.size), detail)
+
+
 def stable_mba_identity(mba: object) -> int:
     """Return the underlying mba_t address, stable across SWIG proxy wrappers."""
     try:
@@ -1638,6 +1657,16 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             name for name, passed in checks if not passed
         )
         if failed_obligations:
+            source_instruction_shapes = tuple(
+                (
+                    f"0x{int(instruction.ea):X}",
+                    int(instruction.opcode),
+                    _diagnostic_operand_shape(instruction.l),
+                    _diagnostic_operand_shape(instruction.r),
+                    _diagnostic_operand_shape(instruction.d),
+                )
+                for instruction in instructions
+            )
             source_label = (
                 f"blk{int(template_block.source_serial)}"
                 f"@0x{int(template_block.native_entry_ea):X}"
@@ -1682,6 +1711,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 f"join_callinfo_is_noret={join_callinfo_flags is not None and bool(join_callinfo_flags & int(ida_hexrays.FCI_NORET))} "
                 f"direct_unresolved_transfer={direct_unresolved_transfer} "
                 f"artificial_tail_call_transfer={artificial_tail_call_transfer} "
+                f"source_instruction_shapes={source_instruction_shapes!r} "
                 f"join_instructions={None if join is None else tuple((f'0x{int(instruction.ea):X}', int(instruction.opcode)) for instruction in join.instructions)!r} "
                 f"failed_obligations={failed_obligations!r}"
             )
