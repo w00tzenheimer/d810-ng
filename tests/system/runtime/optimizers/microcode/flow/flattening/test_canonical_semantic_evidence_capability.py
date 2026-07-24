@@ -7,6 +7,9 @@ from types import SimpleNamespace
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
+from d810.capabilities.frontend_normalization import (
+    FrontendNormalizationEvidenceCapability,
+)
 from d810.capabilities.semantic_routes import (
     CanonicalSemanticCandidateEvidenceCapability,
     CanonicalSemanticEvidenceCapability,
@@ -31,6 +34,7 @@ def test_live_unflattener_injects_session_canonical_semantic_evidence(
     state = NativePreanalysisSessionState()
     expected_evidence = object()
     expected_candidate = object()
+    expected_frontend = object()
     monkeypatch.setattr(
         NativePreanalysisSessionState,
         "canonical_semantic_evidence_for",
@@ -43,6 +47,13 @@ def test_live_unflattener_injects_session_canonical_semantic_evidence(
         "canonical_semantic_candidate_evidence_for",
         lambda self, key: (
             expected_candidate if self is state and key == native_key else None
+        ),
+    )
+    monkeypatch.setattr(
+        NativePreanalysisSessionState,
+        "frontend_normalization_evidence_for",
+        lambda self, key: (
+            expected_frontend if self is state and key == native_key else None
         ),
     )
     monkeypatch.setattr(
@@ -85,3 +96,8 @@ def test_live_unflattener_injects_session_canonical_semantic_evidence(
         is expected_candidate
     )
     assert candidate_provider.candidate_evidence_for(function_ea + 1) is None
+    frontend_provider = capabilities.require(
+        FrontendNormalizationEvidenceCapability
+    )
+    assert frontend_provider.evidence_for(function_ea) is expected_frontend
+    assert frontend_provider.evidence_for(function_ea + 1) is None
