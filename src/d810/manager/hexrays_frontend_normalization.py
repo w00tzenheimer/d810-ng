@@ -31,23 +31,14 @@ def _lift_live_function(mba: object) -> object:
 
 def _new_live_backend(
     *,
-    mba: object,
-    function_ea: int,
     mutation_gateway: object,
+    semantic_native_body_materializer: object,
 ) -> object:
     from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
-    from d810.hexrays.mutation.detached_handler_island import (
-        PreoptUnionSemanticNativeBodyMaterializer,
-    )
 
     return HexRaysMutationBackend(
         mutation_gateway=mutation_gateway,
-        semantic_native_body_materializer=(
-            PreoptUnionSemanticNativeBodyMaterializer(
-                mba=mba,
-                function_ea=int(function_ea),
-            )
-        ),
+        semantic_native_body_materializer=semantic_native_body_materializer,
     )
 
 
@@ -95,6 +86,9 @@ def run_live_frontend_normalization(
     """Publish one portable PREOPT generation through the fragment gateway."""
     session = decision.get("session")
     mutation_gateway = decision.get("mutation_gateway")
+    semantic_native_body_materializer = decision.get(
+        "semantic_native_body_materializer"
+    )
     if not isinstance(session, DecompilationSessionContext):
         logger.debug(
             "frontend normalization abstained for 0x%X: no lifecycle session",
@@ -107,6 +101,13 @@ def run_live_frontend_normalization(
             int(function_ea),
         )
         return
+    if semantic_native_body_materializer is None:
+        logger.debug(
+            "frontend normalization abstained for 0x%X: "
+            "no semantic native-body materializer",
+            int(function_ea),
+        )
+        return
     if int(session.function_ea) != int(function_ea):
         raise ValueError(
             "frontend normalization event belongs to another lifecycle session"
@@ -116,9 +117,10 @@ def run_live_frontend_normalization(
 
     source = _lift_live_function(mba)
     backend = _new_live_backend(
-        mba=mba,
-        function_ea=int(function_ea),
         mutation_gateway=mutation_gateway,
+        semantic_native_body_materializer=(
+            semantic_native_body_materializer
+        ),
     )
     try:
         result = run_frontend_normalization_pipeline(

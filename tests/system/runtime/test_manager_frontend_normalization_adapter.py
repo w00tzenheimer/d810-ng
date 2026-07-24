@@ -67,6 +67,7 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
         get_mblock=lambda _serial: None,
     )
     gateway = object()
+    materializer = object()
     source = SimpleNamespace(
         flow_graph=GRAPH,
         func_ea=0x1000,
@@ -107,6 +108,7 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
         "session": session,
         "identity_index": object(),
         "mutation_gateway": gateway,
+        "semantic_native_body_materializer": materializer,
     }
 
     live_normalization.run_live_frontend_normalization(
@@ -116,9 +118,8 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
     )
 
     assert captured["backend_args"] == {
-        "mba": mba,
-        "function_ea": 0x1000,
         "mutation_gateway": gateway,
+        "semantic_native_body_materializer": materializer,
     }
     pipeline_args = captured["pipeline_args"]
     assert pipeline_args["source"] is source
@@ -137,6 +138,35 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
             "published_work_item_id": None,
             "remaining_obligation_count": 0,
         }
+    }
+
+
+def test_live_adapter_abstains_without_lifecycle_owned_materializer(
+    monkeypatch,
+) -> None:
+    session = _session()
+    gateway = object()
+    monkeypatch.setattr(
+        live_normalization,
+        "_lift_live_function",
+        lambda _mba: (_ for _ in ()).throw(
+            AssertionError("adapter lifted without its materializer capability")
+        ),
+    )
+
+    decision = {
+        "session": session,
+        "mutation_gateway": gateway,
+    }
+    live_normalization.run_live_frontend_normalization(
+        function_ea=0x1000,
+        mba=object(),
+        decision=decision,
+    )
+
+    assert decision == {
+        "session": session,
+        "mutation_gateway": gateway,
     }
 
 
@@ -209,6 +239,7 @@ def test_live_adapter_binds_committed_import_identity_to_current_mba(
             decision={
                 "session": session,
                 "mutation_gateway": object(),
+                "semantic_native_body_materializer": object(),
             },
         )
     finally:
@@ -289,6 +320,7 @@ def test_live_adapter_does_not_claim_a_pipeline_noop(monkeypatch) -> None:
     decision = {
         "session": session,
         "mutation_gateway": object(),
+        "semantic_native_body_materializer": object(),
     }
 
     live_normalization.run_live_frontend_normalization(
@@ -347,6 +379,7 @@ def test_live_adapter_records_planning_rejection_before_failing_open(
                 decision={
                     "session": session,
                     "mutation_gateway": object(),
+                    "semantic_native_body_materializer": object(),
                 },
             )
     finally:

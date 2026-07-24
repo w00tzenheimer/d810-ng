@@ -2114,8 +2114,16 @@ class TestUnflattenBoundedRerunGate:
             recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
 
         class _Backend:
-            def __init__(self, *, mutation_gateway):
+            def __init__(
+                self,
+                *,
+                mutation_gateway,
+                semantic_native_body_materializer,
+            ):
                 assert mutation_gateway is not None
+                captured["semantic_native_body_materializer"] = (
+                    semantic_native_body_materializer
+                )
 
             def capabilities(self):
                 return frozenset()
@@ -2159,6 +2167,7 @@ class TestUnflattenBoundedRerunGate:
         scheduler = object()
         family = _Family()
         fact_view = SimpleNamespace(active_observations=("state",))
+        materializer = object()
 
         monkeypatch.setattr(
             indirect_jump_labels,
@@ -2223,6 +2232,7 @@ class TestUnflattenBoundedRerunGate:
         rule.flow_context = SimpleNamespace(
             validated_fact_view=lambda _maturity: fact_view,
             new_mba_mutation_gateway=lambda: object(),
+            semantic_native_body_materializer=lambda: materializer,
         )
         rule.current_resolver_session_state = lambda: ResolverSessionState(
             native_preanalysis=NativePreanalysisSessionState(),
@@ -2238,6 +2248,7 @@ class TestUnflattenBoundedRerunGate:
         assert rule.optimize(SimpleNamespace(mba=mba, serial=0)) == 0
 
         assert captured["maturity"] is IRMaturity.GLOBAL_ANALYZED
+        assert captured["semantic_native_body_materializer"] is materializer
         assert captured["input_facts"] is fact_view
         assert captured["prepared_input_facts"] is fact_view
         from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
@@ -2289,8 +2300,16 @@ class TestUnflattenBoundedRerunGate:
             recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
 
         class _Backend:
-            def __init__(self, *, mutation_gateway):
+            def __init__(
+                self,
+                *,
+                mutation_gateway,
+                semantic_native_body_materializer,
+            ):
                 assert mutation_gateway is not None
+                captured["semantic_native_body_materializer"] = (
+                    semantic_native_body_materializer
+                )
 
             def capabilities(self):
                 return frozenset()
@@ -2329,6 +2348,7 @@ class TestUnflattenBoundedRerunGate:
                 return self.facts
 
         captured: dict[str, object] = {}
+        materializer = object()
         family = (
             unflat_mod._MaterializedComputedGotoContinuationFamily()
             if materialized_continuation
@@ -2421,6 +2441,7 @@ class TestUnflattenBoundedRerunGate:
                 active_observations=()
             ),
             new_mba_mutation_gateway=lambda: object(),
+            semantic_native_body_materializer=lambda: materializer,
         )
         rule._union_maturities_cache = frozenset({test_maturity})
 
@@ -2430,6 +2451,7 @@ class TestUnflattenBoundedRerunGate:
         )
         assert rule.optimize(SimpleNamespace(mba=mba, serial=0)) == 0
 
+        assert captured["semantic_native_body_materializer"] is materializer
         pipeline_v2_specs = captured["pipeline_v2_specs"]
         expected_pass_ids = (
             (

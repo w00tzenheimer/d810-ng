@@ -91,6 +91,7 @@ def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
     session = SimpleNamespace(native_preanalysis_depth=0)
     identity_index = object()
     mutation_gateway = object()
+    materializer = object()
     calls: list[object] = []
 
     class _Lifecycle:
@@ -129,6 +130,15 @@ def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
             calls.append(("gateway", function_ea, maturity))
             return mutation_gateway
 
+        def new_semantic_native_body_materializer(
+            self,
+            *,
+            function_ea: int,
+            mba: object,
+        ):
+            calls.append(("materializer", function_ea, mba))
+            return materializer
+
     class _Emitter:
         def emit(self, event, **kwargs):
             calls.append(("emit", event, kwargs))
@@ -148,6 +158,7 @@ def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
         ("already-emitted", 0x40D200),
         ("index", 0x40D200, mba),
         ("gateway", 0x40D200, ida_hexrays.MMAT_PREOPTIMIZED),
+        ("materializer", 0x40D200, mba),
         (
             "emit",
             DecompilationEvent.HEXRAYS_PREOPT_READY,
@@ -159,6 +170,7 @@ def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
                     "session": session,
                     "identity_index": identity_index,
                     "mutation_gateway": mutation_gateway,
+                    "semantic_native_body_materializer": materializer,
                     "microcode_modified": True,
                 },
             },
@@ -170,7 +182,7 @@ def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
         ("session", 0x40D200),
         ("already-emitted", 0x40D200),
     ]
-    assert len(calls) == 8
+    assert len(calls) == 9
 
 
 def test_instruction_adapter_emits_preopt_for_new_mba_at_same_maturity() -> None:
