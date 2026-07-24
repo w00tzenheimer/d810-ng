@@ -86,8 +86,9 @@ class _ComputedBranchNormalizationPlan:
 
     operation: FragmentOperation
     cut_index: int
-    result_instruction_index: int
+    result_instruction_index: int | None
     branch_opcode: int
+    branch_condition_template: object | None = None
 
 
 def _diagnostic_operand_shape(operand: object, *, depth: int = 2) -> tuple:
@@ -1544,7 +1545,19 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         producer_index = None if producer_row is None else int(producer_row[0])
         producer = None if producer_row is None else producer_row[1]
         branch_opcode = None if producer_row is None else int(producer_row[2])
-        tail_skips_semantic_true = False
+        signed_split_plan = (
+            PreoptUnionSemanticNativeBodyMaterializer._preflight_split_signed_flag_xor(
+                instructions=instructions,
+                predicate_indexes=predicate_indexes,
+                tail=tail,
+                operation=operation,
+                normalization=normalization,
+            )
+        )
+        normalization_plan_count = len(oriented_producers) + int(
+            signed_split_plan is not None
+        )
+        tail_skips_semantic_true = signed_split_plan is not None
         if (
             tail is not None
             and producer is not None
@@ -1579,19 +1592,25 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
         checks = (
             ("predicate_anchor_unique", len(predicate_indexes) == 1),
-            ("oriented_producer_unique", producer_row is not None),
+            ("oriented_producer_unique", normalization_plan_count == 1),
             (
                 "producer_has_result",
-                producer is not None
-                and PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
-                    producer
+                signed_split_plan is not None
+                or (
+                    producer is not None
+                    and PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
+                        producer
+                    )
                 ),
             ),
             (
                 "producer_precedes_predicate",
-                producer_index is not None
-                and len(predicate_indexes) == 1
-                and producer_index < int(predicate_indexes[0]),
+                signed_split_plan is not None
+                or (
+                    producer_index is not None
+                    and len(predicate_indexes) == 1
+                    and producer_index < int(predicate_indexes[0])
+                ),
             ),
             (
                 "source_is_two_way",
@@ -1693,6 +1712,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 f"selected_block={selected_label} join_block={join_label} "
                 f"predicate_indexes={predicate_indexes!r} "
                 f"oriented_producers={len(oriented_producers)} "
+                f"signed_split_normalization={signed_split_plan is not None} "
                 f"source_successors={tuple(int(serial) for serial in template_block.successor_serials)!r} "
                 f"join_predecessors={join_predecessors!r} "
                 f"join_type={None if join is None else int(join.block_type)} "
@@ -1714,6 +1734,13 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 f"source_instruction_shapes={source_instruction_shapes!r} "
                 f"join_instructions={None if join is None else tuple((f'0x{int(instruction.ea):X}', int(instruction.opcode)) for instruction in join.instructions)!r} "
                 f"failed_obligations={failed_obligations!r}"
+            )
+        if signed_split_plan is not None:
+            return signed_split_plan
+        if producer_index is None or branch_opcode is None:
+            raise SemanticFragmentBackendRejected(
+                "PREOPT split conditional-select normalization lost its "
+                f"validated condition plan; {label}"
             )
         return _ComputedBranchNormalizationPlan(
             operation=operation,
@@ -1851,6 +1878,90 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
 
     @staticmethod
+    def _preflight_split_signed_flag_xor(
+        *,
+        instructions: tuple[object, ...],
+        predicate_indexes: tuple[int, ...],
+        tail: object | None,
+        operation: FragmentOperation,
+        normalization: FragmentComputedBranchNormalization,
+    ) -> _ComputedBranchNormalizationPlan | None:
+        """Recognize one exact split ``SLT`` select encoded as ``SF XOR OF``."""
+        if (
+            normalization.predicate_kind is not PredicateKind.SLT
+            or len(predicate_indexes) != 1
+            or tail is None
+            or int(tail.opcode) != int(ida_hexrays.m_jcnd)
+        ):
+            return None
+        predicate_index = int(predicate_indexes[0])
+        producer_rows = tuple(
+            (index, instruction)
+            for index, instruction in enumerate(instructions)
+            if int(instruction.ea) == int(normalization.condition_producer_ea)
+        )
+        expected_flag_opcodes = (
+            int(ida_hexrays.m_setb),
+            int(ida_hexrays.m_seto),
+            int(ida_hexrays.m_setz),
+            int(ida_hexrays.m_setp),
+            int(ida_hexrays.m_sets),
+        )
+        if (
+            tuple(int(instruction.opcode) for _, instruction in producer_rows)
+            != expected_flag_opcodes
+            or tuple(index for index, _ in producer_rows)
+            != tuple(range(predicate_index - len(expected_flag_opcodes), predicate_index))
+            or not all(
+                PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
+                    instruction
+                )
+                for _, instruction in producer_rows
+            )
+        ):
+            return None
+        overflow = next(
+            instruction
+            for _, instruction in producer_rows
+            if int(instruction.opcode) == int(ida_hexrays.m_seto)
+        )
+        sign = next(
+            instruction
+            for _, instruction in producer_rows
+            if int(instruction.opcode) == int(ida_hexrays.m_sets)
+        )
+        if (
+            int(tail.l.t) != int(ida_hexrays.mop_d)
+            or int(tail.l.d.opcode) != int(ida_hexrays.m_lnot)
+            or int(tail.l.d.r.t) != int(ida_hexrays.mop_z)
+            or int(tail.l.d.l.t) != int(ida_hexrays.mop_d)
+            or int(tail.l.d.l.d.opcode) != int(ida_hexrays.m_xor)
+            or int(tail.l.d.l.d.d.t) != int(ida_hexrays.mop_z)
+            or int(tail.l.d.l.size) <= 0
+        ):
+            return None
+        xor = tail.l.d.l.d
+        compare_flags = int(ida_hexrays.EQ_IGNSIZE)
+        if not (
+            (
+                xor.l.equal_mops(sign.d, compare_flags)
+                and xor.r.equal_mops(overflow.d, compare_flags)
+            )
+            or (
+                xor.l.equal_mops(overflow.d, compare_flags)
+                and xor.r.equal_mops(sign.d, compare_flags)
+            )
+        ):
+            return None
+        return _ComputedBranchNormalizationPlan(
+            operation=operation,
+            cut_index=predicate_index,
+            result_instruction_index=None,
+            branch_opcode=int(ida_hexrays.m_jnz),
+            branch_condition_template=tail.l.d.l,
+        )
+
+    @staticmethod
     def _preflight_signed_flag_xor(
         *,
         instructions: tuple[object, ...],
@@ -1984,26 +2095,53 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                         "PREOPT computed branch normalization disappeared "
                         "during preparation"
                     )
-                result_index = normalization_entry.result_instruction_index
-                if (
-                    not 0 <= int(result_index) < len(instructions)
-                    or not self._has_result_operand(
-                        instructions[int(result_index)][1]
-                    )
-                ):
-                    raise SemanticFragmentBackendRejected(
-                        "PREOPT computed branch result changed during rebase"
-                    )
-                result = instructions[int(result_index)][1]
                 predicate_ea = int(operation.predicate_anchor_ea)
                 branch = ida_hexrays.minsn_t(predicate_ea)
                 branch.opcode = normalization_entry.branch_opcode
                 branch.l = ida_hexrays.mop_t()
-                branch.l.assign(result.d)
+                branch_condition_template = (
+                    normalization_entry.branch_condition_template
+                )
+                if branch_condition_template is None:
+                    result_index = normalization_entry.result_instruction_index
+                    if (
+                        result_index is None
+                        or not 0 <= int(result_index) < len(instructions)
+                        or not self._has_result_operand(
+                            instructions[int(result_index)][1]
+                        )
+                    ):
+                        raise SemanticFragmentBackendRejected(
+                            "PREOPT computed branch result changed during rebase"
+                        )
+                    result = instructions[int(result_index)][1]
+                    branch.l.assign(result.d)
+                else:
+                    branch.l.assign(branch_condition_template)
+                    predicate_stack_map = _stack_map_with_positive_identity_overrides(
+                        dict(stack_map),
+                        _instruction_destination_stack_map(
+                            self.mba,
+                            template,
+                            predicate_ea,
+                        ),
+                    )
+                    if not _rebase_template_operand(
+                        self.mba,
+                        branch.l,
+                        predicate_stack_map,
+                    ):
+                        raise SemanticFragmentBackendRejected(
+                            "PREOPT computed branch template changed during rebase"
+                        )
+                if int(branch.l.size) <= 0:
+                    raise SemanticFragmentBackendRejected(
+                        "PREOPT computed branch condition has no portable width"
+                    )
                 branch.r = ida_hexrays.mop_t()
                 branch.r.make_number(
                     0,
-                    int(result.d.size),
+                    int(branch.l.size),
                     predicate_ea,
                 )
                 branch.d = ida_hexrays.mop_t()

@@ -1085,6 +1085,8 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
 
 @pytest.mark.parametrize(
     (
+        "predicate_kind",
+        "predicate_combine_opcode",
         "selected_opcode",
         "join_opcode",
         "join_flags",
@@ -1092,9 +1094,27 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
         "normalization_succeeds",
     ),
     (
-        (ida_hexrays.m_mov, ida_hexrays.m_ijmp, 0, 0, True),
-        (ida_hexrays.m_add, ida_hexrays.m_ijmp, 0, 0, False),
         (
+            PredicateKind.EQ,
+            None,
+            ida_hexrays.m_mov,
+            ida_hexrays.m_ijmp,
+            0,
+            0,
+            True,
+        ),
+        (
+            PredicateKind.EQ,
+            None,
+            ida_hexrays.m_add,
+            ida_hexrays.m_ijmp,
+            0,
+            0,
+            False,
+        ),
+        (
+            PredicateKind.EQ,
+            None,
             ida_hexrays.m_mov,
             ida_hexrays.m_icall,
             ida_hexrays.MBL_TCAL,
@@ -1102,6 +1122,8 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
             True,
         ),
         (
+            PredicateKind.EQ,
+            None,
             ida_hexrays.m_mov,
             ida_hexrays.m_icall,
             0,
@@ -1109,6 +1131,8 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
             False,
         ),
         (
+            PredicateKind.EQ,
+            None,
             ida_hexrays.m_mov,
             ida_hexrays.m_icall,
             ida_hexrays.MBL_TCAL | ida_hexrays.MBL_CALL,
@@ -1116,9 +1140,29 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
             False,
         ),
         (
+            PredicateKind.EQ,
+            None,
             ida_hexrays.m_mov,
             ida_hexrays.m_icall,
             ida_hexrays.MBL_TCAL,
+            0,
+            False,
+        ),
+        (
+            PredicateKind.SLT,
+            ida_hexrays.m_xor,
+            ida_hexrays.m_mov,
+            ida_hexrays.m_ijmp,
+            0,
+            0,
+            True,
+        ),
+        (
+            PredicateKind.SLT,
+            ida_hexrays.m_or,
+            ida_hexrays.m_mov,
+            ida_hexrays.m_ijmp,
+            0,
             0,
             False,
         ),
@@ -1126,6 +1170,8 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
 )
 def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
     monkeypatch,
+    predicate_kind,
+    predicate_combine_opcode,
     selected_opcode,
     join_opcode,
     join_flags,
@@ -1145,10 +1191,32 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
         register=zero_flag_register,
         size=1,
     )
+    overflow_flag = _Operand(
+        ida_hexrays.mop_r,
+        register=52,
+        size=1,
+    )
+    sign_flag = _Operand(
+        ida_hexrays.mop_r,
+        register=54,
+        size=1,
+    )
+    predicate_result = zero_flag
+    if predicate_combine_opcode is not None:
+        predicate_result = _Operand(
+            ida_hexrays.mop_d,
+            nested=_Instruction(
+                predicate_combine_opcode,
+                selected_ea,
+                left=sign_flag,
+                right=overflow_flag,
+            ),
+            size=1,
+        )
     skip_selected = _Instruction(
         ida_hexrays.m_lnot,
         selected_ea,
-        left=zero_flag,
+        left=predicate_result,
         dest=_Operand(
             ida_hexrays.mop_r,
             register=56,
@@ -1167,7 +1235,7 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
             _Instruction(
                 ida_hexrays.m_seto,
                 source_ea,
-                dest=_Operand(ida_hexrays.mop_r, register=52, size=1),
+                dest=overflow_flag,
             ),
             _Instruction(
                 ida_hexrays.m_setz,
@@ -1182,7 +1250,7 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
             _Instruction(
                 ida_hexrays.m_sets,
                 source_ea,
-                dest=_Operand(ida_hexrays.mop_r, register=54, size=1),
+                dest=sign_flag,
             ),
             _Instruction(ida_hexrays.m_mov, predicate_ea),
             _Instruction(ida_hexrays.m_mov, 0x40A5D6),
@@ -1313,7 +1381,7 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
                     predicate_anchor_ea=predicate_ea,
                     computed_branch_normalization=(
                         FragmentComputedBranchNormalization(
-                            predicate_kind=PredicateKind.EQ,
+                            predicate_kind=predicate_kind,
                             condition_producer_ea=source_ea,
                             unresolved_transfer_ea=unresolved_transfer_ea,
                         )
@@ -1383,8 +1451,16 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
         int(ida_hexrays.m_jnz),
     )
     branch = staged[-1]
-    assert int(branch.l.t) == int(ida_hexrays.mop_r)
-    assert int(branch.l.r) == zero_flag_register
+    if predicate_combine_opcode is None:
+        assert int(branch.l.t) == int(ida_hexrays.mop_r)
+        assert int(branch.l.r) == zero_flag_register
+    else:
+        assert int(branch.l.t) == int(ida_hexrays.mop_d)
+        assert int(branch.l.d.opcode) == int(predicate_combine_opcode)
+        assert {
+            int(branch.l.d.l.r),
+            int(branch.l.d.r.r),
+        } == {int(sign_flag.r), int(overflow_flag.r)}
     assert int(branch.r.t) == int(ida_hexrays.mop_n)
     assert int(branch.r.nnn.value) == 0
     assert set(context.instruction_origins.values()) == {
