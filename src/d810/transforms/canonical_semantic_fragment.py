@@ -10,14 +10,18 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     BoundCanonicalSemanticEvidence,
     BoundSemanticBlock,
     CanonicalSemanticEvidence,
+    SemanticCorridorPoint,
     SemanticPredicateKind,
+    SemanticRouteProof,
     SemanticRouteProofKind,
     SemanticRouteShape,
+    semantic_route_proof_reaches_consumer,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
+    stable_block_identities_refine_at_anchor,
     stable_block_identity_semantic_anchor,
     stable_block_identity_from_snapshot,
     stable_block_identity_token,
@@ -577,6 +581,166 @@ def _detached_target_component(
     return selected_blocks, selected_operations, selected_native_body
 
 
+def _canonical_composition_proofs(
+    evidence: CanonicalSemanticEvidence,
+) -> tuple[SemanticRouteProof, SemanticRouteProof | None]:
+    """Select one live route and its exact downstream imported consumer."""
+    direct = tuple(
+        proof
+        for proof in evidence.route_proofs
+        if (
+            proof.proof_kind is SemanticRouteProofKind.STATE_ASSIGNMENT
+            and proof.shape is SemanticRouteShape.DIRECT
+            and len(proof.destinations) == 1
+            and proof.predicate is None
+            and not proof.carriers
+            and proof.terminal_return_carrier is None
+            and proof.state_write is not None
+        )
+    )
+    if len(direct) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition requires one complete direct state assignment"
+        )
+    (root_proof,) = direct
+    consumers = tuple(
+        proof
+        for proof in evidence.route_proofs
+        if proof is not root_proof
+    )
+    if not consumers:
+        return root_proof, None
+    if len(consumers) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition requires at most one downstream semantic consumer"
+        )
+    (consumer,) = consumers
+    if (
+        consumer.proof_kind is not SemanticRouteProofKind.STATE_CHOICE
+        or consumer.shape is not SemanticRouteShape.CONDITIONAL
+        or len(consumer.destinations) != 2
+        or consumer.predicate is None
+        or consumer.predicate.kind is not SemanticPredicateKind.STORAGE_EQUALS
+        or len(consumer.carriers) != 1
+        or consumer.state_write is not None
+        or consumer.terminal_return_carrier is not None
+        or consumer.source_owner_identity != consumer.source_identity
+        or consumer.source_owner_anchor_ea != consumer.source_anchor_ea
+        or not semantic_route_proof_reaches_consumer(
+            root_proof,
+            consumer,
+        )
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition downstream consumer is not one complete "
+            "imported state choice"
+        )
+    return root_proof, consumer
+
+
+def _with_semantic_imported_consumer(
+    plan: FragmentPlan,
+    proof: SemanticRouteProof,
+) -> FragmentPlan:
+    """Replace one imported raw dispatcher operation with its semantic choice."""
+    source = _unique_plan_block(
+        plan,
+        proof.source_identity,
+        proof.source_anchor_ea,
+        roles=frozenset({FragmentBlockRole.IMPORTED}),
+        description="canonical imported semantic consumer",
+    )
+    if source.native_body_id is None:
+        raise CanonicalSemanticFragmentRejected(
+            "canonical imported semantic consumer lacks native-body ownership"
+        )
+    destinations = tuple(
+        _unique_plan_block(
+            plan,
+            destination.target_identity,
+            destination.target_anchor_ea,
+            roles=frozenset(
+                {
+                    FragmentBlockRole.EXTERNAL,
+                    FragmentBlockRole.IMPORTED,
+                    FragmentBlockRole.REPLACEMENT,
+                }
+            ),
+            description="canonical imported semantic destination",
+        )
+        for destination in proof.destinations
+    )
+    if any(
+        destination.role is FragmentBlockRole.IMPORTED
+        and destination.native_body_id != source.native_body_id
+        for destination in destinations
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical imported semantic choice crosses native-body ownership"
+        )
+    source_operations = tuple(
+        operation
+        for operation in plan.operations
+        if operation.source_block_id == source.block_id
+    )
+    if len(source_operations) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "canonical imported semantic consumer requires one raw operation"
+        )
+    (raw_operation,) = source_operations
+    semantic_operation = FragmentOperation(
+        operation_id=f"route:{proof.proof_id}",
+        source_block_id=source.block_id,
+        edges=tuple(
+            FragmentEdge(
+                role=destination.role,
+                target_block_id=target.block_id,
+            )
+            for destination, target in zip(
+                proof.destinations,
+                destinations,
+                strict=True,
+            )
+        ),
+        predicate_anchor_ea=int(proof.source_anchor_ea),
+    )
+    native_bodies = tuple(
+        replace(
+            body,
+            terminal_block_ids=tuple(
+                block_id
+                for block_id in body.terminal_block_ids
+                if block_id != source.block_id
+            ),
+            proof_ids=tuple(
+                dict.fromkeys(
+                    (
+                        *(
+                            proof_id
+                            for proof_id in body.proof_ids
+                            if proof_id != raw_operation.operation_id
+                        ),
+                        proof.proof_id,
+                    )
+                )
+            ),
+        )
+        if body.body_id == source.native_body_id
+        else body
+        for body in plan.native_bodies
+    )
+    return replace(
+        plan,
+        operations=tuple(
+            semantic_operation
+            if operation is raw_operation
+            else operation
+            for operation in plan.operations
+        ),
+        native_bodies=native_bodies,
+    )
+
+
 def compose_canonical_semantic_fragment_plan(
     graph: FlowGraph,
     normalization_plan: FragmentPlan,
@@ -657,26 +821,18 @@ def compose_canonical_semantic_fragment_plan(
                 "source_plan_id": normalization_authority.source_plan_id,
             },
         )
-    if len(evidence.route_proofs) != 1:
-        raise CanonicalSemanticFragmentRejected(
-            "canonical composition currently requires one route proof"
+    proof, imported_consumer = _canonical_composition_proofs(evidence)
+    effective_normalization_plan = (
+        normalization_plan
+        if imported_consumer is None
+        else _with_semantic_imported_consumer(
+            normalization_plan,
+            imported_consumer,
         )
-    (proof,) = evidence.route_proofs
-    if (
-        proof.proof_kind is not SemanticRouteProofKind.STATE_ASSIGNMENT
-        or proof.shape is not SemanticRouteShape.DIRECT
-        or len(proof.destinations) != 1
-        or proof.predicate is not None
-        or proof.carriers
-        or proof.terminal_return_carrier is not None
-        or proof.state_write is None
-    ):
-        raise CanonicalSemanticFragmentRejected(
-            "canonical composition requires one complete direct state assignment"
-        )
+    )
 
     source = _unique_plan_block(
-        normalization_plan,
+        effective_normalization_plan,
         proof.source_identity,
         proof.source_anchor_ea,
         roles=frozenset({FragmentBlockRole.EXTERNAL}),
@@ -713,7 +869,7 @@ def compose_canonical_semantic_fragment_plan(
     source_anchor_ea = int(state_write.instruction_ea)
     (destination,) = proof.destinations
     target = _unique_plan_block(
-        normalization_plan,
+        effective_normalization_plan,
         destination.target_identity,
         destination.target_anchor_ea,
         roles=frozenset({FragmentBlockRole.IMPORTED}),
@@ -722,10 +878,12 @@ def compose_canonical_semantic_fragment_plan(
     target_blocks, target_operations, native_body = (
         _detached_target_component(
             graph,
-            normalization_plan,
+            effective_normalization_plan,
             target,
             current_identity_by_serial=current_identity_by_serial,
-            canonical_proof_id=proof.proof_id,
+            canonical_proof_id="+".join(
+                item.proof_id for item in evidence.route_proofs
+            ),
         )
     )
     target_external_blocks = tuple(
@@ -871,6 +1029,152 @@ def compose_canonical_semantic_fragment_plan(
         external_id_by_serial[serial] = block_id
         return block_id
 
+    blocks.extend(
+        (
+            FragmentBlock(
+                block_id=original_id,
+                role=FragmentBlockRole.ORIGINAL,
+                materialization=(
+                    FragmentBlockMaterialization.REUSE_PUBLISHED
+                ),
+                semantic_anchor_ea=source_anchor_ea,
+                stable_identity=source_identity,
+            ),
+            FragmentBlock(
+                block_id=replacement_id,
+                role=FragmentBlockRole.REPLACEMENT,
+                materialization=(
+                    FragmentBlockMaterialization.CLONE_PUBLISHED
+                ),
+                semantic_anchor_ea=source_anchor_ea,
+                stable_identity=source_identity,
+                replaces_block_id=original_id,
+            ),
+            *target_imported_blocks,
+        )
+    )
+
+    def semantic_point_block_id(point: SemanticCorridorPoint) -> str:
+        candidates = tuple(
+            block
+            for block in blocks
+            if block.role is not FragmentBlockRole.ORIGINAL
+            and block.stable_identity is not None
+            and stable_block_identities_refine_at_anchor(
+                block.stable_identity,
+                point.identity,
+                point.anchor_ea,
+            )
+        )
+        if len(candidates) == 1:
+            return candidates[0].block_id
+        if candidates:
+            raise CanonicalSemanticFragmentRejected(
+                "canonical semantic corridor has multiple projected owners",
+                reason_code="projected_semantic_corridor_owner_ambiguous",
+                anchor_ea=int(point.anchor_ea),
+                payload={
+                    "candidate_block_ids": tuple(
+                        block.block_id for block in candidates
+                    ),
+                },
+            )
+        current_owners = tuple(
+            int(serial)
+            for serial, identity in current_identity_by_serial.items()
+            if stable_block_identities_refine_at_anchor(
+                identity,
+                point.identity,
+                point.anchor_ea,
+            )
+        )
+        if len(current_owners) != 1:
+            raise CanonicalSemanticFragmentRejected(
+                "canonical semantic corridor requires one current or staged owner",
+                reason_code="semantic_corridor_owner_count_mismatch",
+                anchor_ea=int(point.anchor_ea),
+                payload={
+                    "owner_labels": tuple(
+                        (
+                            f"blk{serial}@"
+                            f"0x{int(graph.blocks[serial].start_ea):X}"
+                        )
+                        for serial in current_owners
+                    ),
+                },
+            )
+        return external_block_id(current_owners[0])
+
+    data_flow_obligations: list[FragmentDataFlowObligation] = []
+    if imported_consumer is not None:
+        predicate = imported_consumer.predicate
+        if (
+            predicate is None
+            or predicate.kind is not SemanticPredicateKind.STORAGE_EQUALS
+            or predicate.storage_identity is None
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "canonical imported consumer lacks one portable storage predicate"
+            )
+        for point in predicate.corridor:
+            semantic_point_block_id(point)
+        predicate_value_id = f"predicate:{imported_consumer.proof_id}"
+        data_flow_obligations.append(
+            FragmentDataFlowObligation(
+                obligation_id=f"{predicate_value_id}:use-def",
+                role=FragmentDataFlowRole.CONDITION,
+                definition=FragmentValueSite(
+                    site_id=f"{predicate_value_id}:definition",
+                    block_id=semantic_point_block_id(predicate.origin),
+                    value_id=predicate_value_id,
+                    instruction_ea=int(predicate.origin.anchor_ea),
+                    storage_identity=predicate.storage_identity,
+                    width=int(predicate.width),
+                ),
+                uses=(
+                    FragmentValueSite(
+                        site_id=f"{predicate_value_id}:consumer",
+                        block_id=semantic_point_block_id(predicate.consumer),
+                        value_id=predicate_value_id,
+                        instruction_ea=int(predicate.consumer.anchor_ea),
+                        storage_identity=predicate.storage_identity,
+                        width=int(predicate.width),
+                    ),
+                ),
+            )
+        )
+        for carrier in imported_consumer.carriers:
+            for point in carrier.corridor:
+                semantic_point_block_id(point)
+            carrier_value_id = (
+                f"carrier:{imported_consumer.proof_id}:{carrier.carrier_id}"
+            )
+            data_flow_obligations.append(
+                FragmentDataFlowObligation(
+                    obligation_id=f"{carrier_value_id}:use-def",
+                    role=FragmentDataFlowRole.CARRIER,
+                    definition=FragmentValueSite(
+                        site_id=f"{carrier_value_id}:definition",
+                        block_id=semantic_point_block_id(carrier.definition),
+                        value_id=carrier_value_id,
+                        instruction_ea=int(carrier.definition.anchor_ea),
+                        storage_identity=carrier.storage_identity,
+                        width=int(carrier.width),
+                    ),
+                    uses=tuple(
+                        FragmentValueSite(
+                            site_id=f"{carrier_value_id}:consumer:{index}",
+                            block_id=semantic_point_block_id(consumer),
+                            value_id=carrier_value_id,
+                            instruction_ea=int(consumer.anchor_ea),
+                            storage_identity=carrier.storage_identity,
+                            width=int(carrier.width),
+                        )
+                        for index, consumer in enumerate(carrier.consumers)
+                    ),
+                )
+            )
+
     all_prohibited_serials = tuple(
         dict.fromkeys(int(value) for value in prohibited_dispatcher_serials)
     )
@@ -896,30 +1200,6 @@ def compose_canonical_semantic_fragment_plan(
         external_block_id(serial) for serial in prohibited_witness_serials
     )
 
-    blocks.extend(
-        (
-            FragmentBlock(
-                block_id=original_id,
-                role=FragmentBlockRole.ORIGINAL,
-                materialization=(
-                    FragmentBlockMaterialization.REUSE_PUBLISHED
-                ),
-                semantic_anchor_ea=source_anchor_ea,
-                stable_identity=source_identity,
-            ),
-            FragmentBlock(
-                block_id=replacement_id,
-                role=FragmentBlockRole.REPLACEMENT,
-                materialization=(
-                    FragmentBlockMaterialization.CLONE_PUBLISHED
-                ),
-                semantic_anchor_ea=source_anchor_ea,
-                stable_identity=source_identity,
-                replaces_block_id=original_id,
-            ),
-        )
-    )
-    blocks.extend(target_imported_blocks)
     operations = (
         FragmentOperation(
             operation_id=f"route:{proof.proof_id}",
@@ -950,6 +1230,7 @@ def compose_canonical_semantic_fragment_plan(
         operations=operations,
         normalization_authority=normalization_authority,
         native_bodies=(native_body,),
+        data_flow_obligations=tuple(data_flow_obligations),
     )
 
 

@@ -8,6 +8,7 @@ from enum import Enum
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import (
     StableBlockIdentity,
+    stable_block_identities_refine_at_anchor,
     stable_block_identity_from_snapshot,
 )
 from d810.ir.flowgraph import FlowGraph
@@ -637,6 +638,26 @@ class SemanticRouteProof:
         return self.source_identity.native_key
 
 
+def semantic_route_proof_reaches_consumer(
+    proof: SemanticRouteProof,
+    consumer: SemanticRouteProof,
+) -> bool:
+    """Match one destination to a consumer through an exact shared anchor."""
+    source_anchor_ea = int(consumer.source_anchor_ea)
+    source_identity = consumer.source_identity
+    if source_anchor_ea not in source_identity.exact_instruction_eas:
+        return False
+    return any(
+        int(destination.target_anchor_ea) == source_anchor_ea
+        and stable_block_identities_refine_at_anchor(
+            source_identity,
+            destination.target_identity,
+            source_anchor_ea,
+        )
+        for destination in proof.destinations
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalSemanticEvidence:
     """One atomic generation of provider-neutral semantic route proofs."""
@@ -978,4 +999,5 @@ __all__ = [
     "SemanticStateWriteProof",
     "bind_canonical_semantic_evidence",
     "canonical_terminal_state_targets",
+    "semantic_route_proof_reaches_consumer",
 ]

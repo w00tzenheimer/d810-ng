@@ -24,6 +24,7 @@ def test_exposes_the_portable_block_identity_contract() -> None:
         "BoundBlock",
         "RebindResult",
         "stable_block_identity_semantic_anchor",
+        "stable_block_identities_refine_at_anchor",
         "stable_block_identity_token",
     ):
         assert hasattr(block_identity, name), name
@@ -102,6 +103,56 @@ def test_current_mba_identity_snapshot_ties_full_ranges_to_live_anchors() -> Non
         (0xFFFFFFFFFFFFFF01, 0x40C64B),
     )
     assert snapshot.block_bindings == (binding,)
+
+
+def test_exact_anchor_refinement_matches_split_and_portable_identities() -> None:
+    native_key = make_native_key()
+    portable = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40A5AB, 0x40A5D0),),
+        native_key=native_key,
+        exact_instruction_eas=(0x40A5AB,),
+    )
+    live_split = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40A5AB, 0x40A5AC),),
+        native_key=native_key,
+        exact_instruction_eas=(0x40A5AB,),
+    )
+    overlap_only = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40A5A0, 0x40A5B0),),
+        native_key=native_key,
+        exact_instruction_eas=(0x40A5AB,),
+    )
+    wrong_native = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40A5AB, 0x40A5AC),),
+        native_key=make_native_key(function_rva=0x2000),
+        exact_instruction_eas=(0x40A5AB,),
+    )
+
+    assert block_identity.stable_block_identities_refine_at_anchor(
+        portable,
+        live_split,
+        0x40A5AB,
+    )
+    assert block_identity.stable_block_identities_refine_at_anchor(
+        live_split,
+        portable,
+        0x40A5AB,
+    )
+    assert not block_identity.stable_block_identities_refine_at_anchor(
+        portable,
+        overlap_only,
+        0x40A5AB,
+    )
+    assert not block_identity.stable_block_identities_refine_at_anchor(
+        portable,
+        wrong_native,
+        0x40A5AB,
+    )
+    assert not block_identity.stable_block_identities_refine_at_anchor(
+        portable,
+        live_split,
+        0x40A5AC,
+    )
 
 
 def test_identity_contract_exposes_explicit_construction_and_rebind_results() -> None:
