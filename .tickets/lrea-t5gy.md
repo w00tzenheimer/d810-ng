@@ -467,3 +467,44 @@ envelope. Start with a focused red resolver contract for the
 Do not accept arbitrary synthetic tails, preserve the raw dispatcher
 navigation as semantics, add a sample-EA production guard, or broaden
 publication beyond the first failed obligation.
+
+**2026-07-24T05:48:00Z**
+
+Commit `59a9cc37e` recovers an exact ESP-relative native comparison feeding a
+CMOV state choice only after the comparison instruction has one canonical
+IDA-frame stack identity. The resolver records that stable stack identity,
+predicate width and constant, both selected state constants, and the original
+condition code before any dispatcher navigation. Missing or ambiguous stack
+identity still makes discovery abstain. The focused runtime contract was red
+before the change and is green afterward; Ruff, ast-grep, all 14
+worktree-local import contracts, commit hooks, and `graphify update .` pass.
+
+The mandatory production A560 diagnostic canary completed in 9.24 seconds
+without a process segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784872053_11.diag.sqlite3`; log:
+`.tmp/rhad-a560-v31-stack-predicate-choice.txt`. The highest contiguous level
+remains C1, not C5 or C6, and the transaction again rolls back before fragment
+staging or root publication.
+
+The intended resolver evidence is proven in production. Snapshot 1 contains
+`ResolverTransferEvidenceFact` proof `d177cf26836df2ac9d1f` with source
+`0x40C4B4`, select/predicate consumer `0x40C4C3`, materialized anchors
+`0x40C4B4` and `0x40C4C3`, canonical stack identity `68`, width 4, compare
+constant 5, true state `0x456A4274` mapped to handler `0x40B199`, and false
+state `0x2B8162DC` mapped to handler `0x40ADA2`. The row is a
+`static_conditional_state_choice_bridge` and preserves the original condition.
+
+The first failed C2 obligation is unchanged because frontend normalization
+still projects only computed-goto patch plans. The transaction therefore emits
+the generic imported operation `native-body-edge@0x40C4B4`, expects the later
+raw dispatcher predicate at `0x40C4D2`, observes the detached synthetic tail at
+fictitious EA `0xF1C02B3C`, aborts before staging, and rolls back successfully.
+
+Continue by projecting only field-complete static conditional state-choice
+bridges into `NativeIndirectTransferProof`: the proof must own the original
+condition producer/consumer, the complete split dispatcher envelope through
+the unique unresolved transfer, and both independently mapped handler
+endpoints. That proof-owned operation must replace the generic native-body
+operation at the same imported source, so exactly one atomic predicate and
+both semantic arms own the envelope. Do not special-case `0x40C4B4`, weaken
+predicate validation, or retain both operations.
