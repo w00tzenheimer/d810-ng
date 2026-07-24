@@ -747,7 +747,15 @@ def _validate_reachability(
     outcomes: list[FragmentValidationOutcome],
 ) -> None:
     entry_reachable = _reachable(blocks, (projection.entry_block_id,))
-    fragment_reachable = _reachable(blocks, plan.roots)
+    internal_roots = (
+        *plan.roots,
+        *(
+            entry_block_id
+            for native_body in plan.native_bodies
+            for entry_block_id in native_body.entry_block_ids
+        ),
+    )
+    fragment_reachable = _reachable(blocks, internal_roots)
     for root in plan.roots:
         passed = root in entry_reachable
         _outcome(
@@ -773,9 +781,12 @@ def _validate_reachability(
             FragmentValidationPostcondition.INTERNAL_CONNECTIVITY,
             block.block_id,
             passed,
-            "staged fragment block is connected to a fragment root"
+            "staged fragment block is connected to a publication or native-body root"
             if passed
-            else "staged fragment block is disconnected from all fragment roots",
+            else (
+                "staged fragment block is disconnected from all publication "
+                "and native-body roots"
+            ),
             block.block_id,
         )
     for operation in plan.operations:
@@ -785,9 +796,12 @@ def _validate_reachability(
             FragmentValidationPostcondition.OPERATION_REACHABILITY,
             operation.operation_id,
             passed,
-            "required operation is reachable from a fragment root"
+            "required operation is reachable from a publication or native-body root"
             if passed
-            else "required operation is unreachable from every fragment root",
+            else (
+                "required operation is unreachable from every publication "
+                "and native-body root"
+            ),
             operation.source_block_id,
         )
     for original in plan.owned_originals:
