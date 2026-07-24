@@ -627,3 +627,49 @@ replacement envelopes retain the existing replacement normalization, and
 unknown ownership rejects. Prove this first with a focused red semantic-backend
 contract. Do not add a compatibility fallback, manufacture a replaced original,
 weaken fragment validation, or special-case A560 addresses.
+
+**2026-07-24T06:48:34Z**
+
+Commit `fc04bb77f` completes the imported-envelope ownership slice. The
+semantic-fragment backend now dispatches a
+`FragmentImportedConditionalSelectEnvelope` to the detached native-body
+materializer and reserves live replacement normalization for
+`FragmentConditionalSelectEnvelope`; an unknown envelope type rejects instead
+of falling through. The pinned-Docker affected semantic-backend and detached
+import gate is 133/133 green, Ruff passes, ast-grep passes, all 14
+worktree-local import contracts pass, commit hooks pass, and
+`graphify update .` completes.
+
+The mandatory production A560 diagnostic canary completed in 132.41 seconds.
+Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784875062_11.diag.sqlite3`; log:
+`.tmp/rhad-a560-v31-imported-envelope-owner-dispatch.txt`. The process did not
+segfault. Hex-Rays completed the decompilation pipeline but returned no cfunc
+with `hexrays_failure(code=-1, ea=0x40A560, description='INTERR: 51974')`.
+This is not INTERR 52719.
+
+The highest contiguous canary level is C5, not C6. The diagnostic DB records
+two committed frontend-normalization transactions,
+`73e6eb1c03be41bfba2acde8217f4a89` and
+`fb151ae362474420bf1783872aa25e35`. Each transaction staged its fragment,
+passed 3,357 prepublication and 6,263 postpublication outcomes, published its
+root, and committed a receipt with 1,390 planned and 1,390 applied operations.
+The second transaction follows the one controlled restart. Evidence generation
+3 is discovered after the second normalization round.
+
+SDK-first decoding of the exact runtime failure identifies `51974` as the
+ctree-generation assertion that a surviving microinstruction must not carry
+`minsn_t.iprops & IPROP_ASSERT`. The matching IDA 9.3 runtime binary contains
+the unique `51974` call site immediately after testing bit 7 of the
+microinstruction `iprops` field. This is a Hex-Rays internal consistency error,
+not a host-process segfault and not a stale block-index assertion.
+
+The first failed C6 obligation is therefore assertion-instruction lifecycle
+hygiene before ctree generation. The diagnostic DB cannot yet identify the
+responsible anchored instruction because its `instructions` table records the
+opcode and operands but not `iprops` or an assertion marker. Continue by adding
+first-class `iprops` and `is_assert` instruction snapshot fields, with no
+backward-compatible schema path, then rerun the exact A560 canary and query the
+DB for the first `blkN@EA` assertion owner. Do not clear assertion flags
+generically, bypass ctree generation, infer ownership from text logs, or alter
+semantic publication until the DB proves the instruction's origin.
