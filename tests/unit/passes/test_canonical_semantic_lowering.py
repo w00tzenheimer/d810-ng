@@ -30,6 +30,7 @@ from d810.capabilities.resolver import CapabilitySet
 from d810.capabilities.semantic_routes import (
     CanonicalSemanticCandidateEvidenceCapability,
 )
+from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -224,6 +225,18 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
             unreachable_obligation_ids=(),
         ),
     )
+    normalization_scope = normalization_plan.work_item_scope
+    assert normalization_scope is not None
+    normalization_authority = NormalizationWorkItemAuthority(
+        evidence_generation=candidate.generation,
+        publication_revision=1,
+        source_plan_id=normalization_plan.plan_id,
+        source_atomic_group_id=normalization_plan.atomic_group_id,
+        work_item_id=normalization_scope.work_item_id,
+        selected_obligation_ids=normalization_scope.selected_obligation_ids,
+        remaining_obligation_ids=normalization_scope.remaining_obligation_ids,
+        unreachable_obligation_ids=normalization_scope.unreachable_obligation_ids,
+    )
     calls = []
     monkeypatch.setattr(
         state_machine_module,
@@ -258,7 +271,7 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
         def plan_for(self, function_ea: int, evidence_generation: int):
             calls.append(("plan", function_ea, evidence_generation))
             return (
-                normalization_plan
+                (normalization_plan, normalization_authority)
                 if (
                     int(function_ea) == graph.func_ea
                     and int(evidence_generation) == candidate.generation
@@ -308,7 +321,10 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
         normalization_plan,
         candidate,
     )
-    assert calls[1][4] == {"prohibited_dispatcher_serials": (30,)}
+    assert calls[1][4] == {
+        "normalization_authority": normalization_authority,
+        "prohibited_dispatcher_serials": (30,),
+    }
     assert (
         result.analysis_outputs["lower_state_machine_plan_metadata"][
             "evidence_generation"

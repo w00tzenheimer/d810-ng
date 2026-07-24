@@ -14,6 +14,7 @@ from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
 )
 from d810.capabilities.resolver import CapabilitySet
+from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.maturity import IRMaturity
@@ -39,8 +40,8 @@ class SessionFrontendNormalizationPlanAuthority:
     function_ea: int
     native_key: NativePreanalysisKey
     _plan: FragmentPlan | None = None
+    _authority: NormalizationWorkItemAuthority | None = None
     _evidence_generation: int | None = None
-    _receipted_work_item_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         function_ea = int(self.function_ea)
@@ -56,8 +57,7 @@ class SessionFrontendNormalizationPlanAuthority:
         self,
         plan: FragmentPlan,
         *,
-        evidence_generation: int,
-        work_item_id: str,
+        authority: NormalizationWorkItemAuthority,
     ) -> None:
         """Retain complete intent only after one selected work item commits."""
         if not isinstance(plan, FragmentPlan):
@@ -75,42 +75,58 @@ class SessionFrontendNormalizationPlanAuthority:
             raise FrontendNormalizationPublicationError(
                 "frontend normalization plan belongs to another native identity"
             )
-        generation = int(evidence_generation)
-        if generation <= 0:
-            raise ValueError(
-                "frontend normalization plan generation must be positive"
+        if not isinstance(authority, NormalizationWorkItemAuthority):
+            raise TypeError(
+                "frontend normalization plan requires typed receipt authority"
             )
-        work_item_id = str(work_item_id).strip()
-        if not work_item_id:
-            raise FrontendNormalizationPublicationError(
-                "frontend normalization plan requires a receipted work item"
-            )
+        generation = int(authority.evidence_generation)
         if (
-            self._evidence_generation == generation
-            and self._plan is not None
-            and self._plan != plan
+            authority.source_plan_id != plan.plan_id
+            or authority.source_atomic_group_id != plan.atomic_group_id
         ):
             raise FrontendNormalizationPublicationError(
-                "frontend normalization plan authority changed within one generation"
+                "frontend normalization receipt authority changed plan lineage"
             )
+        previous_generation = self._evidence_generation
+        if previous_generation is not None and generation < previous_generation:
+            raise FrontendNormalizationPublicationError(
+                "frontend normalization plan authority generation regressed"
+            )
+        if previous_generation == generation:
+            if self._plan != plan:
+                raise FrontendNormalizationPublicationError(
+                    "frontend normalization plan intent changed within one generation"
+                )
+            previous_authority = self._authority
+            if previous_authority is None:
+                raise RuntimeError(
+                    "frontend normalization plan lost its receipt authority"
+                )
+            if authority == previous_authority:
+                return
+            if not authority.is_immediate_successor_of(previous_authority):
+                raise FrontendNormalizationPublicationError(
+                    "frontend normalization receipt revision did not advance "
+                    "exactly once within one generation"
+                )
         self._plan = plan
+        self._authority = authority
         self._evidence_generation = generation
-        self._receipted_work_item_ids = tuple(
-            dict.fromkeys((*self._receipted_work_item_ids, work_item_id))
-        )
 
     def plan_for(
         self,
         function_ea: int,
         evidence_generation: int,
-    ) -> FragmentPlan | None:
+    ) -> tuple[FragmentPlan, NormalizationWorkItemAuthority] | None:
         """Return intent only for its exact function and evidence generation."""
         if (
             int(function_ea) != self.function_ea
             or int(evidence_generation) != self._evidence_generation
+            or self._plan is None
+            or self._authority is None
         ):
             return None
-        return self._plan
+        return self._plan, self._authority
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,8 +309,22 @@ def run_frontend_normalization_pipeline(
             )
         plan_authority.record_receipted_plan(
             complete_plan,
-            evidence_generation=generation,
-            work_item_id=work_item_id,
+            authority=NormalizationWorkItemAuthority(
+                evidence_generation=generation,
+                publication_revision=after_work_item_revision,
+                source_plan_id=complete_plan.plan_id,
+                source_atomic_group_id=complete_plan.atomic_group_id,
+                work_item_id=work_item_id,
+                selected_obligation_ids=(
+                    lifecycle_state.normalization_last_selected_obligation_ids
+                ),
+                remaining_obligation_ids=(
+                    lifecycle_state.normalization_last_remaining_obligation_ids
+                ),
+                unreachable_obligation_ids=(
+                    lifecycle_state.normalization_last_unreachable_obligation_ids
+                ),
+            ),
         )
     if after_published == generation:
         if not work_item_published:

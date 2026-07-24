@@ -54,6 +54,7 @@ from d810.analyses.control_flow.terminal_return_carrier_evidence import (
     TerminalReturnCarrierEvidence,
     TerminalReturnCarrierEvidenceRejected,
 )
+from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.core.native_preanalysis_key import (
     NativePreanalysisKey,
     NativePreanalysisKeyMismatch,
@@ -1156,6 +1157,9 @@ class NativePreanalysisSessionState:
     normalization_last_remaining_obligation_ids: tuple[str, ...] = ()
     normalization_last_unreachable_obligation_ids: tuple[str, ...] = ()
     canonical_semantic_plan_generation: int | None = None
+    canonical_semantic_normalization_authority: (
+        NormalizationWorkItemAuthority | None
+    ) = None
     semantic_fragment_staged_generation: int | None = None
     semantic_fragment_validated_generation: int | None = None
     semantic_fragment_published_postvalidated_generation: int | None = None
@@ -1298,6 +1302,27 @@ class NativePreanalysisSessionState:
         self.normalization_last_unreachable_obligation_ids = (
             unreachable_obligation_ids
         )
+        canonical_normalization_authority = (
+            self.canonical_semantic_normalization_authority
+        )
+        if canonical_normalization_authority is not None:
+            if not isinstance(
+                canonical_normalization_authority,
+                NormalizationWorkItemAuthority,
+            ):
+                raise TypeError(
+                    "canonical semantic normalization authority has the wrong type"
+                )
+            if (
+                canonical_normalization_authority.evidence_generation > generation
+                or canonical_normalization_authority.publication_revision
+                > publication_revision
+                or self.canonical_semantic_plan_generation
+                != canonical_normalization_authority.evidence_generation
+            ):
+                raise ValueError(
+                    "canonical semantic normalization authority exceeds lifecycle state"
+                )
 
         normalization_order = (
             self.normalization_published_postvalidated_generation or 0,
@@ -1308,13 +1333,25 @@ class NativePreanalysisSessionState:
         if normalization_order != tuple(sorted(normalization_order)):
             raise ValueError("invalid normalization lifecycle generation order")
 
+        semantic_normalization_generation = max(
+            self.normalization_published_postvalidated_generation or 0,
+            (
+                0
+                if canonical_normalization_authority is None
+                else canonical_normalization_authority.evidence_generation
+            ),
+        )
+        if (
+            self.canonical_semantic_plan_generation or 0
+        ) > semantic_normalization_generation:
+            raise ValueError("canonical semantic plan lacks normalized authority")
         semantic_order = (
             self.receipt_committed_generation or 0,
             self.semantic_fragment_published_postvalidated_generation or 0,
             self.semantic_fragment_validated_generation or 0,
             self.semantic_fragment_staged_generation or 0,
             self.canonical_semantic_plan_generation or 0,
-            self.normalization_published_postvalidated_generation or 0,
+            semantic_normalization_generation,
         )
         if semantic_order != tuple(sorted(semantic_order)):
             raise ValueError("invalid semantic lifecycle generation order")
@@ -1477,19 +1514,77 @@ class NativePreanalysisSessionState:
             != self.evidence_generation
         )
 
-    def mark_canonical_semantic_plan_ready(self) -> bool:
-        """Record a canonical pass plan over the current normalized generation."""
-        return self._mark_lifecycle_generation(
-            attribute="canonical_semantic_plan_generation",
-            operation="canonical_semantic_plan_ready",
-            evidence_family="semantic_lowering",
-            prerequisite_attribute=(
-                "normalization_published_postvalidated_generation"
-            ),
-            prerequisite_error=(
+    def mark_canonical_semantic_plan_ready(
+        self,
+        authority: NormalizationWorkItemAuthority | None = None,
+    ) -> bool:
+        """Record a canonical plan over global or receipt-scoped normalization."""
+        generation = self._require_current_portable_evidence()
+        globally_normalized = (
+            self.normalization_published_postvalidated_generation == generation
+        )
+        if authority is not None:
+            if not isinstance(authority, NormalizationWorkItemAuthority):
+                raise TypeError(
+                    "canonical semantic plan requires typed normalization authority"
+                )
+            scope_matches = bool(
+                authority.evidence_generation == generation
+                and authority.publication_revision
+                == self.normalization_work_item_publication_revision
+                and authority.work_item_id
+                == self.normalization_last_published_work_item_id
+                and authority.selected_obligation_ids
+                == self.normalization_last_selected_obligation_ids
+                and authority.remaining_obligation_ids
+                == self.normalization_last_remaining_obligation_ids
+                and authority.unreachable_obligation_ids
+                == self.normalization_last_unreachable_obligation_ids
+            )
+            if not scope_matches:
+                raise RuntimeError(
+                    "canonical semantic normalization work-item scope drifted"
+                )
+        elif not globally_normalized:
+            raise RuntimeError(
                 "canonical semantic planning requires current normalized authority"
+            )
+
+        previous = self.canonical_semantic_plan_generation
+        if previous == generation:
+            existing = self.canonical_semantic_normalization_authority
+            if existing == authority:
+                return False
+            if (
+                existing is None
+                or authority is None
+                or not authority.is_immediate_successor_of(existing)
+            ):
+                raise RuntimeError(
+                    "canonical semantic normalization work-item scope drifted"
+                )
+        else:
+            self.canonical_semantic_plan_generation = generation
+        self.canonical_semantic_normalization_authority = authority
+        self._observe_transition(
+            operation="canonical_semantic_plan_ready",
+            previous_generation=0 if previous is None else int(previous),
+            evidence_family="semantic_lowering",
+            reason=(
+                f"canonical semantic plan ready for portable generation "
+                f"{generation}"
+                + (
+                    ""
+                    if authority is None
+                    else (
+                        f" via normalization work item "
+                        f"{authority.work_item_id} revision "
+                        f"{authority.publication_revision}"
+                    )
+                )
             ),
         )
+        return True
 
     def _fragment_publication_mark_semantic_fragment_staged(self) -> bool:
         """Record detached construction of the current canonical semantic plan."""
