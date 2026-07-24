@@ -2339,3 +2339,53 @@ rewrite envelope. Determine whether the smallest closed fragment must retain
 that imported normalization and its dispatcher dependency rather than cutting
 at the uniquely published owner. Do not weaken dispatcher absence, add another
 live-backend exception, or claim C4 from completed staging.
+
+**2026-07-24T22:52:53Z**
+
+Commits `abc4de99c` and `e0ec596c2` implement and correct the next vertical
+composition slice; mechanical Ruff formatting is isolated in `d93e74bbb`.
+When a selected detached route reaches a prohibited frontend replacement, the
+composer now imports that replacement's pristine native identity, converts its
+live conditional-select envelope to a portable imported envelope, and carries
+the replacement operation and source/select/join ranges in the same unpublished
+native body. The current-owner match requires complete identity containment and
+the live block's native start EA; it does not fall back to EA-only matching.
+
+Focused verification is 319/319 portable-plan, canonical composition,
+detached-import, and semantic-backend tests. Ruff, ast-grep, all 14
+worktree-local import contracts, commit hooks, and `graphify update .` are
+green. Docker client/server 29.6.2 is live. The first Docker probe preserved
+only its log because pytest used container-local `/tmp`; the authoritative
+rerun uses a worktree-mounted `--basetemp` and preserves all artifacts.
+
+The mandatory cache-disabled A560 diagnostic canary at committed HEAD
+`e0ec596c2` returned normally in 17.42 seconds with no process crash. Log:
+`.tmp/rhad-a560-v33-prohibited-reimport-canary-v2.txt`; primary DB:
+`.tmp/rhad-a560-v33-prohibited-reimport-canary-v2/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-prohibited-reimport-canary-v2/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one `while ( 1 )`; this is not A560
+acceptance.
+
+Canonical transaction `15669f01c6e347c1bdba171e20521c3b` proves the intended
+composition change activated. Its plan grows from 55 to 56 native-body blocks
+and from 56 to 57 proof ids. It contains imported owner
+`0x40A5F0`/source-select anchor `0x40A5FE`, operation
+`native-indirect-transfer@0x40A605`, and both incoming operations at
+`0x40C4B2` and `0x40C663` target that imported owner. The broad reused
+dispatcher boundary from the prior checkpoint is gone.
+
+The highest contiguous main-A560 level remains C3. The first failed C4
+obligation is prepublication outcome 148, `dispatcher_absence`, for current
+owner `blk4@0x40A5F0` with exact native anchor `0x40A5F6`. Its witness now
+enters through external transfer owner
+`native[0x40C4AE-0x40C4B4;exact=0x40C4B2]`, not through the imported broad
+`0x40A5F0` replacement. Later predicate/carrier use-def failures remain
+secondary. Rollback still fails with SDK `INTERR 50856`, the successor-count
+versus block-type invariant at `.ida-sdk/src/verifier/verify.cpp:1155`.
+
+Continue the v3.3 loop at transfer owner `0x40C4B2`. The next obligation is to
+give its complete reference conditional transaction detached ownership--the
+conditional arm to `0x40C4B4` and direct arm to imported `0x40A5F0`--rather
+than leaving the physical transfer block as a live external boundary. Do not
+claim C4, weaken dispatcher absence, or broaden to the 91-route publication.
