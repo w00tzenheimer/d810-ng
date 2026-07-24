@@ -6,6 +6,8 @@ import json
 import pathlib
 from collections.abc import Callable, Mapping
 
+from d810.core.deobfuscation_case import DeobfuscationCaseSnapshot
+from d810.manager.deobfuscation_case_service import DeobfuscationCaseCollectionError
 from d810.manager.project_runtime import ProjectRuntimeSnapshot
 from d810.manager.workbench_models import (
     ArtifactRef,
@@ -27,7 +29,10 @@ from d810.manager.workbench_models import (
     WorkbenchCommandResult,
     WorkbenchDiagnostic,
 )
-from d810.manager.workbench_recipe_models import RecipeCommandRequest
+from d810.manager.workbench_recipe_models import (
+    FunctionPipelineOverride,
+    RecipeCommandRequest,
+)
 from d810.passes.contract_manifest import (
     pipeline_contract_manifest,
     pipeline_contract_preflight_manifest,
@@ -191,6 +196,7 @@ class WorkbenchService:
         baseline: BaselineRef | None = None,
         latest_output: D810OutputRef | None = None,
         runtime_scope: str = "project",
+        saved_recipe: FunctionPipelineOverride | None = None,
         initial_errors: tuple[str, ...] = (),
     ) -> DeobfuscationWorkbenchSnapshot:
         """Collect one generation without executing passes or mutating state."""
@@ -210,6 +216,12 @@ class WorkbenchService:
             hook_mode=project_snapshot.hook_mode,
             pass_ids=tuple(project_snapshot.effective_pass_ids),
             recipe_scope=str(runtime_scope),
+        )
+        function = FunctionRef(
+            ea=int(function_ea),
+            name=str(function_name),
+            fingerprint=function_fingerprint,
+            generation=generation,
         )
 
         try:
@@ -273,14 +285,16 @@ class WorkbenchService:
                 if latest_output is None:
                     latest_output = stored_output
 
+        case = self._case_snapshot(
+            function=function,
+            runtime=runtime,
+            saved_recipe=saved_recipe,
+            errors=errors,
+        )
+
         return DeobfuscationWorkbenchSnapshot(
             generation=generation,
-            function=FunctionRef(
-                ea=int(function_ea),
-                name=str(function_name),
-                fingerprint=function_fingerprint,
-                generation=generation,
-            ),
+            function=function,
             runtime=runtime,
             attack=attack,
             pipeline=pipeline,
@@ -293,6 +307,7 @@ class WorkbenchService:
             freshness=SnapshotFreshness.CURRENT,
             engine_started=bool(getattr(self._manager, "started", False)),
             collection_errors=tuple(errors),
+            case=case,
         )
 
     def execute_analyze(
@@ -340,6 +355,30 @@ class WorkbenchService:
             request,
             expected_command="deobfuscate",
             label="Deobfuscation",
+            lifecycle=lifecycle,
+        )
+
+    def execute_build_deobfuscator(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        target: object,
+        provider_phase: object,
+    ) -> WorkbenchCommandResult:
+        """Refresh the case dossier without invoking a deobfuscation rewrite."""
+
+        def lifecycle() -> bool:
+            self._manager.analyze_workbench_function(
+                function_ea=request.function_ea,
+                target=target,
+                provider_phase=provider_phase,
+            )
+            return True
+
+        return self._execute_lifecycle(
+            request,
+            expected_command="build_deobfuscator",
+            label="Build Deobfuscator",
             lifecycle=lifecycle,
         )
 
@@ -391,6 +430,37 @@ class WorkbenchService:
             refresh_requested=True,
             message=f"{label} completed",
         )
+
+    def _case_snapshot(
+        self,
+        *,
+        function: FunctionRef,
+        runtime: RuntimeConfigRef,
+        saved_recipe: FunctionPipelineOverride | None,
+        errors: list[str],
+    ) -> DeobfuscationCaseSnapshot:
+        collector = getattr(self._manager, "get_deobfuscation_case_snapshot", None)
+        if not callable(collector):
+            return DeobfuscationCaseSnapshot(
+                evidence=None,
+                strategy=None,
+                direct_run_permitted=False,
+                direct_run_reason="Build a strategy before running it.",
+            )
+        try:
+            return collector(
+                function=function,
+                runtime=runtime,
+                saved_recipe=saved_recipe,
+            )
+        except DeobfuscationCaseCollectionError as exc:
+            errors.append(f"case: {exc}")
+            return DeobfuscationCaseSnapshot(
+                evidence=None,
+                strategy=None,
+                direct_run_permitted=False,
+                direct_run_reason="Case evidence is unavailable; Build a strategy before running it.",
+            )
 
     def _validate_request(
         self,

@@ -719,6 +719,19 @@ class D810State(metaclass=SingletonMeta):
             lifecycle=lifecycle,
         )
 
+    def execute_workbench_build_deobfuscator(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        target: object,
+        provider_phase: object,
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_build_deobfuscator(
+            request,
+            target=target,
+            provider_phase=provider_phase,
+        )
+
     def execute_workbench_function_override(
         self,
         request: WorkbenchCommandRequest,
