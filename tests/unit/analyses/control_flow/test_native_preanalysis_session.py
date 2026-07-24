@@ -1342,10 +1342,13 @@ def test_lifecycle_projects_complete_native_patch_ledger_as_frontend_evidence() 
     proofs = {proof.proof_id: proof for proof in evidence.transfer_proofs}
     conditional_proof = proofs["native-indirect-transfer@0x1018"]
     assert conditional_proof.shape is NativeTransferShape.CONDITIONAL
-    assert conditional_proof.source_anchor_ea == predicate_ea
+    assert conditional_proof.source_anchor_ea == conditional.patch_start
     assert conditional_proof.source_transfer_ea == conditional.jmp_ea
     assert conditional_proof.predicate_kind is PredicateKind.NE
     assert conditional_proof.condition_producer_ea == producer_ea
+    assert conditional_proof.source_identity.exact_instruction_eas == frozenset(
+        {conditional.patch_start, predicate_ea}
+    )
     assert tuple(
         (
             identity.native_ranges.intervals[0].start_ea,

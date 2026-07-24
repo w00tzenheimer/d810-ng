@@ -1183,6 +1183,7 @@ def _plan_with_imported_conditional(
                     if unresolved_transfer_native_ea is None
                     else FragmentComputedBranchNormalization(
                         predicate_kind=PredicateKind.NE,
+                        normalization_start_ea=int(predicate_native_ea),
                         condition_producer_ea=int(
                             condition_producer_native_ea
                         ),
@@ -1688,6 +1689,7 @@ def _conditional_select_plan(
                 computed_branch_normalization=(
                     FragmentComputedBranchNormalization(
                         predicate_kind=PredicateKind.SLT,
+                        normalization_start_ea=0x40A5F6,
                         condition_producer_ea=0x40A5F0,
                         unresolved_transfer_ea=0x40A605,
                         conditional_select_envelope=(

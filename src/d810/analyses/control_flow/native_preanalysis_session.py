@@ -471,6 +471,7 @@ def _patch_plan_frontend_proof(
         )
     true_target_ea = int(plan.true_target_ea)
     false_target_ea = int(plan.false_target_ea)
+    normalization_start_ea = int(plan.patch_start)
     predicate_ea = int(plan.new_block_eas[0])
     condition_producer_ea = int(plan.condition_producer_ea)
     predicate_kind = condition_code_predicate(plan.condition_code)
@@ -486,7 +487,7 @@ def _patch_plan_frontend_proof(
     source_identity = _patch_plan_source_identity(
         native_key,
         plan,
-        exact_eas=(predicate_ea,),
+        exact_eas=(normalization_start_ea, predicate_ea),
     )
     condition_identity = _patch_plan_condition_identity(
         native_key,
@@ -516,7 +517,7 @@ def _patch_plan_frontend_proof(
         atomic_group_id=atomic_group_id,
         shape=NativeTransferShape.CONDITIONAL,
         source_identity=source_identity,
-        source_anchor_ea=predicate_ea,
+        source_anchor_ea=normalization_start_ea,
         source_transfer_ea=int(plan.jmp_ea),
         endpoints=endpoints,
         predicate_kind=predicate_kind,

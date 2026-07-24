@@ -249,6 +249,7 @@ def test_fragment_operation_supports_explicit_call_fallthrough() -> None:
 def test_fragment_operation_carries_typed_computed_branch_normalization() -> None:
     normalization = FragmentComputedBranchNormalization(
         predicate_kind=PredicateKind.EQ,
+        normalization_start_ea=0x40AE2E,
         condition_producer_ea=0x40AE28,
         unresolved_transfer_ea=0x40AE3C,
     )
@@ -279,6 +280,7 @@ def test_direct_fragment_operation_rejects_computed_branch_normalization() -> No
             source_block_id="source",
             computed_branch_normalization=FragmentComputedBranchNormalization(
                 predicate_kind=PredicateKind.EQ,
+                normalization_start_ea=0x40AE2E,
                 condition_producer_ea=0x40AE28,
                 unresolved_transfer_ea=0x40AE3C,
             ),
