@@ -27,6 +27,7 @@ from d810.optimizers.microcode.flow.flattening.state_machine_cff_unflattener imp
     _instruction_backed_portable_handler_overrides,
     _materialized_identity_evidence_ready,
     _portable_materialized_state_route_evidence,
+    _postvalidated_canonical_terminal_state_targets,
     _rebind_portable_materialized_state_routes,
     _resolver_native_state_register,
     _should_defer_incomplete_materialized_identity,
@@ -179,6 +180,45 @@ def test_materialized_mutation_waits_for_current_preopt_evidence_generation() ->
     native.normalization_published_postvalidated_generation = None
     state.materialized = False
     assert not _should_defer_unbound_materialized_preopt(state)
+
+
+def test_terminal_completeness_uses_current_postvalidated_canonical_proof(
+    monkeypatch,
+) -> None:
+    native = NativePreanalysisSessionState(evidence_generation=3)
+    state = ResolverSessionState(
+        native_preanalysis=native,
+        materialized=True,
+        native_key=NATIVE_KEY,
+    )
+    canonical_evidence = object()
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        NativePreanalysisSessionState,
+        "canonical_semantic_evidence_for",
+        lambda self, key: canonical_evidence,
+    )
+
+    def project_terminal_targets(evidence, *, state_variable):
+        observed["evidence"] = evidence
+        observed["state_variable"] = state_variable
+        return ((0x19A7218A, 0x40C898),)
+
+    monkeypatch.setattr(
+        unflattener,
+        "canonical_terminal_state_targets",
+        project_terminal_targets,
+    )
+
+    assert _postvalidated_canonical_terminal_state_targets(
+        state,
+        state_var_reg=20,
+    ) == ((0x19A7218A, 0x40C898),)
+    assert observed["evidence"] is canonical_evidence
+    state_variable = observed["state_variable"]
+    assert state_variable.kind.name == "REGISTER"
+    assert state_variable.offset == 20
 
 
 def test_materialized_state_route_round_trips_through_portable_identity() -> None:
