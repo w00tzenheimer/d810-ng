@@ -1265,6 +1265,71 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
         )
 
+    def _report_materialized_handler_completeness(
+        self,
+        mba: object,
+        *,
+        state_var_reg: int,
+        resolver_target_count: int,
+        live_handler_owner_count: int,
+        terminal_state_targets: tuple[tuple[int, int], ...],
+        missing_handler_targets: tuple[tuple[int, int], ...],
+    ) -> None:
+        """Persist the final native-EA handler-completeness decision."""
+        flow_context = getattr(self, "flow_context", None)
+        report = getattr(flow_context, "report_fact_consumers", None)
+        if not callable(report):
+            return
+
+        def target_records(
+            state_targets: tuple[tuple[int, int], ...],
+        ) -> list[dict[str, str]]:
+            return [
+                {
+                    "state": f"0x{int(state) & 0xFFFFFFFF:08X}",
+                    "target_ea": f"0x{int(target_ea):X}",
+                }
+                for state, target_ea in sorted(
+                    {
+                        (
+                            int(state) & 0xFFFFFFFF,
+                            int(target_ea),
+                        )
+                        for state, target_ea in state_targets
+                    }
+                )
+            ]
+
+        terminal_records = target_records(terminal_state_targets)
+        missing_records = target_records(missing_handler_targets)
+        complete = not missing_records
+        report(
+            (
+                FactConsumerRecord(
+                    consumer="state_machine_cff_unflattener",
+                    strategy="materialized_handler_completeness",
+                    fact_id="resolver_session:materialized_handler_identity",
+                    maturity=maturity_to_string(int(getattr(mba, "maturity", 0))),
+                    decision="accepted" if complete else "declined",
+                    reason=(
+                        "complete_materialized_handler_identity"
+                        if complete
+                        else "missing_materialized_handler_targets"
+                    ),
+                    payload={
+                        "first_missing_handler_target": (
+                            None if complete else missing_records[0]
+                        ),
+                        "live_handler_owner_count": int(live_handler_owner_count),
+                        "materialized_state_var_reg": int(state_var_reg),
+                        "missing_handler_targets": missing_records,
+                        "resolver_target_count": int(resolver_target_count),
+                        "terminal_state_targets": terminal_records,
+                    },
+                ),
+            )
+        )
+
     def _log_pipeline_v2_shadow(
         self,
         project_config,
@@ -2589,6 +2654,14 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     materialized_handler_owners,
                     terminal_state_targets=terminal_state_targets,
                 )
+            )
+            self._report_materialized_handler_completeness(
+                mba,
+                state_var_reg=int(materialized_state_var_reg),
+                resolver_target_count=len(equality_target_eas),
+                live_handler_owner_count=len(materialized_handler_owners),
+                terminal_state_targets=tuple(terminal_state_targets),
+                missing_handler_targets=unmapped_materialized_handler_targets,
             )
             if unmapped_materialized_handler_targets:
                 logger.info(
