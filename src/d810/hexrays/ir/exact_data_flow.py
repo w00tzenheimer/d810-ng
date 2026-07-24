@@ -468,9 +468,7 @@ def _find_reaching_defs_for_projected_exact_use(
         if definition is not None:
             results.append(_definition_site(predecessor_serial, definition))
             continue
-        pending.extend(
-            predecessor_serials_by_block.get(predecessor_serial, ())
-        )
+        pending.extend(predecessor_serials_by_block.get(predecessor_serial, ()))
     return results
 
 
