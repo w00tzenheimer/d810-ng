@@ -593,6 +593,76 @@ def _imported_fragment_block(
     )
 
 
+def _single_block_native_body_runtime(
+    *,
+    function_ea: int,
+    entry_ea: int,
+    opcode: int,
+    destination_maturity: int,
+) -> tuple[_MBA, FragmentNativeBody, _NativeBodyStagingContext]:
+    source = _MBA(
+        (
+            _Block(
+                0,
+                entry_ea,
+                (_Instruction(opcode, entry_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        entry_ea,
+        source,
+        ((entry_ea, entry_ea + 1),),
+        owned_block_entry_eas=(entry_ea,),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=destination_maturity,
+    )
+    body_id = f"native-body:single:{entry_ea:X}"
+    imported = _imported_fragment_block(
+        "imported-single",
+        body_id,
+        entry_ea,
+        entry_ea + 1,
+    )
+    native_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=(imported.block_id,),
+        entry_block_ids=(imported.block_id,),
+        terminal_block_ids=(),
+        native_ranges=(NativeEaInterval(entry_ea, entry_ea + 1),),
+        proof_ids=("proof:single",),
+    )
+    context = _NativeBodyStagingContext(
+        destination,
+        _NativeBodyPlan(
+            (imported,),
+            operations=(
+                FragmentOperation(
+                    operation_id="native-body-single-edge",
+                    source_block_id=imported.block_id,
+                    edges=(
+                        FragmentEdge(
+                            role=SemanticEdgeRole.DIRECT,
+                            target_block_id=imported.block_id,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    return destination, native_body, context
+
+
 def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
     monkeypatch,
 ) -> None:
@@ -715,6 +785,107 @@ def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
     )
     assert set(context.instruction_origins.values()) == {entry_ea, terminal_ea}
     assert destination.verify_calls == 0
+
+
+def test_calls_call_free_native_body_materializer_populates_unpublished_body(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    entry_ea = 0x3340
+    destination, native_body, context = _single_block_native_body_runtime(
+        function_ea=function_ea,
+        entry_ea=entry_ea,
+        opcode=ida_hexrays.m_mov,
+        destination_maturity=ida_hexrays.MMAT_CALLS,
+    )
+
+    detached_handler_island.CallsCallFreeSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=function_ea,
+    ).stage_native_body(
+        context=context,
+        native_body=native_body,
+    )
+
+    assert context.staged_block_ids == ["imported-single"]
+    assert context.populated_block_ids == ["imported-single"]
+    imported = context.blocks["imported-single"]
+    assert tuple(instruction.opcode for instruction in imported.instructions()) == (
+        ida_hexrays.m_mov,
+    )
+    assert imported.dirty == 1
+    assert destination.chains_dirty == 1
+    assert destination.verify_calls == 0
+
+
+@pytest.mark.parametrize(
+    "opcode",
+    (
+        ida_hexrays.m_call,
+        ida_hexrays.m_icall,
+        ida_hexrays.m_ret,
+    ),
+)
+def test_calls_call_free_native_body_rejects_calls_and_returns_before_staging(
+    monkeypatch,
+    opcode: int,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    destination, native_body, context = _single_block_native_body_runtime(
+        function_ea=function_ea,
+        entry_ea=0x3350 + int(opcode),
+        opcode=opcode,
+        destination_maturity=ida_hexrays.MMAT_CALLS,
+    )
+
+    with pytest.raises(
+        detached_handler_island.SemanticFragmentBackendRejected,
+        match="CALLS native body must be call/return-free",
+    ):
+        detached_handler_island.CallsCallFreeSemanticNativeBodyMaterializer(
+            mba=destination,
+            function_ea=function_ea,
+        ).stage_native_body(
+            context=context,
+            native_body=native_body,
+        )
+
+    assert context.staged_block_ids == []
+    assert context.populated_block_ids == []
+    assert destination.qty == 1
+    assert destination.chains_dirty == 0
+
+
+def test_calls_call_free_native_body_rejects_other_maturity_before_staging(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    destination, native_body, context = _single_block_native_body_runtime(
+        function_ea=function_ea,
+        entry_ea=0x3360,
+        opcode=ida_hexrays.m_mov,
+        destination_maturity=ida_hexrays.MMAT_GLBOPT1,
+    )
+
+    with pytest.raises(
+        detached_handler_island.SemanticFragmentBackendRejected,
+        match="CALLS native body requires an MMAT_CALLS destination MBA",
+    ):
+        detached_handler_island.CallsCallFreeSemanticNativeBodyMaterializer(
+            mba=destination,
+            function_ea=function_ea,
+        ).stage_native_body(
+            context=context,
+            native_body=native_body,
+        )
+
+    assert context.staged_block_ids == []
+    assert context.populated_block_ids == []
+    assert destination.qty == 1
+    assert destination.chains_dirty == 0
 
 
 def test_preopt_native_body_rejects_non_control_block_refs_before_staging(
