@@ -704,6 +704,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # context is born, never once per optimized block.
             self._bind_resolver_session_state(self._flow_context, mba)
             self._bind_mutation_gateway_port(self._flow_context, mba)
+            self._bind_semantic_native_body_materializer_port(
+                self._flow_context,
+                mba,
+            )
         else:
             self._flow_context.refresh_mba(mba)
         self._flow_context.set_function_priors_provider(
@@ -773,6 +777,39 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         if not callable(new_gateway):
             return None
         return new_gateway(function_ea=function_ea, maturity=maturity)
+
+    def _bind_semantic_native_body_materializer_port(
+        self,
+        flow_context: FlowMaturityContext,
+        mba: ida_hexrays.mbl_array_t,
+    ) -> None:
+        """Inject manager-owned unpublished-body realization into flow rules."""
+        set_factory = getattr(
+            flow_context,
+            "set_semantic_native_body_materializer_factory",
+            None,
+        )
+        if not callable(set_factory):
+            return
+        lifecycle = self._decompilation_lifecycle
+        if lifecycle is None:
+            set_factory(None)
+            return
+        new_materializer = getattr(
+            lifecycle,
+            "new_semantic_native_body_materializer",
+            None,
+        )
+        if not callable(new_materializer):
+            set_factory(None)
+            return
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        set_factory(
+            lambda: new_materializer(
+                function_ea=function_ea,
+                mba=flow_context.mba,
+            )
+        )
 
     def _bind_resolver_session_state(
         self,

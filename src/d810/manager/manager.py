@@ -222,6 +222,18 @@ def _new_current_mba_mutation_gateway(
     )
 
 
+def _new_semantic_native_body_materializer(*, session, mba):
+    """Construct the sole Hex-Rays native-body materialization capability."""
+    from d810.hexrays.mutation.detached_handler_island import (
+        PreoptUnionSemanticNativeBodyMaterializer,
+    )
+
+    return PreoptUnionSemanticNativeBodyMaterializer(
+        mba=mba,
+        function_ea=int(session.function_ea),
+    )
+
+
 def maybe_run_tail_distinct(
     mba: typing.Any,
     *,
@@ -730,6 +742,9 @@ class D810Manager:
             event_emitter=self.event_emitter,
             current_mba_identity_index_builder=_build_current_mba_identity_index,
             mba_mutation_gateway_factory=_new_current_mba_mutation_gateway,
+            semantic_native_body_materializer_factory=(
+                _new_semantic_native_body_materializer
+            ),
             resolver_attachment_initializer=_initialize_resolver_attachment,
         )
 

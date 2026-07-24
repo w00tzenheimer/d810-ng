@@ -42,6 +42,7 @@ from d810.manager.manager import (
     _build_current_mba_identity_index,
     _initialize_resolver_attachment,
     _new_current_mba_mutation_gateway,
+    _new_semantic_native_body_materializer,
 )
 from d810.manager.decompilation_lifecycle import DecompilationSessionContext
 from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
@@ -258,6 +259,25 @@ def test_current_mba_mutation_gateway_uses_session_lifecycle_authority() -> None
     assert gateway.lifecycle_authority.evidence_generation == 2
     assert gateway.identity_index is index
     assert gateway.event_emitter is event_emitter
+
+
+def test_manager_constructs_the_semantic_native_body_materializer() -> None:
+    from d810.hexrays.mutation.detached_handler_island import (
+        PreoptUnionSemanticNativeBodyMaterializer,
+    )
+
+    mba = object()
+    materializer = _new_semantic_native_body_materializer(
+        session=SimpleNamespace(function_ea=0x40A560),
+        mba=mba,
+    )
+
+    assert isinstance(
+        materializer,
+        PreoptUnionSemanticNativeBodyMaterializer,
+    )
+    assert materializer.mba is mba
+    assert materializer.function_ea == 0x40A560
 
 
 def test_manager_preserves_applied_work_on_aborted_mutation_receipt(

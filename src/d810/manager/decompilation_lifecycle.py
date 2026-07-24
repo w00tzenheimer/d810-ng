@@ -124,6 +124,9 @@ class DecompilationLifecycleCoordinator:
         None
     )
     mba_mutation_gateway_factory: typing.Callable[..., object | None] | None = None
+    semantic_native_body_materializer_factory: (
+        typing.Callable[..., object | None] | None
+    ) = None
     resolver_attachment_initializer: (
         typing.Callable[[DecompilationSessionContext], ResolverEvidenceAttachment]
         | None
@@ -607,6 +610,30 @@ class DecompilationLifecycleCoordinator:
         except Exception:
             logger.debug(
                 "current MBA mutation-gateway creation failed for func=0x%x",
+                int(function_ea),
+                exc_info=True,
+            )
+            return None
+
+    def new_semantic_native_body_materializer(
+        self,
+        *,
+        function_ea: int,
+        mba: object,
+    ) -> object | None:
+        """Create the manager-owned native-body port for this live MBA."""
+        session = self.current_session(int(function_ea))
+        if session is None:
+            return None
+        factory = self.semantic_native_body_materializer_factory
+        if not callable(factory):
+            return None
+        try:
+            return factory(session=session, mba=mba)
+        except Exception:
+            logger.debug(
+                "semantic native-body materializer creation failed for "
+                "func=0x%x",
                 int(function_ea),
                 exc_info=True,
             )
