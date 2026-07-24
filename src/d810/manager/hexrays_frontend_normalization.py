@@ -50,6 +50,26 @@ def _new_live_backend(
     )
 
 
+def _bind_committed_live_import_origins(
+    *,
+    session: DecompilationSessionContext,
+    mba: object,
+) -> None:
+    """Bind receipt-backed imported provenance to exactly this live MBA."""
+    from d810.hexrays.mutation.detached_handler_island import (
+        imported_detached_snippet_instruction_origins,
+        stable_mba_identity,
+    )
+    from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+        resolver_session_state,
+    )
+
+    resolver_session_state(session).bind_current_imported_instruction_origins(
+        stable_mba_identity(mba),
+        imported_detached_snippet_instruction_origins(mba),
+    )
+
+
 def run_live_frontend_normalization(
     *,
     function_ea: int,
@@ -129,6 +149,10 @@ def run_live_frontend_normalization(
         "remaining_obligation_count": result.remaining_obligation_count,
     }
     decision["microcode_modified"] = True
+    _bind_committed_live_import_origins(
+        session=session,
+        mba=mba,
+    )
 
 
 def install_live_frontend_normalization() -> None:
