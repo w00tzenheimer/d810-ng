@@ -85,6 +85,31 @@ class ResolverProvenHandlerEntry:
 
     entry_ea: int
     provenance: str
+    owned_native_ranges: tuple[NativeRange, ...] = ()
+
+    def __post_init__(self) -> None:
+        entry_ea = int(self.entry_ea)
+        provenance = str(self.provenance).strip()
+        owned_native_ranges = tuple(self.owned_native_ranges)
+        if entry_ea < 0:
+            raise ValueError("handler entry EA must be non-negative")
+        if not provenance:
+            raise ValueError("handler entry provenance must be non-empty")
+        if any(
+            not isinstance(native_range, NativeRange)
+            for native_range in owned_native_ranges
+        ):
+            raise TypeError("handler entry ownership requires native ranges")
+        if owned_native_ranges and sum(
+            int(native_range.start_ea) <= entry_ea < int(native_range.end_ea)
+            for native_range in owned_native_ranges
+        ) != 1:
+            raise ValueError(
+                "range-owned handler entry must belong to exactly one native range"
+            )
+        object.__setattr__(self, "entry_ea", entry_ea)
+        object.__setattr__(self, "provenance", provenance)
+        object.__setattr__(self, "owned_native_ranges", owned_native_ranges)
 
 
 @dataclass(frozen=True)

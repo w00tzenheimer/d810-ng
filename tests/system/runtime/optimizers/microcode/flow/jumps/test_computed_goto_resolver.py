@@ -8660,6 +8660,7 @@ def test_frontend_union_source_seeds_proof_owned_static_handler_body(
         ResolverProvenHandlerEntry(
             entry_ea=handler_entry_ea,
             provenance="static_handler_entry_route",
+            owned_native_ranges=(NativeRange(handler_entry_ea, 0x2020),),
         )
         in source.closure.seed_provenance
     )

@@ -920,6 +920,189 @@ def test_next_work_item_retains_resolver_proven_detached_body_root() -> None:
     ) == (0x1300, 0x1600, 0x1700)
 
 
+def _handler_prefix_before_required_exit_case(
+    *,
+    owned_native_ranges: tuple[NativeRange, ...],
+) -> tuple[FlowGraph, FrontendNormalizationEvidence]:
+    graph = FlowGraph(
+        blocks={
+            0: _block(
+                0,
+                0x1000,
+                (1,),
+                (),
+                (_insn(0x1000, InsnKind.GOTO, target=1),),
+            ),
+            1: _block(
+                1,
+                0x1100,
+                (2,),
+                (0,),
+                (_insn(0x1100, InsnKind.INDIRECT_JUMP),),
+            ),
+            2: _block(
+                2,
+                0x1200,
+                (),
+                (1,),
+                (_insn(0x1200, InsnKind.RET),),
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    closure = NativeSemanticClosure(
+        included_block_eas=(0x1300, 0x1600, 0x1610),
+        native_ranges=(
+            NativeRange(0x1300, 0x1310),
+            NativeRange(0x1600, 0x1620),
+        ),
+        proven_internal_edges=(
+            ProvenInternalEdge(
+                source_ea=0x1600,
+                target_ea=0x1610,
+                kind=NativeEdgeKind.CALL_FALLTHROUGH,
+            ),
+        ),
+        abstentions=(),
+        seed_provenance=(
+            ResolverProvenHandlerEntry(
+                entry_ea=0x1600,
+                provenance="static_handler_entry_route",
+                owned_native_ranges=owned_native_ranges,
+            ),
+        ),
+    )
+    native_cfg = NativeCfg(
+        {
+            0x1300: NativeBlock(
+                start_ea=0x1300,
+                end_ea=0x1310,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+            0x1600: NativeBlock(
+                start_ea=0x1600,
+                end_ea=0x1610,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.CALL,
+                        target_ea=0x5000,
+                    ),
+                    NativeEdge(
+                        kind=NativeEdgeKind.CALL_FALLTHROUGH,
+                        target_ea=0x1610,
+                    ),
+                ),
+            ),
+            0x1610: NativeBlock(
+                start_ea=0x1610,
+                end_ea=0x1620,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.INDIRECT,
+                        target_ea=0x1300,
+                        resolver_proven=True,
+                        provenance="static_handler_exit_route",
+                        source_instruction_ea=0x161E,
+                    ),
+                ),
+            ),
+        }
+    )
+    evidence = FrontendNormalizationEvidence(
+        native_key=NATIVE_KEY,
+        generation=7,
+        atomic_group_id="frontend-normalization:g7",
+        transfer_proofs=(
+            _direct_proof(
+                proof_id="direct@0x1100",
+                source_ea=0x1100,
+                target_ea=0x1300,
+            ),
+            _direct_proof(
+                proof_id="direct@0x1610",
+                source_ea=0x1610,
+                target_ea=0x1300,
+            ),
+        ),
+        semantic_closure=closure,
+        native_cfg=native_cfg,
+    )
+    return graph, evidence
+
+
+def test_next_work_item_retains_range_owned_handler_prefix_before_required_exit(
+) -> None:
+    graph, evidence = _handler_prefix_before_required_exit_case(
+        owned_native_ranges=(NativeRange(0x1600, 0x1620),),
+    )
+
+    plan = plan_next_frontend_normalization_work_item(graph, evidence)
+
+    assert plan is not None
+    assert {operation.operation_id for operation in plan.operations} == {
+        "direct@0x1100",
+        "direct@0x1610",
+        "native-body-edge@0x1600",
+    }
+    assert plan.work_item_scope is not None
+    assert plan.work_item_scope.selected_obligation_ids == (
+        "direct@0x1100",
+        "direct@0x1610",
+    )
+    assert plan.work_item_scope.remaining_obligation_ids == ()
+    assert plan.work_item_scope.unreachable_obligation_ids == ()
+    native_body = plan.native_bodies[0]
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea
+        for block_id in native_body.entry_block_ids
+    ) == (0x1300, 0x1600)
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea
+        for block_id in native_body.block_ids
+    ) == (0x1300, 0x1600, 0x1610)
+
+
+def test_next_work_item_does_not_promote_range_less_handler_prefix() -> None:
+    graph, evidence = _handler_prefix_before_required_exit_case(
+        owned_native_ranges=(),
+    )
+
+    plan = plan_next_frontend_normalization_work_item(graph, evidence)
+
+    assert plan is not None
+    assert tuple(operation.operation_id for operation in plan.operations) == (
+        "direct@0x1100",
+    )
+    assert plan.work_item_scope is not None
+    assert plan.work_item_scope.selected_obligation_ids == ("direct@0x1100",)
+    assert plan.work_item_scope.remaining_obligation_ids == ()
+    assert plan.work_item_scope.unreachable_obligation_ids == (
+        "direct@0x1610",
+    )
+    native_body = plan.native_bodies[0]
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea
+        for block_id in native_body.entry_block_ids
+    ) == (0x1300,)
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea
+        for block_id in native_body.block_ids
+    ) == (0x1300,)
+
+
+def test_next_work_item_rejects_handler_seed_range_outside_closure() -> None:
+    graph, evidence = _handler_prefix_before_required_exit_case(
+        owned_native_ranges=(NativeRange(0x1600, 0x1700),),
+    )
+
+    with pytest.raises(
+        FrontendNormalizationEvidenceRejected,
+        match="range-owned handler seed 0x1600 escapes its semantic closure",
+    ):
+        plan_next_frontend_normalization_work_item(graph, evidence)
+
+
 def test_next_work_item_selects_smallest_complete_root_component() -> None:
     graph = FlowGraph(
         blocks={
