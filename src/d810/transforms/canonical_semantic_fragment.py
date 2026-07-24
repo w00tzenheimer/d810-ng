@@ -28,6 +28,7 @@ from d810.ir.block_identity import (
 )
 from d810.ir.directed_graph import tarjan_scc
 from d810.ir.flowgraph import FlowGraph
+from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
 from d810.transforms.fragment_plan import (
     FragmentBlock,
@@ -73,6 +74,18 @@ def _identity_contains(
     candidate: StableBlockIdentity,
 ) -> bool:
     return bool(
+        _identity_ranges_contain(owner, candidate)
+        and candidate.exact_instruction_eas.issubset(
+            owner.exact_instruction_eas
+        )
+    )
+
+
+def _identity_ranges_contain(
+    owner: StableBlockIdentity,
+    candidate: StableBlockIdentity,
+) -> bool:
+    return bool(
         owner.native_key == candidate.native_key
         and all(
             any(
@@ -83,9 +96,6 @@ def _identity_contains(
                 for owner_interval in owner.native_ranges.intervals
             )
             for candidate_interval in candidate.native_ranges.intervals
-        )
-        and candidate.exact_instruction_eas.issubset(
-            owner.exact_instruction_eas
         )
     )
 
@@ -743,11 +753,262 @@ def _with_semantic_imported_consumer(
     )
 
 
+def _with_nested_imported_state_assignments(
+    plan: FragmentPlan,
+    available_evidence: CanonicalSemanticEvidence,
+    *,
+    component_block_ids: frozenset[str],
+    excluded_proof_ids: frozenset[str],
+) -> tuple[FragmentPlan, tuple[SemanticRouteProof, ...]]:
+    """Replace reachable imported dispatcher exits with canonical state routes.
+
+    Frontend normalization retains the native selector topology so later
+    canonical passes can inspect it.  Once a state assignment and its delivery
+    corridor are proved, however, the generic selector edge is no longer
+    authoritative.  This projection replaces only routes whose complete
+    write-to-delivery corridor already belongs to the selected detached
+    component.  It never expands the work item merely because another route is
+    present elsewhere in the normalization inventory.
+    """
+    imported_component_blocks = tuple(
+        block
+        for block in plan.blocks
+        if (
+            block.block_id in component_block_ids
+            and block.role is FragmentBlockRole.IMPORTED
+            and block.stable_identity is not None
+        )
+    )
+    operation_by_source: dict[str, list[FragmentOperation]] = {}
+    for operation in plan.operations:
+        operation_by_source.setdefault(
+            operation.source_block_id,
+            [],
+        ).append(operation)
+
+    replacements: list[
+        tuple[
+            SemanticRouteProof,
+            FragmentBlock,
+            FragmentOperation,
+            FragmentBlock,
+        ]
+    ] = []
+    claimed_source_ids: dict[str, str] = {}
+    for proof in available_evidence.route_proofs:
+        if (
+            proof.proof_id in excluded_proof_ids
+            or proof.proof_kind is not SemanticRouteProofKind.STATE_ASSIGNMENT
+            or proof.shape is not SemanticRouteShape.DIRECT
+            or len(proof.destinations) != 1
+            or proof.state_write is None
+            or proof.source_anchor_ea
+            not in proof.source_identity.exact_instruction_eas
+        ):
+            continue
+        source_matches = tuple(
+            block
+            for block in imported_component_blocks
+            if (
+                block.stable_identity is not None
+                and block.stable_identity.native_ranges.contains(
+                    int(proof.source_anchor_ea)
+                )
+                and _identity_ranges_contain(
+                    block.stable_identity,
+                    proof.source_identity,
+                )
+            )
+        )
+        if not source_matches:
+            continue
+        if len(source_matches) != 1:
+            raise CanonicalSemanticFragmentRejected(
+                "nested canonical state route has multiple imported sources",
+                reason_code="nested_state_route_source_ambiguous",
+                anchor_ea=int(proof.source_anchor_ea),
+                payload={
+                    "route_proof_id": proof.proof_id,
+                    "source_block_ids": tuple(
+                        block.block_id for block in source_matches
+                    ),
+                },
+            )
+        (source,) = source_matches
+        corridor_owner_ids: list[str] = []
+        for corridor_ea in proof.state_write.corridor_instruction_eas:
+            owners = tuple(
+                block
+                for block in imported_component_blocks
+                if block.stable_identity is not None
+                and block.stable_identity.native_ranges.contains(
+                    int(corridor_ea)
+                )
+            )
+            if len(owners) != 1:
+                raise CanonicalSemanticFragmentRejected(
+                    "nested canonical state route corridor is not wholly "
+                    "owned by its imported component",
+                    reason_code="nested_state_route_corridor_owner_mismatch",
+                    anchor_ea=int(corridor_ea),
+                    payload={
+                        "route_proof_id": proof.proof_id,
+                        "owner_block_ids": tuple(
+                            block.block_id for block in owners
+                        ),
+                    },
+                )
+            corridor_owner_ids.append(owners[0].block_id)
+        source_operations = tuple(
+            operation_by_source.get(source.block_id, ())
+        )
+        if len(source_operations) != 1:
+            raise CanonicalSemanticFragmentRejected(
+                "nested canonical state route requires one raw imported "
+                "operation",
+                reason_code="nested_state_route_operation_count_mismatch",
+                anchor_ea=int(proof.source_anchor_ea),
+                payload={
+                    "route_proof_id": proof.proof_id,
+                    "operation_ids": tuple(
+                        operation.operation_id
+                        for operation in source_operations
+                    ),
+                    "corridor_block_ids": tuple(
+                        dict.fromkeys(corridor_owner_ids)
+                    ),
+                },
+            )
+        destination_evidence = proof.destinations[0]
+        destination = _unique_plan_block(
+            plan,
+            destination_evidence.target_identity,
+            destination_evidence.target_anchor_ea,
+            roles=frozenset(
+                {
+                    FragmentBlockRole.EXTERNAL,
+                    FragmentBlockRole.IMPORTED,
+                    FragmentBlockRole.REPLACEMENT,
+                }
+            ),
+            description="nested canonical state-route destination",
+        )
+        if (
+            destination.role is FragmentBlockRole.IMPORTED
+            and destination.native_body_id != source.native_body_id
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "nested canonical state route crosses native-body ownership",
+                reason_code="nested_state_route_native_body_mismatch",
+                anchor_ea=int(proof.source_anchor_ea),
+                payload={"route_proof_id": proof.proof_id},
+            )
+        existing_proof_id = claimed_source_ids.setdefault(
+            source.block_id,
+            proof.proof_id,
+        )
+        if existing_proof_id != proof.proof_id:
+            raise CanonicalSemanticFragmentRejected(
+                "nested canonical state routes compete for one imported source",
+                reason_code="nested_state_route_source_conflict",
+                anchor_ea=int(proof.source_anchor_ea),
+                payload={
+                    "route_proof_ids": (
+                        existing_proof_id,
+                        proof.proof_id,
+                    ),
+                    "source_block_id": source.block_id,
+                },
+            )
+        replacements.append(
+            (
+                proof,
+                source,
+                source_operations[0],
+                destination,
+            )
+        )
+
+    if not replacements:
+        return plan, ()
+
+    replacement_by_operation_id = {
+        raw_operation.operation_id: FragmentOperation(
+            operation_id=f"route:{proof.proof_id}",
+            source_block_id=source.block_id,
+            edges=(
+                FragmentEdge(
+                    role=SemanticEdgeRole.DIRECT,
+                    target_block_id=destination.block_id,
+                ),
+            ),
+        )
+        for proof, source, raw_operation, destination in replacements
+    }
+    raw_operation_ids = frozenset(replacement_by_operation_id)
+    proof_ids_by_body: dict[str, list[str]] = {}
+    source_ids_by_body: dict[str, set[str]] = {}
+    for proof, source, _raw_operation, _destination in replacements:
+        if source.native_body_id is None:
+            raise CanonicalSemanticFragmentRejected(
+                "nested canonical state route lacks native-body ownership"
+            )
+        proof_ids_by_body.setdefault(
+            source.native_body_id,
+            [],
+        ).append(proof.proof_id)
+        source_ids_by_body.setdefault(
+            source.native_body_id,
+            set(),
+        ).add(source.block_id)
+
+    return (
+        replace(
+            plan,
+            operations=tuple(
+                replacement_by_operation_id.get(
+                    operation.operation_id,
+                    operation,
+                )
+                for operation in plan.operations
+            ),
+            native_bodies=tuple(
+                replace(
+                    body,
+                    terminal_block_ids=tuple(
+                        block_id
+                        for block_id in body.terminal_block_ids
+                        if block_id
+                        not in source_ids_by_body.get(body.body_id, set())
+                    ),
+                    proof_ids=tuple(
+                        dict.fromkeys(
+                            (
+                                *(
+                                    proof_id
+                                    for proof_id in body.proof_ids
+                                    if proof_id not in raw_operation_ids
+                                ),
+                                *proof_ids_by_body.get(body.body_id, ()),
+                            )
+                        )
+                    ),
+                )
+                if body.body_id in proof_ids_by_body
+                else body
+                for body in plan.native_bodies
+            ),
+        ),
+        tuple(proof for proof, *_rest in replacements),
+    )
+
+
 def compose_canonical_semantic_fragment_plan(
     graph: FlowGraph,
     normalization_plan: FragmentPlan,
     evidence: CanonicalSemanticEvidence,
     *,
+    available_evidence: CanonicalSemanticEvidence,
     current_identity_by_serial: Mapping[int, StableBlockIdentity],
     normalization_authority: NormalizationWorkItemAuthority,
     prohibited_dispatcher_serials: Iterable[int] = (),
@@ -763,9 +1024,26 @@ def compose_canonical_semantic_fragment_plan(
     ):
         raise CanonicalSemanticFragmentRejected(
             "canonical composition requires frontend-normalization intent"
-        )
+    )
     if not isinstance(evidence, CanonicalSemanticEvidence):
         raise TypeError("canonical composition requires canonical evidence")
+    if not isinstance(available_evidence, CanonicalSemanticEvidence):
+        raise TypeError(
+            "canonical composition available evidence must be canonical"
+        )
+    if (
+        available_evidence.native_key != evidence.native_key
+        or available_evidence.generation != evidence.generation
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition available evidence generation drifted",
+            reason_code="canonical_available_evidence_generation_drift",
+            anchor_ea=int(graph.func_ea),
+            payload={
+                "work_item_generation": int(evidence.generation),
+                "available_generation": int(available_evidence.generation),
+            },
+        )
     current_identity_by_serial = {
         int(serial): identity
         for serial, identity in current_identity_by_serial.items()
@@ -877,7 +1155,7 @@ def compose_canonical_semantic_fragment_plan(
         roles=frozenset({FragmentBlockRole.IMPORTED}),
         description="canonical route target",
     )
-    target_blocks, target_operations, native_body = (
+    initial_target_blocks, _initial_target_operations, _initial_native_body = (
         _detached_target_component(
             graph,
             effective_normalization_plan,
@@ -885,6 +1163,36 @@ def compose_canonical_semantic_fragment_plan(
             current_identity_by_serial=current_identity_by_serial,
             canonical_proof_id="+".join(
                 item.proof_id for item in evidence.route_proofs
+            ),
+        )
+    )
+    (
+        effective_normalization_plan,
+        nested_state_assignment_proofs,
+    ) = _with_nested_imported_state_assignments(
+        effective_normalization_plan,
+        available_evidence,
+        component_block_ids=frozenset(
+            block.block_id for block in initial_target_blocks
+        ),
+        excluded_proof_ids=frozenset(
+            item.proof_id for item in evidence.route_proofs
+        ),
+    )
+    target_blocks, target_operations, native_body = (
+        _detached_target_component(
+            graph,
+            effective_normalization_plan,
+            target,
+            current_identity_by_serial=current_identity_by_serial,
+            canonical_proof_id="+".join(
+                (
+                    *(item.proof_id for item in evidence.route_proofs),
+                    *(
+                        item.proof_id
+                        for item in nested_state_assignment_proofs
+                    ),
+                )
             ),
         )
     )

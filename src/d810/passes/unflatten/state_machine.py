@@ -865,6 +865,7 @@ def _compose_candidate_semantic_fragment(
                 context.graph,
                 normalization_plan,
                 route_candidate,
+                available_evidence=candidate,
                 current_identity_by_serial=current_identity_by_serial,
                 normalization_authority=normalization_authority,
                 prohibited_dispatcher_serials=(

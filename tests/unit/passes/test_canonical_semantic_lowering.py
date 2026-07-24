@@ -409,6 +409,7 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
         candidate,
     )
     assert calls[1][4] == {
+        "available_evidence": candidate,
         "current_identity_by_serial": current_identity_by_serial,
         "normalization_authority": normalization_authority,
         "prohibited_dispatcher_serials": (30,),
