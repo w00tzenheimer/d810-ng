@@ -62,6 +62,7 @@ from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentConditionalSelectEnvelope,
     FragmentDataFlowObligation,
     FragmentDataFlowRole,
+    FragmentDirectTransferRewrite,
     FragmentEdge,
     FragmentFlagCorridor,
     FragmentImportedConditionalSelectEnvelope,
@@ -714,12 +715,18 @@ def _change_fake_zero_way_successor_preserving_instructions(
 ) -> bool:
     del verify
     target_serial = int(target_serial)
-    goto = _Instruction(
-        ida_hexrays.m_goto,
-        block.mba.entry_ea,
-        target_serial,
-    )
-    block.insert_into_block(goto, block.tail)
+    if (
+        block.tail is not None
+        and int(block.tail.opcode) == int(ida_hexrays.m_goto)
+    ):
+        block.tail.l.make_blkref(target_serial)
+    else:
+        goto = _Instruction(
+            ida_hexrays.m_goto,
+            block.mba.entry_ea,
+            target_serial,
+        )
+        block.insert_into_block(goto, block.tail)
     block.type = int(ida_hexrays.BLT_1WAY)
     block.succset.push_back(target_serial)
     target = block.mba.get_mblock(target_serial)
@@ -889,6 +896,79 @@ def _plan_with_imported_terminal(
     )
 
 
+def _plan_with_prepared_imported_direct_transfer(
+    gateway,
+    *,
+    entry: int,
+    original: int,
+    target: int,
+    dispatcher: int,
+) -> FragmentPlan:
+    plan = _plan(
+        gateway,
+        entry=entry,
+        original=original,
+        target=target,
+        dispatcher=dispatcher,
+    )
+    rewrite_anchor_ea = 0x500000
+    native_range = NativeEaInterval(rewrite_anchor_ea, rewrite_anchor_ea + 0x10)
+    imported = FragmentBlock(
+        block_id="imported-direct-source",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=rewrite_anchor_ea,
+        stable_identity=StableBlockIdentity.from_intervals(
+            (native_range,),
+            native_key=gateway.native_key,
+            exact_instruction_eas=(rewrite_anchor_ea,),
+        ),
+        native_body_id="prepared-direct-native-body",
+    )
+    root_route = replace(
+        plan.operations[0],
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=imported.block_id,
+            ),
+        ),
+    )
+    operation_id = "route:proof:prepared-direct"
+    imported_route = FragmentOperation(
+        operation_id=operation_id,
+        source_block_id=imported.block_id,
+        direct_transfer_rewrite=FragmentDirectTransferRewrite(
+            route_proof_id="proof:prepared-direct",
+            rewrite_anchor_ea=rewrite_anchor_ea,
+            proof_corridor_instruction_eas=(rewrite_anchor_ea,),
+            superseded_instruction_eas=(rewrite_anchor_ea,),
+        ),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id="target",
+            ),
+        ),
+    )
+    return replace(
+        plan,
+        plan_id="runtime-prepared-imported-direct",
+        blocks=(*plan.blocks, imported),
+        operations=(root_route, imported_route),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id="prepared-direct-native-body",
+                block_ids=(imported.block_id,),
+                entry_block_ids=(imported.block_id,),
+                terminal_block_ids=(),
+                native_ranges=(native_range,),
+                proof_ids=(operation_id,),
+            ),
+        ),
+    )
+
+
 class _RecordingNativeBodyMaterializer:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str | None]] = []
@@ -947,6 +1027,37 @@ class _RejectingNativeBodyMaterializer:
     ) -> None:
         self.stage_calls += 1
         raise AssertionError("rejected preparation must not reach staging")
+
+
+class _PreparedDirectNativeBodyMaterializer:
+    def prepare_native_body(
+        self,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+    ) -> object:
+        return (plan.plan_id, native_body.body_id)
+
+    def stage_native_body(
+        self,
+        *,
+        context,
+        native_body: FragmentNativeBody,
+        preparation: object,
+    ) -> None:
+        assert preparation == (context.plan.plan_id, native_body.body_id)
+        assert native_body.block_ids == ("imported-direct-source",)
+        context.stage_block("imported-direct-source")
+        context.populate_block(
+            block_id="imported-direct-source",
+            instructions=(
+                (0x500000, _Instruction(ida_hexrays.m_goto, 0x500000)),
+            ),
+            block_flags=0,
+        )
+        context.materialize_direct_transfer(
+            operation_id="route:proof:prepared-direct",
+        )
 
 
 class _TerminalEffectNativeBodyMaterializer:
@@ -2224,6 +2335,78 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
     )
     assert gateway.active is False
     assert gateway.receipts == ()
+
+
+def test_backend_does_not_realize_prepared_imported_direct_transfer_twice(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    monkeypatch.setattr(
+        dm,
+        "change_0way_block_successor",
+        _change_fake_zero_way_successor_preserving_instructions,
+    )
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=gateway,
+        semantic_native_body_materializer=(
+            _PreparedDirectNativeBodyMaterializer()
+        ),
+    )
+    plan = _plan_with_prepared_imported_direct_transfer(
+        gateway,
+        entry=0,
+        original=1,
+        target=2,
+        dispatcher=3,
+    )
+    generic_realizations: list[str] = []
+    original_realize = modifier._realize_semantic_edge_operation
+
+    def record_generic_realization(operation):
+        generic_realizations.append(operation.description)
+        return original_realize(operation)
+
+    monkeypatch.setattr(
+        modifier,
+        "_realize_semantic_edge_operation",
+        record_generic_realization,
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    assert generic_realizations == ["fragment operation direct-route"]
+    state = modifier._semantic_fragment_state
+    assert state is not None
+    assert state.detached_operation_ids == {"route:proof:prepared-direct"}
+    imported = sfb._live_block_for_binding(
+        modifier,
+        state.binding("imported-direct-source"),
+    )
+    imported_target = sfb._live_block_for_binding(
+        modifier,
+        state.binding("target"),
+    )
+    assert imported.tail is not None
+    assert int(imported.tail.opcode) == int(ida_hexrays.m_goto)
+    assert int(imported.tail.l.b) == int(imported_target.serial)
+    assert tuple(imported.succset) == (int(imported_target.serial),)
+    validation = validate_fragment_projection(plan, projection)
+    assert validation.passed, validation.failures
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="prepared direct transfer staging cleanup")
 
 
 def test_backend_prepares_all_native_bodies_before_live_staging(

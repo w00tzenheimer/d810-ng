@@ -24,6 +24,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentComputedBranchNormalization,
+    FragmentDirectTransferRewrite,
     FragmentEdge,
     FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
@@ -522,6 +523,7 @@ class _NativeBodyStagingContext:
         self.blocks: dict[str, _Block] = {}
         self.instruction_origins: dict[tuple[str, int], int] = {}
         self.predicate_live_eas_by_operation_id: dict[str, int] = {}
+        self.detached_operation_ids: set[str] = set()
 
     def stage_block(self, block_id: str) -> None:
         block_id = str(block_id)
@@ -598,6 +600,38 @@ class _NativeBodyStagingContext:
         self.predicate_live_eas_by_operation_id[
             operation.operation_id
         ] = live_ea
+
+    def materialize_direct_transfer(self, *, operation_id: str) -> None:
+        operation = next(
+            operation
+            for operation in self.plan.operations
+            if operation.operation_id == str(operation_id)
+        )
+        assert operation.operation_id not in self.detached_operation_ids
+        assert len(operation.edges) == 1
+        assert operation.edges[0].role is SemanticEdgeRole.DIRECT
+        rewrite = operation.direct_transfer_rewrite
+        assert rewrite is not None
+        source = self.blocks[operation.source_block_id]
+        target = self.blocks[operation.edges[0].target_block_id]
+        assert source.tail is not None
+        assert int(source.tail.opcode) == int(ida_hexrays.m_goto)
+        assert (
+            self.instruction_origins[
+                (operation.source_block_id, int(source.tail.ea))
+            ]
+            == int(rewrite.rewrite_anchor_ea)
+        )
+        assert source.nsucc() == 0
+        source.tail.l.make_blkref(int(target.serial))
+        source.type = int(ida_hexrays.BLT_1WAY)
+        source.flags |= int(ida_hexrays.MBL_GOTO)
+        source.succset.push_back(int(target.serial))
+        target.predset.push_back(int(source.serial))
+        source.mark_lists_dirty()
+        target.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+        self.detached_operation_ids.add(operation.operation_id)
 
 
 def _prepare_and_stage_native_body(
@@ -1615,6 +1649,271 @@ def test_preopt_native_body_rejects_unowned_topology_before_staging(
 
     assert context.staged_block_ids == []
     assert destination.qty == 1
+
+
+def test_preopt_native_body_lowers_owned_direct_transfer_while_unpublished(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    source_ea = 0x3600
+    corridor_start_ea = 0x3604
+    preserved_setup_ea = 0x3608
+    rewrite_anchor_ea = 0x3610
+    direct_target_ea = 0x3620
+    discarded_arm_ea = 0x3630
+    source = _Block(
+        0,
+        source_ea,
+        (
+            _Instruction(ida_hexrays.m_mov, corridor_start_ea),
+            _Instruction(ida_hexrays.m_mov, preserved_setup_ea),
+            _Instruction(
+                ida_hexrays.m_jcnd,
+                rewrite_anchor_ea,
+                dest=_Operand(ida_hexrays.mop_b, block_ref=1),
+            ),
+        ),
+        (1, 2),
+    )
+    source.type = int(ida_hexrays.BLT_2WAY)
+    direct_target = _Block(
+        1,
+        direct_target_ea,
+        (_Instruction(ida_hexrays.m_ret, direct_target_ea),),
+    )
+    discarded_arm = _Block(
+        2,
+        discarded_arm_ea,
+        (_Instruction(ida_hexrays.m_ret, discarded_arm_ea),),
+    )
+    template = _MBA(
+        (source, direct_target, discarded_arm),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        source_ea,
+        template,
+        ((source_ea, discarded_arm_ea + 1),),
+        owned_block_entry_eas=(
+            source_ea,
+            direct_target_ea,
+            discarded_arm_ea,
+        ),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    body_id = "native-body:direct-transfer"
+    source_block = _imported_fragment_block(
+        "imported-direct-source",
+        body_id,
+        source_ea,
+        direct_target_ea,
+    )
+    target_block = _imported_fragment_block(
+        "imported-direct-target",
+        body_id,
+        direct_target_ea,
+        discarded_arm_ea,
+    )
+    discarded_block = _imported_fragment_block(
+        "imported-discarded-arm",
+        body_id,
+        discarded_arm_ea,
+        discarded_arm_ea + 1,
+    )
+    operation_id = "route:proof:direct-transfer"
+    native_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=(
+            source_block.block_id,
+            target_block.block_id,
+            discarded_block.block_id,
+        ),
+        entry_block_ids=(source_block.block_id,),
+        terminal_block_ids=(
+            target_block.block_id,
+            discarded_block.block_id,
+        ),
+        native_ranges=(
+            NativeEaInterval(source_ea, discarded_arm_ea + 1),
+        ),
+        proof_ids=(operation_id,),
+    )
+    context = _NativeBodyStagingContext(
+        destination,
+        _NativeBodyPlan(
+            (source_block, target_block, discarded_block),
+            operations=(
+                FragmentOperation(
+                    operation_id=operation_id,
+                    source_block_id=source_block.block_id,
+                    direct_transfer_rewrite=FragmentDirectTransferRewrite(
+                        route_proof_id="proof:direct-transfer",
+                        rewrite_anchor_ea=rewrite_anchor_ea,
+                        proof_corridor_instruction_eas=(
+                            corridor_start_ea,
+                            preserved_setup_ea,
+                            rewrite_anchor_ea,
+                        ),
+                        superseded_instruction_eas=(rewrite_anchor_ea,),
+                    ),
+                    edges=(
+                        FragmentEdge(
+                            role=SemanticEdgeRole.DIRECT,
+                            target_block_id=target_block.block_id,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    _prepare_and_stage_native_body(
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+            mba=destination,
+            function_ea=function_ea,
+        ),
+        context=context,
+        native_body=native_body,
+    )
+
+    staged_source = context.blocks[source_block.block_id]
+    staged_rows = staged_source.instructions()
+    assert tuple(int(instruction.opcode) for instruction in staged_rows) == (
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_goto),
+    )
+    assert tuple(
+        context.instruction_origins[(source_block.block_id, int(instruction.ea))]
+        for instruction in staged_rows
+    ) == (
+        corridor_start_ea,
+        preserved_setup_ea,
+        rewrite_anchor_ea,
+    )
+    assert int(staged_source.type) == int(ida_hexrays.BLT_1WAY)
+    assert tuple(staged_source.succset) == (
+        context.blocks[target_block.block_id].serial,
+    )
+    assert tuple(context.blocks[target_block.block_id].predset) == (
+        staged_source.serial,
+    )
+    assert context.detached_operation_ids == {operation_id}
+
+
+def _direct_transfer_preflight_case(
+    *,
+    rewrite: FragmentDirectTransferRewrite,
+    instructions: tuple[_Instruction, ...],
+) -> tuple[
+    FragmentNativeBody,
+    FragmentOperation,
+    dict[str, object],
+]:
+    block_id = "imported-direct-source"
+    operation_id = f"route:{rewrite.route_proof_id}"
+    native_body = FragmentNativeBody(
+        body_id="native-body:direct-preflight",
+        block_ids=(block_id,),
+        entry_block_ids=(block_id,),
+        terminal_block_ids=(),
+        native_ranges=(NativeEaInterval(0x3600, 0x3620),),
+        proof_ids=(operation_id,),
+    )
+    operation = FragmentOperation(
+        operation_id=operation_id,
+        source_block_id=block_id,
+        direct_transfer_rewrite=rewrite,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id="direct-target",
+            ),
+        ),
+    )
+    matched = {
+        block_id: SimpleNamespace(
+            native_entry_ea=0x3600,
+            instructions=instructions,
+        ),
+    }
+    return native_body, operation, matched
+
+
+def test_preopt_direct_transfer_rejects_rewrite_anchor_tail_mismatch() -> None:
+    rewrite = FragmentDirectTransferRewrite(
+        route_proof_id="proof:tail-mismatch",
+        rewrite_anchor_ea=0x3610,
+        proof_corridor_instruction_eas=(0x3604, 0x3610),
+        superseded_instruction_eas=(0x3610,),
+    )
+    native_body, operation, matched = _direct_transfer_preflight_case(
+        rewrite=rewrite,
+        instructions=(
+            _Instruction(ida_hexrays.m_mov, 0x3604),
+            _Instruction(ida_hexrays.m_mov, 0x3610),
+            _Instruction(ida_hexrays.m_jcnd, 0x3614),
+        ),
+    )
+
+    with pytest.raises(
+        detached_handler_island.SemanticFragmentBackendRejected,
+        match="does not own its exact detached tail",
+    ) as caught:
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._preflight_direct_transfer_rewrite(
+            matched=matched,
+            native_body=native_body,
+            block_id=operation.source_block_id,
+            template_block=matched[operation.source_block_id],
+            operation=operation,
+            rewrite=rewrite,
+        )
+
+    assert caught.value.reason_code == "detached_direct_transfer_tail_mismatch"
+    assert caught.value.anchor_ea == 0x3610
+
+
+def test_preopt_direct_transfer_rejects_corridor_outside_native_body() -> None:
+    rewrite = FragmentDirectTransferRewrite(
+        route_proof_id="proof:corridor-escape",
+        rewrite_anchor_ea=0x3610,
+        proof_corridor_instruction_eas=(0x35FC, 0x3610),
+        superseded_instruction_eas=(0x3610,),
+    )
+    native_body, operation, matched = _direct_transfer_preflight_case(
+        rewrite=rewrite,
+        instructions=(
+            _Instruction(ida_hexrays.m_mov, 0x35FC),
+            _Instruction(ida_hexrays.m_jcnd, 0x3610),
+        ),
+    )
+
+    with pytest.raises(
+        detached_handler_island.SemanticFragmentBackendRejected,
+        match="corridor escapes native-body ranges",
+    ) as caught:
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._preflight_direct_transfer_rewrite(
+            matched=matched,
+            native_body=native_body,
+            block_id=operation.source_block_id,
+            template_block=matched[operation.source_block_id],
+            operation=operation,
+            rewrite=rewrite,
+        )
+
+    assert caught.value.reason_code == "detached_direct_transfer_corridor_unowned"
+    assert caught.value.anchor_ea == 0x3610
 
 
 @pytest.mark.parametrize(
