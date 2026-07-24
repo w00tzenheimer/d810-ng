@@ -161,6 +161,38 @@ def _stable_identities_overlap(
     )
 
 
+def _stable_identity_overlap_is_one_shared_anchor(
+    left: StableBlockIdentity,
+    right: StableBlockIdentity,
+    *,
+    anchor_ea: int,
+) -> bool:
+    """Allow one role-tagged same-EA microblock split, and nothing wider."""
+    anchor_ea = int(anchor_ea)
+    exact_overlap = (
+        left.exact_instruction_eas & right.exact_instruction_eas
+    )
+    if exact_overlap != {anchor_ea}:
+        return False
+    overlaps = tuple(
+        (
+            max(int(left_interval.start_ea), int(right_interval.start_ea)),
+            min(int(left_interval.end_ea), int(right_interval.end_ea)),
+        )
+        for left_interval in left.native_ranges.intervals
+        for right_interval in right.native_ranges.intervals
+        if max(int(left_interval.start_ea), int(right_interval.start_ea))
+        < min(int(left_interval.end_ea), int(right_interval.end_ea))
+    )
+    return bool(
+        overlaps
+        and all(
+            start_ea == anchor_ea and end_ea == anchor_ea + 1
+            for start_ea, end_ea in overlaps
+        )
+    )
+
+
 def _identity_belongs_to_native_body(
     identity: StableBlockIdentity,
     native_body: FragmentNativeBody,
@@ -1718,22 +1750,41 @@ class FragmentPlan:
                             "imported conditional-select normalization lacks "
                             "native-body proof ownership"
                         )
-                    envelope_identities = (
-                        envelope.selected_value_identity,
-                        envelope.join_identity,
+                    selected_identity = envelope.selected_value_identity
+                    join_identity = envelope.join_identity
+                    source_selected_overlap = _stable_identities_overlap(
+                        identity,
+                        selected_identity,
+                    )
+                    role_shared_source_selected = bool(
+                        envelope.source_branch_ea
+                        == envelope.selected_value_ea
+                        and _stable_identity_overlap_is_one_shared_anchor(
+                            identity,
+                            selected_identity,
+                            anchor_ea=envelope.source_branch_ea,
+                        )
                     )
                     if (
-                        any(
-                            _stable_identities_overlap(identity, member)
-                            for member in envelope_identities
+                        (
+                            source_selected_overlap
+                            and not role_shared_source_selected
                         )
-                        or _stable_identities_overlap(*envelope_identities)
+                        or _stable_identities_overlap(identity, join_identity)
+                        or _stable_identities_overlap(
+                            selected_identity,
+                            join_identity,
+                        )
                     ):
                         raise FragmentPlanRejected(
                             f"fragment operation {operation.operation_id!r} "
-                            "imported conditional-select envelope requires "
-                            "three distinct physical block identities"
+                            "imported conditional-select envelope overlaps "
+                            "outside its one role-shared source/select EA"
                         )
+                    envelope_identities = (
+                        selected_identity,
+                        join_identity,
+                    )
                     if any(
                         not _identity_belongs_to_native_body(
                             member,
