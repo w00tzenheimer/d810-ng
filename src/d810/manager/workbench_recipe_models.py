@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 
+from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.manager.workbench_models import OutcomeStatus
 
 
@@ -20,6 +21,7 @@ class PassCatalogEntry:
     owned_rules: tuple[str, ...]
     transforms: tuple[str, ...]
     configured: bool
+    workflow_stage: StrategyWorkflowStage = StrategyWorkflowStage.CANONICAL_PIPELINE
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

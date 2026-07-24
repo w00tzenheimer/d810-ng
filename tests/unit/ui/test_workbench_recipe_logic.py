@@ -4,6 +4,12 @@ import ast
 import dataclasses
 from pathlib import Path
 
+from d810.core.deobfuscation_case import (
+    DeobfuscationCaseSnapshot,
+    StrategyDeficiency,
+    StrategyRecommendation,
+    StrategyWorkflowStage,
+)
 from d810.manager.workbench_models import OutcomeStatus
 from d810.manager.workbench_recipe_models import (
     PassCatalogEntry,
@@ -94,6 +100,48 @@ def test_catalog_filter_and_sort_do_not_change_draft_execution_order() -> None:
     ]
     assert [row.pass_id for row in draft_rows] == ["z-pass", "a-pass"]
     assert [row.ordinal for row in draft_rows] == [0, 1]
+
+
+def test_catalog_exposes_display_stage_without_reordering_the_draft() -> None:
+    catalog = (
+        dataclasses.replace(
+            _catalog()[0],
+            workflow_stage=StrategyWorkflowStage.CANONICAL_TRANSFORM,
+        ),
+        dataclasses.replace(
+            _catalog()[1],
+            workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
+        ),
+    )
+
+    rows = logic.project_catalog_rows(catalog, sort_by="stage")
+    draft_rows = logic.project_draft_rows(_draft(), _validation())
+
+    assert [row.workflow_stage for row in rows] == [
+        StrategyWorkflowStage.FRONTEND_NORMALIZATION,
+        StrategyWorkflowStage.CANONICAL_TRANSFORM,
+    ]
+    assert [row.pass_id for row in draft_rows] == ["z-pass", "a-pass"]
+
+
+def test_recipe_strategy_explains_missing_evidence_without_raw_transform_editing() -> None:
+    case = DeobfuscationCaseSnapshot(
+        evidence=None,
+        strategy=StrategyRecommendation(
+            deficiency=StrategyDeficiency.CFG_FORMATION,
+            summary="Recover the control-flow shape first.",
+            required_finding_ids=("predicate:0x401000",),
+            stages=(StrategyWorkflowStage.CANONICAL_ANALYSIS,),
+        ),
+        direct_run_permitted=False,
+        direct_run_reason="Build a strategy before running it.",
+    )
+
+    view = logic.project_recipe_strategy(case, _catalog())
+
+    assert view.strategy_summary == "Recover the control-flow shape first."
+    assert view.blocked_reason == "Build the case dossier before composing a run."
+    assert view.can_add_transform is False
 
 
 def test_draft_rows_show_disabled_and_blocked_states_without_reordering() -> None:

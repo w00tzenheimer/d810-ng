@@ -4,6 +4,7 @@ import dataclasses
 
 import pytest
 
+from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.manager.workbench_recipe_models import (
     FunctionPipelineOverride,
     PassCatalogEntry,
@@ -51,6 +52,7 @@ def test_recipe_records_are_frozen_and_keep_ordered_tuple_payloads() -> None:
 
     assert draft.passes == (recipe_pass,)
     assert entry.transforms == ("dispatcher recovery",)
+    assert entry.workflow_stage is StrategyWorkflowStage.CANONICAL_PIPELINE
     with pytest.raises(dataclasses.FrozenInstanceError):
         draft.revision = 2  # type: ignore[misc]
 

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from d810.ir.maturity import IRMaturity
+from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.passes import pass_pipeline as pp
 from d810.passes.scheduler import RunLater
 from d810.transforms.plan import PatchPlan
@@ -185,6 +186,22 @@ def test_pipeline_config_roundtrip_preserves_contract_fields():
     assert payload["scheduler_policy"] == "replay_after_pipeline"
     assert payload["backend_route"] == "analysis_only"
     assert pp.PipelineConfig.from_dict(payload) == config
+
+
+def test_pipeline_config_persists_display_only_workflow_stage() -> None:
+    defaulted = pp.PipelineConfig.from_dict({"pass_id": "unknown-pass"})
+    configured = pp.PipelineConfig(
+        pass_id="recover_dispatcher",
+        workflow_stage=StrategyWorkflowStage.CANONICAL_ANALYSIS,
+    )
+
+    assert defaulted.workflow_stage is StrategyWorkflowStage.CANONICAL_PIPELINE
+    assert configured.to_dict()["workflow_stage"] == "canonical_analysis"
+    assert pp.PipelineConfig.from_dict(configured.to_dict()) == configured
+    with pytest.raises(pp.PipelineConfigError, match="workflow_stage"):
+        pp.PipelineConfig.from_dict(
+            {"pass_id": "recover_dispatcher", "workflow_stage": "invented"}
+        )
 
 
 def test_pipeline_config_roundtrip_preserves_native_pass_contract():

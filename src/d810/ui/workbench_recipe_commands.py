@@ -58,6 +58,10 @@ class WorkbenchRecipeAdapter:
     def catalog(self) -> tuple[object, ...]:
         return tuple(self._state.get_workbench_recipe_catalog())
 
+    def case(self) -> object | None:
+        """Return the immutable case captured with this Recipe Composer session."""
+        return getattr(self._snapshot, "case", None)
+
     def validate(self, draft: PipelineRecipeDraft) -> RecipeValidation:
         return self._state.validate_workbench_recipe(draft, facts=self._facts)
 

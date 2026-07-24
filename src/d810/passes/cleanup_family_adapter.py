@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
@@ -109,6 +110,7 @@ def register_cleanup_family_adapter_passes(registry: PassRegistry) -> PassRegist
         build_cleanup_family_adapter_pass,
         config_template=PipelineConfig(
             pass_id=SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+            workflow_stage=StrategyWorkflowStage.CANONICAL_TRANSFORM,
             options={"legacy_rule": SIMPLE_FLATTENING_CLEANUP_RULE},
         ),
         transforms=(SIMPLE_FLATTENING_CLEANUP_RULE,),
