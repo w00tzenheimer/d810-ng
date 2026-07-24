@@ -2389,3 +2389,55 @@ give its complete reference conditional transaction detached ownership--the
 conditional arm to `0x40C4B4` and direct arm to imported `0x40A5F0`--rather
 than leaving the physical transfer block as a live external boundary. Do not
 claim C4, weaken dispatcher absence, or broaden to the 91-route publication.
+
+**2026-07-24T23:12:07Z**
+
+Commits `b2e55d581`, `c89f0a42b`, and `09b65e60b` finish the direct-transfer
+ownership slice. Ruff reflow is isolated in the first commit. Direct patch
+evidence now uses the actual indirect-transfer EA as its source anchor, so a
+patch corridor split across native blocks binds the physical transfer owner.
+Canonical composition retains a proof-owned imported transfer when its edge
+enters a selected prohibited replacement instead of cutting that transfer at
+its uniquely published current owner. The final commit updates one stale test
+assertion to the diagnostic wording introduced by `28ec10126`.
+
+The expanded portable/frontend/canonical/runtime suite is 409/409 green.
+Ruff, ast-grep, all 14 worktree-local import contracts, the portable-core
+shape ratchet, commit hooks, and `graphify update .` are green. Docker
+client/server 29.6.2 is live.
+
+The mandatory cache-disabled A560 diagnostic canary at committed HEAD
+`09b65e60b` returned normally in 17.32 seconds with no process crash. Log:
+`.tmp/rhad-a560-v33-direct-owner-canary.txt`; primary DB:
+`.tmp/rhad-a560-v33-direct-owner-canary/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-direct-owner-canary/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one `while ( 1 )`; this is not A560
+acceptance.
+
+The committed frontend transaction `2305c8caee704a42a6e04a9facc60a12`
+proves the ownership correction activated. Operation
+`native-indirect-transfer@0x40C4B2` is now sourced by imported identity
+`native[0x40C4AE-0x40C4B4;exact=0x40C4AE,0x40C4B2]` and directly targets the
+imported/replacement `0x40A5F0` identity. The preceding imported topology is
+preserved as `0x40C49A -> {0x40C4A8,0x40C4AE}` and
+`0x40C4A8 -> 0x40C4AE`; it is no longer misbound to the prefix block.
+
+Canonical transaction `03fcbee432154b64b7f1a5b4611ea8ae` contains 46 blocks
+and 34 operations. It stages the fragment, does not attempt root publication,
+and aborts during prepublication validation. The highest contiguous A560
+level remains C3. The first failed C4 obligation is outcome 161,
+`use_def_integrity`, for predicate
+`state-choice@0x40BECC:0xEC71CA67:0xA0716E5B`, between native definition owner
+`native[0x40A5AB-0x40A5AC;exact=0x40A5AB]` and imported consumer
+`native[0x40BECC-0x40BEE7;exact=0x40BECC,0x40BED0,0x40BED6]`. Outcome 162 is
+the paired def-use failure; outcomes 163-164 are the corresponding carrier
+use-def/def-use failures from replacement route `0x40A5C8` to the same
+consumer. The prior `0x40C4B2` dispatcher-absence failure is no longer the
+first obligation.
+
+Rollback then fails with SDK `INTERR 50856`; the defining assertion at
+`.ida-sdk/src/verifier/verify.cpp:1155` is successor cardinality disagreeing
+with block type. Continue the v3.3 vertical loop from the predicate/carrier
+use-def break at imported consumer `0x40BECC`. Do not claim C4 or C5, weaken
+the use-def gate, or broaden to the 91-route publication.
