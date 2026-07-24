@@ -1271,13 +1271,25 @@ class FragmentPlan:
                 operation.computed_branch_normalization
             )
             if computed_normalization is not None:
-                if self.publication_purpose is not (
-                    FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+                native_body = native_body_by_id.get(
+                    str(source.native_body_id)
+                )
+                canonical_imported_normalization = bool(
+                    self.publication_purpose
+                    is FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+                    and source.role is FragmentBlockRole.IMPORTED
+                    and native_body is not None
+                    and operation.operation_id in native_body.proof_ids
+                )
+                if (
+                    self.publication_purpose
+                    is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+                    and not canonical_imported_normalization
                 ):
                     raise FragmentPlanRejected(
                         f"fragment operation {operation.operation_id!r} "
-                        "computed branch normalization requires a "
-                        "frontend-normalization plan"
+                        "canonical computed branch normalization requires "
+                        "imported native-body proof"
                     )
                 envelope = computed_normalization.conditional_select_envelope
                 identity = source.stable_identity

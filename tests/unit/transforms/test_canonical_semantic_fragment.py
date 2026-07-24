@@ -31,6 +31,7 @@ from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
@@ -41,6 +42,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentComputedBranchNormalization,
     FragmentDataFlowRole,
     FragmentEdge,
     FragmentNativeBody,
@@ -460,6 +462,70 @@ def test_detached_component_rebinds_published_replacement_boundary_as_external()
         plan.block(block_id).semantic_anchor_ea
         for block_id in plan.owned_originals
     ) == (0x1100,)
+
+
+def test_detached_component_keeps_proof_owned_imported_branch_normalization() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    (native_body,) = normalization_plan.native_bodies
+    detached_identity = _wide_identity(0x1200, 0x1210)
+    normalization = FragmentComputedBranchNormalization(
+        predicate_kind=PredicateKind.EQ,
+        normalization_start_ea=0x1202,
+        condition_producer_ea=0x1203,
+        unresolved_transfer_ea=0x1208,
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=tuple(
+            replace(block, stable_identity=detached_identity)
+            if block.block_id == "detached-target"
+            else block
+            for block in normalization_plan.blocks
+        ),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="detached-normalization",
+                source_block_id="detached-target",
+                predicate_anchor_ea=0x1204,
+                computed_branch_normalization=normalization,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        target_block_id="unrelated-replacement",
+                    ),
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                        target_block_id="unrelated-exit",
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                terminal_block_ids=(),
+                native_ranges=(NativeEaInterval(0x1200, 0x1210),),
+            ),
+        ),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    operation = next(
+        operation
+        for operation in plan.operations
+        if operation.operation_id == "detached-normalization"
+    )
+    assert operation.computed_branch_normalization is normalization
+    assert plan.block(operation.source_block_id).role is FragmentBlockRole.IMPORTED
 
 
 def test_canonical_route_rebinds_retained_corridor_to_live_source_subset() -> None:
