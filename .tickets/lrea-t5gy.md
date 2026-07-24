@@ -2479,3 +2479,39 @@ data-flow site EAs to transaction-local live EAs before querying, then map every
 observed live EA back through instruction-origin authority before matching a
 portable site. Do not accept raw fictitious EAs as portable evidence or weaken
 the use-def gate.
+
+**2026-07-24T23:37:25Z**
+
+Commit `12ff2838f` maps planned native data-flow sites into staged instruction
+origin authority before UD/DU queries and maps observed staged EAs back to
+their native origins before portable-site matching. The focused
+semantic-backend, validation, and diagnostic-DB suite is 139/139 green.
+
+The mandatory cache-disabled A560 canary at `12ff2838f` returned normally in
+18.66 seconds. Log:
+`.tmp/rhad-a560-v33-instruction-origin-canary.txt`; primary DB:
+`.tmp/rhad-a560-v33-instruction-origin-canary/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-instruction-origin-canary/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one `while ( 1 )`; this is not A560
+acceptance.
+
+The highest contiguous canary level remains C3. Canonical transaction
+`ec898969b7f448dab9db1dca2605f36c` now fails during staging, before C4
+validation or root publication. Its first failed obligation is exact live-site
+binding for imported native owner
+`native[0x40BECC-0x40BEE7;exact=0x40BECC,0x40BED0,0x40BED6]`: several staged
+microinstructions have native origin `0x40BECC`, so the generic origin lookup
+rejects the ambiguous `imported@0x40BECC` instead of guessing. The next
+vertical-loop slice must bind a data-flow site by portable storage identity,
+width, and access role (definition or use), while preserving the generic
+origin lookup's uniqueness requirement.
+
+Stage cleanup first records SDK `INTERR 50856`, whose assertion at
+`.ida-sdk/src/verifier/verify.cpp:1155` is successor cardinality disagreeing
+with block type. Rollback then records SDK `INTERR 52719`; the defining
+assertion at `.ida-sdk/src/include/hexrays.hpp:5570` is `n < qty` in
+`mba_t::get_mblock(n)`, so rollback is attempting an out-of-range or stale
+block index after the stage abort. Continue from the data-flow-specific live
+site ambiguity; do not weaken origin authority, claim C4, or broaden to the
+91-route publication.
