@@ -29,6 +29,10 @@ from d810.backends.hexrays.registration import (
     ensure_hexrays_fact_lifter_registered,
 )
 from d810.diagnostics.post_d810_handoff import detect_post_d810_handoff_violations
+from d810.diagnostics.deobfuscation_case_repository import (
+    DeobfuscationCaseRepository,
+    SqliteCaseDiagnosticReader,
+)
 from d810.diagnostics.workbench_cleanup import DiagnosticCleanupService
 from d810.diagnostics.workbench_inventory import DiagnosticInventoryService
 from d810.diagnostics.workbench_models import (
@@ -76,6 +80,7 @@ from d810.manager.config_v2_edit_models import (
     ConfigV2ProjectValidation,
 )
 from d810.manager.config_v2_editing import ConfigV2EditingService
+from d810.manager.deobfuscation_case_service import DeobfuscationCaseService
 from d810.manager.function_recipe_runtime import (
     FunctionRecipePersistenceError,
     FunctionRecipeRuntime,
@@ -95,7 +100,10 @@ from d810.manager.workbench_comparison import (
 from d810.manager.workbench_models import (
     BaselineRef,
     D810OutputRef,
+    DeobfuscationCaseSnapshot,
     DeobfuscationWorkbenchSnapshot,
+    FunctionRef,
+    RuntimeConfigRef,
     WorkbenchComparisonSnapshot,
 )
 from d810.manager.workbench_service import WorkbenchService
@@ -628,6 +636,7 @@ class D810Manager:
         """Collect one immutable read-only workbench snapshot."""
         runtime_scope = "project"
         initial_errors: tuple[str, ...] = ()
+        saved_recipe: FunctionPipelineOverride | None = None
         try:
             override = self.function_recipe_runtime.get(function_ea)
             selection = select_workbench_recipe_projection(
@@ -641,6 +650,8 @@ class D810Manager:
             project_snapshot = selection.project_snapshot
             runtime_scope = selection.recipe_scope
             initial_errors = selection.errors
+            if selection.recipe_scope == "function-recipe":
+                saved_recipe = override
         except FunctionRecipePersistenceError as exc:
             runtime_scope = "function-recipe-blocked"
             initial_errors = (f"function recipe: {exc}",)
@@ -654,7 +665,34 @@ class D810Manager:
             baseline=baseline,
             latest_output=latest_output,
             runtime_scope=runtime_scope,
+            saved_recipe=saved_recipe,
             initial_errors=initial_errors,
+        )
+
+    def get_deobfuscation_case_snapshot(
+        self,
+        *,
+        function: FunctionRef,
+        runtime: RuntimeConfigRef,
+        saved_recipe: FunctionPipelineOverride | None,
+    ) -> DeobfuscationCaseSnapshot:
+        """Project only closed, current-schema diagnostic databases for one function."""
+        databases = self.diagnostic_inventory_service.databases()
+        paths = tuple(
+            pathlib.Path(database.path)
+            for database in databases
+            if (
+                database.readable
+                and not database.active
+                and database.schema_version == 7
+                and int(function.ea) in database.function_eas
+            )
+        )
+        repository = DeobfuscationCaseRepository(SqliteCaseDiagnosticReader(paths))
+        return DeobfuscationCaseService(repository).collect(
+            function=function,
+            runtime=runtime,
+            saved_recipe=saved_recipe,
         )
 
     def analyze_workbench_function(

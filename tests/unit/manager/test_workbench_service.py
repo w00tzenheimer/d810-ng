@@ -621,6 +621,35 @@ def test_analyze_calls_read_only_manager_seam_once_and_requests_refresh(
     assert result.refresh_requested is True
 
 
+def test_build_deobfuscator_calls_only_the_read_only_analysis_seam(
+    tmp_path: Path,
+) -> None:
+    service, manager, snapshot, _ = _collected_service(tmp_path)
+    target = object()
+    provider_phase = object()
+    calls: list[dict[str, object]] = []
+    manager.analyze_workbench_function = (
+        lambda **kwargs: calls.append(kwargs) or object()
+    )
+
+    result = service.execute_build_deobfuscator(
+        _request(snapshot, "build_deobfuscator"),
+        target=target,
+        provider_phase=provider_phase,
+    )
+
+    assert calls == [
+        {
+            "function_ea": 0x401000,
+            "target": target,
+            "provider_phase": provider_phase,
+        }
+    ]
+    assert result.succeeded is True
+    assert result.accepted is True
+    assert result.refresh_requested is True
+
+
 def test_deobfuscate_and_function_override_invoke_existing_lifecycles_once(
     tmp_path: Path,
 ) -> None:
@@ -717,6 +746,7 @@ def test_state_command_facades_delegate_without_policy() -> None:
     state_path = _ROOT / "src" / "d810" / "manager" / "state.py"
     expectations = {
         "execute_workbench_analyze": "execute_analyze",
+        "execute_workbench_build_deobfuscator": "execute_build_deobfuscator",
         "execute_workbench_deobfuscate": "execute_deobfuscate",
         "execute_workbench_function_override": "execute_function_override",
     }

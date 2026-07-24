@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import enum
 
+from d810.core.deobfuscation_case import DeobfuscationCaseSnapshot
 
 class OutcomeStatus(str, enum.Enum):
     """Approved status labels shared by passes and supporting consumers."""
@@ -219,6 +220,7 @@ class DeobfuscationWorkbenchSnapshot:
     freshness: SnapshotFreshness
     engine_started: bool
     collection_errors: tuple[str, ...]
+    case: DeobfuscationCaseSnapshot | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
