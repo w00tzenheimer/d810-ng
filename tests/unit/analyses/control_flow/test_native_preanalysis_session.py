@@ -21,6 +21,8 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
 )
 from d810.analyses.control_flow.frontend_normalization import (
     FrontendNormalizationEvidenceRejected,
+    NativeIndirectTransferProof,
+    NativeTransferEndpoint,
     NativeTransferShape,
 )
 from d810.analyses.control_flow.semantic_route_evidence import (
@@ -44,6 +46,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     PreoptUnionPreparationResult,
     PrepatchPreoptUnionSource,
     NativePreanalysisSessionState,
+    _without_superseded_frontier_patch_proofs,
 )
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.analyses.control_flow.native_semantic_closure import (
@@ -1463,7 +1466,7 @@ def test_frontend_evidence_projects_complete_static_state_choice_envelope() -> N
         abstentions=(),
         seed_provenance=(),
     )
-    patch_plan = ComputedGotoPatchPlan(
+    unrelated_patch_plan = ComputedGotoPatchPlan(
         jmp_ea=0x5008,
         block_entry=0x5000,
         patch_start=0x5000,
@@ -1473,14 +1476,29 @@ def test_frontend_evidence_projects_complete_static_state_choice_envelope() -> N
         new_block_eas=(0x5000,),
         target_eas=(true_target_ea,),
     )
+    superseded_frontier_plan = ComputedGotoPatchPlan(
+        jmp_ea=unresolved_transfer_ea,
+        block_entry=selected_ea,
+        patch_start=selected_ea,
+        patch_bytes=b"\x90",
+        region_end=0x1040,
+        insn_heads=(selected_ea, join_ea, unresolved_transfer_ea),
+        new_block_eas=(selected_ea,),
+        target_eas=(dispatcher_target_ea,),
+    )
     resolution = ComputedGotoResolution(
         function_ea=0x1000,
-        jmp_targets={patch_plan.jmp_ea: patch_plan.target_eas},
+        jmp_targets={
+            unrelated_patch_plan.jmp_ea: unrelated_patch_plan.target_eas,
+            superseded_frontier_plan.jmp_ea: (
+                superseded_frontier_plan.target_eas
+            ),
+        },
         reachable_eas=(0x1000,),
         arch="x86",
         executed_insns=17,
         seeds_run=0,
-        patch_plans=(patch_plan,),
+        patch_plans=(unrelated_patch_plan, superseded_frontier_plan),
     )
     transfer = MaterializedIndirectTransfer(
         source_jmp_ea=select_ea,
@@ -1515,6 +1533,12 @@ def test_frontend_evidence_projects_complete_static_state_choice_envelope() -> N
     assert evidence is not None
     proofs = {proof.proof_id: proof for proof in evidence.transfer_proofs}
     proof = proofs["native-state-choice@0x100C"]
+    assert "native-indirect-transfer@0x103E" not in proofs
+    assert "native-indirect-transfer@0x5008" in proofs
+    assert (
+        "superseded_patch_proof",
+        "native-indirect-transfer@0x103E",
+    ) in proof.diagnostic_provenance
     assert proof.shape is NativeTransferShape.CONDITIONAL
     assert proof.source_anchor_ea == select_ea
     assert proof.source_transfer_ea == unresolved_transfer_ea
@@ -1538,6 +1562,98 @@ def test_frontend_evidence_projects_complete_static_state_choice_envelope() -> N
         (SemanticEdgeRole.CONDITIONAL_TAKEN, true_target_ea),
         (SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, false_target_ea),
     }
+
+
+def test_state_choice_frontier_supersession_is_contained_and_unambiguous() -> None:
+    atomic_group_id = "frontend-normalization:g1"
+    state_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1040),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1000, 0x100C),
+    )
+    state_choice = NativeIndirectTransferProof(
+        proof_id="native-state-choice@0x100C",
+        atomic_group_id=atomic_group_id,
+        shape=NativeTransferShape.CONDITIONAL,
+        source_identity=state_identity,
+        source_anchor_ea=0x100C,
+        source_transfer_ea=0x103E,
+        endpoints=(
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                identity=StableBlockIdentity.from_instruction_eas(
+                    (0x2000,),
+                    native_key=NATIVE_KEY,
+                ),
+                anchor_ea=0x2000,
+            ),
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                identity=StableBlockIdentity.from_instruction_eas(
+                    (0x3000,),
+                    native_key=NATIVE_KEY,
+                ),
+                anchor_ea=0x3000,
+            ),
+        ),
+        predicate_kind=PredicateKind.EQ,
+        predicate_anchor_ea=0x100C,
+        condition_producer_ea=0x1000,
+        flag_corridor=(state_identity,),
+        permitted_flag_write_eas=frozenset({0x1000}),
+    )
+
+    def direct_patch(
+        proof_id: str,
+        start_ea: int,
+    ) -> NativeIndirectTransferProof:
+        return NativeIndirectTransferProof(
+            proof_id=proof_id,
+            atomic_group_id=atomic_group_id,
+            shape=NativeTransferShape.DIRECT,
+            source_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(start_ea, 0x1040),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=(start_ea,),
+            ),
+            source_anchor_ea=start_ea,
+            source_transfer_ea=0x103E,
+            endpoints=(
+                NativeTransferEndpoint(
+                    role=SemanticEdgeRole.DIRECT,
+                    identity=StableBlockIdentity.from_instruction_eas(
+                        (0x4000,),
+                        native_key=NATIVE_KEY,
+                    ),
+                    anchor_ea=0x4000,
+                ),
+            ),
+        )
+
+    contained = direct_patch("native-indirect-transfer@0x103E", 0x1020)
+    partial = direct_patch("native-indirect-transfer@0x103E-partial", 0x0FF0)
+
+    retained, annotated = _without_superseded_frontier_patch_proofs(
+        (contained, partial),
+        (state_choice,),
+    )
+
+    assert retained == (partial,)
+    assert (
+        "superseded_patch_proof",
+        contained.proof_id,
+    ) in annotated[0].diagnostic_provenance
+    with pytest.raises(
+        FrontendNormalizationEvidenceRejected,
+        match="multiple state-choice owners",
+    ):
+        _without_superseded_frontier_patch_proofs(
+            (contained,),
+            (
+                state_choice,
+                replace(state_choice, proof_id="native-state-choice@0x100D"),
+            ),
+        )
 
 
 def test_frontend_evidence_owns_patch_corridor_and_ledger_target() -> None:
