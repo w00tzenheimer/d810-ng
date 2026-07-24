@@ -276,6 +276,7 @@ from d810.ir.flowgraph import FlowGraph, InsnSnapshot
 from d810.hexrays.mutation.insn_snapshot_materializer import (
     materialize_insn_snapshots,
 )
+from d810.hexrays.opcode_lift import opcode_name
 from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
 from d810.hexrays.ir.semantic_edge import (
     LogicalSemanticEdge,
@@ -2978,6 +2979,72 @@ class DeferredGraphModifier:
             f"observed_tail={observed_tail}"
         )
 
+    def _semantic_edge_call_fallthrough_diagnostic(
+        self,
+        operation: LogicalSemanticEdgeOperation,
+        source_binding: LogicalBlockVersion,
+        source: object,
+    ) -> str:
+        identity = source_binding.handle.stable_identity
+        stable_identity = (
+            "none" if identity is None else identity.diagnostic_label()
+        )
+        successors: list[str] = []
+        quantity = int(getattr(self.mba, "qty", 0) or 0)
+        for successor_serial in tuple(
+            int(successor) for successor in getattr(source, "succset", ())
+        ):
+            successor = (
+                self.mba.get_mblock(successor_serial)
+                if 0 <= successor_serial < quantity
+                else None
+            )
+            successors.append(
+                (
+                    f"blk{successor_serial}@<unbound>"
+                    if successor is None
+                    else self._semantic_edge_block_label(successor)
+                )
+            )
+        tail = getattr(source, "tail", None)
+        if tail is None:
+            tail_diagnostic = (
+                "tail_ea=none tail_native_origin=unmapped "
+                "tail_opcode=none tail_dest_type=none"
+            )
+        else:
+            tail_ea = int(getattr(tail, "ea", -1))
+            tail_opcode = int(getattr(tail, "opcode", -1))
+            tail_opcode_name = opcode_name(tail_opcode) or "unknown"
+            destination = getattr(tail, "d", None)
+            tail_dest_type = (
+                "none"
+                if destination is None
+                else str(int(getattr(destination, "t", -1)))
+            )
+            tail_native_origin = (
+                f"0x{tail_ea:X}"
+                if identity is not None
+                and tail_ea in identity.exact_instruction_eas
+                else "unmapped"
+            )
+            tail_diagnostic = (
+                f"tail_ea=0x{tail_ea:X} "
+                f"tail_native_origin={tail_native_origin} "
+                f"tail_opcode={tail_opcode_name}({tail_opcode}) "
+                f"tail_dest_type={tail_dest_type}"
+            )
+        return (
+            f"operation={operation.description!r} "
+            f"stable_identity={stable_identity} "
+            f"live={self._semantic_edge_block_label(source)} "
+            f"block_type={int(getattr(source, 'type', -1))} "
+            f"nsucc={int(source.nsucc())} "
+            f"successors=[{','.join(successors)}] "
+            f"{tail_diagnostic} "
+            "expected=zero-way block-closing m_call or m_icall"
+        )
+
     def _semantic_edge_live_binding(self, proxy):
         gateway = self._mutation_gateway
         if gateway is None or not gateway.active:
@@ -3127,7 +3194,6 @@ class DeferredGraphModifier:
     ) -> LogicalBlockVersion:
         source_binding, source = self._semantic_edge_live_binding(operation.source)
         target_binding, target = self._semantic_edge_live_binding(edge.target)
-        label = self._semantic_edge_block_label(source)
         tail = source.tail
         if (
             int(source.nsucc()) != 0
@@ -3136,7 +3202,12 @@ class DeferredGraphModifier:
             not in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}
         ):
             raise SemanticEdgeOperationRejected(
-                f"call fallthrough requires a zero-way block-closing call at {label}"
+                "call fallthrough requires a zero-way block-closing call; "
+                + self._semantic_edge_call_fallthrough_diagnostic(
+                    operation,
+                    source_binding,
+                    source,
+                )
             )
         if edge.expected_target is not None:
             raise SemanticEdgeOperationRejected(

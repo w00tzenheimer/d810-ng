@@ -106,6 +106,10 @@ class _Mba:
     def mark_chains_dirty(self) -> None:
         self.chains_dirty = True
 
+    @staticmethod
+    def map_fict_ea(ea: int) -> int:
+        return int(ea)
+
     def _relink(self) -> None:
         ordered = sorted(self.blocks.values(), key=lambda block: block.serial)
         for index, block in enumerate(ordered):
@@ -340,6 +344,61 @@ def test_gateway_rejects_call_fallthrough_for_non_call_before_helper_creation(
 
     assert helper_calls == 0
     assert tuple(source.succset) == ()
+    assert gateway.receipts == ()
+
+
+def test_gateway_reports_portable_call_fallthrough_shape_diagnostic(
+    monkeypatch,
+) -> None:
+    source = _Block(1, start=0x401010)
+    target = _Block(2, start=0x401020)
+    call = _call_tail(ea=0x401011)
+    source.head = call
+    source.tail = call
+    source.type = int(ida_hexrays.BLT_1WAY)
+    source.succset.push_back(2)
+    target.predset.push_back(1)
+    mba = _Mba(source, target)
+    gateway = make_mutation_gateway(mba)
+    helper_calls = 0
+
+    def _unexpected_helper(*_args, **_kwargs):
+        nonlocal helper_calls
+        helper_calls += 1
+        return None
+
+    monkeypatch.setattr(
+        dm.DeferredGraphModifier,
+        "_build_fallthrough_goto_helper",
+        _unexpected_helper,
+    )
+    operation = LogicalSemanticEdgeOperation(
+        source=_proxy(gateway, 1),
+        edges=(
+            LogicalSemanticEdge(
+                role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                target=_proxy(gateway, 2),
+            ),
+        ),
+        description="fragment operation native-body-edge@0x401010",
+    )
+
+    with pytest.raises(SemanticEdgeOperationRejected) as error:
+        _apply(gateway, mba, operation)
+
+    message = str(error.value)
+    assert "operation='fragment operation native-body-edge@0x401010'" in message
+    assert "stable_identity=" in message
+    assert "exact-ea=[0x401011]" in message
+    assert "live=blk1@0x401010" in message
+    assert "block_type=" in message
+    assert "nsucc=1" in message
+    assert "successors=[blk2@0x401020]" in message
+    assert "tail_ea=0x401011" in message
+    assert "tail_opcode=m_call(" in message
+    assert "tail_dest_type=" in message
+    assert "expected=zero-way block-closing m_call or m_icall" in message
+    assert helper_calls == 0
     assert gateway.receipts == ()
 
 
