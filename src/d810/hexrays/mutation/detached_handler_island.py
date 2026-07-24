@@ -5226,6 +5226,7 @@ class DetachedSnippetCompanionCaptureResult:
     captured: bool
     replacement_required: bool
     call_eas: tuple[int, ...] = ()
+    observed_call_eas: tuple[int, ...] = ()
     reason: str | None = None
     mismatch_ea: int | None = None
 
@@ -5487,11 +5488,13 @@ def capture_preopt_union_call_companion_template(
         calls_mba,
         normalized_range,
     )
+    observed_call_eas = tuple(sorted(analyzed_calls))
     if analyzed_duplicate is not None:
         return DetachedSnippetCompanionCaptureResult(
             captured=False,
             replacement_required=True,
             call_eas=call_eas,
+            observed_call_eas=observed_call_eas,
             reason="calls_duplicate_call_ea",
             mismatch_ea=int(analyzed_duplicate),
         )
@@ -5500,6 +5503,7 @@ def capture_preopt_union_call_companion_template(
             captured=False,
             replacement_required=True,
             call_eas=call_eas,
+            observed_call_eas=observed_call_eas,
             reason="call_ea_set_mismatch",
             mismatch_ea=min(frozenset(raw_calls).symmetric_difference(analyzed_calls)),
         )
@@ -5511,6 +5515,7 @@ def capture_preopt_union_call_companion_template(
                 captured=False,
                 replacement_required=True,
                 call_eas=call_eas,
+                observed_call_eas=observed_call_eas,
                 reason="call_opcode_mismatch",
                 mismatch_ea=int(call_ea),
             )
@@ -5519,6 +5524,7 @@ def capture_preopt_union_call_companion_template(
                 captured=False,
                 replacement_required=True,
                 call_eas=call_eas,
+                observed_call_eas=observed_call_eas,
                 reason="direct_callee_mismatch",
                 mismatch_ea=int(call_ea),
             )
@@ -5527,6 +5533,7 @@ def capture_preopt_union_call_companion_template(
                 captured=False,
                 replacement_required=True,
                 call_eas=call_eas,
+                observed_call_eas=observed_call_eas,
                 reason="analyzed_arglist_missing",
                 mismatch_ea=int(call_ea),
             )
@@ -5553,6 +5560,7 @@ def capture_preopt_union_call_companion_template(
             captured=False,
             replacement_required=True,
             call_eas=call_eas,
+            observed_call_eas=observed_call_eas,
             reason="replacement_capture_failed",
         )
     replacements = _analyzed_replacement_calls_by_ea(
@@ -5568,6 +5576,7 @@ def capture_preopt_union_call_companion_template(
             captured=False,
             replacement_required=True,
             call_eas=call_eas,
+            observed_call_eas=observed_call_eas,
             reason="replacement_call_inventory_mismatch",
             mismatch_ea=min(frozenset(replacements).symmetric_difference(raw_calls)),
         )
@@ -5575,6 +5584,7 @@ def capture_preopt_union_call_companion_template(
         captured=True,
         replacement_required=True,
         call_eas=call_eas,
+        observed_call_eas=observed_call_eas,
     )
 
 

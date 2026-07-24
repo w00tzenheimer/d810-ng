@@ -8778,7 +8778,13 @@ def _install_requested_call_companion_harness(
         return SimpleNamespace(
             captured=capture_succeeds,
             call_eas=(call_ea,),
+            observed_call_eas=(
+                (call_ea,)
+                if capture_succeeds
+                else (call_ea + 1,)
+            ),
             reason=None if capture_succeeds else "call_ea_set_mismatch",
+            mismatch_ea=None if capture_succeeds else call_ea,
         )
 
     monkeypatch.setattr(
@@ -8819,7 +8825,9 @@ def test_prepare_requested_call_companion_captures_exact_calls_component(
             native_range=harness["native_range"],
             component_target_ea=harness["component_start_ea"],
             captured=True,
-            call_eas=(harness["call_ea"],),
+            preopt_call_eas=(harness["call_ea"],),
+            calls_call_eas=(harness["call_ea"],),
+            mismatch_ea=None,
             reason="captured",
         ),
     )
@@ -8868,6 +8876,9 @@ def test_prepare_requested_call_companion_retains_failed_request(
     assert len(outcomes) == 1
     assert not outcomes[0].captured
     assert outcomes[0].reason == "call_ea_set_mismatch"
+    assert outcomes[0].preopt_call_eas == (harness["call_ea"],)
+    assert outcomes[0].calls_call_eas == (harness["call_ea"] + 1,)
+    assert outcomes[0].mismatch_ea == harness["call_ea"]
     assert state.pending_call_companion_ranges == (harness["native_range"],)
     assert not state.snippet_capture_active
 
