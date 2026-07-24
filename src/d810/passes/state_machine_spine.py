@@ -87,8 +87,7 @@ LOWER_ANALYSES = AnalysisContract(
     provided=frozenset({"lower_state_machine_plan_metadata"}),
 )
 SEMANTIC_LOWER_ANALYSES = AnalysisContract(
-    required=LOWER_ANALYSES.required
-    | frozenset({BOUND_CANONICAL_SEMANTIC_EVIDENCE}),
+    required=LOWER_ANALYSES.required,
     provided=LOWER_ANALYSES.provided,
 )
 CLEANUP_ANALYSES = AnalysisContract()

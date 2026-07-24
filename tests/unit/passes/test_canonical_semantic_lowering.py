@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from d810.analyses.control_flow.frontend_normalization import (
     FrontendNormalizationEvidence,
+    FrontendNormalizationEvidenceRejected,
     NativeIndirectTransferProof,
     NativeTransferEndpoint,
     NativeTransferShape,
@@ -44,6 +47,7 @@ from d810.passes.unflatten.state_machine import (
 )
 from d810.passes.unflatten import state_machine as state_machine_module
 from d810.transforms.canonical_semantic_fragment import (
+    CanonicalSemanticFragmentRejected,
     build_canonical_semantic_fragment_plan,
 )
 from d810.transforms.fragment_plan import FragmentPublicationPurpose
@@ -289,6 +293,40 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
     )
 
 
+def test_candidate_normalization_rejection_names_attempted_route(
+    monkeypatch,
+) -> None:
+    graph, bound = _graph_and_bound_evidence()
+    candidate = bound.evidence
+    frontend_evidence = object()
+    monkeypatch.setattr(
+        state_machine_module,
+        "plan_frontend_computed_branch_normalization",
+        lambda _graph, _evidence: (_ for _ in ()).throw(
+            FrontendNormalizationEvidenceRejected(
+                "original route corridor is not closed"
+            )
+        ),
+    )
+
+    with pytest.raises(
+        CanonicalSemanticFragmentRejected,
+    ) as exc_info:
+        state_machine_module._plan_candidate_normalization(
+            SimpleNamespace(graph=graph),
+            candidate,
+            frontend_evidence,
+        )
+
+    rejection = exc_info.value
+    assert rejection.reason_code == "frontend_normalization_plan_rejected"
+    assert rejection.anchor_ea == 0x1100
+    assert rejection.payload == {
+        "normalization_reason": "original route corridor is not closed",
+        "route_proof_id": "state-assignment@0x1100",
+    }
+
+
 def test_semantic_evidence_spine_declares_fragment_publication_authority() -> None:
     specs = semantic_evidence_state_machine_passes()
 
@@ -300,3 +338,7 @@ def test_semantic_evidence_spine_declares_fragment_publication_authority() -> No
     )
     assert specs[-1].pass_factory is LowerCanonicalSemanticFragment
     assert specs[-1].backend_route is BackendRoute.FRAGMENT_PUBLICATION
+    assert (
+        BOUND_CANONICAL_SEMANTIC_EVIDENCE
+        not in specs[-1].analyses.required
+    )

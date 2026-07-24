@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 
 from d810.analyses.control_flow.semantic_route_evidence import (
@@ -42,6 +42,19 @@ from d810.transforms.fragment_plan import (
 
 class CanonicalSemanticFragmentRejected(ValueError):
     """Bound canonical evidence cannot form one closed portable fragment."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str = "canonical_semantic_fragment_rejected",
+        anchor_ea: int | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason_code = str(reason_code)
+        self.anchor_ea = None if anchor_ea is None else int(anchor_ea)
+        self.payload = dict(payload or {})
 
 
 def _identity_contains(
@@ -86,7 +99,13 @@ def _unique_plan_block(
     if len(matches) != 1:
         raise CanonicalSemanticFragmentRejected(
             f"{description} 0x{anchor_ea:X} requires one normalization-plan "
-            f"owner, observed {len(matches)}"
+            f"owner, observed {len(matches)}",
+            reason_code="normalization_plan_owner_count_mismatch",
+            anchor_ea=anchor_ea,
+            payload={
+                "description": description,
+                "owner_count": len(matches),
+            },
         )
     return matches[0]
 
@@ -119,7 +138,13 @@ def _unique_graph_serial(
     if len(matches) != 1:
         raise CanonicalSemanticFragmentRejected(
             f"{description} 0x{anchor_ea:X} requires one current-graph owner, "
-            f"observed {len(matches)}"
+            f"observed {len(matches)}",
+            reason_code="current_graph_owner_count_mismatch",
+            anchor_ea=anchor_ea,
+            payload={
+                "description": description,
+                "owner_count": len(matches),
+            },
         )
     return matches[0]
 

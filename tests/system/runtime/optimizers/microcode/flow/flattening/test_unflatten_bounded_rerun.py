@@ -51,6 +51,9 @@ from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     ResolverSessionState,
 )
 from d810.passes.unflatten.state_machine import LOWER_STATE_MACHINE_PLAN_METADATA
+from d810.transforms.canonical_semantic_fragment import (
+    CanonicalSemanticFragmentRejected,
+)
 from d810.transforms.minimal_unflatten_emit import (
     TERMINAL_CARRIER_CONVERGENCE_METADATA,
 )
@@ -1578,6 +1581,13 @@ def test_partial_canonical_composition_owns_calls_maturity_admission(
     assert reported[-1].decision == "accepted"
     assert reported[-1].reason == "recovery_round_granted"
 
+    assert rule._should_recover(
+        calls,
+        canonical_composition_ready=True,
+    ) == (False, False)
+    assert reported[-1].decision == "declined"
+    assert reported[-1].reason == "canonical_composition_already_attempted"
+
     glbopt1 = SimpleNamespace(entry_ea=_EA, maturity=ida_hexrays.MMAT_GLBOPT1)
     assert rule._should_recover(
         glbopt1,
@@ -1599,6 +1609,43 @@ def test_partial_canonical_composition_owns_calls_maturity_admission(
         canonical_composition_ready=True,
     ) == (True, True)
     assert reported[-1].reason == "recovery_round_granted"
+
+
+def test_canonical_composition_rejection_reports_stable_route_obligation() -> None:
+    reported = []
+    rule = _fresh_rule()
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    mba = SimpleNamespace(entry_ea=_EA, maturity=_MAT2)
+    rejection = CanonicalSemanticFragmentRejected(
+        "delivery 0x40BECC requires one current-graph owner, observed 0",
+        reason_code="current_graph_owner_missing",
+        anchor_ea=0x40BECC,
+        payload={
+            "description": "delivery",
+            "owner_count": 0,
+        },
+    )
+
+    rule._report_canonical_composition_rejection(mba, rejection)
+
+    assert len(reported) == 1
+    record = reported[0]
+    assert record.consumer == "state_machine_cff_unflattener"
+    assert record.strategy == "canonical_semantic_composition"
+    assert record.fact_id == "canonical_route:0x40BECC"
+    assert record.maturity == "MMAT_CALLS"
+    assert record.decision == "declined"
+    assert record.reason == "current_graph_owner_missing"
+    assert record.payload == {
+        "anchor_ea": "0x40BECC",
+        "description": "delivery",
+        "detail": (
+            "delivery 0x40BECC requires one current-graph owner, observed 0"
+        ),
+        "owner_count": 0,
+    }
 
 
 def test_materialized_handler_completeness_reports_final_native_ea_inventory() -> None:
@@ -2037,7 +2084,7 @@ class TestUnflattenBoundedRerunGate:
         monkeypatch.setattr(
             StateMachineCffUnflattener,
             "_should_run_unflatten_round",
-            lambda self, func_ea, *, is_indirect, maturity: True,
+            lambda self, func_ea, *, is_indirect, maturity, one_shot=False: True,
         )
         monkeypatch.setattr(
             StateMachineCffUnflattener,
@@ -2231,7 +2278,7 @@ class TestUnflattenBoundedRerunGate:
         monkeypatch.setattr(
             StateMachineCffUnflattener,
             "_should_run_unflatten_round",
-            lambda self, func_ea, *, is_indirect, maturity: True,
+            lambda self, func_ea, *, is_indirect, maturity, one_shot=False: True,
         )
         monkeypatch.setattr(
             StateMachineCffUnflattener,

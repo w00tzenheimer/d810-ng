@@ -963,3 +963,47 @@ normalization capabilities at its pass-contract boundary, while preserving the
 existing typed rejection inside the pass when neither source is available.
 The next A560 canary must either record one complete C3 plan or persist the
 first stable-EA composition rejection in the diagnostic DB.
+
+**2026-07-24T08:45:16Z**
+
+The canonical pass-contract and failure-visibility slice is complete. The
+semantic lowerer no longer statically requires
+`bound_canonical_semantic_evidence`; it may enter through the existing
+candidate-plus-normalization capability path. Partial canonical composition
+has a one-shot CALLS budget per function, maturity, and evidence epoch, so a
+failed candidate does not consume the ordinary 64-round non-indirect
+convergence budget.
+
+Canonical planning failures now cross the vendor callback boundary as typed
+diagnostic obligations. Declared fragment rejections retain their native EA
+and structured reason. The known frontend-normalization rejection is adapted
+at the canonical pass boundary to retain the attempted route proof and source
+EA. Unexpected exceptions still propagate rather than being swallowed after a
+possibly partial backend publication.
+
+The focused canonical transform, pipeline-driver, frontend-lifecycle,
+capability, session-authority, and live recovery-gate suite is 259/259 green.
+Ruff and ast-grep pass, all 14 worktree-local import contracts pass, and
+`graphify update .` completes. The mandatory exact A560 canary completed in
+15.41 seconds without a process segfault or INTERR.
+Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784882874_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-canonical-corridor-final.txt`. The semantic oracle
+remains red with one residual `while ( 1 )`.
+
+The highest contiguous production level remains C2. The DB records the
+generation-1 frontend-normalization transaction and committed receipt, 141
+identity decisions, one accepted CALLS candidate attempt, and no canonical
+plan. The first failed C3 obligation is now explicit:
+`state_assignment@0x40A5C8:0xABB95547` at stable native EA `0x40A5C8` is
+declined with typed reason `frontend_normalization_plan_rejected` because the
+original route corridor is not closed. The next callback records
+`canonical_composition_already_attempted`; GLBOPT1 still declines before
+planning with `canonical_composition_requires_calls`.
+
+Continue the v3.1 vertical loop at the corridor-closure obligation for
+`0x40A5C8`. Do not broaden to the 91-route transaction. The next change must
+explain which relevant live or detached edge leaves the projected
+normalization corridor, make that edge identity visible to the diagnostic DB,
+and either close one candidate fragment or decline with a narrower stable-EA
+reason.
