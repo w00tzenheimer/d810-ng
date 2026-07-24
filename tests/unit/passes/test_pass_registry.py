@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.families.state_machine_cff.pipeline import (
     standard_state_machine_passes,
     state_machine_pass_registry,
@@ -126,6 +127,20 @@ def test_registry_build_spec_preserves_pass_options_metadata():
 
     assert spec.options == options
     assert spec.config.options == options
+
+
+def test_registry_build_spec_preserves_display_only_workflow_stage():
+    registry = PassRegistry()
+    registry.register("fake", _FakePass)
+    config = PipelineConfig(
+        pass_id="fake",
+        workflow_stage=StrategyWorkflowStage.CANONICAL_TRANSFORM,
+    )
+
+    spec = registry.build_spec(config)
+
+    assert spec.workflow_stage is StrategyWorkflowStage.CANONICAL_TRANSFORM
+    assert spec.config.workflow_stage is StrategyWorkflowStage.CANONICAL_TRANSFORM
 
 
 def test_registry_configured_factory_receives_full_pipeline_config():

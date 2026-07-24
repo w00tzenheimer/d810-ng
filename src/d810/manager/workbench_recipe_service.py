@@ -110,6 +110,7 @@ class RecipeService:
                     owned_rules=_owned_rules(config),
                     transforms=self._registry.transforms_for(pass_id),
                     configured=self._registry.is_configured(pass_id),
+                    workflow_stage=config.workflow_stage,
                 )
             )
         return tuple(entries)

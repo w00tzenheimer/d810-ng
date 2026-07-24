@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.manager.workbench_recipe_models import FunctionPipelineOverride, RecipePass
 from d810.manager.workbench_recipe_service import RecipeEditError, RecipeService
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
@@ -74,6 +75,9 @@ def test_catalog_is_sorted_but_draft_keeps_effective_execution_order() -> None:
     assert next(
         entry for entry in catalog if entry.pass_id == "jump-fixer"
     ).transforms == ("JumpFixer",)
+    assert next(
+        entry for entry in catalog if entry.pass_id == "recover_dispatcher"
+    ).workflow_stage is StrategyWorkflowStage.CANONICAL_ANALYSIS
     assert tuple(item.pass_id for item in draft.passes) == (
         "jump-fixer",
         "recover_dispatcher",

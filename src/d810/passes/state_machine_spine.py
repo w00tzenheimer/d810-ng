@@ -7,6 +7,7 @@ This module owns the canonical 5-tuple — the DRY source consumed by the family
 """
 from __future__ import annotations
 
+from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.passes.pass_pipeline import (
     AnalysisContract,
     FactRequirement,
@@ -190,6 +191,14 @@ _CONTRACTS_BY_PASS_ID = {
     "cleanup_residual_dispatcher": CLEANUP_CONTRACT,
 }
 
+_WORKFLOW_STAGE_BY_PASS_ID = {
+    "recover_dispatcher": StrategyWorkflowStage.CANONICAL_ANALYSIS,
+    "recover_state_transitions": StrategyWorkflowStage.CANONICAL_ANALYSIS,
+    "plan_semantic_regions": StrategyWorkflowStage.CANONICAL_ANALYSIS,
+    "lower_state_machine": StrategyWorkflowStage.CANONICAL_TRANSFORM,
+    "cleanup_residual_dispatcher": StrategyWorkflowStage.BACKEND_PUBLICATION,
+}
+
 
 def state_machine_pass_spec(
     pass_id: str,
@@ -198,6 +207,7 @@ def state_machine_pass_spec(
     safety_policy,
     *,
     analyses: AnalysisContract,
+    workflow_stage: StrategyWorkflowStage | None = None,
 ) -> PassSpec:
     """Build a canonical state-machine pass spec with native contract metadata."""
     return PassSpec(
@@ -207,6 +217,7 @@ def state_machine_pass_spec(
         safety_policy,
         analyses=analyses,
         contract=_CONTRACTS_BY_PASS_ID[pass_id],
+        workflow_stage=workflow_stage or _WORKFLOW_STAGE_BY_PASS_ID[pass_id],
     )
 
 

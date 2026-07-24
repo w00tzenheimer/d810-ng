@@ -61,7 +61,15 @@ def test_recipe_panel_projects_catalog_draft_and_action_states_through_pure_logi
 
     assert "project_catalog_rows" in calls
     assert "project_draft_rows" in calls
+    assert "project_recipe_strategy" in calls
     assert "recipe_action_states" in calls
+
+
+def test_recipe_panel_groups_catalog_rows_by_display_only_workflow_stage() -> None:
+    source = ast.unparse(_method("_render_catalog"))
+
+    assert "workflow_stage" in source
+    assert "stage_items" in source
 
 
 def test_recipe_panel_forwards_all_draft_operations_to_command_adapter() -> None:

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import dataclasses
 
+from d810.core.deobfuscation_case import (
+    DeobfuscationCaseSnapshot,
+    StrategyWorkflowStage,
+)
 from d810.manager.workbench_models import OutcomeStatus
 from d810.manager.workbench_recipe_models import (
     PassCatalogEntry,
@@ -18,6 +22,8 @@ from d810.manager.workbench_recipe_models import (
 class RecipeCatalogRow:
     pass_id: str
     label: str
+    workflow_stage: StrategyWorkflowStage
+    workflow_stage_label: str
     summary: str
     detail: str
     transform_children: tuple[str, ...]
@@ -43,6 +49,74 @@ class RecipeActionState:
     reason: str
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class RecipeStrategyView:
+    strategy_summary: str
+    blocked_reason: str | None
+    can_add_transform: bool = False
+
+
+_WORKFLOW_STAGE_LABELS = {
+    StrategyWorkflowStage.EVIDENCE_PROVIDER: "Evidence provider",
+    StrategyWorkflowStage.FRONTEND_NORMALIZATION: "Frontend normalization",
+    StrategyWorkflowStage.CANONICAL_ANALYSIS: "Canonical analysis",
+    StrategyWorkflowStage.CANONICAL_TRANSFORM: "Canonical transform",
+    StrategyWorkflowStage.BACKEND_PUBLICATION: "Backend publication",
+    StrategyWorkflowStage.CANONICAL_PIPELINE: "Canonical pipeline",
+}
+_WORKFLOW_STAGE_ORDER = {
+    stage: ordinal for ordinal, stage in enumerate(StrategyWorkflowStage)
+}
+
+
+def workflow_stage_label(stage: StrategyWorkflowStage) -> str:
+    """Return a stable UI label for explicit pass registration metadata."""
+    return _WORKFLOW_STAGE_LABELS[stage]
+
+
+def project_recipe_strategy(
+    case: DeobfuscationCaseSnapshot | None,
+    entries: tuple[PassCatalogEntry, ...],
+) -> RecipeStrategyView:
+    """Explain how registered passes relate to the current case, without editing it."""
+    del entries
+    if case is None:
+        return RecipeStrategyView(
+            strategy_summary="No current case strategy is available.",
+            blocked_reason="Return to the Workbench and build a case first.",
+        )
+    if case.strategy is None:
+        if case.direct_run_permitted:
+            return RecipeStrategyView(
+                strategy_summary="Current saved function recipe.",
+                blocked_reason=None,
+            )
+        return RecipeStrategyView(
+            strategy_summary="No validated strategy is selected.",
+            blocked_reason="Build the case dossier before composing a run.",
+        )
+    if case.evidence is None:
+        return RecipeStrategyView(
+            strategy_summary=case.strategy.summary,
+            blocked_reason="Build the case dossier before composing a run.",
+        )
+    available = {finding.finding_id for finding in case.evidence.findings}
+    missing = tuple(
+        finding_id
+        for finding_id in case.strategy.required_finding_ids
+        if finding_id not in available
+    )
+    if missing:
+        return RecipeStrategyView(
+            strategy_summary=case.strategy.summary,
+            blocked_reason="Validate required evidence: " + ", ".join(missing),
+        )
+    return RecipeStrategyView(
+        strategy_summary=case.strategy.summary,
+        blocked_reason=None,
+    )
+
+
 def project_catalog_rows(
     entries: tuple[PassCatalogEntry, ...],
     *,
@@ -65,6 +139,7 @@ def project_catalog_rows(
                 entry.maturity,
                 entry.backend_route,
                 entry.safety_policy,
+                entry.workflow_stage.value,
                 *entry.owned_rules,
                 *entry.transforms,
             )
@@ -75,6 +150,10 @@ def project_catalog_rows(
         "pass_id": lambda entry: (entry.pass_id.casefold(), entry.pass_id),
         "maturity": lambda entry: (entry.maturity.casefold(), entry.pass_id),
         "backend": lambda entry: (entry.backend_route.casefold(), entry.pass_id),
+        "stage": lambda entry: (
+            _WORKFLOW_STAGE_ORDER[entry.workflow_stage],
+            entry.pass_id,
+        ),
     }
     if sort_by not in key_functions:
         raise ValueError(f"unsupported recipe catalog sort: {sort_by!r}")
@@ -83,10 +162,14 @@ def project_catalog_rows(
         RecipeCatalogRow(
             pass_id=entry.pass_id,
             label=entry.display_name,
+            workflow_stage=entry.workflow_stage,
+            workflow_stage_label=workflow_stage_label(entry.workflow_stage),
             summary=(
+                f"{workflow_stage_label(entry.workflow_stage)}; "
                 f"{entry.granularity}; {entry.maturity}; {entry.backend_route}"
             ),
             detail=(
+                f"stage: {workflow_stage_label(entry.workflow_stage)}\n"
                 f"safety: {entry.safety_policy}\n"
                 f"rules: {', '.join(entry.owned_rules) or 'none'}\n"
                 f"options: {entry.option_template_json}\n"
@@ -221,9 +304,12 @@ __all__ = [
     "RecipeActionState",
     "RecipeCatalogRow",
     "RecipeDraftRow",
+    "RecipeStrategyView",
     "project_catalog_rows",
     "project_draft_rows",
+    "project_recipe_strategy",
     "recipe_action_states",
     "recipe_command_request",
     "should_accept_recipe_result",
+    "workflow_stage_label",
 ]

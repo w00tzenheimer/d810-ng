@@ -139,5 +139,6 @@ class PassRegistry:
             backend_route=config.backend_route,
             contract=config.contract,
             rules=config.rules,
+            workflow_stage=config.workflow_stage,
             options=config.options,
         )

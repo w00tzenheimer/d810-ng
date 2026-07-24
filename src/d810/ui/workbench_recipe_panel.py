@@ -9,6 +9,7 @@ from d810.core.logging import getLogger
 from d810.ui.workbench_recipe_logic import (
     project_catalog_rows,
     project_draft_rows,
+    project_recipe_strategy,
     recipe_action_states,
     should_accept_recipe_result,
 )
@@ -39,7 +40,7 @@ if IDA_AVAILABLE:
         """Companion dock whose policy and mutations remain service-owned."""
 
         TITLE = "d810-ng Recipe Composer"
-        _SORT_KEYS = ("name", "pass_id", "maturity", "backend")
+        _SORT_KEYS = ("name", "pass_id", "maturity", "backend", "stage")
 
         def __init__(
             self,
@@ -53,6 +54,8 @@ if IDA_AVAILABLE:
             self._refresh_workbench = refresh_workbench
             self._open_project_profile = open_project_profile
             self._catalog_entries = tuple(adapter.catalog())
+            case = getattr(adapter, "case", None)
+            self._case = case() if callable(case) else None
             self._draft, self._validation = adapter.reset()
             self._catalog_by_id = {
                 entry.pass_id: entry for entry in self._catalog_entries
@@ -65,17 +68,19 @@ if IDA_AVAILABLE:
 
             self.context_label = QtWidgets.QLabel()
             self.validation_label = QtWidgets.QLabel()
+            self.strategy_label = QtWidgets.QLabel()
+            self.strategy_label.setWordWrap(True)
             self.search_edit = QtWidgets.QLineEdit()
             self.search_edit.setPlaceholderText(
                 "Search registered passes and transforms"
             )
             self.sort_combo = QtWidgets.QComboBox()
-            for label in ("Name", "Pass ID", "Maturity", "Backend"):
+            for label in ("Name", "Pass ID", "Maturity", "Backend", "Stage"):
                 self.sort_combo.addItem(label)
 
             self.catalog_model = QtGui.QStandardItemModel()
             self.catalog_model.setHorizontalHeaderLabels(
-                ["Registered pass / transform", "Contract summary"]
+                ["Registered pass / owned transform", "Contract summary"]
             )
             self.catalog_tree = QtWidgets.QTreeView()
             self.catalog_tree.setModel(self.catalog_model)
@@ -152,6 +157,7 @@ if IDA_AVAILABLE:
             context_layout = QtWidgets.QFormLayout(context_group)
             context_layout.addRow("Function:", self.context_label)
             context_layout.addRow("Preflight:", self.validation_label)
+            context_layout.addRow("Case strategy:", self.strategy_label)
 
             catalog_controls = QtWidgets.QHBoxLayout()
             catalog_controls.addWidget(self.search_edit)
@@ -229,7 +235,7 @@ if IDA_AVAILABLE:
 
         def _render(self, ignored: typing.Any = None) -> None:
             del ignored
-            sort_index = max(0, min(self.sort_combo.currentIndex(), 3))
+            sort_index = max(0, min(self.sort_combo.currentIndex(), 4))
             self._catalog_rows = project_catalog_rows(
                 self._catalog_entries,
                 query=self.search_edit.text(),
@@ -237,6 +243,7 @@ if IDA_AVAILABLE:
             )
             self._draft_rows = project_draft_rows(self._draft, self._validation)
             self._draft_by_item = {row.item_id: row for row in self._draft_rows}
+            strategy = project_recipe_strategy(self._case, self._catalog_entries)
             states = recipe_action_states(
                 self._draft,
                 self._validation,
@@ -254,6 +261,8 @@ if IDA_AVAILABLE:
                 self.validation_label.setText(
                     f"Blocked ({len(self._validation.diagnostics)} diagnostic(s))"
                 )
+            self.strategy_label.setText(strategy.strategy_summary)
+            self.strategy_label.setToolTip(strategy.blocked_reason or "")
             self._render_catalog()
             self._render_draft()
             by_id = {state.action_id: state for state in states}
@@ -266,13 +275,24 @@ if IDA_AVAILABLE:
         def _render_catalog(self) -> None:
             self.catalog_model.removeRows(0, self.catalog_model.rowCount())
             role = _user_role()
+            stage_items: dict[str, typing.Any] = {}
             for row in self._catalog_rows:
+                stage = stage_items.get(row.workflow_stage.value)
+                if stage is None:
+                    stage = QtGui.QStandardItem(row.workflow_stage_label)
+                    stage_summary = QtGui.QStandardItem("Registered capabilities")
+                    stage.setToolTip(
+                        "Display-only workflow stage; draft order remains explicit."
+                    )
+                    stage_summary.setToolTip(stage.toolTip())
+                    self.catalog_model.appendRow([stage, stage_summary])
+                    stage_items[row.workflow_stage.value] = stage
                 label = QtGui.QStandardItem(f"{row.label} ({row.pass_id})")
                 summary = QtGui.QStandardItem(row.summary)
                 label.setData(row.pass_id, role)
                 label.setToolTip(row.detail)
                 summary.setToolTip(row.detail)
-                self.catalog_model.appendRow([label, summary])
+                stage.appendRow([label, summary])
                 for transform in row.transform_children:
                     child = QtGui.QStandardItem(f"transform: {transform}")
                     child.setToolTip(

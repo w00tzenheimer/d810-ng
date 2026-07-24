@@ -38,6 +38,18 @@ def _adapter(state, *, entry_ea=0x401000, maturity=5):
     )
 
 
+def test_recipe_adapter_returns_the_case_captured_with_its_snapshot():
+    case = object()
+    adapter = WorkbenchRecipeAdapter(
+        SimpleNamespace(),
+        SimpleNamespace(get_widget_vdui=lambda widget: None),
+        SimpleNamespace(widget=object()),
+        SimpleNamespace(case=case),
+    )
+
+    assert adapter.case() is case
+
+
 def test_reset_catalog_and_edits_delegate_to_state_then_revalidate():
     draft = _draft()
     edited = SimpleNamespace(**{**draft.__dict__, "revision": 3})
