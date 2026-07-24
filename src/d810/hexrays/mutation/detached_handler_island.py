@@ -2037,9 +2037,10 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
         return _ComputedBranchNormalizationPlan(
             operation=operation,
-            cut_index=predicate_index + 1,
-            result_instruction_index=predicate_index,
+            cut_index=predicate_index,
+            result_instruction_index=None,
             branch_opcode=branch_opcode,
+            branch_condition_template=predicate.l,
         )
 
     def _prepare_native_body_instructions(

@@ -292,6 +292,24 @@ class _MBA:
         block.owner = self
         self.blocks.append(block)
 
+    def insert_block(self, destination_serial: int) -> _Block:
+        destination_serial = int(destination_serial)
+        for block in self.blocks[destination_serial:]:
+            block.serial += 1
+        for block in self.blocks:
+            block.succset[:] = [
+                int(serial) + (int(serial) >= destination_serial)
+                for serial in block.succset
+            ]
+            block.predset[:] = [
+                int(serial) + (int(serial) >= destination_serial)
+                for serial in block.predset
+            ]
+        inserted = _Block(destination_serial, self.entry_ea, ())
+        inserted.owner = self
+        self.blocks.insert(destination_serial, inserted)
+        return inserted
+
     def get_mblock(self, serial: int) -> _Block:
         return self.blocks[int(serial)]
 
@@ -1663,19 +1681,23 @@ def test_preopt_native_body_normalizes_signed_flag_xor_before_staging(
     assert tuple(int(instruction.opcode) for instruction in staged) == (
         int(ida_hexrays.m_seto),
         int(ida_hexrays.m_sets),
-        int(ida_hexrays.m_xdu),
         int(expected_branch_opcode),
     )
     branch = staged[-1]
-    assert int(branch.l.t) == int(ida_hexrays.mop_r)
-    assert int(branch.l.r) == predicate_register
-    assert int(branch.l.size) == 4
+    assert int(branch.l.t) == int(ida_hexrays.mop_d)
+    assert int(branch.l.d.opcode) == int(combine_opcode)
+    assert {
+        int(branch.l.d.l.r),
+        int(branch.l.d.r.r),
+    } == {sign_register, overflow_register}
+    assert int(branch.l.size) == 1
     assert int(branch.r.t) == int(ida_hexrays.mop_n)
     assert int(branch.r.nnn.value) == 0
-    assert set(context.instruction_origins.values()) == {
+    assert tuple(context.instruction_origins.values()) == (
+        condition_producer_ea,
         condition_producer_ea,
         predicate_ea,
-    }
+    )
 
 
 def test_recursively_rebases_all_stack_operand_shapes(monkeypatch) -> None:
