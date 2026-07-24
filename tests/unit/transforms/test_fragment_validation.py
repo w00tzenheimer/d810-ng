@@ -1157,10 +1157,26 @@ def test_fallthrough_helper_must_be_transparent_and_operation_owned() -> None:
 def test_broken_use_def_and_def_use_relations_are_rejected() -> None:
     projection = replace(_projection(), data_flow_relations=())
 
-    failed = _failed_codes(_plan(), projection)
+    failures = validate_fragment_projection(_plan(), projection).failures
+    failed = {outcome.postcondition for outcome in failures}
 
     assert FragmentValidationPostcondition.USE_DEF_INTEGRITY in failed
     assert FragmentValidationPostcondition.DEF_USE_INTEGRITY in failed
+    use_def = next(
+        outcome
+        for outcome in failures
+        if outcome.postcondition is FragmentValidationPostcondition.USE_DEF_INTEGRITY
+    )
+    assert "missing_sites=()" in use_def.reason
+    assert "observed_use_def=(('flags.use', (), 0),)" in use_def.reason
+    def_use = next(
+        outcome
+        for outcome in failures
+        if outcome.postcondition is FragmentValidationPostcondition.DEF_USE_INTEGRITY
+    )
+    assert "expected_uses=('flags.use',)" in def_use.reason
+    assert "observed_uses=()" in def_use.reason
+    assert "observed_relation_count=0" in def_use.reason
 
 
 def test_intervening_flag_clobber_is_rejected() -> None:
