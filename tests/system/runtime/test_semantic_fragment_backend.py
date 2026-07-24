@@ -74,6 +74,7 @@ from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentReturnCarrier,
     FragmentReturnSource,
     FragmentReturnSourceKind,
+    FragmentStoragePredicateMaterialization,
     FragmentTerminalReturn,
     FragmentTerminalRoute,
     FragmentValueSite,
@@ -96,6 +97,59 @@ def _fragment_gateway(mba):
         mba,
         publication_purpose=FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING,
     )
+
+
+def test_backend_state_uses_typed_synthesized_predicate_binding() -> None:
+    native_ea = 0x401010
+    consumer_live_ea = 0xF10001
+    predicate_live_ea = 0xF10002
+    operation = FragmentOperation(
+        operation_id="storage-choice",
+        source_block_id="imported-consumer",
+        predicate_anchor_ea=native_ea,
+        storage_predicate_materialization=(
+            FragmentStoragePredicateMaterialization(
+                predicate_kind=PredicateKind.EQ,
+                storage_identity=StorageIdentity(
+                    StorageIdentityKind.STACK,
+                    0x40,
+                ),
+                width=4,
+                compare_constant=0,
+                cut_after_ea=native_ea,
+            )
+        ),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                target_block_id="taken",
+            ),
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                target_block_id="fallthrough",
+            ),
+        ),
+    )
+    state = sfb.SemanticFragmentBackendState(
+        plan_id="storage-choice-plan",
+        atomic_group_id="storage-choice-group",
+        instruction_origins_by_block_id={
+            operation.source_block_id: {
+                consumer_live_ea: native_ea,
+                predicate_live_ea: native_ea,
+            },
+        },
+        predicate_live_eas_by_operation_id={
+            operation.operation_id: predicate_live_ea,
+        },
+    )
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="instruction origin is ambiguous",
+    ):
+        state.live_instruction_ea(operation.source_block_id, native_ea)
+    assert state.live_operation_predicate_ea(operation) == predicate_live_ea
 
 
 def _persisted_version_transition_row(version, from_state: str, to_state: str):
