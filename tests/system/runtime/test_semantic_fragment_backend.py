@@ -164,6 +164,43 @@ class _EdgeSet:
         self.values.clear()
 
 
+class _AddressRange:
+    def __init__(self, start_ea: int, end_ea: int):
+        self.start_ea = int(start_ea)
+        self.end_ea = int(end_ea)
+
+
+class _AddressRangeVector:
+    def __init__(self, ranges=()):
+        self.values = [
+            _AddressRange(start_ea, end_ea)
+            for start_ea, end_ea in ranges
+        ]
+
+    def __getitem__(self, index: int) -> _AddressRange:
+        return self.values[int(index)]
+
+    def size(self) -> int:
+        return len(self.values)
+
+    def clear(self) -> None:
+        self.values.clear()
+
+    def push_back(self, address_range) -> None:
+        self.values.append(
+            _AddressRange(
+                int(address_range.start_ea),
+                int(address_range.end_ea),
+            )
+        )
+
+
+class _MbaRanges:
+    def __init__(self, ranges=()):
+        self.pfn = None
+        self.ranges = _AddressRangeVector(ranges)
+
+
 class _BlockReference:
     def __init__(self, serial: int | None = None):
         self.t = int(ida_hexrays.mop_z if serial is None else ida_hexrays.mop_b)
@@ -357,6 +394,8 @@ class _Mba:
         self.verify_calls = 0
         self.entry_ea = 0x401000
         self.maturity = int(ida_hexrays.MMAT_PREOPTIMIZED)
+        self._flags2 = 0
+        self.mbr = _MbaRanges(((self.entry_ea, self.entry_ea + 0x100),))
         self.chains_dirty = False
         self.next_fictitious_ea = 0xF10000
         self.fictitious_ea_map: dict[int, int] = {}
@@ -386,6 +425,18 @@ class _Mba:
         self.next_fictitious_ea += 1
         self.fictitious_ea_map[live_ea] = int(native_ea)
         return live_ea
+
+    def map_fict_ea(self, live_ea: int) -> int:
+        return int(self.fictitious_ea_map.get(int(live_ea), int(live_ea)))
+
+    def get_mba_flags2(self) -> int:
+        return int(self._flags2)
+
+    def set_mba_flags2(self, flags: int) -> None:
+        self._flags2 |= int(flags)
+
+    def clr_mba_flags2(self, flags: int) -> None:
+        self._flags2 &= ~int(flags)
 
     @staticmethod
     def stkoff_ida2vd(stack_offset: int) -> int:
@@ -507,6 +558,16 @@ def _connect(source: _Block, target: _Block) -> None:
     source.head = source.tail
     source.succset.push_back(target.serial)
     target.predset.push_back(source.serial)
+
+
+def _outline_ranges(mba: _Mba) -> tuple[tuple[int, int], ...]:
+    return tuple(
+        (
+            int(mba.mbr.ranges[index].start_ea),
+            int(mba.mbr.ranges[index].end_ea),
+        )
+        for index in range(int(mba.mbr.ranges.size()))
+    )
 
 
 def _connect_conditional(
@@ -1764,6 +1825,10 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
         target=2,
         dispatcher=3,
     )
+    original_ranges = _outline_ranges(mba)
+    assert not int(mba.get_mba_flags2()) & int(
+        ida_hexrays.MBA2_HAS_OUTLINES
+    )
     root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
     gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
     transaction_id = gateway.active_batch_id
@@ -1793,11 +1858,22 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
     )
     assert gateway.active
     assert gateway.receipts == ()
+    assert _outline_ranges(mba) == (
+        *original_ranges,
+        (0x500000, 0x500010),
+    )
+    assert int(mba.get_mba_flags2()) & int(
+        ida_hexrays.MBA2_HAS_OUTLINES
+    )
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="runtime imported native-body staging cleanup")
 
     assert mba.qty == 5
+    assert _outline_ranges(mba) == original_ranges
+    assert not int(mba.get_mba_flags2()) & int(
+        ida_hexrays.MBA2_HAS_OUTLINES
+    )
     assert gateway.active is False
     assert gateway.receipts == ()
 
@@ -2404,6 +2480,7 @@ def test_native_body_origin_binding_translates_operations_and_projection(
     gateway = _fragment_gateway(mba)
     predicate_native_ea = 0x500004
     predicate_live_ea = 0xF10004
+    mba.fictitious_ea_map[predicate_live_ea] = predicate_native_ea
     materializer = _OriginBoundConditionalNativeBodyMaterializer(
         live_ea=predicate_live_ea,
         native_ea=predicate_native_ea,
@@ -2734,6 +2811,7 @@ def test_gateway_publishes_native_body_in_one_balanced_receipt(monkeypatch) -> N
     )
     imported_identity = plan.block("imported-terminal").stable_identity
     assert imported_identity is not None
+    original_ranges = _outline_ranges(mba)
 
     receipt = gateway.publish_semantic_fragment(modifier, plan)
 
@@ -2754,6 +2832,13 @@ def test_gateway_publishes_native_body_in_one_balanced_receipt(monkeypatch) -> N
     assert gateway.active is False
     assert modifier._semantic_fragment_state is None
     assert gateway.receipts == (receipt,)
+    assert _outline_ranges(mba) == (
+        *original_ranges,
+        (0x500000, 0x500010),
+    )
+    assert int(mba.get_mba_flags2()) & int(
+        ida_hexrays.MBA2_HAS_OUTLINES
+    )
 
 
 @pytest.mark.parametrize(
