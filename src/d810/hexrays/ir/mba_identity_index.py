@@ -38,6 +38,7 @@ class IdentityRebindObservation:
     result: RebindResult
     mba_generation: int
     evidence_generation: int
+    candidates: tuple[BoundBlock, ...] = ()
 
 
 @dataclass(slots=True)
@@ -906,18 +907,38 @@ class MbaBlockIdentityIndex:
         self._baseline_tokens_by_transaction.pop(transaction_id, None)
         return tuple(discarded)
 
-    def _bound_for_tokens(self, tokens: Iterable[str]) -> RebindResult:
+    def _current_for_tokens(
+        self,
+        tokens: Iterable[str],
+    ) -> tuple[BoundBlock, ...]:
         current_by_handle = {
             bound.handle.token: bound
             for token in tokens
             if (bound := self.resolve(self._handles_by_token[token])) is not None
         }
-        current = tuple(current_by_handle.values())
+        return tuple(
+            sorted(
+                current_by_handle.values(),
+                key=lambda bound: (
+                    int(bound.serial),
+                    -1 if bound.anchor_ea is None else int(bound.anchor_ea),
+                    bound.handle.token,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _result_for_candidates(
+        current: tuple[BoundBlock, ...],
+    ) -> RebindResult:
         if not current:
             return RebindResult.missing()
         if len(current) != 1:
             return RebindResult.ambiguous()
         return RebindResult.bound(current[0])
+
+    def _bound_for_tokens(self, tokens: Iterable[str]) -> RebindResult:
+        return self._result_for_candidates(self._current_for_tokens(tokens))
 
     def _tokens_for_identity(
         self,
@@ -936,13 +957,16 @@ class MbaBlockIdentityIndex:
         identity: StableBlockIdentity,
         *,
         provenance: BlockHandleProvenance | None,
-    ) -> RebindResult:
+    ) -> tuple[RebindResult, tuple[BoundBlock, ...]]:
         """Rebind via exact identity, containment, then unique overlap."""
         if identity.native_key != self.native_key:
-            return RebindResult.missing()
-        exact = self._bound_for_tokens(self._tokens_for_identity(identity, provenance))
+            return RebindResult.missing(), ()
+        exact_candidates = self._current_for_tokens(
+            self._tokens_for_identity(identity, provenance)
+        )
+        exact = self._result_for_candidates(exact_candidates)
         if exact.block is not None or exact.status.name == "AMBIGUOUS":
-            return exact
+            return exact, exact_candidates
 
         current = tuple(
             candidate
@@ -958,11 +982,17 @@ class MbaBlockIdentityIndex:
             )
         )
         if len(contained) == 1:
-            return self._bound_for_tokens(
+            candidates = self._current_for_tokens(
                 self._tokens_for_identity(contained[0], provenance)
             )
+            return self._result_for_candidates(candidates), candidates
         if len(contained) > 1:
-            return RebindResult.ambiguous()
+            candidates = self._current_for_tokens(
+                token
+                for candidate in contained
+                for token in self._tokens_for_identity(candidate, provenance)
+            )
+            return RebindResult.ambiguous(), candidates
 
         def overlap(candidate: StableBlockIdentity) -> int:
             return sum(
@@ -974,16 +1004,26 @@ class MbaBlockIdentityIndex:
         scored = [(overlap(candidate), candidate) for candidate in current]
         best_score = max((score for score, _candidate in scored), default=0)
         if best_score == 0:
-            return RebindResult.missing()
+            return RebindResult.missing(), ()
         best = tuple(candidate for score, candidate in scored if score == best_score)
+        candidates = self._current_for_tokens(
+            token
+            for candidate in best
+            for token in self._tokens_for_identity(candidate, provenance)
+        )
         if len(best) != 1:
-            return RebindResult.ambiguous()
-        return self._bound_for_tokens(self._tokens_for_identity(best[0], provenance))
+            return RebindResult.ambiguous(), candidates
+        return self._result_for_candidates(candidates), candidates
 
     def rebind_identity(self, identity: StableBlockIdentity) -> RebindResult:
         """Rebind any unique current translation of portable native identity."""
-        result = self._rebind_identity(identity, provenance=None)
-        self._observe_decision("rebind", identity, result)
+        result, candidates = self._rebind_identity(identity, provenance=None)
+        self._observe_decision(
+            "rebind",
+            identity,
+            result,
+            candidates=candidates,
+        )
         return result
 
     def rebind_native_identity(
@@ -991,11 +1031,16 @@ class MbaBlockIdentityIndex:
         identity: StableBlockIdentity,
     ) -> RebindResult:
         """Rebind only the unique non-imported live native translation."""
-        result = self._rebind_identity(
+        result, candidates = self._rebind_identity(
             identity,
             provenance=BlockHandleProvenance.NATIVE,
         )
-        self._observe_decision("rebind_native", identity, result)
+        self._observe_decision(
+            "rebind_native",
+            identity,
+            result,
+            candidates=candidates,
+        )
         return result
 
     def rebind_imported_identity(
@@ -1003,11 +1048,16 @@ class MbaBlockIdentityIndex:
         identity: StableBlockIdentity,
     ) -> RebindResult:
         """Rebind only a unique importer-published native translation."""
-        result = self._rebind_identity(
+        result, candidates = self._rebind_identity(
             identity,
             provenance=BlockHandleProvenance.IMPORTED_NATIVE,
         )
-        self._observe_decision("rebind_imported", identity, result)
+        self._observe_decision(
+            "rebind_imported",
+            identity,
+            result,
+            candidates=candidates,
+        )
         return result
 
     def _observe_decision(
@@ -1015,6 +1065,8 @@ class MbaBlockIdentityIndex:
         decision_kind: str,
         identity: StableBlockIdentity,
         result: RebindResult,
+        *,
+        candidates: tuple[BoundBlock, ...] = (),
     ) -> None:
         observer = self.decision_observer
         if observer is None:
@@ -1027,6 +1079,7 @@ class MbaBlockIdentityIndex:
                     result=result,
                     mba_generation=int(self.generation),
                     evidence_generation=int(self.evidence_generation),
+                    candidates=tuple(candidates),
                 )
             )
         except Exception:

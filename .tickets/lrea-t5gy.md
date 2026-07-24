@@ -1357,3 +1357,32 @@ native owner set self-contained in the diagnostic DB, then repair ownership
 provenance or plan composition from that evidence. It must not reintroduce
 fictitious identity, select a candidate by block order, or weaken unique
 rebinding.
+
+**2026-07-24T11:08:40Z**
+
+The identity-candidate observability slice is verified and ready for its own
+commit. Every identity rebind decision now carries the deterministic set of
+current `BoundBlock` candidates considered at the decisive exact, containment,
+or maximum-overlap tier. The manager persists each candidate's anchored block
+label, provenance, and complete portable stable identity in
+`identity_decisions.candidates_json`; it never emits a bare snapshot-local
+serial.
+
+The focused local identity suite is 40/40 green, and the pinned Docker identity
+plus manager runtime suite is 37/37 green. The mandatory exact A560 canary
+completed in 11.59 seconds without a process segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784891162_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-identity-candidates.txt`. The PREOPT publication remains a
+committed 260/260-operation transaction, the semantic oracle remains red with
+one residual `while ( 1 )`, and the highest contiguous level remains C3.
+
+Identity event 160 makes the first C4 failure self-contained. The requested
+composite identity
+`native[0x40A560-0x40A561,0x40A5D0-0x40A5D1;exact=0x40A5D0]`
+has no single containing owner. Its equally scored overlap owners split between
+the repeated entry-coordinate blocks such as `blk0@0x40A560` and the imported
+native block `blk6@0x40A5CA`, whose identity contains `0x40A5D0`. The next
+vertical slice must trace why root-inventory composition unions those two
+owners into one required identity and preserve their lineage as separate
+logical roles. It must not select one physical candidate, relax uniqueness, or
+collapse the identity back to one EA.
