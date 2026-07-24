@@ -1752,7 +1752,7 @@ def test_imported_state_choice_consumes_its_exact_three_block_envelope() -> None
     )
     with pytest.raises(
         FragmentPlanRejected,
-        match="three distinct physical block identities",
+        match="overlaps outside its one role-shared source/select EA",
     ):
         replace(
             plan,
