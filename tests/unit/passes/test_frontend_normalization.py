@@ -501,6 +501,7 @@ def test_live_conditional_select_is_one_detached_normalization_contract() -> Non
     normalization = operation.computed_branch_normalization
     assert normalization is not None
     assert normalization.predicate_kind is PredicateKind.SLT
+    assert normalization.normalization_start_ea == operation.predicate_anchor_ea
     assert normalization.condition_producer_ea == 0x1100
     assert normalization.unresolved_transfer_ea == 0x110F
     assert normalization.conditional_select_envelope == (
@@ -1094,6 +1095,12 @@ def test_missing_downstream_transfer_source_is_normalized_inside_the_same_fragme
     assert (
         imported_operation[0].computed_branch_normalization.predicate_kind
         is PredicateKind.EQ
+    )
+    assert (
+        imported_operation[
+            0
+        ].computed_branch_normalization.normalization_start_ea
+        == imported_proof.source_anchor_ea
     )
     assert (
         imported_operation[0].computed_branch_normalization.condition_producer_ea

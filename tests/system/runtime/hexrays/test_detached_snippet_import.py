@@ -1042,6 +1042,7 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
                     computed_branch_normalization=(
                         FragmentComputedBranchNormalization(
                             predicate_kind=semantic_predicate,
+                            normalization_start_ea=predicate_ea,
                             condition_producer_ea=condition_producer_ea,
                             unresolved_transfer_ea=unresolved_transfer_ea,
                         )
@@ -1400,6 +1401,7 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
                     computed_branch_normalization=(
                         FragmentComputedBranchNormalization(
                             predicate_kind=predicate_kind,
+                            normalization_start_ea=predicate_ea,
                             condition_producer_ea=source_ea,
                             unresolved_transfer_ea=unresolved_transfer_ea,
                         )
@@ -1699,6 +1701,7 @@ def test_preopt_native_body_normalizes_signed_flag_xor_before_staging(
                     computed_branch_normalization=(
                         FragmentComputedBranchNormalization(
                             predicate_kind=semantic_predicate,
+                            normalization_start_ea=predicate_ea,
                             condition_producer_ea=condition_producer_ea,
                             unresolved_transfer_ea=unresolved_transfer_ea,
                         )

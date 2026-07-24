@@ -367,6 +367,7 @@ class FragmentComputedBranchNormalization:
     """Typed proof for replacing one unresolved imported computed branch."""
 
     predicate_kind: PredicateKind
+    normalization_start_ea: int
     condition_producer_ea: int
     unresolved_transfer_ea: int
     conditional_select_envelope: FragmentConditionalSelectEnvelope | None = None
@@ -376,6 +377,10 @@ class FragmentComputedBranchNormalization:
             raise TypeError(
                 "computed branch normalization requires a PredicateKind"
             )
+        normalization_start_ea = _require_native_ea(
+            self.normalization_start_ea,
+            "computed branch normalization start",
+        )
         condition_producer_ea = _require_native_ea(
             self.condition_producer_ea,
             "computed branch condition producer",
@@ -384,9 +389,14 @@ class FragmentComputedBranchNormalization:
             self.unresolved_transfer_ea,
             "unresolved computed transfer",
         )
-        if condition_producer_ea == unresolved_transfer_ea:
+        if (
+            normalization_start_ea == condition_producer_ea
+            or normalization_start_ea == unresolved_transfer_ea
+            or condition_producer_ea == unresolved_transfer_ea
+        ):
             raise FragmentPlanRejected(
-                "computed branch producer and transfer require distinct anchors"
+                "computed branch start, producer, and transfer require distinct "
+                "anchors"
             )
         conditional_select_envelope = self.conditional_select_envelope
         if conditional_select_envelope is not None and not isinstance(
@@ -396,6 +406,11 @@ class FragmentComputedBranchNormalization:
             raise TypeError(
                 "computed branch conditional-select envelope is invalid"
             )
+        object.__setattr__(
+            self,
+            "normalization_start_ea",
+            normalization_start_ea,
+        )
         object.__setattr__(
             self,
             "condition_producer_ea",
@@ -1181,6 +1196,7 @@ class FragmentPlan:
                     if any(
                         not identity.native_ranges.contains(ea)
                         for ea in (
+                            computed_normalization.normalization_start_ea,
                             computed_normalization.condition_producer_ea,
                             computed_normalization.unresolved_transfer_ea,
                         )
@@ -1210,6 +1226,7 @@ class FragmentPlan:
                             "replacement source"
                         )
                     source_anchors = (
+                        computed_normalization.normalization_start_ea,
                         computed_normalization.condition_producer_ea,
                         operation.predicate_anchor_ea,
                         envelope.predicate_ea,
