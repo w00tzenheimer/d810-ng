@@ -16,6 +16,11 @@ from d810.core.observability_events import (
     MutationPlanItemObserved,
     MutationPlanObserved,
     MutationReceiptObserved,
+    SemanticFragmentFailureObserved,
+)
+from d810.diagnostics.lifecycle_timeline import (
+    mutation_batch,
+    render_mutation_batch,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from tests.native_preanalysis import make_native_key
@@ -530,6 +535,35 @@ def test_aborted_fragment_persists_failed_postcondition_and_rollback(
             root_publication_succeeded=True,
             rollback_attempted=True,
             rollback_succeeded=True,
+            fragment_failures=(
+                SemanticFragmentFailureObserved(
+                    failure_kind="stage",
+                    phase="stage",
+                    error_type="SemanticFragmentBackendRejected",
+                    error_message=(
+                        "fragment plan requires an imported native-body materializer"
+                    ),
+                ),
+                SemanticFragmentFailureObserved(
+                    failure_kind="verifier",
+                    phase="stage_cleanup",
+                    error_type="RuntimeError",
+                    error_message="INTERR: 50856",
+                    interr_code=50856,
+                    verification_context=(
+                        "staged semantic fragment rollback sweep"
+                    ),
+                ),
+                SemanticFragmentFailureObserved(
+                    failure_kind="rollback",
+                    phase="rollback",
+                    error_type="SemanticFragmentBackendRejected",
+                    error_message=(
+                        "staged semantic fragment discard cannot remove "
+                        "entry or stop blocks"
+                    ),
+                ),
+            ),
             validation_outcomes=(
                 FragmentValidationOutcomeObserved(
                     phase="prepublication",
@@ -589,19 +623,75 @@ def test_aborted_fragment_persists_failed_postcondition_and_rollback(
         ),
     ]
     assert diag_conn.execute(
-        "SELECT event_kind,outcome FROM semantic_fragment_transaction_events "
+        "SELECT event_kind,outcome,detail_json "
+        "FROM semantic_fragment_transaction_events "
         "WHERE mutation_batch_id='aborted-fragment' ORDER BY event_index"
     ).fetchall() == [
-        ("plan_recorded", "planned"),
-        ("fragment_staged", "completed"),
-        ("prepublication_validation", "passed"),
-        ("root_group_publication", "published"),
-        ("root_publication", "published"),
-        ("postpublication_validation", "failed"),
-        ("root_group_rollback", "succeeded"),
-        ("rollback", "succeeded"),
-        ("receipt", "aborted"),
+        (
+            "plan_recorded",
+            "planned",
+            '{"atomic_group_id":"atomic-route-2","plan_id":"fragment-2"}',
+        ),
+        (
+            "stage_failure",
+            "failed",
+            '{"error_message":"fragment plan requires an imported native-body '
+            'materializer","error_type":"SemanticFragmentBackendRejected",'
+            '"interr_code":null,"phase":"stage","verification_context":""}',
+        ),
+        (
+            "verifier_failure",
+            "failed",
+            '{"error_message":"INTERR: 50856","error_type":"RuntimeError",'
+            '"interr_code":50856,"phase":"stage_cleanup",'
+            '"verification_context":"staged semantic fragment rollback sweep"}',
+        ),
+        (
+            "rollback_failure",
+            "failed",
+            '{"error_message":"staged semantic fragment discard cannot remove '
+            'entry or stop blocks","error_type":"SemanticFragmentBackendRejected",'
+            '"interr_code":null,"phase":"rollback","verification_context":""}',
+        ),
+        ("fragment_staged", "completed", "{}"),
+        ("prepublication_validation", "passed", '{"outcome_count":1}'),
+        (
+            "root_group_publication",
+            "published",
+            '{"group_id":"root-group:entry"}',
+        ),
+        ("root_publication", "published", "{}"),
+        ("postpublication_validation", "failed", '{"outcome_count":1}'),
+        (
+            "root_group_rollback",
+            "succeeded",
+            '{"group_id":"root-group:entry"}',
+        ),
+        ("rollback", "succeeded", "{}"),
+        (
+            "receipt",
+            "aborted",
+            '{"reason":"postpublication root authority failed"}',
+        ),
     ]
+    rendered = render_mutation_batch(
+        mutation_batch(diag_conn, "aborted-fragment")
+    )
+    assert (
+        "stage_failure outcome=failed phase=stage "
+        "error=SemanticFragmentBackendRejected: fragment plan requires "
+        "an imported native-body materializer"
+    ) in rendered
+    assert (
+        "verifier_failure outcome=failed phase=stage_cleanup "
+        "error=RuntimeError: INTERR: 50856 interr=50856 "
+        "verify-context=staged semantic fragment rollback sweep"
+    ) in rendered
+    assert (
+        "rollback_failure outcome=failed phase=rollback "
+        "error=SemanticFragmentBackendRejected: staged semantic fragment "
+        "discard cannot remove entry or stop blocks"
+    ) in rendered
 
 
 def test_fragment_receipt_scope_mismatch_leaves_no_partial_receipt(

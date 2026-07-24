@@ -336,6 +336,8 @@ class _FragmentBackend:
         *,
         invalid_preprojection: bool = False,
         invalid_postobservation: bool = False,
+        raise_during_stage: bool = False,
+        raise_during_discard: bool = False,
         raise_during_publish: bool = False,
         raise_during_rollback: bool = False,
         omit_semantic_edge_record: bool = False,
@@ -346,6 +348,8 @@ class _FragmentBackend:
         self.gateway = gateway
         self.invalid_preprojection = invalid_preprojection
         self.invalid_postobservation = invalid_postobservation
+        self.raise_during_stage = raise_during_stage
+        self.raise_during_discard = raise_during_discard
         self.raise_during_publish = raise_during_publish
         self.raise_during_rollback = raise_during_rollback
         self.omit_semantic_edge_record = omit_semantic_edge_record
@@ -410,6 +414,18 @@ class _FragmentBackend:
 
     def _stage_semantic_fragment(self, plan: FragmentPlan) -> ProjectedFragment:
         self.calls.append("stage")
+        if self.raise_during_stage:
+            try:
+                raise LookupError(
+                    "fragment plan requires an imported native-body materializer"
+                )
+            except LookupError:
+                verifier_error = RuntimeError("INTERR: 50856")
+                verifier_error.d810_interr_code = 50856
+                verifier_error.d810_verification_context = (
+                    "staged semantic fragment rollback sweep"
+                )
+                raise verifier_error
         index = self.gateway.identity_index
         original = index.handle_for_serial(1)
         assert original is not None
@@ -503,6 +519,10 @@ class _FragmentBackend:
 
     def _discard_staged_semantic_fragment(self, _plan: FragmentPlan) -> None:
         self.calls.append("discard")
+        if self.raise_during_discard:
+            raise RuntimeError(
+                "staged semantic fragment discard cannot remove entry or stop blocks"
+            )
 
     def _prepare_semantic_fragment_root_publication(
         self,
@@ -1192,6 +1212,62 @@ def test_rollback_failure_is_fatal_and_never_commits_a_receipt() -> None:
     assert committed == []
     assert len(aborted) == 1
     assert "rollback failed" in aborted[0].reason
+
+
+def test_stage_verifier_and_rollback_failures_remain_separate() -> None:
+    plan = _plan()
+    gateway, committed, aborted = _gateway(plan)
+    backend = _FragmentBackend(
+        gateway,
+        raise_during_stage=True,
+        raise_during_discard=True,
+    )
+
+    with pytest.raises(
+        SemanticFragmentRollbackFailed,
+        match="staged semantic fragment discard",
+    ):
+        gateway.publish_semantic_fragment(backend, plan)
+
+    assert backend.calls == ["plan-roots", "stage", "discard"]
+    assert committed == []
+    assert len(aborted) == 1
+    assert [
+        (
+            failure.failure_kind,
+            failure.phase,
+            failure.error_type,
+            failure.error_message,
+            failure.interr_code,
+            failure.verification_context,
+        )
+        for failure in aborted[0].fragment_failures
+    ] == [
+        (
+            "stage",
+            "stage",
+            "LookupError",
+            "fragment plan requires an imported native-body materializer",
+            None,
+            "",
+        ),
+        (
+            "verifier",
+            "stage_cleanup",
+            "RuntimeError",
+            "INTERR: 50856",
+            50856,
+            "staged semantic fragment rollback sweep",
+        ),
+        (
+            "rollback",
+            "rollback",
+            "RuntimeError",
+            "staged semantic fragment discard cannot remove entry or stop blocks",
+            None,
+            "",
+        ),
+    ]
 
 
 def test_backend_without_complete_internal_publication_port_is_rejected() -> None:

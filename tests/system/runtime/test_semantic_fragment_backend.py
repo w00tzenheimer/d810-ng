@@ -2270,6 +2270,7 @@ def test_failed_live_staging_restores_graph_and_records_rollback(
         "ORDER BY event_index"
     ).fetchall() == [
         ("plan_recorded", "planned"),
+        ("stage_failure", "failed"),
         ("fragment_staged", "failed"),
         ("rollback", "succeeded"),
         ("receipt", "aborted"),

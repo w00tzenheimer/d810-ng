@@ -210,6 +210,9 @@ def safe_verify(
     except Exception as e:
         interr_code = catcher.last_code if catcher is not None else None
         if interr_code is not None:
+            e.d810_interr_code = int(interr_code)
+        e.d810_verification_context = str(ctx)
+        if interr_code is not None:
             logger_func(
                 "verify failed after %s (INTERR %d / 0x%X): %s",
                 ctx,

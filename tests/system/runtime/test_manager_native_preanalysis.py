@@ -11,6 +11,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 from d810.core.observability_events import (
     IdentityDecisionObserved,
     MutationReceiptObserved,
+    SemanticFragmentFailureObserved,
 )
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.ir.logical_block_proxy import (
@@ -24,6 +25,9 @@ from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationAborted,
     MbaMutationRootPublicationGroup,
     StructuralMutationKind,
+)
+from d810.hexrays.mutation.semantic_fragment_failure import (
+    MbaSemanticFragmentFailure,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.block_identity import (
@@ -314,6 +318,26 @@ def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
             root_publication_succeeded=True,
             rollback_attempted=True,
             rollback_succeeded=True,
+            fragment_failures=(
+                MbaSemanticFragmentFailure(
+                    failure_kind="stage",
+                    phase="stage",
+                    error_type="SemanticFragmentBackendRejected",
+                    error_message=(
+                        "fragment plan requires an imported native-body materializer"
+                    ),
+                ),
+                MbaSemanticFragmentFailure(
+                    failure_kind="verifier",
+                    phase="stage_cleanup",
+                    error_type="RuntimeError",
+                    error_message="INTERR: 50856",
+                    interr_code=50856,
+                    verification_context=(
+                        "staged semantic fragment rollback sweep"
+                    ),
+                ),
+            ),
         )
     )
 
@@ -328,6 +352,24 @@ def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
     assert observed[0].fragment_staged
     assert observed[0].root_publication_succeeded
     assert observed[0].rollback_succeeded
+    assert observed[0].fragment_failures == (
+        SemanticFragmentFailureObserved(
+            failure_kind="stage",
+            phase="stage",
+            error_type="SemanticFragmentBackendRejected",
+            error_message=(
+                "fragment plan requires an imported native-body materializer"
+            ),
+        ),
+        SemanticFragmentFailureObserved(
+            failure_kind="verifier",
+            phase="stage_cleanup",
+            error_type="RuntimeError",
+            error_message="INTERR: 50856",
+            interr_code=50856,
+            verification_context="staged semantic fragment rollback sweep",
+        ),
+    )
     assert observed[0].root_publication_groups[0].rollback_succeeded
     assert len(observed[0].version_transitions) == 1
     transition = observed[0].version_transitions[0]

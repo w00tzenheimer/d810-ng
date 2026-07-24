@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from d810.core.formatting import format_block_id
@@ -213,9 +214,24 @@ def render_mutation_batch(result: dict[str, Any]) -> str:
                 f"rollback={_bool_value(group['rollback_succeeded'])}"
             )
         for event in result["fragment_events"]:
+            detail = ""
+            if event["event_kind"].endswith("_failure"):
+                failure = json.loads(event["detail_json"])
+                detail = (
+                    f" phase={failure['phase']} "
+                    f"error={failure['error_type']}: "
+                    f"{failure['error_message']}"
+                )
+                if failure["interr_code"] is not None:
+                    detail += f" interr={failure['interr_code']}"
+                if failure["verification_context"]:
+                    detail += (
+                        " verify-context="
+                        f"{failure['verification_context']}"
+                    )
             lines.append(
                 f"fragment-event[{event['event_index']}] "
-                f"{event['event_kind']} outcome={event['outcome']}"
+                f"{event['event_kind']} outcome={event['outcome']}{detail}"
             )
         for validation in result["fragment_validations"]:
             lines.append(

@@ -479,13 +479,31 @@ def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch, request):
     configure_settings(verify_capture=True, verify_capture_dir=str(tmp_path))
     request.addfinalizer(reset_settings)
 
-    with pytest.raises(RuntimeError):
+    class _Catcher:
+        def __init__(self):
+            self.last_code = 50856
+
+        def hook(self):
+            return True
+
+        def unhook(self):
+            return True
+
+    monkeypatch.setattr(cfg_verify, "_InterrCatcher", _Catcher)
+
+    with pytest.raises(RuntimeError) as caught:
         cfg_verify.safe_verify(
             mba,
             "unit-test verify failure",
             capture_blocks=[1],
             capture_metadata={"rule": "unit_test_rule", "mod_index": 7},
         )
+
+    assert caught.value.d810_interr_code == 50856
+    assert (
+        caught.value.d810_verification_context
+        == "unit-test verify failure"
+    )
 
     artifacts = list(tmp_path.glob("verify_fail_*.json"))
     assert len(artifacts) == 1

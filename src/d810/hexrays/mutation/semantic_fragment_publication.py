@@ -8,8 +8,13 @@ portable validation phases succeed.
 
 from __future__ import annotations
 
+import re
+
 from d810.hexrays.mutation.fragment_publication_lifecycle import (
     FragmentPublicationLifecycleAuthority,
+)
+from d810.hexrays.mutation.semantic_fragment_failure import (
+    MbaSemanticFragmentFailure,
 )
 from d810.transforms.fragment_plan import FragmentPlan
 from d810.transforms.fragment_validation import (
@@ -60,6 +65,136 @@ class SemanticFragmentRollbackFailed(RuntimeError):
         super().__init__(
             f"semantic fragment rollback failed after {type(original).__name__}: "
             f"{type(recovery).__name__}: {recovery}"
+        )
+
+
+_INTERR_PATTERN = re.compile(
+    r"\b(?:INTERR\s*:?\s*|Internal error\s+)(?P<code>\d+)\b"
+)
+
+
+def _exception_chain(error: Exception) -> tuple[Exception, ...]:
+    """Return the causal exception chain from initiating cause to wrapper."""
+    chain: list[Exception] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while isinstance(current, Exception) and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = (
+            current.__cause__
+            if current.__cause__ is not None
+            else current.__context__
+        )
+    chain.reverse()
+    return tuple(chain)
+
+
+def _explicit_exception_chain(error: Exception) -> tuple[Exception, ...]:
+    """Return only causes explicitly owned by ``error`` and its wrappers."""
+    chain: list[Exception] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while isinstance(current, Exception) and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__
+    chain.reverse()
+    return tuple(chain)
+
+
+def _interr_code(error: Exception) -> int | None:
+    observed = getattr(error, "d810_interr_code", None)
+    if observed is not None:
+        return int(observed)
+    match = _INTERR_PATTERN.search(str(error))
+    return None if match is None else int(match.group("code"))
+
+
+def _failure_message(error: Exception) -> str:
+    return str(error) or "<no exception message>"
+
+
+def _record_primary_failure(
+    gateway: object,
+    plan: FragmentPlan,
+    *,
+    phase: str,
+    error: Exception,
+) -> None:
+    chain = _exception_chain(error)
+    primary = chain[0]
+    primary_kind = "stage" if phase == "stage" else "publication"
+    gateway._record_fragment_failure(
+        plan,
+        MbaSemanticFragmentFailure(
+            failure_kind=primary_kind,
+            phase=phase,
+            error_type=type(primary).__name__,
+            error_message=_failure_message(primary),
+        ),
+    )
+    for candidate in chain:
+        interr_code = _interr_code(candidate)
+        if interr_code is None:
+            continue
+        gateway._record_fragment_failure(
+            plan,
+            MbaSemanticFragmentFailure(
+                failure_kind="verifier",
+                phase=(
+                    phase
+                    if candidate is primary
+                    else f"{phase}_cleanup"
+                ),
+                error_type=type(candidate).__name__,
+                error_message=_failure_message(candidate),
+                interr_code=interr_code,
+                verification_context=str(
+                    getattr(
+                        candidate,
+                        "d810_verification_context",
+                        "",
+                    )
+                ),
+            ),
+        )
+
+
+def _record_rollback_failure(
+    gateway: object,
+    plan: FragmentPlan,
+    error: Exception,
+) -> None:
+    gateway._record_fragment_failure(
+        plan,
+        MbaSemanticFragmentFailure(
+            failure_kind="rollback",
+            phase="rollback",
+            error_type=type(error).__name__,
+            error_message=_failure_message(error),
+        ),
+    )
+    for candidate in _explicit_exception_chain(error):
+        interr_code = _interr_code(candidate)
+        if interr_code is None:
+            continue
+        gateway._record_fragment_failure(
+            plan,
+            MbaSemanticFragmentFailure(
+                failure_kind="verifier",
+                phase="rollback_verification",
+                error_type=type(candidate).__name__,
+                error_message=_failure_message(candidate),
+                interr_code=interr_code,
+                verification_context=str(
+                    getattr(
+                        candidate,
+                        "d810_verification_context",
+                        "",
+                    )
+                ),
+            ),
         )
 
 
@@ -143,6 +278,7 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
     root_attempted = False
     rollback_token = None
     receipt = None
+    failure_phase = "stage"
     try:
         stage_attempted = True
         projection = backend._stage_semantic_fragment(plan)
@@ -154,10 +290,12 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             plan,
         )
         lifecycle_staged = True
+        failure_phase = "current_identity_binding"
         gateway._record_fragment_current_mba_identity_binding(
             plan,
             backend._semantic_fragment_current_mba_identity_binding(plan),
         )
+        failure_phase = "prepublication_validation"
         prepublication = validate_fragment_projection(plan, projection)
         gateway._record_fragment_validation(
             plan=plan,
@@ -175,22 +313,27 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             prepublication,
         )
 
+        failure_phase = "root_preparation"
         rollback_token = backend._prepare_semantic_fragment_root_publication(
             plan,
             root_inventory,
         )
         root_attempted = True
         gateway._record_fragment_root_publication_attempted(plan)
+        failure_phase = "root_publication"
         backend._publish_semantic_fragment_roots(plan, rollback_token)
         gateway._record_fragment_root_publication_succeeded(plan)
         for _root_edge in root_inventory.items:
             gateway.record_edge_redirect()
+        failure_phase = "root_rebuild"
         backend._rebuild_semantic_fragment_chains(plan)
+        failure_phase = "postpublication_observation"
         observation = backend._observe_published_semantic_fragment(plan)
         if not isinstance(observation, PublishedFragmentObservation):
             raise TypeError(
                 "semantic-fragment backend returned an invalid published observation"
             )
+        failure_phase = "postpublication_validation"
         postpublication = validate_published_fragment_observation(
             plan,
             observation,
@@ -211,8 +354,15 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             prepublication=prepublication,
             postpublication=postpublication,
         )
+        failure_phase = "commit"
         receipt = gateway.commit()
     except Exception as original_error:
+        _record_primary_failure(
+            gateway,
+            plan,
+            phase=failure_phase,
+            error=original_error,
+        )
         recovery_error: Exception | None = None
         recovery_succeeded = True
         if root_attempted:
@@ -220,12 +370,14 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
                 backend._rollback_semantic_fragment_roots(plan, rollback_token)
                 backend._rebuild_semantic_fragment_chains(plan)
             except Exception as exc:
+                _record_rollback_failure(gateway, plan, exc)
                 recovery_error = exc
                 recovery_succeeded = False
         if stage_attempted:
             try:
                 backend._discard_staged_semantic_fragment(plan)
             except Exception as exc:
+                _record_rollback_failure(gateway, plan, exc)
                 recovery_succeeded = False
                 if recovery_error is None:
                     recovery_error = exc
@@ -236,10 +388,11 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
                     succeeded=recovery_succeeded,
                 )
             except Exception as exc:
+                _record_rollback_failure(gateway, plan, exc)
                 recovery_succeeded = False
                 if recovery_error is None:
                     recovery_error = exc
-        reason = str(original_error)
+        reason = _failure_message(_exception_chain(original_error)[0])
         if recovery_error is not None:
             reason += (
                 f"; rollback failed: {type(recovery_error).__name__}: {recovery_error}"

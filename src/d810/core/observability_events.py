@@ -416,6 +416,37 @@ class MutationPlanObserved:
 
 
 @dataclass(frozen=True)
+class SemanticFragmentFailureObserved:
+    """One ordered fragment-transaction failure persisted for diagnosis."""
+
+    failure_kind: str
+    phase: str
+    error_type: str
+    error_message: str
+    interr_code: int | None = None
+    verification_context: str = ""
+
+    def __post_init__(self) -> None:
+        if self.failure_kind not in {
+            "stage",
+            "publication",
+            "rollback",
+            "verifier",
+        }:
+            raise ValueError("semantic-fragment failure kind is invalid")
+        if not self.phase or not self.error_type or not self.error_message:
+            raise ValueError(
+                "semantic-fragment failure requires phase, type, and message"
+            )
+        if self.interr_code is not None and int(self.interr_code) <= 0:
+            raise ValueError("semantic-fragment INTERR code must be positive")
+        if self.verification_context and self.failure_kind != "verifier":
+            raise ValueError(
+                "only verifier failures may carry verification context"
+            )
+
+
+@dataclass(frozen=True)
 class MutationReceiptObserved:
     session_id: str
     func_ea: int
@@ -442,6 +473,7 @@ class MutationReceiptObserved:
     rollback_succeeded: bool | None = None
     validation_outcomes: tuple[FragmentValidationOutcomeObserved, ...] = ()
     version_transitions: tuple[LogicalBlockVersionTransitionObserved, ...] = ()
+    fragment_failures: tuple[SemanticFragmentFailureObserved, ...] = ()
     timestamp: float = 0.0
 
     def __post_init__(self) -> None:
@@ -465,6 +497,11 @@ class MutationReceiptObserved:
             for transition in self.version_transitions
         ):
             raise TypeError("mutation receipt contains an invalid version transition")
+        if any(
+            not isinstance(failure, SemanticFragmentFailureObserved)
+            for failure in self.fragment_failures
+        ):
+            raise TypeError("fragment receipt contains an invalid failure fact")
         has_fragment = bool(self.fragment_plan_id)
         if has_fragment != bool(self.fragment_atomic_group_id):
             raise ValueError("fragment receipt requires plan and atomic-group ids")
@@ -498,6 +535,7 @@ class MutationReceiptObserved:
                 not self.fragment_staged
                 or not self.root_publication_succeeded
                 or self.rollback_attempted
+                or self.fragment_failures
                 or any(
                     not group.publication_attempted
                     or not group.publication_succeeded
@@ -523,6 +561,7 @@ class MutationReceiptObserved:
             or self.rollback_succeeded is not None
             or self.validation_outcomes
             or self.root_publication_groups
+            or self.fragment_failures
         ):
             raise ValueError(
                 "non-fragment receipt cannot carry fragment transaction state"
@@ -769,6 +808,7 @@ __all__ = [
     # Hex-Rays
     "CaptureMbaSnapshotRequested",
     "FragmentRootPublicationGroupObserved",
+    "SemanticFragmentFailureObserved",
     # Preanalysis
     "BranchOwnershipProofsObserved",
     "BranchWitnessDecisionsObserved",
