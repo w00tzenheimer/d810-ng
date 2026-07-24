@@ -2007,3 +2007,53 @@ any body preparation and rebase every affected live/imported stack identity.
 If not, preserve the rejection and revisit the publication boundary. Do not
 emit negative decompiler stack coordinates merely because `verify.cpp` lacks a
 direct `call_spd` inequality.
+
+**2026-07-24T15:32:18Z**
+
+Commit `063066cee` completes the native-frame stack-point slice. The
+`hxe_stkpnts` provider now derives canonical stack depth from the authoritative
+IDA `func_t` while the new MBA's frame fields are still zero. It does not add a
+fallback or mutate live MBA frame coordinates after construction.
+
+The focused local and pinned-Docker runtime suites are both 451/451 green.
+Docker artifact:
+`.tmp/calls-stack-native-frame-runtime-root.txt`. Changed-file Ruff, diff
+checks, ast-grep, all 14 worktree-local import contracts, commit hooks, and
+`graphify update .` pass.
+
+The mandatory cache-disabled A560 canary returned normally in 17.86 seconds
+and remains semantically red with one `while ( 1 )`. Pytest log:
+`.tmp/rhad-a560-v31-native-frame.txt`; primary DB:
+`.tmp/rhad-a560-native-frame/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-native-frame/test_real_loader_matches_reach0/sub_40A560.c`.
+
+The DB proves the intended fact moved forward. Stack-point projection events 8
+and 179 each apply all 28 resolver-owned call points at MMAT_ZERO with zero
+abstentions and canonical SPD `-1168`. Native call `0x40C2A9` receives
+`-1192`; the deepest native call `0x40B49E` receives `-1216`. The prior
+`calls_companion_destination_stack_window_insufficient` rejection is absent.
+
+The highest contiguous canary level remains C3 because the gateway does not
+finish staging or pre-publication validation. After the controlled redo, the
+canonical transaction plans 123 operations and applies 49 before the
+state-choice operation anchored at native `0x40BECC` rejects predicate
+realization. Plan item 49 is the fallthrough helper for the atomic conditional;
+items 50 and 51 are its taken and fallthrough arms. The rejection reports
+source `blk87@0x40A560` projected from native `0x40BECC`, expected predicate
+EA `0xF1C00B1C`, and observed tail `0xF1C00B3C`.
+
+Rollback then fails with `INTERR 52719`. The bundled SDK defines that number at
+`.ida-sdk/src/include/hexrays.hpp` as the `mba_t::get_mblock(n)` assertion
+`n < qty`, so the rollback path dereferenced a stale or out-of-range
+maturity-local block index. This was visible in the diagnostic DB even though
+the worker returned normally and the textual pytest failure showed only the
+semantic oracle.
+
+Continue the v3.1 vertical loop from the first C4 obligation: prove why the
+portable predicate for native `0x40BECC` no longer matches the staged source
+tail before its atomic two-arm realization. Preserve the native anchor in all
+diagnostics and tests. Separately, enforce restart-safe failure semantics so a
+failed staged operation cannot roll back through stale serials or continue on
+an MBA whose restoration was not proved. Do not broaden the 123-operation
+fragment, weaken predicate validation, or treat partial operation count as C4.
