@@ -11076,6 +11076,12 @@ def _on_build_callinfo(
     state = _resolver_state_from_decision(decision)
     if state is None:
         return
+    if state.native_preanalysis.has_pending_generated_restart:
+        # A call-info callback can discover exact detached route evidence after
+        # PREOPT has already published the current generation.  Once that
+        # evidence stages a controller-owned restart, all later call-info
+        # callbacks belong to the obsolete live MBA and must not extend it.
+        return
     imported_origins = dict(imported_detached_snippet_instruction_origins(block.mba))
     call_ea = int(imported_origins.get(int(tail.ea), int(tail.ea)))
     key, resolution = _callinfo_profile_resolution(state, function_ea, call_ea)
@@ -11163,7 +11169,21 @@ def _on_build_callinfo(
                 entry_context_transfers=recorded_transfers,
             )
             if local_transfers:
-                _merge_materialized_transfers(state, local_transfers)
+                calls_evidence_changed = _merge_materialized_transfers(
+                    state,
+                    local_transfers,
+                )
+                published_generation = (
+                    state.native_preanalysis.normalization_published_postvalidated_generation
+                )
+                if (
+                    calls_evidence_changed
+                    and owns_live_profile_mba
+                    and not state.snippet_capture_active
+                    and published_generation is not None
+                    and int(published_generation) < int(state.evidence_generation)
+                ):
+                    state.native_preanalysis.request_generated_restart()
                 combined_transfers = state.materialized_transfers
                 proven_reentry_eas = _proven_callinfo_reentry_eas(
                     resolution,
