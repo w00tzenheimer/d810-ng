@@ -113,8 +113,8 @@ def _build_current_mba_identity_index(*, session, mba):
         raise TypeError("current MBA identity index requires a live graph")
     build_graph()
 
-    imported_instruction_origins = dict(
-        state.imported_instruction_origins_for(stable_mba_identity(mba))
+    current_mba_identity_binding = state.current_mba_identity_binding_for(
+        stable_mba_identity(mba)
     )
     from d810.core.maturity_labels import mmat_label
     from d810.core.observability import emit as emit_diagnostic
@@ -165,7 +165,7 @@ def _build_current_mba_identity_index(*, session, mba):
         native_key=session.native_key,
         evidence_generation=session.native_preanalysis.evidence_generation,
         session_id=session.identity_key,
-        imported_instruction_origins=imported_instruction_origins,
+        current_mba_identity_binding=current_mba_identity_binding,
         decision_observer=_observe_identity,
     )
     state.bind_current_mba(index)

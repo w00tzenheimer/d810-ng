@@ -287,6 +287,8 @@ from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.ir_translator import lift
 from d810.ir.block_identity import (
     BlockHandleProvenance,
+    CurrentMbaBlockIdentityBinding,
+    CurrentMbaIdentityBindingSnapshot,
     MbaBlockHandle,
     StableBlockIdentity,
 )
@@ -3932,11 +3934,11 @@ class DeferredGraphModifier:
         """Backend-only discard port for unpublished fragment versions."""
         discard_staged_semantic_fragment(self, plan)
 
-    def _semantic_fragment_current_mba_instruction_origins(
+    def _semantic_fragment_current_mba_identity_binding(
         self,
         plan: FragmentPlan,
-    ) -> tuple[tuple[int, int], ...]:
-        """Return the staged live/native coordinates owned by one transaction."""
+    ) -> CurrentMbaIdentityBindingSnapshot:
+        """Return staged point origins and full serial-free block identities."""
         state = self._semantic_fragment_state
         if (
             state is None
@@ -3947,7 +3949,18 @@ class DeferredGraphModifier:
                 "semantic fragment origins have no matching staged state"
             )
         native_by_live: dict[int, int] = {}
-        for origins in state.instruction_origins_by_block_id.values():
+        block_bindings: list[CurrentMbaBlockIdentityBinding] = []
+        for block_id in sorted(state.instruction_origins_by_block_id):
+            origins = state.instruction_origins_by_block_id[block_id]
+            if not origins:
+                continue
+            stable_identity = state.binding(
+                block_id
+            ).version.handle.stable_identity
+            if stable_identity is None:
+                raise SemanticFragmentBackendRejected(
+                    "semantic fragment instruction origins lack stable identity"
+                )
             for live_ea, native_ea in origins.items():
                 live_ea = int(live_ea)
                 native_ea = int(native_ea)
@@ -3957,7 +3970,16 @@ class DeferredGraphModifier:
                         "semantic fragment live instruction has conflicting origins"
                     )
                 native_by_live[live_ea] = native_ea
-        return tuple(sorted(native_by_live.items()))
+            block_bindings.append(
+                CurrentMbaBlockIdentityBinding(
+                    stable_identity=stable_identity,
+                    live_instruction_eas=frozenset(int(ea) for ea in origins),
+                )
+            )
+        return CurrentMbaIdentityBindingSnapshot(
+            instruction_origins=tuple(sorted(native_by_live.items())),
+            block_bindings=tuple(block_bindings),
+        )
 
     @staticmethod
     def _semantic_fragment_publication_token(

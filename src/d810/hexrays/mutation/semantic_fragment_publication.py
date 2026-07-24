@@ -27,7 +27,7 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
 _BACKEND_PORT = (
     "_plan_semantic_fragment_root_publication_inventory",
     "_stage_semantic_fragment",
-    "_semantic_fragment_current_mba_instruction_origins",
+    "_semantic_fragment_current_mba_identity_binding",
     "_discard_staged_semantic_fragment",
     "_prepare_semantic_fragment_root_publication",
     "_publish_semantic_fragment_roots",
@@ -154,9 +154,9 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             plan,
         )
         lifecycle_staged = True
-        gateway._record_fragment_current_mba_instruction_origins(
+        gateway._record_fragment_current_mba_identity_binding(
             plan,
-            backend._semantic_fragment_current_mba_instruction_origins(plan),
+            backend._semantic_fragment_current_mba_identity_binding(plan),
         )
         prepublication = validate_fragment_projection(plan, projection)
         gateway._record_fragment_validation(
