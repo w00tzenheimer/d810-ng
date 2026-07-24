@@ -506,6 +506,15 @@ class D810Manager:
                                             outcome.native_range[1]
                                         ),
                                     },
+                                    "calls_native_ranges": [
+                                        {
+                                            "start_ea": int(start_ea),
+                                            "end_ea": int(end_ea),
+                                        }
+                                        for start_ea, end_ea in (
+                                            outcome.calls_native_ranges
+                                        )
+                                    ],
                                     "component_target_ea": (
                                         None
                                         if outcome.component_target_ea is None

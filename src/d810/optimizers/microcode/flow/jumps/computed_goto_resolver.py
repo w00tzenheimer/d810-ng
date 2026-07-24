@@ -8229,6 +8229,7 @@ class CallCompanionPreparationOutcome(NamedTuple):
     """One manager-preflight result keyed only by a portable native range."""
 
     native_range: tuple[int, int]
+    calls_native_ranges: tuple[tuple[int, int], ...]
     component_target_ea: int | None
     captured: bool
     preopt_call_eas: tuple[int, ...]
@@ -8257,6 +8258,55 @@ def _native_range_is_covered(
     return False
 
 
+def _call_companion_native_ranges(
+    native_range: tuple[int, int],
+    cfg: NativeCfg,
+) -> tuple[tuple[int, int], ...]:
+    """Exclude only a uniquely proven trailing resolver transfer from CALLS.
+
+    The complete native range remains the pristine PREOPT inventory authority.
+    Isolated CALLS generation needs the semantic body and analyzed call owners,
+    but exposing its resolver-owned terminal indirect jump lets Hex-Rays
+    reclassify that jump as a tail call.  Trim only when the portable CFG proves
+    that every outgoing edge of the unique terminal block is the same resolved
+    indirect-transfer site.
+    """
+    start_ea, end_ea = map(int, native_range)
+    complete_range = ((start_ea, end_ea),)
+    if start_ea <= 0 or end_ea <= start_ea:
+        return complete_range
+    terminal_blocks = tuple(
+        block
+        for block in cfg.blocks_by_ea.values()
+        if start_ea <= int(block.start_ea) < end_ea
+        and int(block.end_ea) == end_ea
+        and block.terminal is NativeTerminalKind.STOP
+    )
+    if len(terminal_blocks) != 1:
+        return complete_range
+    outgoing_edges = tuple(terminal_blocks[0].outgoing_edges)
+    if not outgoing_edges or any(
+        edge.kind is not NativeEdgeKind.INDIRECT
+        or not edge.resolver_proven
+        or edge.provenance != "resolver_proven_native_cut"
+        or edge.target_ea is None
+        or edge.source_instruction_ea is None
+        for edge in outgoing_edges
+    ):
+        return complete_range
+    source_eas = {
+        int(edge.source_instruction_ea)
+        for edge in outgoing_edges
+        if edge.source_instruction_ea is not None
+    }
+    if len(source_eas) != 1:
+        return complete_range
+    resolver_exit_ea = next(iter(source_eas))
+    if not start_ea < resolver_exit_ea < end_ea:
+        return complete_range
+    return ((start_ea, resolver_exit_ea),)
+
+
 def prepare_requested_detached_call_companions(
     state: ResolverSessionState,
 ) -> tuple[CallCompanionPreparationOutcome, ...]:
@@ -8279,6 +8329,7 @@ def prepare_requested_detached_call_companions(
         return tuple(
             CallCompanionPreparationOutcome(
                 native_range=native_range,
+                calls_native_ranges=(),
                 component_target_ea=None,
                 captured=False,
                 preopt_call_eas=(),
@@ -8293,6 +8344,7 @@ def prepare_requested_detached_call_companions(
         return tuple(
             CallCompanionPreparationOutcome(
                 native_range=native_range,
+                calls_native_ranges=(),
                 component_target_ea=None,
                 captured=False,
                 preopt_call_eas=(),
@@ -8317,6 +8369,7 @@ def prepare_requested_detached_call_companions(
                 outcomes.append(
                     CallCompanionPreparationOutcome(
                         native_range=normalized_range,
+                        calls_native_ranges=(),
                         component_target_ea=None,
                         captured=False,
                         preopt_call_eas=(),
@@ -8326,17 +8379,18 @@ def prepare_requested_detached_call_companions(
                     )
                 )
                 continue
-            owned_entries = tuple(
+            component_owned_entries = tuple(
                 int(entry_ea)
                 for entry_ea in source.imported_block_entry_eas
                 if normalized_range[0]
                 <= int(entry_ea)
                 < normalized_range[1]
             )
-            if not owned_entries:
+            if not component_owned_entries:
                 outcomes.append(
                     CallCompanionPreparationOutcome(
                         native_range=normalized_range,
+                        calls_native_ranges=(),
                         component_target_ea=None,
                         captured=False,
                         preopt_call_eas=(),
@@ -8346,14 +8400,41 @@ def prepare_requested_detached_call_companions(
                     )
                 )
                 continue
-            component_target_ea = int(min(owned_entries))
-            ranges = ida_hexrays.mba_ranges_t()
-            ranges.ranges.push_back(
-                idaapi.range_t(
-                    normalized_range[0],
-                    normalized_range[1],
+            component_target_ea = int(min(component_owned_entries))
+            calls_native_ranges = _call_companion_native_ranges(
+                normalized_range,
+                source.cfg,
+            )
+            owned_entries = tuple(
+                entry_ea
+                for entry_ea in component_owned_entries
+                if any(
+                    int(start_ea) <= entry_ea < int(end_ea)
+                    for start_ea, end_ea in calls_native_ranges
                 )
             )
+            if component_target_ea not in owned_entries:
+                outcomes.append(
+                    CallCompanionPreparationOutcome(
+                        native_range=normalized_range,
+                        calls_native_ranges=calls_native_ranges,
+                        component_target_ea=component_target_ea,
+                        captured=False,
+                        preopt_call_eas=(),
+                        calls_call_eas=(),
+                        mismatch_ea=None,
+                        reason="calls_range_excludes_component_target",
+                    )
+                )
+                continue
+            ranges = ida_hexrays.mba_ranges_t()
+            for calls_start_ea, calls_end_ea in calls_native_ranges:
+                ranges.ranges.push_back(
+                    idaapi.range_t(
+                        int(calls_start_ea),
+                        int(calls_end_ea),
+                    )
+                )
             failure = ida_hexrays.hexrays_failure_t()
             try:
                 calls_mba = _generate_microcode_without_d810(
@@ -8381,6 +8462,7 @@ def prepare_requested_detached_call_companions(
                 outcomes.append(
                     CallCompanionPreparationOutcome(
                         native_range=normalized_range,
+                        calls_native_ranges=calls_native_ranges,
                         component_target_ea=component_target_ea,
                         captured=False,
                         preopt_call_eas=(),
@@ -8399,9 +8481,10 @@ def prepare_requested_detached_call_companions(
                 for instruction_ea, offsets in dict(
                     resolution.native_stack_frame_offsets
                 ).items()
-                if normalized_range[0]
-                <= int(instruction_ea)
-                < normalized_range[1]
+                if any(
+                    int(start_ea) <= int(instruction_ea) < int(end_ea)
+                    for start_ea, end_ea in calls_native_ranges
+                )
             }
             capture = capture_preopt_union_call_companion_template(
                 key,
@@ -8409,11 +8492,13 @@ def prepare_requested_detached_call_companions(
                 component_target_ea,
                 calls_mba,
                 normalized_range,
+                calls_native_ranges=calls_native_ranges,
                 owned_block_entry_eas=owned_entries,
                 native_stack_frame_offsets_by_ea=stack_offsets,
             )
             outcome = CallCompanionPreparationOutcome(
                 native_range=normalized_range,
+                calls_native_ranges=calls_native_ranges,
                 component_target_ea=component_target_ea,
                 captured=bool(capture.captured),
                 preopt_call_eas=tuple(int(ea) for ea in capture.call_eas),

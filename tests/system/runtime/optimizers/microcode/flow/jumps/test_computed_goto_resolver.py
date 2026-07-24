@@ -8700,13 +8700,23 @@ def _install_requested_call_companion_harness(
     function_ea = 0x1000
     component_start_ea = 0x2000
     component_end_ea = 0x2040
+    resolver_exit_ea = 0x203E
     call_ea = 0x2020
     cfg = NativeCfg(
         {
             component_start_ea: NativeBlock(
                 component_start_ea,
                 component_end_ea,
-                terminal=NativeTerminalKind.RETURN,
+                outgoing_edges=(
+                    NativeEdge(
+                        NativeEdgeKind.INDIRECT,
+                        component_start_ea,
+                        resolver_proven=True,
+                        provenance="resolver_proven_native_cut",
+                        source_instruction_ea=resolver_exit_ea,
+                    ),
+                ),
+                terminal=NativeTerminalKind.STOP,
             )
         }
     )
@@ -8798,11 +8808,126 @@ def _install_requested_call_companion_harness(
         "component_start_ea": component_start_ea,
         "call_ea": call_ea,
         "native_range": native_range,
+        "calls_native_ranges": (
+            (component_start_ea, resolver_exit_ea),
+        ),
         "calls_mba": calls_mba,
         "calls_events": calls_events,
         "generated": generated,
         "captures": captures,
     }
+
+
+def test_call_companion_ranges_exclude_unique_proven_trailing_resolver_cut() -> None:
+    native_range = (0x2000, 0x2040)
+    resolver_exit_ea = 0x203E
+    cfg = NativeCfg(
+        {
+            0x2000: NativeBlock(
+                0x2000,
+                0x2040,
+                outgoing_edges=(
+                    NativeEdge(
+                        NativeEdgeKind.INDIRECT,
+                        0x3000,
+                        resolver_proven=True,
+                        provenance="resolver_proven_native_cut",
+                        source_instruction_ea=resolver_exit_ea,
+                    ),
+                    NativeEdge(
+                        NativeEdgeKind.INDIRECT,
+                        0x4000,
+                        resolver_proven=True,
+                        provenance="resolver_proven_native_cut",
+                        source_instruction_ea=resolver_exit_ea,
+                    ),
+                ),
+                terminal=NativeTerminalKind.STOP,
+            ),
+        }
+    )
+
+    assert computed_goto_resolver._call_companion_native_ranges(
+        native_range,
+        cfg,
+    ) == ((0x2000, resolver_exit_ea),)
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    (
+        NativeCfg(
+            {
+                0x2000: NativeBlock(
+                    0x2000,
+                    0x2030,
+                    outgoing_edges=(
+                        NativeEdge(
+                            NativeEdgeKind.INDIRECT,
+                            0x3000,
+                            resolver_proven=True,
+                            source_instruction_ea=0x202E,
+                        ),
+                    ),
+                    terminal=NativeTerminalKind.STOP,
+                ),
+                0x2030: NativeBlock(
+                    0x2030,
+                    0x2040,
+                    terminal=NativeTerminalKind.RETURN,
+                ),
+            }
+        ),
+        NativeCfg(
+            {
+                0x2000: NativeBlock(
+                    0x2000,
+                    0x2040,
+                    outgoing_edges=(
+                        NativeEdge(
+                            NativeEdgeKind.INDIRECT,
+                            provenance="native_indirect_without_resolver",
+                            source_instruction_ea=0x203E,
+                        ),
+                    ),
+                    terminal=NativeTerminalKind.STOP,
+                ),
+            }
+        ),
+        NativeCfg(
+            {
+                0x2000: NativeBlock(
+                    0x2000,
+                    0x2040,
+                    outgoing_edges=(
+                        NativeEdge(
+                            NativeEdgeKind.INDIRECT,
+                            0x3000,
+                            resolver_proven=True,
+                            source_instruction_ea=0x203C,
+                        ),
+                        NativeEdge(
+                            NativeEdgeKind.INDIRECT,
+                            0x4000,
+                            resolver_proven=True,
+                            source_instruction_ea=0x203E,
+                        ),
+                    ),
+                    terminal=NativeTerminalKind.STOP,
+                ),
+            }
+        ),
+    ),
+)
+def test_call_companion_ranges_keep_full_range_without_unique_tail_proof(
+    cfg: NativeCfg,
+) -> None:
+    native_range = (0x2000, 0x2040)
+
+    assert computed_goto_resolver._call_companion_native_ranges(
+        native_range,
+        cfg,
+    ) == (native_range,)
 
 
 def test_prepare_requested_call_companion_captures_exact_calls_component(
@@ -8823,6 +8948,7 @@ def test_prepare_requested_call_companion_captures_exact_calls_component(
     assert outcomes == (
         computed_goto_resolver.CallCompanionPreparationOutcome(
             native_range=harness["native_range"],
+            calls_native_ranges=harness["calls_native_ranges"],
             component_target_ea=harness["component_start_ea"],
             captured=True,
             preopt_call_eas=(harness["call_ea"],),
@@ -8833,7 +8959,7 @@ def test_prepare_requested_call_companion_captures_exact_calls_component(
     )
     assert harness["generated"] == [
         (
-            (harness["native_range"],),
+            harness["calls_native_ranges"],
             int(ida_hexrays.DECOMP_NO_WAIT | ida_hexrays.DECOMP_ALL_BLKS),
             int(ida_hexrays.MMAT_CALLS),
         )
@@ -8849,6 +8975,7 @@ def test_prepare_requested_call_companion_captures_exact_calls_component(
                 harness["native_range"],
             ),
             {
+                "calls_native_ranges": harness["calls_native_ranges"],
                 "owned_block_entry_eas": (harness["component_start_ea"],),
                 "native_stack_frame_offsets_by_ea": {
                     harness["call_ea"]: (-8, -4)
