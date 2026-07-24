@@ -34,6 +34,7 @@ from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+from d810.transforms import canonical_semantic_fragment as canonical_fragment
 from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
     build_canonical_semantic_fragment_plan,
@@ -489,6 +490,148 @@ def test_detached_component_rebinds_published_replacement_boundary_as_external()
         plan.block(block_id).semantic_anchor_ea
         for block_id in plan.owned_originals
     ) == (0x1100,)
+
+
+def test_projected_boundary_reuses_its_unique_current_owner_role() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            90: _block(
+                90,
+                0x1301,
+                succs=(20,),
+                preds=(20,),
+            ),
+        },
+    )
+    boundary_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1300, 0x1302),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1300, 0x1301),
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=tuple(
+            replace(
+                block,
+                stable_identity=boundary_identity,
+            )
+            if block.block_id
+            in {
+                "unrelated-original",
+                "unrelated-replacement",
+            }
+            else block
+            for block in normalization_plan.blocks
+        ),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="detached-normalization",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="unrelated-replacement",
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=tuple(
+            replace(body, terminal_block_ids=())
+            for body in normalization_plan.native_bodies
+        ),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    detached_operation = next(
+        operation
+        for operation in plan.operations
+        if operation.operation_id == "detached-normalization"
+    )
+    (detached_edge,) = detached_operation.edges
+    (prohibited_block_id,) = plan.prohibited_dispatcher_blocks
+    assert detached_edge.target_block_id == prohibited_block_id
+    boundary = plan.block(prohibited_block_id)
+    assert boundary.stable_identity == boundary_identity
+    assert tuple(
+        block.block_id
+        for block in plan.blocks
+        if block.materialization
+        is FragmentBlockMaterialization.REUSE_PUBLISHED
+        and block.stable_identity is not None
+        and 0x1301 in block.stable_identity.exact_instruction_eas
+    ) == (boundary.block_id,)
+
+
+def test_projected_boundary_rejects_multiple_current_owner_roles(
+    monkeypatch,
+) -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    (native_body,) = normalization_plan.native_bodies
+    normalization_plan = replace(
+        normalization_plan,
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="detached-normalization",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="unrelated-replacement",
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(replace(native_body, terminal_block_ids=()),),
+    )
+    monkeypatch.setattr(
+        canonical_fragment,
+        "_current_owners_contained_by_identity",
+        lambda _graph, _identity: (
+            (90, 0x1400),
+            (91, 0x1410),
+        ),
+    )
+
+    with pytest.raises(
+        CanonicalSemanticFragmentRejected,
+        match="projected canonical boundary has multiple current owners",
+    ) as exc_info:
+        compose_canonical_semantic_fragment_plan(
+            graph,
+            normalization_plan,
+            evidence,
+            normalization_authority=_normalization_authority(
+                normalization_plan,
+                evidence,
+            ),
+            prohibited_dispatcher_serials=(90,),
+        )
+
+    rejection = exc_info.value
+    assert rejection.reason_code == "projected_boundary_current_owner_ambiguous"
+    assert rejection.payload["current_owner_labels"] == (
+        "blk90@0x1400",
+        "blk91@0x1410",
+    )
 
 
 def test_detached_component_keeps_proof_owned_imported_branch_normalization() -> None:
