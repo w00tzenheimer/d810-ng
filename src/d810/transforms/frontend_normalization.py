@@ -24,7 +24,9 @@ from d810.analyses.control_flow.native_semantic_closure import (
 from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
+    stable_block_identity_semantic_anchor,
     stable_block_identity_from_snapshot,
+    stable_block_identity_token,
 )
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind
@@ -238,23 +240,6 @@ class _BoundImportedConditionalSelectEnvelope:
     join: NativeBlock
 
 
-def _semantic_anchor(identity: StableBlockIdentity) -> int:
-    if identity.exact_instruction_eas:
-        return min(identity.exact_instruction_eas)
-    return identity.native_ranges.intervals[0].start_ea
-
-
-def _identity_token(identity: StableBlockIdentity) -> str:
-    native_ranges = ",".join(
-        f"0x{interval.start_ea:X}-0x{interval.end_ea:X}"
-        for interval in identity.native_ranges.intervals
-    )
-    exact_instruction_eas = ",".join(
-        f"0x{ea:X}" for ea in sorted(identity.exact_instruction_eas)
-    )
-    return f"{native_ranges};exact={exact_instruction_eas or 'none'}"
-
-
 def _bind_corridor_block(
     graph: FlowGraph,
     identity: StableBlockIdentity,
@@ -263,7 +248,7 @@ def _bind_corridor_block(
     preferred_block: BlockSnapshot | None = None,
 ) -> BlockSnapshot | None:
     anchor_ea = (
-        _semantic_anchor(identity)
+        stable_block_identity_semantic_anchor(identity)
         if preferred_anchor_ea is None
         else int(preferred_anchor_ea)
     )
@@ -767,7 +752,7 @@ def _bind_imported_proof(
 
     corridor: list[NativeBlock] = []
     for index, identity in enumerate(proof.flag_corridor):
-        anchor_ea = _semantic_anchor(identity)
+        anchor_ea = stable_block_identity_semantic_anchor(identity)
         if index == 0 and proof.condition_producer_ea is not None:
             anchor_ea = int(proof.condition_producer_ea)
         if index == len(proof.flag_corridor) - 1:
@@ -1261,7 +1246,7 @@ def plan_frontend_computed_branch_normalization(
             imported_native_blocks[int(entry_ea)] = native_block
             imported_identities[int(entry_ea)] = identity
             imported_ids[int(entry_ea)] = (
-                f"native[{_identity_token(identity)}]:imported"
+                f"native[{stable_block_identity_token(identity)}]:imported"
             )
         if not imported_native_blocks:
             raise FrontendNormalizationEvidenceRejected(
@@ -1339,7 +1324,7 @@ def plan_frontend_computed_branch_normalization(
             "normalization route corridor lacks unique stable identities"
         )
     base_ids = {
-        serial: f"native[{_identity_token(identity)}]"
+        serial: f"native[{stable_block_identity_token(identity)}]"
         for serial, identity in identities.items()
     }
     original_ids = {serial: f"{base_ids[serial]}:original" for serial in source_serials}
@@ -1353,7 +1338,7 @@ def plan_frontend_computed_branch_normalization(
     blocks: list[FragmentBlock] = []
     for serial in sorted(relevant_serials):
         identity = identities[serial]
-        semantic_anchor_ea = _semantic_anchor(identity)
+        semantic_anchor_ea = stable_block_identity_semantic_anchor(identity)
         if serial in replacement_ids:
             original_id = original_ids[serial]
             blocks.extend(

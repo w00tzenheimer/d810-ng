@@ -218,6 +218,31 @@ class StableBlockIdentity:
         )
 
 
+def stable_block_identity_semantic_anchor(
+    identity: StableBlockIdentity,
+) -> int:
+    """Select one deterministic native EA for a portable block identity."""
+    if not isinstance(identity, StableBlockIdentity):
+        raise TypeError("semantic anchor requires a stable block identity")
+    if identity.exact_instruction_eas:
+        return min(identity.exact_instruction_eas)
+    return identity.native_ranges.intervals[0].start_ea
+
+
+def stable_block_identity_token(identity: StableBlockIdentity) -> str:
+    """Encode a serial-free plan-local token from complete native ownership."""
+    if not isinstance(identity, StableBlockIdentity):
+        raise TypeError("identity token requires a stable block identity")
+    native_ranges = ",".join(
+        f"0x{interval.start_ea:X}-0x{interval.end_ea:X}"
+        for interval in identity.native_ranges.intervals
+    )
+    exact_instruction_eas = ",".join(
+        f"0x{ea:X}" for ea in sorted(identity.exact_instruction_eas)
+    )
+    return f"{native_ranges};exact={exact_instruction_eas or 'none'}"
+
+
 @dataclass(frozen=True, slots=True)
 class CurrentMbaBlockIdentityBinding:
     """Tie one full stable identity to surviving current-MBA instruction EAs."""
@@ -678,16 +703,16 @@ def block_body_observation_fingerprint(
     operand_rows: list[dict[str, object | None]] = []
     for insn in block.insn_snapshots:
         d = _mop_row(getattr(insn, "d", None))
-        l = _mop_row(getattr(insn, "l", None))
+        left = _mop_row(getattr(insn, "l", None))
         r = _mop_row(getattr(insn, "r", None))
         operand_rows.append(
             {
                 "d_t": d["t"],
                 "d_o": d["o"],
                 "d_s": d["s"],
-                "l_t": l["t"],
-                "l_o": l["o"],
-                "l_v": l["v"],
+                "l_t": left["t"],
+                "l_o": left["o"],
+                "l_v": left["v"],
                 "r_t": r["t"],
                 "r_o": r["o"],
                 "r_v": r["v"],
@@ -737,5 +762,7 @@ __all__ = [
     "hex64",
     "instruction_fingerprint",
     "maturity_label",
+    "stable_block_identity_semantic_anchor",
     "stable_block_identity_from_snapshot",
+    "stable_block_identity_token",
 ]

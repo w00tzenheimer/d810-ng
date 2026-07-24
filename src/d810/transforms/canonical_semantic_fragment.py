@@ -16,7 +16,9 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
+    stable_block_identity_semantic_anchor,
     stable_block_identity_from_snapshot,
+    stable_block_identity_token,
 )
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.fragment_plan import (
@@ -189,6 +191,33 @@ def _current_route_source(
                 },
             )
     return source_serial, source_identity
+
+
+def _claim_current_external_identity(
+    serial: int,
+    identity: StableBlockIdentity,
+    *,
+    owner_serial_by_identity: dict[StableBlockIdentity, int],
+) -> None:
+    """Reject two current blocks that claim the same portable identity."""
+    serial = int(serial)
+    existing_serial = owner_serial_by_identity.get(identity)
+    if existing_serial is None:
+        owner_serial_by_identity[identity] = serial
+        return
+    if existing_serial == serial:
+        return
+    anchor_ea = stable_block_identity_semantic_anchor(identity)
+    raise CanonicalSemanticFragmentRejected(
+        "canonical external stable identity has multiple current owners",
+        reason_code="external_identity_ambiguous",
+        anchor_ea=anchor_ea,
+        payload={
+            "candidate_owner": f"blk{serial}@0x{anchor_ea:X}",
+            "existing_owner": f"blk{existing_serial}@0x{anchor_ea:X}",
+            "stable_identity": identity.diagnostic_label(),
+        },
+    )
 
 
 def _merged_imported_ranges(
@@ -429,6 +458,7 @@ def compose_canonical_semantic_fragment_plan(
     replacement_id = f"route:{proof.proof_id}:replacement"
     blocks: list[FragmentBlock] = []
     external_id_by_serial: dict[int, str] = {}
+    external_owner_serial_by_identity: dict[StableBlockIdentity, int] = {}
 
     def external_block_id(serial: int) -> str:
         serial = int(serial)
@@ -440,7 +470,20 @@ def compose_canonical_semantic_fragment_plan(
             raise CanonicalSemanticFragmentRejected(
                 f"canonical composition references absent block {serial}"
             )
-        block_id = f"external:0x{int(block.start_ea):X}"
+        identity = _external_identity(
+            graph,
+            serial,
+            native_key=evidence.native_key,
+        )
+        _claim_current_external_identity(
+            serial,
+            identity,
+            owner_serial_by_identity=(
+                external_owner_serial_by_identity
+            ),
+        )
+        semantic_anchor_ea = stable_block_identity_semantic_anchor(identity)
+        block_id = f"native[{stable_block_identity_token(identity)}]"
         blocks.append(
             FragmentBlock(
                 block_id=block_id,
@@ -448,12 +491,8 @@ def compose_canonical_semantic_fragment_plan(
                 materialization=(
                     FragmentBlockMaterialization.REUSE_PUBLISHED
                 ),
-                semantic_anchor_ea=int(block.start_ea),
-                stable_identity=_external_identity(
-                    graph,
-                    serial,
-                    native_key=evidence.native_key,
-                ),
+                semantic_anchor_ea=semantic_anchor_ea,
+                stable_identity=identity,
             )
         )
         external_id_by_serial[serial] = block_id
@@ -588,6 +627,7 @@ def build_canonical_semantic_fragment_plan(
     owned_originals: list[str] = []
     replacement_id_by_serial: dict[int, str] = {}
     external_id_by_serial: dict[int, str] = {}
+    external_owner_serial_by_identity: dict[StableBlockIdentity, int] = {}
 
     for route in bound.routes:
         proof = route.evidence
@@ -685,12 +725,22 @@ def build_canonical_semantic_fragment_plan(
         anchor_ea: int | None = None,
     ) -> str:
         serial = int(serial)
+        requested_identity = identity
         block = graph.blocks.get(serial)
         if block is None:
             raise CanonicalSemanticFragmentRejected(
                 f"canonical fragment references absent block {serial}"
             )
-        anchor_ea = int(block.start_ea if anchor_ea is None else anchor_ea)
+        identity = identity or _external_identity(
+            graph,
+            serial,
+            native_key=evidence.native_key,
+        )
+        anchor_ea = int(
+            stable_block_identity_semantic_anchor(identity)
+            if anchor_ea is None
+            else anchor_ea
+        )
         block_anchor_eas = {
             int(block.start_ea),
             *(
@@ -708,19 +758,21 @@ def build_canonical_semantic_fragment_plan(
                 block for block in blocks if block.block_id == existing
             )
             if (
-                identity is not None
-                and existing_block.stable_identity != identity
+                requested_identity is not None
+                and existing_block.stable_identity != requested_identity
             ):
                 raise CanonicalSemanticFragmentRejected(
                     "canonical fragment external identity drifted"
                 )
             return existing
-        identity = identity or _external_identity(
-            graph,
+        _claim_current_external_identity(
             serial,
-            native_key=evidence.native_key,
+            identity,
+            owner_serial_by_identity=(
+                external_owner_serial_by_identity
+            ),
         )
-        block_id = f"external:0x{anchor_ea:X}"
+        block_id = f"native[{stable_block_identity_token(identity)}]"
         if any(item.block_id == block_id for item in blocks):
             raise CanonicalSemanticFragmentRejected(
                 "canonical fragment external block id is ambiguous"
