@@ -11,6 +11,10 @@ import pytest
 from d810.analyses.control_flow.detached_handler_island import (
     DetachedSnippetBoundaryPorts,
 )
+from d810.analyses.control_flow.call_abi import (
+    StackCallAbiEvidence,
+    StackCallAbiProof,
+)
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     TerminalReturnCarrierRequest,
@@ -42,6 +46,7 @@ from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
 )
 from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
     _native_entry_corridor_serials,
+    _on_build_callinfo,
     _on_calls_done_preanalysis,
     _on_flowchart_preanalysis,
     discover_static_native_bootstrap_routes,
@@ -362,6 +367,173 @@ def test_generated_restart_is_staged_once_then_consumed_by_flowchart(
         )
     ]
     assert not state.native_preanalysis.has_pending_generated_restart
+
+
+def test_callinfo_transfer_stages_one_controller_restart_and_rebinds_next_generation(
+    monkeypatch,
+) -> None:
+    import ida_hexrays
+    import ida_nalt
+
+    import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as resolver
+
+    function_ea = 0x40A560
+    call_ea = 0x40B943
+    existing_reentry_ea = 0x40B970
+    discovered_reentry_ea = 0x40B956
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={existing_reentry_ea: (0x40B980,)},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    discovered = MaterializedIndirectTransfer(
+        source_jmp_ea=discovered_reentry_ea,
+        source_block_ea=0x40B940,
+        materialized_anchor_eas=(discovered_reentry_ea,),
+        target_eas=(0x40B980,),
+        resolver_kind="detached_static_fixpoint",
+    )
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(),
+        resolver_attachment=None,
+        native_key=NATIVE_KEY,
+    )
+    state = resolver_session_state(session)
+    lifecycle = state.native_preanalysis
+    assert lifecycle.set_computed_goto_resolution(NATIVE_KEY, resolution)
+    assert lifecycle.merge_facts(NATIVE_KEY, _native_facts())
+    assert lifecycle.evidence_generation == 1
+    _publish_normalization(lifecycle)
+
+    transitions: list[str] = []
+    lifecycle.event_observer = lambda transition: transitions.append(
+        transition.operation
+    )
+    redo: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(resolver, "_copy_mcallinfo", None)
+    monkeypatch.setattr(
+        resolver,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(ida_nalt, "get_op_tinfo", lambda *_args: False)
+    monkeypatch.setattr(
+        resolver,
+        "_detached_static_terminal_transfers",
+        lambda _resolution, entry_eas, *, entry_context_transfers=(): (
+            (discovered,)
+            if entry_eas == (0x40B940,) and entry_context_transfers == ()
+            else ()
+        ),
+    )
+    observed_reentries: list[frozenset[int]] = []
+
+    def no_stack_adjustment(_call_ea, reentry_eas):
+        observed_reentries.append(reentry_eas)
+        return True if discovered_reentry_ea in reentry_eas else None
+
+    monkeypatch.setattr(
+        resolver,
+        "native_corridor_has_no_stack_adjustment",
+        no_stack_adjustment,
+    )
+    monkeypatch.setattr(
+        resolver,
+        "native_call_stack_deficit",
+        lambda _block, _call_ea: 12,
+    )
+    monkeypatch.setattr(
+        resolver,
+        "collect_three_argument_callee_purged_evidence",
+        lambda _block, **_kwargs: StackCallAbiEvidence(
+            word_size=4,
+            outgoing_stack_offsets=(-12, -8, -4),
+            call_stack_deficit=12,
+            argument_values_proven=True,
+            continuation_is_linear=True,
+            continuation_reaches_proven_reentry=True,
+            caller_stack_adjustment=0,
+            has_authoritative_type=False,
+        ),
+    )
+    proof = StackCallAbiProof(3, 12)
+    monkeypatch.setattr(
+        resolver,
+        "prove_three_argument_callee_purged_call",
+        lambda _evidence: proof,
+    )
+    monkeypatch.setattr(
+        resolver,
+        "apply_three_argument_stdcall_type",
+        lambda _call_type, candidate: candidate == proof,
+    )
+    prepared_callinfo = object()
+    monkeypatch.setattr(
+        resolver,
+        "build_three_argument_stdcall_callinfo",
+        lambda _block, _call_type, _proof: prepared_callinfo,
+    )
+    monkeypatch.setattr(
+        resolver,
+        "request_hexrays_redo",
+        lambda decision, reason, **details: (
+            decision.__setitem__("request_redo", True),
+            redo.append((reason, details)),
+        ),
+    )
+    block = SimpleNamespace(
+        mba=SimpleNamespace(qty=0),
+        start=0x40B940,
+        tail=SimpleNamespace(opcode=ida_hexrays.m_icall, ea=call_ea),
+    )
+    decision: dict[str, object] = {"callinfo": None, "session": session}
+
+    _on_build_callinfo(
+        function_ea=function_ea,
+        block=block,
+        call_type=object(),
+        decision=decision,
+    )
+
+    assert observed_reentries == [
+        frozenset({existing_reentry_ea}),
+        frozenset({discovered_reentry_ea, existing_reentry_ea}),
+    ]
+    assert state.materialized_transfers == (discovered,)
+    assert decision["callinfo"] is prepared_callinfo
+    assert lifecycle.evidence_generation == 2
+    assert lifecycle.has_pending_generated_restart
+    assert transitions == [
+        "evidence_changed",
+        "generated_restart_requested",
+    ]
+
+    flowchart_decision = {"session": session, "request_redo": False}
+    _on_flowchart_preanalysis(
+        function_ea=function_ea,
+        mba=object(),
+        decision=flowchart_decision,
+    )
+
+    assert flowchart_decision["request_redo"] is True
+    assert redo == [
+        (
+            "computed_goto_calls_evidence_rebind",
+            {"function_ea": function_ea, "evidence_generation": 2},
+        )
+    ]
+    assert transitions == [
+        "evidence_changed",
+        "generated_restart_requested",
+        "generated_restart_consumed",
+    ]
+    assert not lifecycle.has_pending_generated_restart
+
+    _publish_normalization(lifecycle)
+    assert lifecycle.normalization_published_postvalidated_generation == 2
 
 
 def test_replaying_identical_conditional_bridge_is_an_evidence_noop() -> None:
