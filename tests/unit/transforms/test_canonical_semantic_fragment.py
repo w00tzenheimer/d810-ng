@@ -56,6 +56,7 @@ from d810.transforms.fragment_plan import (
     FragmentPlan,
     FragmentPublicationPurpose,
     FragmentReturnSourceKind,
+    FragmentStoragePredicateMaterialization,
     FragmentWorkItemScope,
 )
 from tests.native_preanalysis import make_native_key
@@ -620,9 +621,20 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
 
     operations = {operation.operation_id: operation for operation in plan.operations}
     assert "raw-consumer-dispatch" not in operations
+    semantic_operation = operations[f"route:{state_choice.proof_id}"]
+    assert semantic_operation.predicate_anchor_ea == 0x1200
+    assert semantic_operation.storage_predicate_materialization == (
+        FragmentStoragePredicateMaterialization(
+            predicate_kind=PredicateKind.EQ,
+            storage_identity=predicate_storage,
+            width=4,
+            compare_constant=0,
+            cut_after_ea=0x1200,
+        )
+    )
     assert tuple(
         plan.block(edge.target_block_id).semantic_anchor_ea
-        for edge in operations[f"route:{state_choice.proof_id}"].edges
+        for edge in semantic_operation.edges
     ) == (0x1250, 0x1260)
     assert all(
         plan.block(edge.target_block_id).semantic_anchor_ea != 0x1400
