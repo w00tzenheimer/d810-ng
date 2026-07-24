@@ -7084,6 +7084,42 @@ def test_validated_setcc_target_survives_live_condition_chain_snapshot_and_lower
     assert routes == (MaterializedStateRoute(234, state, 203),)
 
 
+def test_condition_chain_snapshot_rejects_dispatcher_router_target_as_handler():
+    state = 0xA7933EA0
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, 0x40A5F0),
+            11: _block(11, 0x40B32C),
+        },
+        entry_serial=10,
+        func_ea=0x40A560,
+    )
+
+    class _Row:
+        state_const = state
+        target_block = 11
+        compare_block = 10
+
+    class _DispatchMap:
+        router_kind = RouterKind.CONDITION_CHAIN
+        dispatcher_entry_block = 10
+        dispatcher_blocks = frozenset({10, 11})
+        rows = (_Row(),)
+
+    class _Recovery:
+        dispatch_map = _DispatchMap()
+        state_var_reg = 20
+
+    assert (
+        computed_goto_resolver._condition_chain_handler_transfers_from_recovery(
+            (),
+            graph,
+            _Recovery(),
+        )
+        == ()
+    )
+
+
 def test_materialized_state_routes_use_latest_matching_transfer_and_full_reg_snapshot():
     state = 0xF6A636EF
     graph = FlowGraph(
