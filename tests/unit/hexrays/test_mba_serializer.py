@@ -5,6 +5,7 @@ unit tests focus on the import guard behavior and the module-level
 contract.  Full integration tests that exercise the serializer with
 a real MBA belong in ``tests/system/``.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -89,17 +90,17 @@ class _FakeInsn:
         opcode: int,
         ea: int,
         text: str,
-        l: _FakeMop,
-        r: _FakeMop,
-        d: _FakeMop,
+        left: _FakeMop,
+        right: _FakeMop,
+        dest: _FakeMop,
         iprops: int = 0,
     ):
         self.opcode = opcode
         self.ea = ea
         self._text = text
-        self.l = l
-        self.r = r
-        self.d = d
+        self.l = left
+        self.r = right
+        self.d = dest
         self.iprops = iprops
         self.next = None
 
@@ -125,6 +126,7 @@ class _FakeIhr:
     mop_p = 15
     mop_sc = 16
     m_mov = 4
+    m_goto = 55
     m_call = 56
     m_icall = 57
     IPROP_ASSERT = 0x80
@@ -138,11 +140,27 @@ class _FakeIhr:
     @staticmethod
     def get_mreg_name(register: int, size: int) -> str:
         if size == 0:
-            return {4: "m_mov", 56: "m_call", 57: "m_icall"}.get(register, "")
+            return {
+                4: "m_mov",
+                55: "fps^3",
+                56: "m_call",
+                57: "m_icall",
+            }.get(register, "")
         return {16: "rdx", 24: "rcx", 72: "r8"}.get(register, f"r{register}")
 
 
 class TestMbaSerializerInstructionMeta:
+    def test_opcode_name_comes_from_sdk_opcode_constants(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import d810.hexrays.mba_serializer as serializer
+
+        monkeypatch.setattr(serializer, "_ihr", _FakeIhr)
+        serializer._OPCODE_NAME_CACHE.clear()
+
+        assert serializer._opcode_name(_FakeIhr.m_goto) == "m_goto"
+
     def test_live_assertion_state_is_first_class(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -155,9 +173,9 @@ class TestMbaSerializerInstructionMeta:
             opcode=_FakeIhr.m_mov,
             ea=0x401234,
             text="mov #1, r0",
-            l=z,
-            r=z,
-            d=z,
+            left=z,
+            right=z,
+            dest=z,
             iprops=_FakeIhr.IPROP_ASSERT,
         )
         block = SimpleNamespace(
@@ -192,7 +210,7 @@ class TestMbaSerializerInstructionMeta:
                 opcode=_FakeIhr.m_mov,
                 ea=0x1800175E3,
                 text="mov &($off_180019F10).8, rdx.8",
-                l=_FakeMop(
+                left=_FakeMop(
                     _FakeIhr.mop_a,
                     8,
                     "&($off_180019F10).8",
@@ -203,14 +221,14 @@ class TestMbaSerializerInstructionMeta:
                         g=0x180019F10,
                     ),
                 ),
-                r=z,
-                d=_FakeMop(_FakeIhr.mop_r, 8, "rdx.8", r=16),
+                right=z,
+                dest=_FakeMop(_FakeIhr.mop_r, 8, "rdx.8", r=16),
             ),
             _FakeInsn(
                 opcode=_FakeIhr.m_mov,
                 ea=0x1800175EA,
                 text="mov &(%var_1A8).8, rcx.8",
-                l=_FakeMop(
+                left=_FakeMop(
                     _FakeIhr.mop_a,
                     8,
                     "&(%var_1A8).8",
@@ -221,21 +239,21 @@ class TestMbaSerializerInstructionMeta:
                         s=SimpleNamespace(off=0x70),
                     ),
                 ),
-                r=z,
-                d=_FakeMop(_FakeIhr.mop_r, 8, "rcx.8", r=24),
+                right=z,
+                dest=_FakeMop(_FakeIhr.mop_r, 8, "rcx.8", r=24),
             ),
             _FakeInsn(
                 opcode=_FakeIhr.m_mov,
                 ea=0x1800175EF,
                 text="mov #0x128.8, r8.8",
-                l=_FakeMop(
+                left=_FakeMop(
                     _FakeIhr.mop_n,
                     8,
                     "#0x128.8",
                     nnn=SimpleNamespace(value=0x128),
                 ),
-                r=z,
-                d=_FakeMop(_FakeIhr.mop_r, 8, "r8.8", r=72),
+                right=z,
+                dest=_FakeMop(_FakeIhr.mop_r, 8, "r8.8", r=72),
             ),
         )
         for index, insn in enumerate(setup, start=7):
@@ -249,9 +267,9 @@ class TestMbaSerializerInstructionMeta:
             opcode=_FakeIhr.m_call,
             ea=0x1800175F5,
             text="call $0x180000000",
-            l=_FakeMop(_FakeIhr.mop_v, -1, "$0x180000000", g=0x180000000),
-            r=z,
-            d=z,
+            left=_FakeMop(_FakeIhr.mop_v, -1, "$0x180000000", g=0x180000000),
+            right=z,
+            dest=z,
         )
         meta_json = serializer._instruction_snapshot_meta(
             call,
@@ -262,8 +280,7 @@ class TestMbaSerializerInstructionMeta:
 
         meta = json.loads(meta_json)
         setup_by_name = {
-            record["register_name"]: record
-            for record in meta["call_setup_registers"]
+            record["register_name"]: record for record in meta["call_setup_registers"]
         }
         assert setup_by_name["rcx"]["source"]["sub_operand"]["stkoff"] == 0x70
         assert setup_by_name["rdx"]["source"]["sub_operand"]["global_ea"] == (
