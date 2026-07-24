@@ -54,6 +54,9 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
 from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteBindingEvidence,
 )
+from d810.analyses.control_flow.semantic_route_evidence import (
+    canonical_terminal_state_targets,
+)
 from d810.analyses.control_flow.read_state_cfg import read_dag_from
 from d810.analyses.control_flow.semantic_transition import (
     facts_from_validated_view,
@@ -150,6 +153,7 @@ from d810.ir.block_identity import (
 )
 from d810.ir.flowgraph import BlockKind
 from d810.ir.maturity import IRMaturity
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.hexrays.observability import (
     diagnostics_enabled as _capture_diagnostics_enabled,
     request_capture_mba_snapshot,
@@ -260,6 +264,26 @@ def _validated_materialized_target_eas(
             if int(ea) > 0
         )
     return frozenset(targets)
+
+
+def _postvalidated_canonical_terminal_state_targets(
+    state: ResolverSessionState | None,
+    *,
+    state_var_reg: int | None,
+) -> tuple[tuple[int, int], ...]:
+    """Return terminal targets owned by the current normalized generation."""
+    if not isinstance(state, ResolverSessionState) or state_var_reg is None:
+        return ()
+    evidence = state.native_preanalysis.canonical_semantic_evidence_for(
+        state.native_key
+    )
+    return canonical_terminal_state_targets(
+        evidence,
+        state_variable=StorageIdentity(
+            StorageIdentityKind.REGISTER,
+            int(state_var_reg),
+        ),
+    )
 
 
 def _materialized_identity_evidence_ready(
@@ -2553,6 +2577,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     terminal_state_targets.append(
                         (int(route.state_constant), int(target_ea))
                     )
+            terminal_state_targets.extend(
+                _postvalidated_canonical_terminal_state_targets(
+                    resolver_state,
+                    state_var_reg=materialized_state_var_reg,
+                )
+            )
             unmapped_materialized_handler_targets = (
                 missing_materialized_handler_targets(
                     equality_target_eas,

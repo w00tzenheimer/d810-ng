@@ -687,6 +687,42 @@ class CanonicalSemanticEvidence:
         )
 
 
+def canonical_terminal_state_targets(
+    evidence: CanonicalSemanticEvidence | None,
+    *,
+    state_variable: StorageIdentity,
+) -> tuple[tuple[int, int], ...]:
+    """Project exact terminal state targets from one canonical generation.
+
+    The terminal-return proof validator already requires the state write,
+    destination, return carrier, and their exact native anchors to agree.  This
+    projection therefore exposes only the state/target identity needed by
+    consumers whose live graph has canonicalized the terminal block away.
+    """
+    if evidence is None:
+        return ()
+    if not isinstance(evidence, CanonicalSemanticEvidence):
+        raise TypeError("terminal state target projection requires canonical evidence")
+    if not isinstance(state_variable, StorageIdentity):
+        raise TypeError("terminal state target projection requires storage identity")
+    return tuple(
+        sorted(
+            {
+                (
+                    int(destination.state_constant) & 0xFFFFFFFF,
+                    int(destination.target_anchor_ea),
+                )
+                for proof in evidence.route_proofs
+                if proof.proof_kind is SemanticRouteProofKind.TERMINAL_RETURN
+                and proof.state_write is not None
+                and proof.state_write.state_variable == state_variable
+                for destination in proof.destinations
+                if destination.terminal
+            }
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class BoundSemanticBlock:
     """One current-graph serial accompanied by its stable native anchor."""
@@ -941,4 +977,5 @@ __all__ = [
     "SemanticRouteShape",
     "SemanticStateWriteProof",
     "bind_canonical_semantic_evidence",
+    "canonical_terminal_state_targets",
 ]

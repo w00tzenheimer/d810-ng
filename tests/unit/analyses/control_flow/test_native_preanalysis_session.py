@@ -24,6 +24,7 @@ from d810.analyses.control_flow.frontend_normalization import (
     NativeTransferShape,
 )
 from d810.analyses.control_flow.semantic_route_evidence import (
+    canonical_terminal_state_targets,
     SemanticPredicateKind,
     SemanticRouteProofKind,
     SemanticRouteShape,
@@ -612,6 +613,14 @@ def test_canonical_semantic_evidence_groups_terminal_carrier_with_its_route() ->
     assert proof.proof_kind is SemanticRouteProofKind.TERMINAL_RETURN
     assert proof.destinations[0].terminal
     assert proof.terminal_return_carrier == carrier
+    assert canonical_terminal_state_targets(
+        evidence,
+        state_variable=StorageIdentity(StorageIdentityKind.REGISTER, 20),
+    ) == ((0x19A7218A, 0x40C898),)
+    assert not canonical_terminal_state_targets(
+        evidence,
+        state_variable=StorageIdentity(StorageIdentityKind.REGISTER, 21),
+    )
 
     unmatched_terminal = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x40D000, 0x40D008),),
