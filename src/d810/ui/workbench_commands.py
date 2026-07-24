@@ -145,6 +145,41 @@ class WorkbenchCommandAdapter:
             lifecycle=lifecycle,
         )
 
+    def build_deobfuscator(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        """Collect a current strategy dossier without mutating the function."""
+        vdui = self._current_vdui()
+        cfunc = getattr(vdui, "cfunc", None) if vdui is not None else None
+        target = getattr(cfunc, "mba", None) if cfunc is not None else None
+        if target is None:
+            return _failed_result(
+                request,
+                "Build Deobfuscator requires a current pseudocode function with microcode",
+            )
+        entry_ea = getattr(cfunc, "entry_ea", None)
+        if entry_ea is not None and int(entry_ea) != request.function_ea:
+            return _failed_result(
+                request,
+                "Build Deobfuscator pseudocode widget now shows a different function",
+            )
+        provider_level = getattr(target, "maturity", None)
+        if provider_level is None:
+            return _failed_result(
+                request,
+                "Build Deobfuscator requires a current microcode provider level",
+            )
+        provider_phase = provider_phase_snapshot_from_level(
+            int(provider_level),
+            provider_name=HEXRAYS_MICROCODE_PROVIDER,
+        )
+        return self._state.execute_workbench_build_deobfuscator(
+            request,
+            target=target,
+            provider_phase=provider_phase,
+        )
+
     def function_override(
         self,
         request: WorkbenchCommandRequest,

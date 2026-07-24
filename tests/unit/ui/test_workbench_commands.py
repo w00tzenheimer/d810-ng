@@ -261,6 +261,51 @@ def test_deobfuscate_reuses_existing_action_exactly_once(monkeypatch) -> None:
     assert action_calls == [(state, {"idaapi": shim}), ctx]
 
 
+def test_build_deobfuscator_passes_current_mba_without_deobfuscating(
+    monkeypatch,
+) -> None:
+    deobfuscate_action_calls: list[object] = []
+    state_calls: list[object] = []
+
+    class FakeAction:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            deobfuscate_action_calls.append("constructed")
+
+        def execute(self, ctx) -> int:
+            del ctx
+            deobfuscate_action_calls.append("executed")
+            return 1
+
+    module = ModuleType("d810.ui.actions.deobfuscate_this")
+    module.DeobfuscateThisFunction = FakeAction
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    mba = SimpleNamespace(maturity=5)
+    vdui = SimpleNamespace(cfunc=SimpleNamespace(entry_ea=0x401000, mba=mba))
+
+    def execute_build(request, *, target, provider_phase):
+        state_calls.append((request, target, provider_phase))
+        return _result(request)
+
+    state = SimpleNamespace(execute_workbench_build_deobfuscator=execute_build)
+    adapter = command_module.WorkbenchCommandAdapter(
+        state,
+        SimpleNamespace(get_widget_vdui=lambda widget: vdui),
+        SimpleNamespace(widget=object()),
+    )
+    request = _request("build_deobfuscator")
+
+    result = adapter.build_deobfuscator(request)
+
+    assert result.succeeded is True
+    assert len(state_calls) == 1
+    assert state_calls[0][0] is request
+    assert state_calls[0][1] is mba
+    assert state_calls[0][2].provider_name == "hexrays_microcode"
+    assert deobfuscate_action_calls == []
+
+
 def test_function_override_reuses_existing_action_exactly_once(monkeypatch) -> None:
     action_calls: list[object] = []
 

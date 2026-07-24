@@ -312,6 +312,8 @@ def project_case_workflow(
     """Select safe Build/Deobfuscate actions without importing Qt or IDA."""
     if snapshot is None:
         return _unavailable_view("Select a pseudocode function.")
+    if running_command in {_BUILD_ACTION, _DIRECT_ACTION}:
+        return _running_case_workflow(snapshot, running_command)
     if snapshot.freshness is not SnapshotFreshness.CURRENT:
         return _unavailable_view("Refresh the stale workbench snapshot.")
     if not snapshot.engine_started:
@@ -351,47 +353,6 @@ def project_case_workflow(
         else f"{len(evidence.findings)} finding(s); {evidence.verdict.summary}"
     )
 
-    if running_command == _BUILD_ACTION:
-        disabled_build = dataclasses.replace(
-            build,
-            label="Building Deobfuscator...",
-            enabled=False,
-            reason="D810 is collecting a non-mutating dossier.",
-        )
-        return dataclasses.replace(
-            _workflow_view(
-                CaseWorkflowPhase.BUILD,
-                snapshot,
-                disabled_build,
-                disabled_build,
-                dataclasses.replace(direct, enabled=False, reason="Build is running."),
-                stages,
-                evidence_summary,
-                strategy_summary,
-                blocked,
-                verdict,
-            ),
-            headline=f"Building a deobfuscator for {_context_name(snapshot)}",
-        )
-    if running_command == _DIRECT_ACTION:
-        disabled_direct = dataclasses.replace(
-            direct,
-            label="Deobfuscating Function...",
-            enabled=False,
-            reason="The established deobfuscation lifecycle is running.",
-        )
-        return _workflow_view(
-            CaseWorkflowPhase.RUNNING,
-            snapshot,
-            disabled_direct,
-            dataclasses.replace(build, enabled=False, reason="Direct run is active."),
-            disabled_direct,
-            stages,
-            evidence_summary,
-            strategy_summary,
-            blocked,
-            verdict,
-        )
     if blocked:
         return _workflow_view(
             CaseWorkflowPhase.INVESTIGATE,
@@ -438,6 +399,87 @@ def project_case_workflow(
         build,
         build,
         direct,
+        stages,
+        evidence_summary,
+        strategy_summary,
+        blocked,
+        verdict,
+    )
+
+
+def _running_case_workflow(
+    snapshot: DeobfuscationWorkbenchSnapshot,
+    running_command: str,
+) -> CaseWorkflowView:
+    case = snapshot.case
+    evidence = None if case is None else case.evidence
+    blocked = None if evidence is None else evidence.verdict.first_blocked_obligation
+    direct_enabled = bool(case is not None and _is_grounded(case))
+    direct_reason = (
+        case.direct_run_reason
+        if case is not None
+        else "Build a strategy before running it."
+    )
+    build = _action(
+        _BUILD_ACTION,
+        "Build Deobfuscator",
+        enabled=False,
+        reason="A workbench command is running.",
+    )
+    direct = _action(
+        _DIRECT_ACTION,
+        "Deobfuscate Function",
+        enabled=False,
+        reason="A workbench command is running."
+        if direct_enabled
+        else direct_reason,
+    )
+    verdict = _verdict(evidence)
+    strategy_summary = (
+        case.strategy.summary
+        if case is not None and case.strategy is not None
+        else "Current saved function recipe."
+        if direct_enabled
+        else "No validated strategy is selected."
+    )
+    stages = _stage_views(case, direct_completed=False)
+    evidence_summary = (
+        "No case evidence yet."
+        if evidence is None
+        else f"{len(evidence.findings)} finding(s); {evidence.verdict.summary}"
+    )
+    if running_command == _BUILD_ACTION:
+        running_build = dataclasses.replace(
+            build,
+            label="Building Deobfuscator...",
+            reason="D810 is collecting a non-mutating dossier.",
+        )
+        return dataclasses.replace(
+            _workflow_view(
+                CaseWorkflowPhase.BUILD,
+                snapshot,
+                running_build,
+                running_build,
+                direct,
+                stages,
+                evidence_summary,
+                strategy_summary,
+                blocked,
+                verdict,
+            ),
+            headline=f"Building a deobfuscator for {_context_name(snapshot)}",
+        )
+    running_direct = dataclasses.replace(
+        direct,
+        label="Deobfuscating Function...",
+        reason="The established deobfuscation lifecycle is running.",
+    )
+    return _workflow_view(
+        CaseWorkflowPhase.RUNNING,
+        snapshot,
+        running_direct,
+        build,
+        running_direct,
         stages,
         evidence_summary,
         strategy_summary,
