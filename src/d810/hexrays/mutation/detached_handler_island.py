@@ -1005,6 +1005,33 @@ class PreoptUnionSemanticNativeBodyMaterializer:
     mba: object
     function_ea: int
 
+    @staticmethod
+    def _oriented_predicate_producers(
+        *,
+        instructions: tuple[object, ...],
+        normalization: FragmentComputedBranchNormalization,
+    ) -> tuple[tuple[int, object, int], ...]:
+        """Return only exact same- or opposite-polarity boolean producers."""
+        oriented: list[tuple[int, object, int]] = []
+        for index, instruction in enumerate(instructions):
+            if int(instruction.ea) != int(normalization.condition_producer_ea):
+                continue
+            producer_predicate = set_predicate_from_opcode(
+                int(instruction.opcode)
+            )
+            if producer_predicate is normalization.predicate_kind:
+                branch_opcode = int(ida_hexrays.m_jnz)
+            elif (
+                producer_predicate is not None
+                and inverted_predicate_kind(producer_predicate)
+                is normalization.predicate_kind
+            ):
+                branch_opcode = int(ida_hexrays.m_jz)
+            else:
+                continue
+            oriented.append((int(index), instruction, branch_opcode))
+        return tuple(oriented)
+
     def _select_template_blocks(
         self,
         context: object,
@@ -1218,17 +1245,29 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             if (
                 len(operations) == 1
                 and len(operations[0].edges) == 2
-                and not conditional_tail
                 and computed_normalization is not None
             ):
-                computed_normalizations[str(block_id)] = (
-                    self._preflight_computed_branch_normalization(
-                        template_block,
-                        native_body,
-                        operations[0],
-                        computed_normalization,
+                if not conditional_tail:
+                    computed_normalizations[str(block_id)] = (
+                        self._preflight_computed_branch_normalization(
+                            template_block,
+                            native_body,
+                            operations[0],
+                            computed_normalization,
+                        )
                     )
-                )
+                elif int(template_block.instructions[-1].ea) != int(
+                    operations[0].predicate_anchor_ea
+                ):
+                    computed_normalizations[str(block_id)] = (
+                        self._preflight_split_conditional_select_normalization(
+                            template,
+                            template_block,
+                            native_body,
+                            operations[0],
+                            computed_normalization,
+                        )
+                    )
             compatible_conditional = bool(
                 conditional_tail or str(block_id) in computed_normalizations
             )
@@ -1261,6 +1300,397 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     f"plan_call_fallthrough={operation_has_call_fallthrough}"
                 )
         return stack_map, computed_normalizations
+
+    @staticmethod
+    def _preflight_split_conditional_select_normalization(
+        template: DetachedSnippetTemplate,
+        template_block: DetachedSnippetBlockTemplate,
+        native_body: FragmentNativeBody,
+        operation: FragmentOperation,
+        normalization: FragmentComputedBranchNormalization,
+    ) -> _ComputedBranchNormalizationPlan:
+        """Collapse one exact PREOPT CMOV split into its portable semantic branch."""
+        label = (
+            f"operation={operation.operation_id!r} "
+            f"source=0x{int(template_block.native_entry_ea):X} "
+            f"producer=0x{int(normalization.condition_producer_ea):X} "
+            f"predicate=0x{int(operation.predicate_anchor_ea):X} "
+            f"transfer=0x{int(normalization.unresolved_transfer_ea):X} "
+            f"predicate_kind={normalization.predicate_kind.value}"
+        )
+        if operation.operation_id not in native_body.proof_ids:
+            raise SemanticFragmentBackendRejected(
+                "PREOPT split conditional-select normalization lacks native-body "
+                f"proof ownership; {label}"
+            )
+        instructions = tuple(template_block.instructions)
+        predicate_indexes = tuple(
+            index
+            for index, instruction in enumerate(instructions)
+            if int(instruction.ea) == int(operation.predicate_anchor_ea)
+        )
+        oriented_producers = (
+            PreoptUnionSemanticNativeBodyMaterializer._oriented_predicate_producers(
+                instructions=instructions,
+                normalization=normalization,
+            )
+        )
+        tail = None if not instructions else instructions[-1]
+        block_by_serial = {
+            int(block.source_serial): block for block in template.blocks
+        }
+        join_serial = (
+            None
+            if tail is None or int(tail.d.t) != int(ida_hexrays.mop_b)
+            else int(tail.d.b)
+        )
+        selected_serials = tuple(
+            int(serial)
+            for serial in template_block.successor_serials
+            if join_serial is not None and int(serial) != join_serial
+        )
+        selected = (
+            None
+            if len(selected_serials) != 1
+            else block_by_serial.get(selected_serials[0])
+        )
+        join = None if join_serial is None else block_by_serial.get(join_serial)
+        join_predecessors = (
+            ()
+            if join_serial is None
+            else tuple(
+                int(block.source_serial)
+                for block in template.blocks
+                if join_serial
+                in {int(serial) for serial in block.successor_serials}
+            )
+        )
+        join_tail = (
+            None
+            if join is None or not join.instructions
+            else join.instructions[-1]
+        )
+        join_successor_labels = tuple(
+            (
+                (
+                    f"blk{int(successor_serial)}"
+                    f"@0x{int(successor.native_entry_ea):X}"
+                )
+                if (
+                    successor := block_by_serial.get(int(successor_serial))
+                )
+                is not None
+                else (
+                    f"native@0x{int(join.external_successor_eas[index]):X}"
+                    if index < len(join.external_successor_eas)
+                    and int(join.external_successor_eas[index]) > 0
+                    else "unanchored-successor"
+                )
+            )
+            for index, successor_serial in enumerate(
+                () if join is None else join.successor_serials
+            )
+        )
+        join_successor_shapes = tuple(
+            (
+                join_successor_labels[index],
+                None if successor is None else int(successor.block_type),
+                None
+                if successor is None
+                else f"0x{int(successor.block_flags):X}",
+                None
+                if successor is None
+                else tuple(
+                    (f"0x{int(instruction.ea):X}", int(instruction.opcode))
+                    for instruction in successor.instructions
+                ),
+            )
+            for index, successor_serial in enumerate(
+                () if join is None else join.successor_serials
+            )
+            for successor in (
+                block_by_serial.get(int(successor_serial)),
+            )
+        )
+        join_tail_operands = (
+            None
+            if join_tail is None
+            else tuple(
+                (
+                    name,
+                    int(operand.t),
+                    int(operand.size),
+                )
+                for name, operand in (
+                    ("l", join_tail.l),
+                    ("r", join_tail.r),
+                    ("d", join_tail.d),
+                )
+            )
+        )
+        join_callinfo = (
+            None
+            if join_tail is None
+            or int(join_tail.d.t) != int(ida_hexrays.mop_f)
+            else join_tail.d.f
+        )
+        join_callinfo_flags = (
+            None
+            if join_callinfo is None
+            else int(getattr(join_callinfo, "flags", 0))
+        )
+        join_callinfo_callee = (
+            None
+            if join_callinfo is None
+            else int(getattr(join_callinfo, "callee", ida_idaapi.BADADDR))
+        )
+        join_callinfo_args = (
+            None
+            if join_callinfo is None
+            else len(getattr(join_callinfo, "args", ()))
+        )
+        join_callinfo_retregs = (
+            None
+            if join_callinfo is None
+            else len(getattr(join_callinfo, "retregs", ()))
+        )
+        join_successor = (
+            None
+            if join is None or len(join.successor_serials) != 1
+            else block_by_serial.get(int(join.successor_serials[0]))
+        )
+        direct_unresolved_transfer = bool(
+            join is not None
+            and int(join.block_type) == int(ida_hexrays.BLT_0WAY)
+            and not join.successor_serials
+            and join_tail is not None
+            and int(join_tail.opcode) == int(ida_hexrays.m_ijmp)
+            and int(join_tail.ea)
+            == int(normalization.unresolved_transfer_ea)
+        )
+        artificial_tail_call_transfer = bool(
+            join is not None
+            and int(join.block_type) == int(ida_hexrays.BLT_1WAY)
+            and bool(int(join.block_flags) & int(ida_hexrays.MBL_TCAL))
+            and not bool(
+                int(join.block_flags)
+                & (
+                    int(ida_hexrays.MBL_CALL)
+                    | int(ida_hexrays.MBL_NORET)
+                )
+            )
+            and join_tail is not None
+            and int(join_tail.opcode) == int(ida_hexrays.m_icall)
+            and int(join_tail.ea)
+            == int(normalization.unresolved_transfer_ea)
+            and int(join_tail.l.t) == int(ida_hexrays.mop_r)
+            and int(join_tail.r.t) == int(ida_hexrays.mop_r)
+            and int(join_tail.d.t) == int(ida_hexrays.mop_z)
+            and join_callinfo is None
+            and join_successor is not None
+            and int(join_successor.native_entry_ea)
+            == int(normalization.unresolved_transfer_ea)
+            and int(join_successor.block_type) == int(ida_hexrays.BLT_STOP)
+            and bool(
+                int(join_successor.block_flags)
+                & int(ida_hexrays.MBL_FAKE)
+            )
+            and not bool(
+                int(join_successor.block_flags)
+                & (
+                    int(ida_hexrays.MBL_TCAL)
+                    | int(ida_hexrays.MBL_CALL)
+                    | int(ida_hexrays.MBL_NORET)
+                )
+            )
+            and not join_successor.successor_serials
+            and not any(
+                int(ea) > 0
+                for ea in join_successor.external_successor_eas
+            )
+            and len(join_successor.instructions) == 1
+            and int(join_successor.instructions[0].opcode)
+            == int(ida_hexrays.m_ret)
+            and int(join_successor.instructions[0].ea)
+            == int(normalization.unresolved_transfer_ea)
+        )
+        selected_instruction = (
+            None
+            if selected is None or len(selected.instructions) != 1
+            else selected.instructions[0]
+        )
+        producer_row = (
+            None if len(oriented_producers) != 1 else oriented_producers[0]
+        )
+        producer_index = None if producer_row is None else int(producer_row[0])
+        producer = None if producer_row is None else producer_row[1]
+        branch_opcode = None if producer_row is None else int(producer_row[2])
+        tail_skips_semantic_true = False
+        if (
+            tail is not None
+            and producer is not None
+            and int(tail.opcode) == int(ida_hexrays.m_jcnd)
+        ):
+            if (
+                branch_opcode == int(ida_hexrays.m_jnz)
+                and int(tail.l.t) == int(ida_hexrays.mop_d)
+                and int(tail.l.d.opcode) == int(ida_hexrays.m_lnot)
+                and int(tail.l.d.r.t) == int(ida_hexrays.mop_z)
+                and tail.l.d.l.equal_mops(
+                    producer.d,
+                    int(ida_hexrays.EQ_IGNSIZE),
+                )
+            ):
+                tail_skips_semantic_true = True
+            elif (
+                branch_opcode == int(ida_hexrays.m_jz)
+                and tail.l.equal_mops(
+                    producer.d,
+                    int(ida_hexrays.EQ_IGNSIZE),
+                )
+            ):
+                tail_skips_semantic_true = True
+        source_successors = {
+            int(serial) for serial in template_block.successor_serials
+        }
+        expected_source_successors = (
+            None
+            if join_serial is None or len(selected_serials) != 1
+            else {int(selected_serials[0]), int(join_serial)}
+        )
+        checks = (
+            ("predicate_anchor_unique", len(predicate_indexes) == 1),
+            ("oriented_producer_unique", producer_row is not None),
+            (
+                "producer_has_result",
+                producer is not None
+                and PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
+                    producer
+                ),
+            ),
+            (
+                "producer_precedes_predicate",
+                producer_index is not None
+                and len(predicate_indexes) == 1
+                and producer_index < int(predicate_indexes[0]),
+            ),
+            (
+                "source_is_two_way",
+                int(template_block.block_type) == int(ida_hexrays.BLT_2WAY),
+            ),
+            (
+                "source_tail_is_jcnd",
+                tail is not None
+                and int(tail.opcode) == int(ida_hexrays.m_jcnd),
+            ),
+            ("join_target_unique", join_serial is not None),
+            ("selected_target_unique", len(selected_serials) == 1),
+            (
+                "source_successors_exact",
+                expected_source_successors is not None
+                and source_successors == expected_source_successors,
+            ),
+            (
+                "selected_is_one_way",
+                selected is not None
+                and int(selected.block_type) == int(ida_hexrays.BLT_1WAY),
+            ),
+            (
+                "selected_targets_join",
+                selected is not None
+                and join_serial is not None
+                and tuple(int(serial) for serial in selected.successor_serials)
+                == (int(join_serial),),
+            ),
+            (
+                "selected_is_one_move",
+                selected_instruction is not None
+                and int(selected_instruction.opcode) == int(ida_hexrays.m_mov),
+            ),
+            (
+                "selected_matches_source_tail",
+                selected_instruction is not None
+                and tail is not None
+                and int(selected_instruction.ea) == int(tail.ea),
+            ),
+            (
+                "join_transfer_topology_supported",
+                direct_unresolved_transfer
+                or artificial_tail_call_transfer,
+            ),
+            (
+                "join_predecessors_exact",
+                selected is not None
+                and set(join_predecessors)
+                == {
+                    int(template_block.source_serial),
+                    int(selected.source_serial),
+                },
+            ),
+            (
+                "join_tail_is_unresolved_transfer",
+                direct_unresolved_transfer
+                or artificial_tail_call_transfer,
+            ),
+            ("tail_skips_semantic_true", tail_skips_semantic_true),
+        )
+        failed_obligations = tuple(
+            name for name, passed in checks if not passed
+        )
+        if failed_obligations:
+            source_label = (
+                f"blk{int(template_block.source_serial)}"
+                f"@0x{int(template_block.native_entry_ea):X}"
+            )
+            selected_label = (
+                "none"
+                if selected is None
+                else (
+                    f"blk{int(selected.source_serial)}"
+                    f"@0x{int(selected.native_entry_ea):X}"
+                )
+            )
+            join_label = (
+                "none"
+                if join is None
+                else (
+                    f"blk{int(join.source_serial)}"
+                    f"@0x{int(join.native_entry_ea):X}"
+                )
+            )
+            raise SemanticFragmentBackendRejected(
+                "PREOPT split conditional-select envelope does not match its "
+                f"portable proof; {label} source_block={source_label} "
+                f"selected_block={selected_label} join_block={join_label} "
+                f"predicate_indexes={predicate_indexes!r} "
+                f"oriented_producers={len(oriented_producers)} "
+                f"source_successors={tuple(int(serial) for serial in template_block.successor_serials)!r} "
+                f"join_predecessors={join_predecessors!r} "
+                f"join_type={None if join is None else int(join.block_type)} "
+                f"join_successors={join_successor_labels!r} "
+                f"join_successor_shapes={join_successor_shapes!r} "
+                f"join_flags={None if join is None else f'0x{int(join.block_flags):X}'} "
+                f"join_is_tail_call={join is not None and bool(int(join.block_flags) & int(ida_hexrays.MBL_TCAL))} "
+                f"join_block_is_noret={join is not None and bool(int(join.block_flags) & int(ida_hexrays.MBL_NORET))} "
+                f"join_tail_operands={join_tail_operands!r} "
+                f"join_is_unknown_call={join_tail is not None and int(join_tail.opcode) in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)} and int(join_tail.d.t) == int(ida_hexrays.mop_z)} "
+                f"join_has_callinfo={join_callinfo is not None} "
+                f"join_callinfo_flags={None if join_callinfo_flags is None else f'0x{join_callinfo_flags:X}'} "
+                f"join_callinfo_callee={None if join_callinfo_callee is None else f'0x{join_callinfo_callee:X}'} "
+                f"join_callinfo_args={join_callinfo_args} "
+                f"join_callinfo_retregs={join_callinfo_retregs} "
+                f"join_callinfo_is_noret={join_callinfo_flags is not None and bool(join_callinfo_flags & int(ida_hexrays.FCI_NORET))} "
+                f"direct_unresolved_transfer={direct_unresolved_transfer} "
+                f"artificial_tail_call_transfer={artificial_tail_call_transfer} "
+                f"join_instructions={None if join is None else tuple((f'0x{int(instruction.ea):X}', int(instruction.opcode)) for instruction in join.instructions)!r} "
+                f"failed_obligations={failed_obligations!r}"
+            )
+        return _ComputedBranchNormalizationPlan(
+            operation=operation,
+            cut_index=int(predicate_indexes[0]),
+            result_instruction_index=int(producer_index),
+            branch_opcode=int(branch_opcode),
+        )
 
     @staticmethod
     def _preflight_computed_branch_normalization(
@@ -1305,36 +1735,14 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 f"and unresolved-transfer anchors; {label} "
                 f"instructions={tuple((f'0x{int(instruction.ea):X}', int(instruction.opcode)) for instruction in instructions)!r}"
             )
-        producer_candidates = tuple(
-            (index, instruction)
-            for index, instruction in enumerate(instructions)
-            if int(instruction.ea) == int(normalization.condition_producer_ea)
-            and set_predicate_from_opcode(int(instruction.opcode)) is not None
+        producer_candidates = (
+            PreoptUnionSemanticNativeBodyMaterializer._oriented_predicate_producers(
+                instructions=instructions,
+                normalization=normalization,
+            )
         )
         if len(producer_candidates) == 1:
-            producer_index, producer = producer_candidates[0]
-            producer_predicate_kind = set_predicate_from_opcode(
-                int(producer.opcode)
-            )
-            if producer_predicate_kind is normalization.predicate_kind:
-                branch_opcode = int(ida_hexrays.m_jnz)
-            elif (
-                producer_predicate_kind is not None
-                and inverted_predicate_kind(producer_predicate_kind)
-                is normalization.predicate_kind
-            ):
-                branch_opcode = int(ida_hexrays.m_jz)
-            else:
-                observed = (
-                    None
-                    if producer_predicate_kind is None
-                    else producer_predicate_kind.value
-                )
-                raise SemanticFragmentBackendRejected(
-                    "PREOPT computed branch condition producer does not match "
-                    f"or invert its portable predicate; {label} "
-                    f"observed_producer_predicate={observed}"
-                )
+            producer_index, producer, branch_opcode = producer_candidates[0]
             if (
                 not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
                     producer
