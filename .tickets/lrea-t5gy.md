@@ -1965,3 +1965,45 @@ in the live MMAT_GLBOPT1 MBA, and make the diagnostic DB record the source
 window, destination frame coordinates, and failed invariant before changing
 the rebinding rule. Do not clamp offsets, discard arguments, bypass exact call
 ownership, grant another redo, or broaden to the 91-route publication.
+
+**2026-07-24T15:21:05Z**
+
+Commit `9c840c360` completes the required stack-window observability slice.
+Insufficient destination capacity and malformed source windows now raise typed
+backend rejections with the native call EA, source call window, destination
+frame coordinates, argument count, failed invariant, and required growth. The
+existing canonical-pipeline fact-consumer path persists that payload; no
+mutation-layer diagnostic import or compatibility event was added.
+
+The focused local and pinned-Docker runtime suites are both 232/232 green;
+Docker artifact: `.tmp/calls-stack-window-diagnostic-runtime.txt`.
+Changed-file Ruff, diff checks, ast-grep, all 14 worktree-local import
+contracts, commit hooks, and `graphify update .` pass.
+
+The mandatory A560 canary returned normally in 16.76 seconds with no OS
+segfault, verifier event, or numeric `INTERR`. Primary DB:
+`.tmp/rhad-a560-calls-stack-window-diag/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pytest log: `.tmp/rhad-a560-v31-calls-stack-window-diag.txt`. The semantic
+oracle remains red with one `while ( 1 )`, so this is not A560 acceptance.
+
+The highest contiguous canary level remains C3. Canonical transaction
+`c672f20a70f04273af6808da3b7c5a21` still plans 123 operations, applies zero,
+stages no fragment, attempts no root publication, and rolls back successfully.
+The first failed C4 obligation is now queryable as fact
+`canonical_pipeline:0x40C2A9`, with reason
+`calls_companion_destination_stack_window_insufficient`.
+
+The exact DB payload proves six analyzed arguments and source call window
+`[call_spd=16, stkargs_top=40)`, span 24. The destination MBA has
+`tmpstk_size=12`, `stkoff_ida2vd(0)=12`, `frsize=1164`, `frregs=4`,
+`stacksize=1180`, `minstkref=212`, and `fullsize=1440`; the failed invariant is
+`destination_stack_zero_vd >= source_stack_span`, with required growth 12.
+
+The next vertical step must determine whether the native function's actual
+outgoing-call stack depth already proves a larger temporary-stack requirement
+that Hex-Rays omitted because the detached path was unreachable. If so, the
+solution must update the destination stack coordinate system atomically before
+any body preparation and rebase every affected live/imported stack identity.
+If not, preserve the rejection and revisit the publication boundary. Do not
+emit negative decompiler stack coordinates merely because `verify.cpp` lacks a
+direct `call_spd` inequality.
