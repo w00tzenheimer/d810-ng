@@ -437,6 +437,7 @@ def test_evidence_export_is_canonical_deterministic_json() -> None:
             "pseudocode": None,
             "type_generation": None,
         },
+        "case": None,
         "collection_errors": ["statistics: unavailable"],
         "consumers": [
             {
