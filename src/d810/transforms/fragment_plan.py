@@ -525,6 +525,57 @@ class FragmentComputedBranchNormalization:
 
 
 @dataclass(frozen=True, slots=True)
+class FragmentStoragePredicateMaterialization:
+    """Portable storage comparison synthesized before fragment staging.
+
+    ``cut_after_ea`` is the last proof-owned native instruction retained from
+    the imported source.  The backend must discard the remaining dispatcher
+    suffix and append the semantic branch while the body is still detached.
+    """
+
+    predicate_kind: PredicateKind
+    storage_identity: StorageIdentity
+    width: int
+    compare_constant: int
+    cut_after_ea: int
+
+    def __post_init__(self) -> None:
+        if self.predicate_kind is not PredicateKind.EQ:
+            raise FragmentPlanRejected(
+                "storage predicate materialization currently requires equality"
+            )
+        storage_identity = self.storage_identity
+        if (
+            not isinstance(storage_identity, StorageIdentity)
+            or storage_identity.kind is not StorageIdentityKind.STACK
+            or int(storage_identity.offset) < 0
+        ):
+            raise FragmentPlanRejected(
+                "storage predicate materialization requires stable stack identity"
+            )
+        width = int(self.width)
+        if not 1 <= width <= 8:
+            raise FragmentPlanRejected(
+                "storage predicate materialization width must be 1..8 bytes"
+            )
+        compare_constant = int(self.compare_constant)
+        if not 0 <= compare_constant < (1 << (width * 8)):
+            raise FragmentPlanRejected(
+                "storage predicate materialization constant must fit its width"
+            )
+        object.__setattr__(self, "width", width)
+        object.__setattr__(self, "compare_constant", compare_constant)
+        object.__setattr__(
+            self,
+            "cut_after_ea",
+            _require_native_ea(
+                self.cut_after_ea,
+                "storage predicate materialization cut",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class FragmentOperation:
     """One complete semantic control-flow operation inside a fragment."""
 
@@ -533,6 +584,9 @@ class FragmentOperation:
     edges: tuple[FragmentEdge, ...]
     predicate_anchor_ea: int | None = None
     computed_branch_normalization: FragmentComputedBranchNormalization | None = None
+    storage_predicate_materialization: (
+        FragmentStoragePredicateMaterialization | None
+    ) = None
 
     def __post_init__(self) -> None:
         operation_id = _require_identifier(
@@ -564,12 +618,33 @@ class FragmentOperation:
         )
         predicate_anchor_ea = self.predicate_anchor_ea
         computed_branch_normalization = self.computed_branch_normalization
+        storage_predicate_materialization = (
+            self.storage_predicate_materialization
+        )
         if computed_branch_normalization is not None and not isinstance(
             computed_branch_normalization,
             FragmentComputedBranchNormalization,
         ):
             raise TypeError(
                 "fragment operation computed branch normalization is invalid"
+            )
+        if (
+            storage_predicate_materialization is not None
+            and not isinstance(
+                storage_predicate_materialization,
+                FragmentStoragePredicateMaterialization,
+            )
+        ):
+            raise TypeError(
+                "fragment operation storage predicate materialization is invalid"
+            )
+        if (
+            computed_branch_normalization is not None
+            and storage_predicate_materialization is not None
+        ):
+            raise FragmentPlanRejected(
+                "fragment conditional cannot combine computed and storage "
+                "predicate materialization"
             )
         if len(edges) == 1:
             if edges[0].role not in {
@@ -586,6 +661,11 @@ class FragmentOperation:
             if computed_branch_normalization is not None:
                 raise FragmentPlanRejected(
                     "computed branch normalization belongs only to a "
+                    "complete conditional"
+                )
+            if storage_predicate_materialization is not None:
+                raise FragmentPlanRejected(
+                    "storage predicate materialization belongs only to a "
                     "complete conditional"
                 )
         else:
@@ -1281,6 +1361,44 @@ class FragmentPlan:
                         f"fragment operation {operation.operation_id!r} predicate "
                         "anchor does not belong to its source identity"
                     )
+            storage_materialization = (
+                operation.storage_predicate_materialization
+            )
+            if storage_materialization is not None:
+                identity = source.stable_identity
+                native_body = native_body_by_id.get(
+                    str(source.native_body_id)
+                )
+                if (
+                    self.publication_purpose
+                    is not FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+                    or source.role is not FragmentBlockRole.IMPORTED
+                    or source.materialization
+                    is not FragmentBlockMaterialization.IMPORT_NATIVE
+                    or identity is None
+                    or native_body is None
+                    or operation.operation_id not in native_body.proof_ids
+                ):
+                    raise FragmentPlanRejected(
+                        f"fragment operation {operation.operation_id!r} "
+                        "storage predicate materialization requires owned "
+                        "canonical imported-body proof"
+                    )
+                anchors = (
+                    operation.predicate_anchor_ea,
+                    storage_materialization.cut_after_ea,
+                )
+                if any(
+                    ea is None
+                    or not identity.native_ranges.contains(ea)
+                    or ea not in identity.exact_instruction_eas
+                    for ea in anchors
+                ):
+                    raise FragmentPlanRejected(
+                        f"fragment operation {operation.operation_id!r} "
+                        "storage predicate anchors require exact physical "
+                        "source ownership"
+                    )
             computed_normalization = (
                 operation.computed_branch_normalization
             )
@@ -1916,6 +2034,7 @@ __all__ = [
     "FragmentReturnCarrier",
     "FragmentReturnSource",
     "FragmentReturnSourceKind",
+    "FragmentStoragePredicateMaterialization",
     "FragmentTerminalReturn",
     "FragmentTerminalRoute",
     "FragmentValueSite",

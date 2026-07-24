@@ -28,6 +28,7 @@ from d810.ir.block_identity import (
 )
 from d810.ir.directed_graph import tarjan_scc
 from d810.ir.flowgraph import FlowGraph
+from d810.ir.semantics import PredicateKind
 from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
@@ -43,6 +44,7 @@ from d810.transforms.fragment_plan import (
     FragmentReturnCarrier,
     FragmentReturnSource,
     FragmentReturnSourceKind,
+    FragmentStoragePredicateMaterialization,
     FragmentTerminalReturn,
     FragmentTerminalRoute,
     FragmentValueSite,
@@ -886,6 +888,46 @@ def compose_canonical_semantic_fragment_plan(
             ),
         )
     )
+    if imported_consumer is not None:
+        predicate = imported_consumer.predicate
+        operation_id = f"route:{imported_consumer.proof_id}"
+        matching_operations = tuple(
+            operation
+            for operation in target_operations
+            if operation.operation_id == operation_id
+        )
+        if (
+            predicate is None
+            or predicate.kind is not SemanticPredicateKind.STORAGE_EQUALS
+            or predicate.storage_identity is None
+            or predicate.compare_constant is None
+            or len(matching_operations) != 1
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "canonical imported semantic consumer lacks one complete "
+                "storage predicate operation"
+            )
+        target_operations = tuple(
+            (
+                replace(
+                    operation,
+                    storage_predicate_materialization=(
+                        FragmentStoragePredicateMaterialization(
+                            predicate_kind=PredicateKind.EQ,
+                            storage_identity=predicate.storage_identity,
+                            width=int(predicate.width),
+                            compare_constant=int(predicate.compare_constant),
+                            cut_after_ea=int(
+                                imported_consumer.source_anchor_ea
+                            ),
+                        )
+                    ),
+                )
+                if operation.operation_id == operation_id
+                else operation
+            )
+            for operation in target_operations
+        )
     target_external_blocks = tuple(
         block
         for block in target_blocks
