@@ -66,7 +66,9 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
         func_ea=0x1000,
         live_source=mba,
     )
-    backend = object()
+    backend = SimpleNamespace(
+        committed_current_mba_instruction_origins=lambda: (),
+    )
     captured: dict[str, object] = {}
     monkeypatch.setattr(
         live_normalization,
@@ -143,7 +145,9 @@ def test_live_adapter_binds_committed_import_origins_to_current_mba(
     monkeypatch.setattr(
         detached_handler_island,
         "imported_detached_snippet_instruction_origins",
-        lambda live_mba: imported_origins if live_mba is mba else (),
+        lambda _live_mba: (_ for _ in ()).throw(
+            AssertionError("receipt-backed publication must not query legacy origins")
+        ),
     )
     monkeypatch.setattr(
         live_normalization,
@@ -154,11 +158,10 @@ def test_live_adapter_binds_committed_import_origins_to_current_mba(
             live_source=live_mba,
         ),
     )
-    monkeypatch.setattr(
-        live_normalization,
-        "_new_live_backend",
-        lambda **_kwargs: object(),
+    backend = SimpleNamespace(
+        committed_current_mba_instruction_origins=lambda: imported_origins,
     )
+    monkeypatch.setattr(live_normalization, "_new_live_backend", lambda **_kwargs: backend)
     monkeypatch.setattr(
         live_normalization,
         "run_frontend_normalization_pipeline",
@@ -169,17 +172,30 @@ def test_live_adapter_binds_committed_import_origins_to_current_mba(
         ),
     )
 
-    live_normalization.run_live_frontend_normalization(
-        function_ea=0x1000,
-        mba=mba,
-        decision={
-            "session": session,
-            "mutation_gateway": object(),
-        },
-    )
+    observed: list[LifecycleEventObserved] = []
+    subscribe(LifecycleEventObserved, observed.append)
+    try:
+        live_normalization.run_live_frontend_normalization(
+            function_ea=0x1000,
+            mba=mba,
+            decision={
+                "session": session,
+                "mutation_gateway": object(),
+            },
+        )
+    finally:
+        unsubscribe(LifecycleEventObserved, observed.append)
 
     assert state.current_mba_token == 0x1234
     assert state.imported_instruction_origins_for(0x1234) == imported_origins
+    assert len(observed) == 1
+    assert observed[0].event_kind == "current_mba_import_origins_bound"
+    assert observed[0].payload == {
+        "outcome": "bound",
+        "origin_count": 2,
+        "native_ea_count": 2,
+        "native_eas": [0x40A70E, 0x40A710],
+    }
 
 
 def test_live_adapter_abstains_without_manager_injected_gateway(

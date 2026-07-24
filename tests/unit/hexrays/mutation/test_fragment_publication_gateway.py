@@ -334,6 +334,7 @@ class _FragmentBackend:
         raise_during_publish: bool = False,
         raise_during_rollback: bool = False,
         omit_semantic_edge_record: bool = False,
+        current_mba_instruction_origins: tuple[tuple[int, int], ...] = (),
     ) -> None:
         self.mba = SimpleNamespace(qty=4)
         self.gateway = gateway
@@ -342,11 +343,18 @@ class _FragmentBackend:
         self.raise_during_publish = raise_during_publish
         self.raise_during_rollback = raise_during_rollback
         self.omit_semantic_edge_record = omit_semantic_edge_record
+        self.current_mba_instruction_origins = current_mba_instruction_origins
         self.calls: list[str] = []
         self.root_published = False
         self.projection: ProjectedFragment | None = None
         self.original_handle = None
         self.replacement_handle = None
+
+    def _semantic_fragment_current_mba_instruction_origins(
+        self,
+        _plan: FragmentPlan,
+    ) -> tuple[tuple[int, int], ...]:
+        return self.current_mba_instruction_origins
 
     def _plan_semantic_fragment_root_publication_inventory(
         self,
@@ -625,6 +633,23 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     assert proxy.resolve().handle is backend.replacement_handle
     assert len(committed) == 1
     assert aborted == []
+
+
+def test_gateway_receipts_current_mba_instruction_origins_only_after_commit() -> None:
+    plan = _plan()
+    gateway, _committed, _aborted = _gateway(plan)
+    origins = (
+        (0xFFFFFFFFFFFFFF01, 0x401010),
+        (0xFFFFFFFFFFFFFF02, 0x401014),
+    )
+    backend = _FragmentBackend(
+        gateway,
+        current_mba_instruction_origins=origins,
+    )
+
+    receipt = gateway.publish_semantic_fragment(backend, plan)
+
+    assert receipt.current_mba_instruction_origins == origins
 
 
 def test_gateway_inventories_terminal_effects_as_first_class_fragment_items() -> None:

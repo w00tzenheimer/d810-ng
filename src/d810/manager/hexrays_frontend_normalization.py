@@ -54,20 +54,35 @@ def _bind_committed_live_import_origins(
     *,
     session: DecompilationSessionContext,
     mba: object,
-) -> None:
+    backend: object,
+) -> tuple[tuple[int, int], ...]:
     """Bind receipt-backed imported provenance to exactly this live MBA."""
     from d810.hexrays.mutation.detached_handler_island import (
-        imported_detached_snippet_instruction_origins,
         stable_mba_identity,
     )
     from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
         resolver_session_state,
     )
 
+    origin_provider = getattr(
+        backend,
+        "committed_current_mba_instruction_origins",
+        None,
+    )
+    if not callable(origin_provider):
+        raise TypeError(
+            "frontend normalization backend lacks committed origin authority"
+        )
+    origins = origin_provider()
+    if not isinstance(origins, tuple):
+        raise TypeError(
+            "frontend normalization backend returned invalid committed origins"
+        )
     resolver_session_state(session).bind_current_imported_instruction_origins(
         stable_mba_identity(mba),
-        imported_detached_snippet_instruction_origins(mba),
+        origins,
     )
+    return origins
 
 
 def run_live_frontend_normalization(
@@ -149,9 +164,36 @@ def run_live_frontend_normalization(
         "remaining_obligation_count": result.remaining_obligation_count,
     }
     decision["microcode_modified"] = True
-    _bind_committed_live_import_origins(
+    committed_origins = _bind_committed_live_import_origins(
         session=session,
         mba=mba,
+        backend=backend,
+    )
+    emit_diagnostic(
+        LifecycleEventObserved(
+            session_id=session.identity_key,
+            func_ea=int(function_ea),
+            event_kind="current_mba_import_origins_bound",
+            provider=_HANDLER_NAME,
+            phase="frontend_normalization",
+            evidence_generation=int(
+                session.native_preanalysis.evidence_generation
+            ),
+            summary="receipt-backed current-MBA import origins bound",
+            payload={
+                "outcome": "bound",
+                "origin_count": len(committed_origins),
+                "native_ea_count": len(
+                    {int(native_ea) for _live_ea, native_ea in committed_origins}
+                ),
+                "native_eas": sorted(
+                    {
+                        int(native_ea)
+                        for _live_ea, native_ea in committed_origins
+                    }
+                ),
+            },
+        )
     )
 
 

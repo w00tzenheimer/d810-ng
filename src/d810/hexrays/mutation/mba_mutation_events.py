@@ -37,6 +37,36 @@ from d810.transforms.fragment_validation import FragmentValidationResult
 
 
 logger = getLogger(__name__)
+_MAX_EA = 0xFFFFFFFFFFFFFFFF
+
+
+def _normalize_current_mba_instruction_origins(
+    origins: Iterable[tuple[int, int]],
+) -> tuple[tuple[int, int], ...]:
+    """Normalize current-MBA coordinates without making them portable."""
+    native_by_live: dict[int, int] = {}
+    for row in tuple(origins):
+        if not isinstance(row, tuple) or len(row) != 2:
+            raise TypeError(
+                "current-MBA instruction origins require live/native EA pairs"
+            )
+        live_ea, native_ea = (int(value) for value in row)
+        if (
+            live_ea <= 0
+            or native_ea <= 0
+            or live_ea >= _MAX_EA
+            or native_ea >= _MAX_EA
+        ):
+            raise ValueError(
+                "current-MBA instruction origins require valid positive EAs"
+            )
+        previous = native_by_live.get(live_ea)
+        if previous is not None and previous != native_ea:
+            raise ValueError(
+                "one current-MBA instruction EA cannot have multiple native origins"
+            )
+        native_by_live[live_ea] = native_ea
+    return tuple(sorted(native_by_live.items()))
 
 
 class StructuralMutationKind(Enum):
@@ -157,6 +187,7 @@ class MbaMutationReceipt:
     prepublication_validation: FragmentValidationResult | None = None
     postpublication_validation: FragmentValidationResult | None = None
     root_publication_confirmed: bool = False
+    current_mba_instruction_origins: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
         pre_generation = int(self.pre_generation)
@@ -189,6 +220,11 @@ class MbaMutationReceipt:
         fragment_plan_id = str(self.fragment_plan_id)
         fragment_atomic_group_id = str(self.fragment_atomic_group_id)
         root_publication_groups = tuple(self.root_publication_groups)
+        current_mba_instruction_origins = (
+            _normalize_current_mba_instruction_origins(
+                self.current_mba_instruction_origins
+            )
+        )
         if (
             any(
                 not isinstance(group, MbaMutationRootPublicationGroup)
@@ -235,6 +271,7 @@ class MbaMutationReceipt:
             or self.postpublication_validation is not None
             or self.root_publication_confirmed
             or root_publication_groups
+            or current_mba_instruction_origins
         ):
             raise ValueError("non-fragment receipt cannot carry fragment validation")
         object.__setattr__(self, "fragment_plan_id", fragment_plan_id)
@@ -252,6 +289,11 @@ class MbaMutationReceipt:
             self,
             "root_publication_confirmed",
             bool(self.root_publication_confirmed),
+        )
+        object.__setattr__(
+            self,
+            "current_mba_instruction_origins",
+            current_mba_instruction_origins,
         )
 
 
@@ -402,6 +444,16 @@ class MbaMutationGateway:
         init=False,
         repr=False,
     )
+    _active_current_mba_instruction_origins: tuple[tuple[int, int], ...] = field(
+        default=(),
+        init=False,
+        repr=False,
+    )
+    _active_current_mba_instruction_origins_recorded: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.generation = int(self.generation)
@@ -461,6 +513,8 @@ class MbaMutationGateway:
         self._active_root_publication_groups.clear()
         self._active_fragment_effect_requirements.clear()
         self._applied_fragment_effects.clear()
+        self._active_current_mba_instruction_origins = ()
+        self._active_current_mba_instruction_origins_recorded = False
 
     def new_transaction(self) -> MbaMutationGateway:
         """Return a fresh batch controller over this current-MBA index.
@@ -844,6 +898,26 @@ class MbaMutationGateway:
     def _record_fragment_staged(self, plan: FragmentPlan) -> None:
         self._require_active_fragment(plan)
         self._active_fragment_staged = True
+
+    def _record_fragment_current_mba_instruction_origins(
+        self,
+        plan: FragmentPlan,
+        origins: Iterable[tuple[int, int]],
+    ) -> None:
+        """Attach staging provenance to the pending receipt, never to evidence."""
+        self._require_active_fragment(plan)
+        if not self._active_fragment_staged:
+            raise RuntimeError(
+                "current-MBA instruction origins require staged fragment authority"
+            )
+        if self._active_current_mba_instruction_origins_recorded:
+            raise RuntimeError(
+                "current-MBA instruction origins were recorded more than once"
+            )
+        self._active_current_mba_instruction_origins = (
+            _normalize_current_mba_instruction_origins(origins)
+        )
+        self._active_current_mba_instruction_origins_recorded = True
 
     def _record_fragment_validation(
         self,
@@ -1485,6 +1559,7 @@ class MbaMutationGateway:
             or self._active_prepublication_validation is None
             or self._active_postpublication_validation is None
             or not self._active_root_publication_confirmed
+            or not self._active_current_mba_instruction_origins_recorded
         ):
             raise RuntimeError(
                 "fragment publication cannot commit before semantic postvalidation"
@@ -1528,6 +1603,9 @@ class MbaMutationGateway:
             prepublication_validation=self._active_prepublication_validation,
             postpublication_validation=self._active_postpublication_validation,
             root_publication_confirmed=self._active_root_publication_confirmed,
+            current_mba_instruction_origins=(
+                self._active_current_mba_instruction_origins
+            ),
         )
         self.generation = post_generation
         self._receipts.append(receipt)

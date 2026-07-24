@@ -3029,6 +3029,23 @@ def test_gateway_publishes_native_body_in_one_balanced_receipt(monkeypatch) -> N
     )
 
 
+def test_gateway_receipts_exact_native_body_instruction_origins(monkeypatch) -> None:
+    mba, gateway, modifier, plan, _entry, _original = (
+        _terminal_effect_runtime_case(monkeypatch)
+    )
+
+    receipt = gateway.publish_semantic_fragment(modifier, plan)
+
+    assert receipt.current_mba_instruction_origins
+    assert dict(receipt.current_mba_instruction_origins) == mba.fictitious_ea_map
+    assert set(dict(receipt.current_mba_instruction_origins).values()) == {
+        0x500000,
+        0x500004,
+        0x500100,
+    }
+    assert modifier._semantic_fragment_state is None
+
+
 @pytest.mark.parametrize(
     ("storage_kind", "storage_offset"),
     (
