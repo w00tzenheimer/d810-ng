@@ -217,6 +217,7 @@ class SemanticFragmentBackendState:
     predicate_live_eas_by_operation_id: dict[str, int] = field(
         default_factory=dict
     )
+    detached_operation_ids: set[str] = field(default_factory=set)
     original_mba_outline_ranges: tuple[tuple[int, int], ...] | None = None
     staged_mba_outline_ranges: tuple[tuple[int, int], ...] = ()
     original_mba_had_outlines: bool | None = None
@@ -511,6 +512,55 @@ class SemanticNativeBodyStagingContext:
             operation.operation_id
         ] = live_ea
 
+    def materialize_direct_transfer(self, *, operation_id: str) -> None:
+        """Bind one already-prepared direct route while its body is unpublished."""
+        operation = self.plan.operation(str(operation_id))
+        source_block_id = operation.source_block_id
+        rewrite = operation.direct_transfer_rewrite
+        if (
+            rewrite is None
+            or source_block_id not in self.native_body.block_ids
+            or source_block_id not in self._populated_block_ids
+            or operation.operation_id not in self.native_body.proof_ids
+            or len(operation.edges) != 1
+            or operation.edges[0].role is not SemanticEdgeRole.DIRECT
+            or operation.operation_id in self.state.detached_operation_ids
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"native body cannot materialize direct operation "
+                f"{operation_id!r}"
+            )
+        target_block_id = operation.edges[0].target_block_id
+        source_binding = self.state.binding(source_block_id)
+        target_binding = self.state.binding(target_block_id)
+        source = _live_block_for_binding(self._modifier, source_binding)
+        tail = source.tail
+        live_anchor_ea = (
+            None if tail is None else int(getattr(tail, "ea", -1) or -1)
+        )
+        origins = self.state.instruction_origins_by_block_id.get(
+            source_block_id,
+            {},
+        )
+        if (
+            tail is None
+            or live_anchor_ea is None
+            or live_anchor_ea < 0
+            or int(tail.opcode) != int(ida_hexrays.m_goto)
+            or origins.get(live_anchor_ea) != int(rewrite.rewrite_anchor_ea)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "native body prepared direct transfer changed before binding; "
+                f"operation={operation.operation_id!r} "
+                f"source={source_block_id!r}@0x{int(rewrite.rewrite_anchor_ea):X}"
+            )
+        self._modifier._bind_prepared_imported_direct_transfer(
+            source_version=source_binding.version,
+            target_version=target_binding.version,
+            rewrite_anchor_ea=live_anchor_ea,
+        )
+        self.state.detached_operation_ids.add(operation.operation_id)
+
     def validate_complete(self) -> None:
         """Reject partial bodies or materializers that changed publication authority."""
         if tuple(self._staged_block_ids) != self.native_body.block_ids:
@@ -573,6 +623,22 @@ class SemanticNativeBodyStagingContext:
             raise SemanticFragmentBackendRejected(
                 f"native body {self.native_body.body_id!r} has an unbound "
                 "synthesized predicate"
+            )
+        expected_direct_operations = {
+            operation.operation_id
+            for operation in self.plan.operations
+            if (
+                operation.source_block_id in self.native_body.block_ids
+                and operation.direct_transfer_rewrite is not None
+            )
+        }
+        realized_direct_operations = (
+            self.state.detached_operation_ids & expected_direct_operations
+        )
+        if realized_direct_operations != expected_direct_operations:
+            raise SemanticFragmentBackendRejected(
+                f"native body {self.native_body.body_id!r} has an unbound "
+                "detached direct transfer"
             )
         gateway = _gateway(self._modifier)
         if gateway.active_batch_id != self.transaction_id:
@@ -1140,12 +1206,32 @@ def _realize_operations(
     plan: FragmentPlan,
     state: SemanticFragmentBackendState,
 ) -> None:
+    detached_capable_operation_ids = {
+        operation.operation_id
+        for operation in plan.operations
+        if (
+            operation.direct_transfer_rewrite is not None
+            and plan.block(operation.source_block_id).role
+            is FragmentBlockRole.IMPORTED
+        )
+    }
+    if not state.detached_operation_ids <= detached_capable_operation_ids:
+        raise SemanticFragmentBackendRejected(
+            "detached native-body lowering consumed an ineligible operation"
+        )
     for operation in plan.operations:
+        if operation.operation_id in state.detached_operation_ids:
+            continue
         source = state.binding(operation.source_block_id)
+        direct_rewrite = operation.direct_transfer_rewrite
         direct_rewrite_anchor_ea = (
             state.live_instruction_ea(
                 operation.source_block_id,
-                plan.block(operation.source_block_id).semantic_anchor_ea,
+                (
+                    direct_rewrite.rewrite_anchor_ea
+                    if direct_rewrite is not None
+                    else plan.block(operation.source_block_id).semantic_anchor_ea
+                ),
             )
             if len(operation.edges) == 1
             and operation.edges[0].role is SemanticEdgeRole.DIRECT

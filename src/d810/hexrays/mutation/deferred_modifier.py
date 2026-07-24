@@ -3995,6 +3995,49 @@ class DeferredGraphModifier:
         self.mark_blocks_dirty_now(block)
         return tuple(origin_bindings)
 
+    def _bind_prepared_imported_direct_transfer(
+        self,
+        *,
+        source_version: LogicalBlockVersion,
+        target_version: LogicalBlockVersion,
+        rewrite_anchor_ea: int,
+    ) -> None:
+        """Wire one prepared direct terminator before its fragment is published."""
+        if (
+            source_version.handle.provenance
+            is not BlockHandleProvenance.IMPORTED_NATIVE
+        ):
+            raise SemanticFragmentBackendRejected(
+                "prepared direct transfer requires imported-native source provenance"
+            )
+        source = self._resolve_semantic_fragment_version(source_version)
+        target = self._resolve_semantic_fragment_version(target_version)
+        tail = source.tail
+        if (
+            tail is None
+            or int(source.nsucc()) != 0
+            or int(tail.ea) != int(rewrite_anchor_ea)
+            or int(tail.opcode) != int(ida_hexrays.m_goto)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "prepared direct transfer no longer owns its unpublished "
+                f"terminator at 0x{int(rewrite_anchor_ea):X}"
+            )
+        gateway = self._mutation_gateway
+        if gateway is None or not gateway.active:
+            raise SemanticFragmentBackendRejected(
+                "prepared direct transfer lost its active mutation gateway"
+            )
+        if not self._apply_terminal_goto_change(source, int(target.serial)):
+            raise SemanticFragmentBackendRejected(
+                "Hex-Rays rejected prepared direct transfer binding at "
+                f"0x{int(rewrite_anchor_ea):X}"
+            )
+        gateway.record_edge_redirect(
+            source=source_version.handle,
+            target=target_version.handle,
+        )
+
     def _stage_semantic_fallthrough_helper(
         self,
         source,

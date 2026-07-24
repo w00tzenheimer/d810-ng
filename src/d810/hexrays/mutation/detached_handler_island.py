@@ -63,6 +63,7 @@ from d810.transforms.graph_modification import (
 )
 from d810.transforms.fragment_plan import (
     FragmentComputedBranchNormalization,
+    FragmentDirectTransferRewrite,
     FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
     FragmentOperation,
@@ -104,12 +105,21 @@ class _StoragePredicateNormalizationPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class _DirectTransferRewritePlan:
+    """Detached realization of one proof-owned direct transfer."""
+
+    operation: FragmentOperation
+    rewrite: FragmentDirectTransferRewrite
+
+
+@dataclass(frozen=True, slots=True)
 class _PreparedSemanticNativeBody:
     """Read-only native-body realization prepared before live MBA staging."""
 
     plan_id: str
     body_id: str
     rows: tuple[tuple[str, int, tuple[tuple[int, object], ...]], ...]
+    direct_transfer_operation_ids: tuple[str, ...]
 
 
 def _diagnostic_operand_shape(operand: object, *, depth: int = 2) -> tuple:
@@ -1255,6 +1265,102 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             )
         return candidates[0]
 
+    @staticmethod
+    def _preflight_direct_transfer_rewrite(
+        *,
+        matched: Mapping[str, DetachedSnippetBlockTemplate],
+        native_body: FragmentNativeBody,
+        block_id: str,
+        template_block: DetachedSnippetBlockTemplate,
+        operation: FragmentOperation,
+        rewrite: FragmentDirectTransferRewrite,
+    ) -> _DirectTransferRewritePlan:
+        """Prove one direct rewrite against the complete detached body."""
+        anchor_ea = int(rewrite.rewrite_anchor_ea)
+        label = (
+            f"operation={operation.operation_id!r} "
+            f"source={block_id!r}@0x{int(template_block.native_entry_ea):X} "
+            f"rewrite=0x{anchor_ea:X}"
+        )
+        if (
+            operation.operation_id not in native_body.proof_ids
+            or operation.operation_id != f"route:{rewrite.route_proof_id}"
+            or len(operation.edges) != 1
+            or operation.edges[0].role is not SemanticEdgeRole.DIRECT
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"PREOPT direct transfer lacks native-body proof ownership; {label}",
+                reason_code="detached_direct_transfer_proof_unowned",
+                anchor_ea=anchor_ea,
+                payload={"operation_id": operation.operation_id},
+            )
+        if not all(
+            any(
+                int(native_range.start_ea)
+                <= int(corridor_ea)
+                < int(native_range.end_ea)
+                for native_range in native_body.native_ranges
+            )
+            for corridor_ea in rewrite.proof_corridor_instruction_eas
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"PREOPT direct transfer corridor escapes native-body ranges; {label}",
+                reason_code="detached_direct_transfer_corridor_unowned",
+                anchor_ea=anchor_ea,
+                payload={
+                    "operation_id": operation.operation_id,
+                    "proof_corridor_instruction_eas": tuple(
+                        hex(int(ea))
+                        for ea in rewrite.proof_corridor_instruction_eas
+                    ),
+                },
+            )
+        instruction_owners: dict[int, set[str]] = {}
+        for candidate_block_id, candidate in matched.items():
+            for instruction in candidate.instructions:
+                instruction_owners.setdefault(int(instruction.ea), set()).add(
+                    str(candidate_block_id)
+                )
+        missing_corridor_eas = tuple(
+            int(ea)
+            for ea in rewrite.proof_corridor_instruction_eas
+            if int(ea) not in instruction_owners
+        )
+        superseded_owner_ids = {
+            owner_id
+            for ea in rewrite.superseded_instruction_eas
+            for owner_id in instruction_owners.get(int(ea), ())
+        }
+        tail = template_block.instructions[-1] if template_block.instructions else None
+        if (
+            missing_corridor_eas
+            or superseded_owner_ids != {str(block_id)}
+            or tail is None
+            or int(tail.ea) != anchor_ea
+            or not (
+                ida_hexrays.is_mcode_jcond(int(tail.opcode))
+                or int(tail.opcode) == int(ida_hexrays.m_ijmp)
+            )
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"PREOPT direct transfer does not own its exact detached tail; {label}",
+                reason_code="detached_direct_transfer_tail_mismatch",
+                anchor_ea=anchor_ea,
+                payload={
+                    "operation_id": operation.operation_id,
+                    "missing_corridor_instruction_eas": tuple(
+                        hex(ea) for ea in missing_corridor_eas
+                    ),
+                    "superseded_owner_ids": tuple(sorted(superseded_owner_ids)),
+                    "tail_ea": None if tail is None else hex(int(tail.ea)),
+                    "tail_opcode": None if tail is None else int(tail.opcode),
+                },
+            )
+        return _DirectTransferRewritePlan(
+            operation=operation,
+            rewrite=rewrite,
+        )
+
     def _preflight_stack_rebase(
         self,
         template: DetachedSnippetTemplate,
@@ -1268,6 +1374,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             _ComputedBranchNormalizationPlan
             | _StoragePredicateNormalizationPlan,
         ],
+        dict[str, _DirectTransferRewritePlan],
     ]:
         stack_map = _stack_map_with_positive_identity_overrides(
             _destination_stack_map(self.mba, template),
@@ -1278,6 +1385,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             _ComputedBranchNormalizationPlan
             | _StoragePredicateNormalizationPlan,
         ] = {}
+        direct_transfer_rewrites: dict[str, _DirectTransferRewritePlan] = {}
         terminal_block_ids = set(native_body.terminal_block_ids)
         for block_id, template_block in matched.items():
             return_indexes = tuple(
@@ -1375,6 +1483,22 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 if len(operations) != 1
                 else operations[0].storage_predicate_materialization
             )
+            direct_transfer_rewrite = (
+                None
+                if len(operations) != 1
+                else operations[0].direct_transfer_rewrite
+            )
+            if direct_transfer_rewrite is not None:
+                direct_transfer_rewrites[str(block_id)] = (
+                    self._preflight_direct_transfer_rewrite(
+                        matched=matched,
+                        native_body=native_body,
+                        block_id=str(block_id),
+                        template_block=template_block,
+                        operation=operations[0],
+                        rewrite=direct_transfer_rewrite,
+                    )
+                )
             if (
                 len(operations) == 1
                 and len(operations[0].edges) == 2
@@ -1411,7 +1535,11 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                             )
                         )
             compatible_conditional = bool(
-                conditional_tail or str(block_id) in computed_normalizations
+                (
+                    conditional_tail
+                    and str(block_id) not in direct_transfer_rewrites
+                )
+                or str(block_id) in computed_normalizations
             )
             operation_has_call_fallthrough = bool(
                 len(operations) == 1
@@ -1441,7 +1569,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     f"template_call_fallthrough={has_call_fallthrough} "
                     f"plan_call_fallthrough={operation_has_call_fallthrough}"
                 )
-        return stack_map, computed_normalizations
+        return stack_map, computed_normalizations, direct_transfer_rewrites
 
     @staticmethod
     def _preflight_split_conditional_select_normalization(
@@ -2423,11 +2551,16 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             _ComputedBranchNormalizationPlan
             | _StoragePredicateNormalizationPlan,
         ],
+        direct_transfer_rewrites: Mapping[
+            str,
+            _DirectTransferRewritePlan,
+        ],
     ) -> dict[str, tuple[tuple[int, object], ...]]:
         """Clone, rebase, and normalize every body before staging any block."""
         prepared: dict[str, tuple[tuple[int, object], ...]] = {}
         for block_id, template_block in matched.items():
             normalization_entry = computed_normalizations.get(str(block_id))
+            direct_rewrite_entry = direct_transfer_rewrites.get(str(block_id))
             captured_instructions = (
                 template_block.instructions
                 if normalization_entry is None
@@ -2435,8 +2568,18 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     : normalization_entry.cut_index
                 ]
             )
+            superseded_instruction_eas = (
+                frozenset()
+                if direct_rewrite_entry is None
+                else frozenset(
+                    int(ea)
+                    for ea in direct_rewrite_entry.rewrite.superseded_instruction_eas
+                )
+            )
             instructions: list[tuple[int, object]] = []
             for captured in captured_instructions:
+                if int(captured.ea) in superseded_instruction_eas:
+                    continue
                 instruction = ida_hexrays.minsn_t(captured)
                 instruction_stack_map = _stack_map_with_positive_identity_overrides(
                     dict(stack_map),
@@ -2552,6 +2695,16 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 )
                 branch.d = ida_hexrays.mop_t()
                 instructions.append((predicate_ea, branch))
+            if direct_rewrite_entry is not None:
+                rewrite_anchor_ea = int(
+                    direct_rewrite_entry.rewrite.rewrite_anchor_ea
+                )
+                direct = ida_hexrays.minsn_t(rewrite_anchor_ea)
+                direct.opcode = int(ida_hexrays.m_goto)
+                direct.l = ida_hexrays.mop_t()
+                direct.r = ida_hexrays.mop_t()
+                direct.d = ida_hexrays.mop_t()
+                instructions.append((rewrite_anchor_ea, direct))
             prepared[str(block_id)] = tuple(instructions)
         return prepared
 
@@ -2564,9 +2717,14 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         DetachedSnippetTemplate,
         dict[str, DetachedSnippetBlockTemplate],
         dict[str, tuple[tuple[int, object], ...]],
+        tuple[str, ...],
     ]:
         template, matched = self._select_template_blocks(plan, native_body)
-        stack_map, computed_normalizations = self._preflight_stack_rebase(
+        (
+            stack_map,
+            computed_normalizations,
+            direct_transfer_rewrites,
+        ) = self._preflight_stack_rebase(
             template,
             matched,
             native_body,
@@ -2577,8 +2735,17 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             matched=matched,
             stack_map=stack_map,
             computed_normalizations=computed_normalizations,
+            direct_transfer_rewrites=direct_transfer_rewrites,
         )
-        return template, matched, prepared
+        return (
+            template,
+            matched,
+            prepared,
+            tuple(
+                entry.operation.operation_id
+                for entry in direct_transfer_rewrites.values()
+            ),
+        )
 
     @staticmethod
     def _prepared_native_body(
@@ -2587,6 +2754,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         native_body: FragmentNativeBody,
         matched: Mapping[str, DetachedSnippetBlockTemplate],
         prepared: Mapping[str, tuple[tuple[int, object], ...]],
+        direct_transfer_operation_ids: tuple[str, ...],
     ) -> _PreparedSemanticNativeBody:
         return _PreparedSemanticNativeBody(
             plan_id=plan.plan_id,
@@ -2599,6 +2767,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 )
                 for block_id in native_body.block_ids
             ),
+            direct_transfer_operation_ids=direct_transfer_operation_ids,
         )
 
     def prepare_native_body(
@@ -2617,7 +2786,12 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             raise SemanticFragmentBackendRejected(
                 "PREOPT native body requires the hxe_preoptimized destination MBA"
             )
-        _template, matched, prepared = self._prepare_native_body(
+        (
+            _template,
+            matched,
+            prepared,
+            direct_transfer_operation_ids,
+        ) = self._prepare_native_body(
             plan=plan,
             native_body=native_body,
         )
@@ -2626,6 +2800,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             native_body=native_body,
             matched=matched,
             prepared=prepared,
+            direct_transfer_operation_ids=direct_transfer_operation_ids,
         )
 
     def stage_native_body(
@@ -2654,6 +2829,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 instructions=instructions,
                 block_flags=block_flags,
             )
+        for operation_id in preparation.direct_transfer_operation_ids:
+            context.materialize_direct_transfer(operation_id=operation_id)
         for operation in context.plan.operations:
             if (
                 operation.source_block_id in native_body.block_ids
@@ -3010,7 +3187,11 @@ class CallsSemanticNativeBodyMaterializer(
                 f"calls={tuple(hex(ea) for ea in sorted(missing_call_eas))!r} "
                 f"ranges={tuple((hex(start), hex(end)) for start, end in requested_ranges)!r}"
             )
-        stack_map, computed_normalizations = self._preflight_stack_rebase(
+        (
+            stack_map,
+            computed_normalizations,
+            direct_transfer_rewrites,
+        ) = self._preflight_stack_rebase(
             template,
             matched,
             native_body,
@@ -3021,6 +3202,7 @@ class CallsSemanticNativeBodyMaterializer(
             matched=matched,
             stack_map=stack_map,
             computed_normalizations=computed_normalizations,
+            direct_transfer_rewrites=direct_transfer_rewrites,
         )
         subsumed_setup_eas: set[int] = set()
         for companion_template in {
@@ -3082,6 +3264,10 @@ class CallsSemanticNativeBodyMaterializer(
                     transformed[block_id],
                 )
                 for block_id in native_body.block_ids
+            ),
+            direct_transfer_operation_ids=tuple(
+                entry.operation.operation_id
+                for entry in direct_transfer_rewrites.values()
             ),
         )
 
