@@ -839,12 +839,22 @@ class _RecordingNativeBodyMaterializer:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str | None]] = []
 
+    def prepare_native_body(
+        self,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+    ) -> object:
+        return (plan.plan_id, native_body.body_id)
+
     def stage_native_body(
         self,
         *,
         context,
         native_body: FragmentNativeBody,
+        preparation: object,
     ) -> None:
+        assert preparation == (context.plan.plan_id, native_body.body_id)
         self.calls.append(
             (
                 context.plan.plan_id,
@@ -856,16 +866,55 @@ class _RecordingNativeBodyMaterializer:
             context.stage_block(block_id)
 
 
-class _TerminalEffectNativeBodyMaterializer:
-    def __init__(self, *, conflicting_carrier: bool = False) -> None:
-        self.conflicting_carrier = bool(conflicting_carrier)
+class _RejectingNativeBodyMaterializer:
+    def __init__(self) -> None:
+        self.prepare_calls = 0
+        self.stage_calls = 0
+
+    def prepare_native_body(
+        self,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+    ) -> object:
+        self.prepare_calls += 1
+        assert plan.plan_id == "runtime-imported-native-body"
+        assert native_body.body_id == "native-body"
+        raise sfb.SemanticFragmentBackendRejected(
+            "native body preparation rejected before staging"
+        )
 
     def stage_native_body(
         self,
         *,
         context,
         native_body: FragmentNativeBody,
+        preparation: object,
     ) -> None:
+        self.stage_calls += 1
+        raise AssertionError("rejected preparation must not reach staging")
+
+
+class _TerminalEffectNativeBodyMaterializer:
+    def __init__(self, *, conflicting_carrier: bool = False) -> None:
+        self.conflicting_carrier = bool(conflicting_carrier)
+
+    def prepare_native_body(
+        self,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+    ) -> object:
+        return (plan.plan_id, native_body.body_id)
+
+    def stage_native_body(
+        self,
+        *,
+        context,
+        native_body: FragmentNativeBody,
+        preparation: object,
+    ) -> None:
+        assert preparation == (context.plan.plan_id, native_body.body_id)
         assert native_body.block_ids == (
             "imported-carrier",
             "imported-return",
@@ -1073,12 +1122,22 @@ class _OriginBoundConditionalNativeBodyMaterializer:
         self.live_ea = int(live_ea)
         self.native_ea = int(native_ea)
 
+    def prepare_native_body(
+        self,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+    ) -> object:
+        return (plan.plan_id, native_body.body_id)
+
     def stage_native_body(
         self,
         *,
         context,
         native_body: FragmentNativeBody,
+        preparation: object,
     ) -> None:
+        assert preparation == (context.plan.plan_id, native_body.body_id)
         assert len(native_body.block_ids) == 1
         block_id = native_body.block_ids[0]
         block = context.stage_block(block_id)
@@ -1092,12 +1151,22 @@ class _OriginBoundConditionalNativeBodyMaterializer:
 
 
 class _UnboundNativeBodyMaterializer:
+    def prepare_native_body(
+        self,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+    ) -> object:
+        return (plan.plan_id, native_body.body_id)
+
     def stage_native_body(
         self,
         *,
         context,
         native_body: FragmentNativeBody,
+        preparation: object,
     ) -> None:
+        assert preparation == (context.plan.plan_id, native_body.body_id)
         assert len(native_body.block_ids) == 1
         block = context.stage_block(native_body.block_ids[0])
         block.insert_into_block(
@@ -2101,6 +2170,62 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
     )
     assert gateway.active is False
     assert gateway.receipts == ()
+
+
+def test_backend_prepares_all_native_bodies_before_live_staging(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    materializer = _RejectingNativeBodyMaterializer()
+    staged_blocks = 0
+
+    def recording_standalone_block(*args, **kwargs):
+        nonlocal staged_blocks
+        staged_blocks += 1
+        return _create_fake_standalone_block(*args, **kwargs)
+
+    monkeypatch.setattr(dm, "create_standalone_block", recording_standalone_block)
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=gateway,
+        semantic_native_body_materializer=materializer,
+    )
+    plan = _plan_with_imported_terminal(
+        gateway,
+        entry=0,
+        original=1,
+        target=2,
+        dispatcher=3,
+    )
+    original_ranges = _outline_ranges(mba)
+    identity_generation = gateway.identity_index.generation
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="native body preparation rejected before staging",
+    ):
+        modifier._stage_semantic_fragment(plan)
+
+    assert materializer.prepare_calls == 1
+    assert materializer.stage_calls == 0
+    assert staged_blocks == 0
+    assert mba.qty == 5
+    assert _outline_ranges(mba) == original_ranges
+    assert gateway.identity_index.generation == identity_generation
+    assert modifier._semantic_fragment_state is None
+    assert gateway.active
+    assert gateway.receipts == ()
+    gateway.abort(reason="runtime preparation rejection cleanup")
 
 
 def test_backend_materializes_and_observes_terminal_effects_from_live_mba(

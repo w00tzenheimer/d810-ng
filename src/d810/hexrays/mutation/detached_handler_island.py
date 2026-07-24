@@ -66,6 +66,7 @@ from d810.transforms.fragment_plan import (
     FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
     FragmentOperation,
+    FragmentPlan,
 )
 from d810.ir.block_identity import (
     BlockHandleProvenance,
@@ -90,6 +91,15 @@ class _ComputedBranchNormalizationPlan:
     result_instruction_index: int | None
     branch_opcode: int
     branch_condition_template: object | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedSemanticNativeBody:
+    """Read-only native-body realization prepared before live MBA staging."""
+
+    plan_id: str
+    body_id: str
+    rows: tuple[tuple[str, int, tuple[tuple[int, object], ...]], ...]
 
 
 def _diagnostic_operand_shape(operand: object, *, depth: int = 2) -> tuple:
@@ -1117,11 +1127,11 @@ class PreoptUnionSemanticNativeBodyMaterializer:
 
     def _select_template_blocks(
         self,
-        context: object,
+        plan: FragmentPlan,
         native_body: FragmentNativeBody,
     ) -> tuple[DetachedSnippetTemplate, dict[str, DetachedSnippetBlockTemplate]]:
         entry_anchors = {
-            int(context.plan.block(block_id).semantic_anchor_ea)
+            int(plan.block(block_id).semantic_anchor_ea)
             for block_id in native_body.entry_block_ids
         }
         required_ranges = tuple(
@@ -1160,11 +1170,11 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             matched: dict[str, DetachedSnippetBlockTemplate] = {}
             block_mismatch: tuple[int, int] | None = None
             for block_id in native_body.block_ids:
-                plan_block = context.plan.block(block_id)
+                plan_block = plan.block(block_id)
                 identity = plan_block.stable_identity
                 source_operations = tuple(
                     operation
-                    for operation in context.plan.operations
+                    for operation in plan.operations
                     if operation.source_block_id == block_id
                 )
                 source_operation = (
@@ -1175,7 +1185,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 matches = (
                     ()
                     if identity is None
-                    or identity.native_key != context.plan.native_key
+                    or identity.native_key != plan.native_key
                     else tuple(
                         template_block
                         for template_block in template.blocks
@@ -2371,13 +2381,59 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             prepared[str(block_id)] = tuple(instructions)
         return prepared
 
-    def stage_native_body(
+    def _prepare_native_body(
         self,
         *,
-        context: object,
+        plan: FragmentPlan,
         native_body: FragmentNativeBody,
-    ) -> None:
-        """Copy instruction bodies only; FragmentPlan operations own all topology."""
+    ) -> tuple[
+        DetachedSnippetTemplate,
+        dict[str, DetachedSnippetBlockTemplate],
+        dict[str, tuple[tuple[int, object], ...]],
+    ]:
+        template, matched = self._select_template_blocks(plan, native_body)
+        stack_map, computed_normalizations = self._preflight_stack_rebase(
+            template,
+            matched,
+            native_body,
+            plan,
+        )
+        prepared = self._prepare_native_body_instructions(
+            template=template,
+            matched=matched,
+            stack_map=stack_map,
+            computed_normalizations=computed_normalizations,
+        )
+        return template, matched, prepared
+
+    @staticmethod
+    def _prepared_native_body(
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+        matched: Mapping[str, DetachedSnippetBlockTemplate],
+        prepared: Mapping[str, tuple[tuple[int, object], ...]],
+    ) -> _PreparedSemanticNativeBody:
+        return _PreparedSemanticNativeBody(
+            plan_id=plan.plan_id,
+            body_id=native_body.body_id,
+            rows=tuple(
+                (
+                    block_id,
+                    int(matched[block_id].block_flags),
+                    tuple(prepared[block_id]),
+                )
+                for block_id in native_body.block_ids
+            ),
+        )
+
+    def prepare_native_body(
+        self,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+    ) -> object:
+        """Prepare one PREOPT body without changing the destination MBA."""
         # Hex-Rays invokes hxe_preoptimized after PREOPT has completed but
         # before advancing mba.maturity from GENERATED to PREOPTIMIZED.
         if int(self.mba.maturity) not in {
@@ -2387,27 +2443,42 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             raise SemanticFragmentBackendRejected(
                 "PREOPT native body requires the hxe_preoptimized destination MBA"
             )
-        template, matched = self._select_template_blocks(context, native_body)
-        stack_map, computed_normalizations = self._preflight_stack_rebase(
-            template,
-            matched,
-            native_body,
-            context.plan,
+        _template, matched, prepared = self._prepare_native_body(
+            plan=plan,
+            native_body=native_body,
         )
-        prepared = self._prepare_native_body_instructions(
-            template=template,
+        return self._prepared_native_body(
+            plan=plan,
+            native_body=native_body,
             matched=matched,
-            stack_map=stack_map,
-            computed_normalizations=computed_normalizations,
+            prepared=prepared,
         )
+
+    def stage_native_body(
+        self,
+        *,
+        context: object,
+        native_body: FragmentNativeBody,
+        preparation: object,
+    ) -> None:
+        """Populate one body from an already complete preparation."""
+        if (
+            not isinstance(preparation, _PreparedSemanticNativeBody)
+            or preparation.plan_id != context.plan.plan_id
+            or preparation.body_id != native_body.body_id
+            or tuple(row[0] for row in preparation.rows)
+            != native_body.block_ids
+        ):
+            raise SemanticFragmentBackendRejected(
+                "prepared native body does not match the staging context"
+            )
         for block_id in native_body.block_ids:
             context.stage_block(block_id)
-        for block_id in native_body.block_ids:
-            template_block = matched[block_id]
+        for block_id, block_flags, instructions in preparation.rows:
             context.populate_block(
                 block_id=block_id,
-                instructions=prepared[block_id],
-                block_flags=int(template_block.block_flags),
+                instructions=instructions,
+                block_flags=block_flags,
             )
 
 
@@ -2463,18 +2534,18 @@ class CallsCallFreeSemanticNativeBodyMaterializer(
                         f"opcode={int(forbidden.opcode)}"
                     )
 
-    def stage_native_body(
+    def prepare_native_body(
         self,
         *,
-        context: object,
+        plan: FragmentPlan,
         native_body: FragmentNativeBody,
-    ) -> None:
-        """Populate unpublished CALLS blocks without weakening PREOPT rules."""
+    ) -> object:
+        """Prepare one call-free CALLS body without changing the live graph."""
         if int(self.mba.maturity) != int(ida_hexrays.MMAT_CALLS):
             raise SemanticFragmentBackendRejected(
                 "CALLS native body requires an MMAT_CALLS destination MBA"
             )
-        template, matched = self._select_template_blocks(context, native_body)
+        template, matched = self._select_template_blocks(plan, native_body)
         self._require_call_free_instructions(
             rows={
                 block_id: tuple(
@@ -2488,7 +2559,7 @@ class CallsCallFreeSemanticNativeBodyMaterializer(
             template,
             matched,
             native_body,
-            context.plan,
+            plan,
         )
         prepared = self._prepare_native_body_instructions(
             template=template,
@@ -2497,15 +2568,12 @@ class CallsCallFreeSemanticNativeBodyMaterializer(
             computed_normalizations=computed_normalizations,
         )
         self._require_call_free_instructions(rows=prepared)
-        for block_id in native_body.block_ids:
-            context.stage_block(block_id)
-        for block_id in native_body.block_ids:
-            template_block = matched[block_id]
-            context.populate_block(
-                block_id=block_id,
-                instructions=prepared[block_id],
-                block_flags=int(template_block.block_flags),
-            )
+        return self._prepared_native_body(
+            plan=plan,
+            native_body=native_body,
+            matched=matched,
+            prepared=prepared,
+        )
 
 
 _IMPORTED_DIRECT_BOUNDARY_EVIDENCE: dict[

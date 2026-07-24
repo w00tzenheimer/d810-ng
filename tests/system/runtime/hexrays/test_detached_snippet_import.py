@@ -502,6 +502,7 @@ class _NativeBodyPlan:
         blocks: tuple[FragmentBlock, ...],
         operations: tuple[FragmentOperation, ...] = (),
     ) -> None:
+        self.plan_id = "native-body-runtime-test"
         self.native_key = NATIVE_KEY
         self._blocks = {block.block_id: block for block in blocks}
         self.operations = tuple(operations)
@@ -571,6 +572,23 @@ class _NativeBodyStagingContext:
         key = (str(block_id), int(live_ea))
         assert key not in self.instruction_origins
         self.instruction_origins[key] = int(native_ea)
+
+
+def _prepare_and_stage_native_body(
+    materializer,
+    *,
+    context: _NativeBodyStagingContext,
+    native_body: FragmentNativeBody,
+) -> None:
+    preparation = materializer.prepare_native_body(
+        plan=context.plan,
+        native_body=native_body,
+    )
+    materializer.stage_native_body(
+        context=context,
+        native_body=native_body,
+        preparation=preparation,
+    )
 
 
 def _imported_fragment_block(
@@ -750,7 +768,8 @@ def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
         )
     )
 
-    materializer.stage_native_body(
+    _prepare_and_stage_native_body(
+        materializer,
         context=context,
         native_body=native_body,
     )
@@ -800,10 +819,11 @@ def test_calls_call_free_native_body_materializer_populates_unpublished_body(
         destination_maturity=ida_hexrays.MMAT_CALLS,
     )
 
-    detached_handler_island.CallsCallFreeSemanticNativeBodyMaterializer(
-        mba=destination,
-        function_ea=function_ea,
-    ).stage_native_body(
+    _prepare_and_stage_native_body(
+        detached_handler_island.CallsCallFreeSemanticNativeBodyMaterializer(
+            mba=destination,
+            function_ea=function_ea,
+        ),
         context=context,
         native_body=native_body,
     )
@@ -844,10 +864,11 @@ def test_calls_call_free_native_body_rejects_calls_and_returns_before_staging(
         detached_handler_island.SemanticFragmentBackendRejected,
         match="CALLS native body must be call/return-free",
     ):
-        detached_handler_island.CallsCallFreeSemanticNativeBodyMaterializer(
-            mba=destination,
-            function_ea=function_ea,
-        ).stage_native_body(
+        _prepare_and_stage_native_body(
+            detached_handler_island.CallsCallFreeSemanticNativeBodyMaterializer(
+                mba=destination,
+                function_ea=function_ea,
+            ),
             context=context,
             native_body=native_body,
         )
@@ -874,10 +895,11 @@ def test_calls_call_free_native_body_rejects_other_maturity_before_staging(
         detached_handler_island.SemanticFragmentBackendRejected,
         match="CALLS native body requires an MMAT_CALLS destination MBA",
     ):
-        detached_handler_island.CallsCallFreeSemanticNativeBodyMaterializer(
-            mba=destination,
-            function_ea=function_ea,
-        ).stage_native_body(
+        _prepare_and_stage_native_body(
+            detached_handler_island.CallsCallFreeSemanticNativeBodyMaterializer(
+                mba=destination,
+                function_ea=function_ea,
+            ),
             context=context,
             native_body=native_body,
         )
@@ -951,10 +973,11 @@ def test_preopt_native_body_rejects_non_control_block_refs_before_staging(
         detached_handler_island.SemanticFragmentBackendRejected,
         match="block reference",
     ):
-        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
-            mba=destination,
-            function_ea=function_ea,
-        ).stage_native_body(
+        _prepare_and_stage_native_body(
+            detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+                mba=destination,
+                function_ea=function_ea,
+            ),
             context=context,
             native_body=native_body,
         )
@@ -1020,10 +1043,11 @@ def test_preopt_native_body_rejects_terminal_without_return_before_staging(
         detached_handler_island.SemanticFragmentBackendRejected,
         match="terminal return",
     ):
-        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
-            mba=destination,
-            function_ea=function_ea,
-        ).stage_native_body(
+        _prepare_and_stage_native_body(
+            detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+                mba=destination,
+                function_ea=function_ea,
+            ),
             context=context,
             native_body=native_body,
         )
@@ -1092,10 +1116,11 @@ def test_preopt_native_body_rejects_unowned_topology_before_staging(
             "operations=0.*expected_operations=1"
         ),
     ):
-        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
-            mba=destination,
-            function_ea=function_ea,
-        ).stage_native_body(
+        _prepare_and_stage_native_body(
+            detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+                mba=destination,
+                function_ea=function_ea,
+            ),
             context=context,
             native_body=native_body,
         )
@@ -1245,14 +1270,16 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
             detached_handler_island.SemanticFragmentBackendRejected,
             match="condition producer does not match",
         ):
-            materializer.stage_native_body(
+            _prepare_and_stage_native_body(
+                materializer,
                 context=context,
                 native_body=native_body,
             )
         assert context.staged_block_ids == []
         return
 
-    materializer.stage_native_body(
+    _prepare_and_stage_native_body(
+        materializer,
         context=context,
         native_body=native_body,
     )
@@ -1642,7 +1669,8 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
             match="split conditional-select envelope",
         )
         with rejection as raised:
-            materializer.stage_native_body(
+            _prepare_and_stage_native_body(
+                materializer,
                 context=context,
                 native_body=native_body,
             )
@@ -1667,7 +1695,8 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
         assert context.staged_block_ids == []
         return
 
-    materializer.stage_native_body(
+    _prepare_and_stage_native_body(
+        materializer,
         context=context,
         native_body=native_body,
     )
@@ -1897,14 +1926,16 @@ def test_preopt_native_body_normalizes_split_signed_select_from_real_start(
             detached_handler_island.SemanticFragmentBackendRejected,
             match="split conditional-select envelope",
         ):
-            materializer.stage_native_body(
+            _prepare_and_stage_native_body(
+                materializer,
                 context=context,
                 native_body=native_body,
             )
         assert context.staged_block_ids == []
         return
 
-    materializer.stage_native_body(
+    _prepare_and_stage_native_body(
+        materializer,
         context=context,
         native_body=native_body,
     )
@@ -2179,7 +2210,8 @@ def test_preopt_native_body_normalizes_signed_flag_xor_before_staging(
             detached_handler_island.SemanticFragmentBackendRejected,
             match="condition producer does not match",
         ) as rejected:
-            materializer.stage_native_body(
+            _prepare_and_stage_native_body(
+                materializer,
                 context=context,
                 native_body=native_body,
             )
@@ -2187,7 +2219,8 @@ def test_preopt_native_body_normalizes_signed_flag_xor_before_staging(
         assert context.staged_block_ids == []
         return
 
-    materializer.stage_native_body(
+    _prepare_and_stage_native_body(
+        materializer,
         context=context,
         native_body=native_body,
     )

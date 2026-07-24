@@ -249,13 +249,22 @@ class SemanticFragmentBackendState:
 class SemanticNativeBodyMaterializer(Protocol):
     """Backend adapter that populates one gateway-owned native body staging context."""
 
+    def prepare_native_body(
+        self,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+    ) -> object:
+        """Prove and prepare one body without mutating the destination MBA."""
+
     def stage_native_body(
         self,
         *,
         context: "SemanticNativeBodyStagingContext",
         native_body: FragmentNativeBody,
+        preparation: object,
     ) -> None:
-        """Populate every block in ``native_body`` without publishing authority."""
+        """Stage one already-prepared body without recovering semantic intent."""
 
 
 @dataclass(slots=True)
@@ -625,15 +634,12 @@ def _restore_native_body_address_ranges(
         )
 
 
-def _stage_native_bodies(
+def _native_body_materializer(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
-    state: SemanticFragmentBackendState,
-    *,
-    reference_version: LogicalBlockVersion,
-) -> None:
+) -> SemanticNativeBodyMaterializer | None:
     if not plan.native_bodies:
-        return
+        return None
     materializer = modifier._semantic_native_body_materializer
     if materializer is None:
         raise SemanticFragmentBackendRejected(
@@ -642,6 +648,54 @@ def _stage_native_bodies(
     if not isinstance(materializer, SemanticNativeBodyMaterializer):
         raise TypeError(
             "semantic native-body materializer does not satisfy its backend protocol"
+        )
+    return materializer
+
+
+def _prepare_native_bodies(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+) -> tuple[tuple[str, object], ...]:
+    """Prepare every native body before the first destination-MBA mutation."""
+    materializer = _native_body_materializer(modifier, plan)
+    if materializer is None:
+        return ()
+    return tuple(
+        (
+            native_body.body_id,
+            materializer.prepare_native_body(
+                plan=plan,
+                native_body=native_body,
+            ),
+        )
+        for native_body in plan.native_bodies
+    )
+
+
+def _stage_native_bodies(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    *,
+    reference_version: LogicalBlockVersion,
+    preparations: tuple[tuple[str, object], ...],
+) -> None:
+    if not plan.native_bodies:
+        if preparations:
+            raise SemanticFragmentBackendRejected(
+                "native-body preparations exist for a plan without native bodies"
+            )
+        return
+    materializer = _native_body_materializer(modifier, plan)
+    assert materializer is not None
+    preparation_by_body_id = dict(preparations)
+    if (
+        len(preparation_by_body_id) != len(preparations)
+        or set(preparation_by_body_id)
+        != {native_body.body_id for native_body in plan.native_bodies}
+    ):
+        raise SemanticFragmentBackendRejected(
+            "native-body preparations do not match the fragment plan"
         )
     gateway = _gateway(modifier)
     transaction_id = _transaction_id(modifier)
@@ -660,6 +714,7 @@ def _stage_native_bodies(
         materializer.stage_native_body(
             context=context,
             native_body=native_body,
+            preparation=preparation_by_body_id[native_body.body_id],
         )
         context.validate_complete()
 
@@ -3073,6 +3128,7 @@ def stage_semantic_fragment(
         raise TypeError("semantic fragment backend requires a FragmentPlan")
     if modifier._semantic_fragment_state is not None:
         raise RuntimeError("a semantic fragment is already staged")
+    preparations = _prepare_native_bodies(modifier, plan)
     state = SemanticFragmentBackendState(
         plan_id=plan.plan_id,
         atomic_group_id=plan.atomic_group_id,
@@ -3100,6 +3156,7 @@ def stage_semantic_fragment(
             plan,
             state,
             reference_version=reference_version,
+            preparations=preparations,
         )
         for block in plan.blocks:
             if block.materialization is FragmentBlockMaterialization.CREATE_EMPTY:
