@@ -4566,7 +4566,7 @@ def test_backend_normalizes_conditional_select_only_on_detached_replacement(
     gateway.abort(reason="runtime conditional-select staging cleanup")
 
 
-def test_backend_unwraps_exact_nested_signed_skip_on_detached_replacement(
+def test_backend_clones_nested_signed_skip_before_replacing_parent(
     monkeypatch,
 ) -> None:
     entry = _Block(0, start=0x40A5E0, block_type=ida_hexrays.BLT_1WAY)
@@ -4634,7 +4634,34 @@ def test_backend_unwraps_exact_nested_signed_skip_on_detached_replacement(
         ),
     )
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+
+    assign_operand = _BlockReference.assign
+
+    def _assign_with_sdk_overlap_semantics(
+        destination: _BlockReference,
+        source: _BlockReference,
+    ):
+        nested = (
+            destination.d is not None
+            and source
+            in {
+                destination.d.l,
+                destination.d.r,
+                destination.d.d,
+            }
+        )
+        if nested:
+            destination.erase()
+            return destination
+        return assign_operand(destination, source)
+
     monkeypatch.setattr(sfb.ida_hexrays, "minsn_t", deepcopy)
+    monkeypatch.setattr(sfb.ida_hexrays, "mop_t", _BlockReference)
+    monkeypatch.setattr(
+        _BlockReference,
+        "assign",
+        _assign_with_sdk_overlap_semantics,
+    )
     monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
     monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
     plan = _conditional_select_plan(

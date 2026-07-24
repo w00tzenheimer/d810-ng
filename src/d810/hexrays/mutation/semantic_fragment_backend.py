@@ -727,7 +727,14 @@ def _normalize_conditional_select_replacement(
             and int(expression.opcode) == int(ida_hexrays.m_lnot)
             and int(expression.l.t) == int(ida_hexrays.mop_d)
         ):
-            branch.l.assign(expression.l)
+            oriented_condition = ida_hexrays.mop_t()
+            oriented_condition.assign(expression.l)
+            if int(oriented_condition.t) == int(ida_hexrays.mop_z):
+                raise SemanticFragmentBackendRejected(
+                    "live conditional-select inner predicate could not be "
+                    f"cloned independently; {label}"
+                )
+            branch.l.assign(oriented_condition)
         else:
             raise SemanticFragmentBackendRejected(
                 "live conditional-select truthiness predicate cannot be "
