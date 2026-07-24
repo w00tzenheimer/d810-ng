@@ -23,6 +23,8 @@ def test_exposes_the_portable_block_identity_contract() -> None:
         "RebindStatus",
         "BoundBlock",
         "RebindResult",
+        "stable_block_identity_semantic_anchor",
+        "stable_block_identity_token",
     ):
         assert hasattr(block_identity, name), name
 
@@ -236,3 +238,20 @@ def test_snapshot_identity_keeps_block_start_as_range_not_exact_instruction() ->
     assert identity.native_ranges.contains(0x401000)
     assert identity.native_ranges.contains(0x401005)
     assert identity.exact_instruction_eas == frozenset({0x401005})
+
+
+def test_stable_identity_exposes_one_serial_free_anchor_and_token() -> None:
+    identity = block_identity.StableBlockIdentity.from_intervals(
+        (
+            block_identity.NativeEaInterval(0x401000, 0x401001),
+            block_identity.NativeEaInterval(0x401005, 0x401007),
+        ),
+        native_key=make_native_key(),
+        exact_instruction_eas=(0x401005, 0x401006),
+    )
+
+    assert block_identity.stable_block_identity_semantic_anchor(identity) == 0x401005
+    assert block_identity.stable_block_identity_token(identity) == (
+        "0x401000-0x401001,0x401005-0x401007;"
+        "exact=0x401005,0x401006"
+    )

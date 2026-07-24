@@ -1125,3 +1125,37 @@ identities in the candidate-scoped fragment plan, preserve both native EA
 anchors in the rejection, and correct the composition at its identity source.
 It must not deduplicate after construction, weaken `FragmentPlan` validation, or
 attempt the broad 91-route publication.
+
+**2026-07-24T09:58:14Z**
+
+The duplicate plan-local block-id slice is verified and ready for its own
+commit. The collision came from canonical composition naming every external
+block from its current `start_ea`. In A560's CALLS graph, several imported
+router blocks retain the placeholder start EA `0x40A560` while owning distinct
+native instruction ranges, so distinct portable identities collapsed to one
+`external:0x40A560` identifier.
+
+Frontend normalization and canonical composition now share one portable
+identity token and deterministic semantic-anchor implementation from
+`d810.ir.block_identity`. The token contains the complete stable native ranges
+and exact instruction EAs and never contains a block serial. Two current blocks
+with genuinely identical stable identities reject as
+`external_identity_ambiguous`, with both snapshot-local owners rendered as
+`blkN@EA` and the complete stable identity included in the payload.
+
+The identity, frontend-normalization, and canonical-composition suites are
+56/56 green, and changed-file Ruff and diff checks pass. The mandatory exact
+A560 canary completed in 16.39 seconds without a process segfault or INTERR.
+Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784887027_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-identity-block-ids.txt`. The semantic oracle remains red
+with one residual `while ( 1 )`.
+
+The duplicate-block-id failure is gone, but the highest contiguous level
+remains C2 because no canonical plan is yet published. The next C3 obligation
+is a new `FragmentPlanRejected`: selected normalization replacement
+`native[0x40A5F0-0x40A5F1,0x40A5F6-0x40A5F7,0x40A5F8-0x40A5F9,0x40A5FE-0x40A5FF;exact=0x40A5F0,0x40A5F6,0x40A5F8,0x40A5FE]:replacement`
+does not include the original block it names. The next slice must close the
+selected detached component over replacement-to-original ownership before
+constructing the canonical plan; it must not weaken the plan invariant or
+deduplicate blocks afterward.

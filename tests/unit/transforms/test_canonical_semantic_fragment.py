@@ -426,6 +426,99 @@ def test_canonical_route_rebinds_retained_corridor_to_live_source_subset() -> No
     )
 
 
+def test_canonical_composition_ids_external_blocks_by_stable_identity() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            10: _block(
+                10,
+                0x1000,
+                succs=(20,),
+                preds=(),
+                insn_eas=(0x1001,),
+            ),
+            90: _block(
+                90,
+                0x1000,
+                succs=(20,),
+                preds=(20,),
+                insn_eas=(0x1400,),
+            ),
+        },
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    external_blocks = tuple(
+        block
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.EXTERNAL
+    )
+    assert len(external_blocks) == 2
+    assert len({block.block_id for block in external_blocks}) == 2
+    assert tuple(
+        sorted(block.semantic_anchor_ea for block in external_blocks)
+    ) == (0x1001, 0x1400)
+    assert all("serial" not in block.block_id for block in external_blocks)
+
+
+def test_canonical_composition_rejects_shared_external_stable_identity() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            10: _block(
+                10,
+                0x1000,
+                succs=(20,),
+                preds=(),
+                insn_eas=(0x1001,),
+            ),
+            90: _block(
+                90,
+                0x1000,
+                succs=(20,),
+                preds=(20,),
+                insn_eas=(0x1001,),
+            ),
+        },
+    )
+
+    with pytest.raises(
+        CanonicalSemanticFragmentRejected,
+        match="external stable identity has multiple current owners",
+    ) as exc_info:
+        compose_canonical_semantic_fragment_plan(
+            graph,
+            normalization_plan,
+            evidence,
+            prohibited_dispatcher_serials=(90,),
+        )
+
+    assert exc_info.value.reason_code == "external_identity_ambiguous"
+    assert exc_info.value.anchor_ea == 0x1001
+    assert exc_info.value.payload == {
+        "candidate_owner": "blk90@0x1001",
+        "existing_owner": "blk10@0x1001",
+        "stable_identity": (
+            "input=sha256:test-input-a function-rva=0x1000 "
+            "exact-ea=[0x1001] native-ea=[0x1000-0x1002]"
+        ),
+    }
+
+
 def test_canonical_route_rejects_split_materialized_delivery_ownership() -> None:
     graph, normalization_plan, evidence = _omitted_delivery_source_case()
     graph = replace(
