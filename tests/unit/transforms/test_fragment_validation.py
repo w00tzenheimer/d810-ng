@@ -971,9 +971,22 @@ def test_reachable_residual_dispatcher_route_is_rejected() -> None:
         replace(projection.block("dispatcher"), predecessors=("false",)),
     )
 
-    assert FragmentValidationPostcondition.DISPATCHER_ABSENCE in _failed_codes(
-        _plan(),
-        projection,
+    failure = next(
+        outcome
+        for outcome in validate_fragment_projection(_plan(), projection).failures
+        if outcome.postcondition
+        is FragmentValidationPostcondition.DISPATCHER_ABSENCE
+    )
+    assert failure.block_ids == (
+        "entry",
+        "replacement",
+        "condition.fallthrough",
+        "false",
+        "dispatcher",
+    )
+    assert (
+        "witness=entry -> replacement -> condition.fallthrough -> false -> dispatcher"
+        in failure.reason
     )
 
 
