@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import sqlite3
 from pathlib import Path
 from d810.core.deobfuscation_case import (
@@ -89,6 +90,43 @@ class SqliteCaseDiagnosticReader:
             "mutation_receipt_identities",
         }
     )
+    _REQUIRED_COLUMNS = {
+        "diagnostic_schema": frozenset({"singleton", "version"}),
+        "diagnostic_sessions": frozenset(
+            {"session_id", "func_ea_i64", "native_key_json", "started_at"}
+        ),
+        "lifecycle_events": frozenset(
+            {
+                "event_id",
+                "session_id",
+                "event_seq",
+                "event_kind",
+                "func_ea_i64",
+                "correlation_id",
+                "summary",
+            }
+        ),
+        "evidence_generation_events": frozenset({"event_id", "outcome", "reason"}),
+        "identity_decisions": frozenset(
+            {"event_id", "outcome", "reason", "primary_anchor_ea_i64"}
+        ),
+        "mutation_plan_items": frozenset(
+            {
+                "event_id",
+                "mutation_batch_id",
+                "item_index",
+                "source_anchor_ea_i64",
+                "target_anchor_ea_i64",
+                "reason",
+            }
+        ),
+        "mutation_receipts": frozenset(
+            {"event_id", "mutation_batch_id", "outcome", "reason"}
+        ),
+        "mutation_receipt_identities": frozenset(
+            {"event_id", "identity_index", "primary_anchor_ea_i64"}
+        ),
+    }
 
     def __init__(self, paths: tuple[Path, ...]) -> None:
         self._paths = tuple(Path(path).expanduser().resolve() for path in paths)
@@ -101,7 +139,11 @@ class SqliteCaseDiagnosticReader:
     ) -> tuple[CaseDiagnosticRow, ...]:
         candidates: list[tuple[float, tuple[CaseDiagnosticRow, ...]]] = []
         for path in self._paths:
-            rows, started_at = self._records_for_path(path, int(function_ea))
+            rows, started_at = self._records_for_path(
+                path,
+                int(function_ea),
+                function_fingerprint,
+            )
             if rows:
                 candidates.append((started_at, rows))
         if not candidates:
@@ -113,6 +155,7 @@ class SqliteCaseDiagnosticReader:
         self,
         path: Path,
         function_ea: int,
+        function_fingerprint: str | None,
     ) -> tuple[tuple[CaseDiagnosticRow, ...], float]:
         if not path.is_file():
             return (), float("-inf")
@@ -126,18 +169,28 @@ class SqliteCaseDiagnosticReader:
         try:
             self._require_schema(connection, path)
             session = connection.execute(
-                "SELECT session_id,started_at FROM diagnostic_sessions "
+                "SELECT session_id,started_at,native_key_json FROM diagnostic_sessions "
                 "WHERE func_ea_i64=? ORDER BY started_at DESC,session_id DESC LIMIT 1",
                 (function_ea,),
             ).fetchone()
             if session is None:
                 return (), float("-inf")
+            native_fingerprint = self._native_fingerprint(
+                session["native_key_json"],
+                path,
+            )
+            if (
+                function_fingerprint is not None
+                and native_fingerprint != function_fingerprint
+            ):
+                return (), float("-inf")
             session_id = str(session["session_id"])
             rows = tuple(
                 row
                 for event in connection.execute(
-                    "SELECT event_id,event_seq,event_kind,summary FROM lifecycle_events "
-                    "WHERE session_id=? AND func_ea_i64=? ORDER BY event_seq,event_id",
+                    "SELECT event_id,event_seq,event_kind,correlation_id,summary "
+                    "FROM lifecycle_events WHERE session_id=? AND func_ea_i64=? "
+                    "ORDER BY event_seq,event_id",
                     (session_id, function_ea),
                 )
                 if (row := self._project_event(connection, session_id, event)) is not None
@@ -158,6 +211,17 @@ class SqliteCaseDiagnosticReader:
             raise DeobfuscationCaseEvidenceError(
                 f"unsupported diagnostic schema missing tables: {', '.join(missing)}"
             )
+        for table, required in self._REQUIRED_COLUMNS.items():
+            available = {
+                str(row[1])
+                for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            missing_columns = sorted(required.difference(available))
+            if missing_columns:
+                raise DeobfuscationCaseEvidenceError(
+                    "unsupported diagnostic schema missing columns for "
+                    f"{table}: {', '.join(missing_columns)}"
+                )
         row = connection.execute(
             "SELECT version FROM diagnostic_schema WHERE singleton=1"
         ).fetchone()
@@ -167,6 +231,25 @@ class SqliteCaseDiagnosticReader:
                 "unsupported diagnostic schema version: "
                 f"expected {self._SUPPORTED_SCHEMA_VERSION}, observed {observed!r} at {path}"
             )
+
+    @staticmethod
+    def _native_fingerprint(native_key_json: object, path: Path) -> str:
+        try:
+            native_key = json.loads(str(native_key_json))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise DeobfuscationCaseEvidenceError(
+                f"malformed native identity at {path}"
+            ) from exc
+        if not isinstance(native_key, dict):
+            raise DeobfuscationCaseEvidenceError(
+                f"malformed native identity at {path}"
+            )
+        fingerprint = native_key.get("function_fingerprint")
+        if not isinstance(fingerprint, str) or not fingerprint.strip():
+            raise DeobfuscationCaseEvidenceError(
+                f"malformed native identity at {path}: missing function_fingerprint"
+            )
+        return fingerprint
 
     @staticmethod
     def _project_event(
@@ -238,13 +321,22 @@ class SqliteCaseDiagnosticReader:
             )
         if event_kind == "mutation_plan":
             record = connection.execute(
-                "SELECT source_anchor_ea_i64,target_anchor_ea_i64,reason "
+                "SELECT mutation_batch_id,source_anchor_ea_i64,target_anchor_ea_i64,reason "
                 "FROM mutation_plan_items WHERE event_id=? ORDER BY item_index LIMIT 1",
                 (event_id,),
             ).fetchone()
             if record is None:
                 raise DeobfuscationCaseEvidenceError(
                     f"plan event {event_id} has no typed plan item"
+                )
+            correlation_id = event["correlation_id"]
+            if not isinstance(correlation_id, str) or not correlation_id:
+                raise DeobfuscationCaseEvidenceError(
+                    f"plan event {event_id} lacks its correlation identity"
+                )
+            if str(record["mutation_batch_id"]) != correlation_id:
+                raise DeobfuscationCaseEvidenceError(
+                    f"plan event {event_id} correlation does not match its plan item"
                 )
             anchor = record["source_anchor_ea_i64"] or record["target_anchor_ea_i64"]
             if anchor is None:
@@ -264,7 +356,7 @@ class SqliteCaseDiagnosticReader:
             )
         if event_kind == "mutation_receipt":
             record = connection.execute(
-                "SELECT outcome,reason FROM mutation_receipts WHERE event_id=?",
+                "SELECT mutation_batch_id,outcome,reason FROM mutation_receipts WHERE event_id=?",
                 (event_id,),
             ).fetchone()
             anchor_row = connection.execute(
@@ -275,6 +367,25 @@ class SqliteCaseDiagnosticReader:
             if record is None or anchor_row is None:
                 raise DeobfuscationCaseEvidenceError(
                     f"receipt event {event_id} lacks typed receipt identity"
+                )
+            correlation_id = event["correlation_id"]
+            if not isinstance(correlation_id, str) or not correlation_id:
+                raise DeobfuscationCaseEvidenceError(
+                    f"receipt event {event_id} lacks its correlation identity"
+                )
+            if str(record["mutation_batch_id"]) != correlation_id:
+                raise DeobfuscationCaseEvidenceError(
+                    f"receipt event {event_id} correlation does not match its receipt"
+                )
+            plan = connection.execute(
+                "SELECT 1 FROM lifecycle_events WHERE session_id=? "
+                "AND event_kind='mutation_plan' AND correlation_id=? "
+                "AND event_seq<? LIMIT 1",
+                (session_id, correlation_id, sequence),
+            ).fetchone()
+            if plan is None:
+                raise DeobfuscationCaseEvidenceError(
+                    f"receipt event {event_id} lacks its correlated plan"
                 )
             committed = str(record["outcome"]) == "committed"
             return CaseDiagnosticRow(

@@ -3,9 +3,12 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from d810.core.deobfuscation_case import CaseEvidenceLevel, CaseFindingKind
 from d810.diagnostics.deobfuscation_case_repository import (
     CaseDiagnosticRow,
+    DeobfuscationCaseEvidenceError,
     DeobfuscationCaseRepository,
     SqliteCaseDiagnosticReader,
 )
@@ -106,7 +109,12 @@ def test_repository_returns_none_when_no_typed_rows_match() -> None:
     assert repository.load(0x1800020F0, "native-key:fixture") is None
 
 
-def _lifecycle_database(path: Path) -> Path:
+def _lifecycle_database(
+    path: Path,
+    *,
+    native_key_json: str = '{"function_fingerprint":"native:fixture"}',
+    receipt_batch_id: str = "batch-1",
+) -> Path:
     connection = sqlite3.connect(path)
     connection.executescript(
         """
@@ -117,7 +125,8 @@ def _lifecycle_database(path: Path) -> Path:
         );
         CREATE TABLE lifecycle_events (
             event_id INTEGER PRIMARY KEY, session_id TEXT, event_seq INTEGER,
-            timestamp REAL, event_kind TEXT, func_ea_i64 INTEGER, summary TEXT
+            timestamp REAL, event_kind TEXT, func_ea_i64 INTEGER,
+            correlation_id TEXT, summary TEXT
         );
         CREATE TABLE evidence_generation_events (
             event_id INTEGER PRIMARY KEY, outcome TEXT, reason TEXT
@@ -127,8 +136,8 @@ def _lifecycle_database(path: Path) -> Path:
             primary_anchor_ea_i64 INTEGER
         );
         CREATE TABLE mutation_plan_items (
-            event_id INTEGER, item_index INTEGER, source_anchor_ea_i64 INTEGER,
-            target_anchor_ea_i64 INTEGER, reason TEXT
+            event_id INTEGER, mutation_batch_id TEXT, item_index INTEGER,
+            source_anchor_ea_i64 INTEGER, target_anchor_ea_i64 INTEGER, reason TEXT
         );
         CREATE TABLE mutation_receipts (
             event_id INTEGER PRIMARY KEY, mutation_batch_id TEXT,
@@ -139,18 +148,28 @@ def _lifecycle_database(path: Path) -> Path:
             primary_anchor_ea_i64 INTEGER
         );
         INSERT INTO diagnostic_schema VALUES (1, 7);
-        INSERT INTO diagnostic_sessions VALUES ('run-1', 6442459376, '{"ea":6442459376}', 10.0);
         INSERT INTO lifecycle_events VALUES
-            (1, 'run-1', 1, 11.0, 'evidence_generation', 6442459376, 'native evidence accepted'),
-            (2, 'run-1', 2, 12.0, 'identity_decision', 6442459376, 'identity accepted'),
-            (3, 'run-1', 3, 13.0, 'mutation_plan', 6442459376, 'fragment planned'),
-            (4, 'run-1', 4, 14.0, 'mutation_receipt', 6442459376, 'fragment aborted');
+            (1, 'run-1', 1, 11.0, 'evidence_generation', 6442459376, NULL, 'native evidence accepted'),
+            (2, 'run-1', 2, 12.0, 'identity_decision', 6442459376, NULL, 'identity accepted'),
+            (3, 'run-1', 3, 13.0, 'mutation_plan', 6442459376, 'batch-1', 'fragment planned'),
+            (4, 'run-1', 4, 14.0, 'mutation_receipt', 6442459376, 'batch-1', 'fragment aborted');
         INSERT INTO evidence_generation_events VALUES (1, 'accepted', 'native facts ready');
         INSERT INTO identity_decisions VALUES (2, 'accepted', 'unique native block', 6442459376);
-        INSERT INTO mutation_plan_items VALUES (3, 0, 6442459376, NULL, 'plan item');
-        INSERT INTO mutation_receipts VALUES (4, 'batch-1', 'aborted', 'unique realization failed');
+        INSERT INTO mutation_plan_items VALUES (3, 'batch-1', 0, 6442459376, NULL, 'plan item');
         INSERT INTO mutation_receipt_identities VALUES (4, 0, 6442459376);
         """
+    )
+    connection.execute(
+        "INSERT INTO diagnostic_sessions VALUES ('run-1', 6442459376, ?, 10.0)",
+        (native_key_json,),
+    )
+    connection.execute(
+        "INSERT INTO mutation_receipts VALUES (4, ?, 'aborted', 'unique realization failed')",
+        (receipt_batch_id,),
+    )
+    connection.execute(
+        "UPDATE lifecycle_events SET correlation_id=? WHERE event_id=4",
+        (receipt_batch_id,),
     )
     connection.commit()
     connection.close()
@@ -176,3 +195,46 @@ def test_sqlite_reader_projects_typed_lifecycle_rows_without_log_parsing(
     assert [row.sequence for row in rows] == [1, 2, 3, 4]
     assert rows[-1].blocked_obligation == "unique realization failed"
     assert rows[-1].native_ea == 0x1800020F0
+
+
+def test_sqlite_reader_rejects_a_stale_native_preanalysis_fingerprint(
+    tmp_path: Path,
+) -> None:
+    path = _lifecycle_database(tmp_path / "case.diag.sqlite3")
+
+    rows = SqliteCaseDiagnosticReader((path,)).case_records(
+        function_ea=0x1800020F0,
+        function_fingerprint="native:changed",
+    )
+
+    assert rows == ()
+
+
+def test_sqlite_reader_rejects_a_malformed_native_preanalysis_identity(
+    tmp_path: Path,
+) -> None:
+    path = _lifecycle_database(
+        tmp_path / "case.diag.sqlite3",
+        native_key_json="not-json",
+    )
+
+    with pytest.raises(DeobfuscationCaseEvidenceError, match="native identity"):
+        SqliteCaseDiagnosticReader((path,)).case_records(
+            function_ea=0x1800020F0,
+            function_fingerprint="native:fixture",
+        )
+
+
+def test_sqlite_reader_rejects_a_receipt_without_its_correlated_plan(
+    tmp_path: Path,
+) -> None:
+    path = _lifecycle_database(
+        tmp_path / "case.diag.sqlite3",
+        receipt_batch_id="batch-without-plan",
+    )
+
+    with pytest.raises(DeobfuscationCaseEvidenceError, match="correlated plan"):
+        SqliteCaseDiagnosticReader((path,)).case_records(
+            function_ea=0x1800020F0,
+            function_fingerprint=None,
+        )
