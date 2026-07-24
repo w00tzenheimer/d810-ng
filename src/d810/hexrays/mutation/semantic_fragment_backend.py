@@ -2189,6 +2189,7 @@ def _project_fragment(
     predecessors: dict[str, list[str]] = {}
     kinds: dict[str, BlockKind] = {}
     physical_positions: dict[str, int] = {}
+    adjacent_fallthrough_target_ids: dict[str, str | None] = {}
     instruction_eas: dict[str, tuple[int, ...]] = {}
     for block_id, block in live_by_id.items():
         successors[block_id] = [
@@ -2205,8 +2206,18 @@ def _project_fragment(
             )
             for serial in block.predset
         ]
-        kinds[block_id] = _block_kind(int(block.type))
+        block_kind = _block_kind(int(block.type))
+        kinds[block_id] = block_kind
         physical_positions[block_id] = int(block.serial)
+        next_block = getattr(block, "nextb", None)
+        adjacent_fallthrough_target_ids[block_id] = (
+            None
+            if block_kind is not BlockKind.TWO_WAY or next_block is None
+            else ids_by_serial.get(
+                int(next_block.serial),
+                _unowned_endpoint(modifier, int(next_block.serial)),
+            )
+        )
         instruction_eas[block_id] = _instruction_eas(
             block,
             state.instruction_origins_by_block_id.get(block_id),
@@ -2252,12 +2263,15 @@ def _project_fragment(
                             physical_positions[block_id] = position + 1
                     kinds[helper_id] = BlockKind.ONE_WAY
                     physical_positions[helper_id] = insertion_position
+                    adjacent_fallthrough_target_ids[helper_id] = None
                     instruction_eas[helper_id] = ()
                     flag_write_eas[helper_id] = frozenset()
                     successors[helper_id] = [root_id]
                     predecessors[helper_id] = [predecessor_id]
                     predecessors[root_id].append(helper_id)
                     projected_target_id = helper_id
+                    if kinds[predecessor_id] is BlockKind.TWO_WAY:
+                        adjacent_fallthrough_target_ids[predecessor_id] = helper_id
                 else:
                     predecessors[root_id].append(predecessor_id)
                 successors[predecessor_id] = [
@@ -2280,6 +2294,9 @@ def _project_fragment(
             successors=tuple(successors[block_id]),
             predecessors=tuple(predecessors[block_id]),
             physical_position=physical_positions[block_id],
+            adjacent_fallthrough_target_id=(
+                adjacent_fallthrough_target_ids[block_id]
+            ),
             instruction_eas=instruction_eas[block_id],
             flag_write_eas=flag_write_eas[block_id],
         )
