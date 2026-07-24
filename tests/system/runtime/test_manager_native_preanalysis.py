@@ -562,6 +562,87 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
     assert state.materialization.resolution is resolution
 
 
+def test_preflight_records_complete_call_companion_mismatch(
+    monkeypatch,
+) -> None:
+    import d810.core.observability as observability
+
+    session = DecompilationSessionContext(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+
+    class _Lifecycle:
+        @staticmethod
+        def ensure_hexrays_session(**_kwargs):
+            return session, True
+
+        @staticmethod
+        def begin_native_preanalysis(_session):
+            return None
+
+        @staticmethod
+        def finish_native_preanalysis(_session):
+            return None
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    manager._database_identity = "sample.i64"
+    resolution = SimpleNamespace(jmp_targets=(0x401100,))
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_has_unresolved_computed_goto",
+        lambda _function_ea: True,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "stage_computed_goto_preanalysis",
+        lambda _function_ea, *, state: resolution,
+    )
+    mismatch = computed_goto_resolver.CallCompanionPreparationOutcome(
+        native_range=(0x40C26D, 0x40C2FB),
+        component_target_ea=0x40C26D,
+        captured=False,
+        preopt_call_eas=(0x40C2A9, 0x40C2BE),
+        calls_call_eas=(0x40C2A9, 0x40C2F0),
+        mismatch_ea=0x40C2BE,
+        reason="call_ea_set_mismatch",
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_requested_detached_call_companions",
+        lambda _state: (mismatch,),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_terminal_return_carrier_evidence",
+        lambda _state: 0,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_detached_handler_snippets",
+        lambda _state: 0,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "discover_static_native_bootstrap_routes",
+        lambda _function_ea, _state: False,
+    )
+    events: list[object] = []
+    monkeypatch.setattr(observability, "emit", events.append)
+
+    assert manager.prepare_native_preanalysis(0x401000) == 0
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_kind == "semantic_native_body_companion_prepared"
+    assert event.payload["preopt_call_eas"] == [0x40C2A9, 0x40C2BE]
+    assert event.payload["calls_call_eas"] == [0x40C2A9, 0x40C2F0]
+    assert event.payload["mismatch_ea"] == 0x40C2BE
+
+
 def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
     monkeypatch,
 ) -> None:

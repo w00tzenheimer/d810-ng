@@ -513,9 +513,19 @@ class D810Manager:
                                             outcome.component_target_ea
                                         )
                                     ),
-                                    "call_eas": [
-                                        int(ea) for ea in outcome.call_eas
+                                    "preopt_call_eas": [
+                                        int(ea)
+                                        for ea in outcome.preopt_call_eas
                                     ],
+                                    "calls_call_eas": [
+                                        int(ea)
+                                        for ea in outcome.calls_call_eas
+                                    ],
+                                    "mismatch_ea": (
+                                        None
+                                        if outcome.mismatch_ea is None
+                                        else int(outcome.mismatch_ea)
+                                    ),
                                     "captured": bool(outcome.captured),
                                     "reason": str(outcome.reason),
                                     "pending_ranges": [

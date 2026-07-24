@@ -908,6 +908,72 @@ def test_calls_native_body_rejects_other_maturity_before_staging(
     assert destination.chains_dirty == 0
 
 
+def test_preopt_union_call_companion_reports_both_mismatched_inventories(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    union_target_ea = 0x3300
+    native_range = (0x3340, 0x3380)
+    first_call_ea = 0x3350
+    second_call_ea = 0x3360
+    invented_call_ea = 0x3370
+    signature = detached_handler_island._DetachedCallSignature(
+        opcode=ida_hexrays.m_call,
+        direct_callee_ea=0x500000,
+        has_arglist=True,
+    )
+    raw_template = object()
+    monkeypatch.setitem(
+        detached_handler_island._PREOPT_UNION_SNIPPET_TEMPLATES,
+        (function_ea, union_target_ea),
+        raw_template,
+    )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_template_call_signatures_in_range",
+        lambda template, candidate_range: (
+            {
+                first_call_ea: signature,
+                second_call_ea: signature,
+            },
+            None,
+        )
+        if template is raw_template and candidate_range == native_range
+        else ({}, None),
+    )
+    calls_mba = SimpleNamespace(maturity=ida_hexrays.MMAT_CALLS)
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_mba_call_signatures_in_range",
+        lambda mba, candidate_range: (
+            {
+                first_call_ea: signature,
+                invented_call_ea: signature,
+            },
+            None,
+        )
+        if mba is calls_mba and candidate_range == native_range
+        else ({}, None),
+    )
+
+    result = (
+        detached_handler_island.capture_preopt_union_call_companion_template(
+            function_ea,
+            union_target_ea,
+            native_range[0],
+            calls_mba,
+            native_range,
+        )
+    )
+
+    assert not result.captured
+    assert result.reason == "call_ea_set_mismatch"
+    assert result.call_eas == (first_call_ea, second_call_ea)
+    assert result.observed_call_eas == (first_call_ea, invented_call_ea)
+    assert result.mismatch_ea == second_call_ea
+
+
 def _calls_native_body_with_raw_call(
     monkeypatch,
     *,

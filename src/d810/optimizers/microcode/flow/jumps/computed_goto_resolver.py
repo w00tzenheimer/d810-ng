@@ -8231,7 +8231,9 @@ class CallCompanionPreparationOutcome(NamedTuple):
     native_range: tuple[int, int]
     component_target_ea: int | None
     captured: bool
-    call_eas: tuple[int, ...]
+    preopt_call_eas: tuple[int, ...]
+    calls_call_eas: tuple[int, ...]
+    mismatch_ea: int | None
     reason: str
 
 
@@ -8279,7 +8281,9 @@ def prepare_requested_detached_call_companions(
                 native_range=native_range,
                 component_target_ea=None,
                 captured=False,
-                call_eas=(),
+                preopt_call_eas=(),
+                calls_call_eas=(),
+                mismatch_ea=None,
                 reason="portable_preopt_union_source_missing",
             )
             for native_range in requested_ranges
@@ -8291,7 +8295,9 @@ def prepare_requested_detached_call_companions(
                 native_range=native_range,
                 component_target_ea=None,
                 captured=False,
-                call_eas=(),
+                preopt_call_eas=(),
+                calls_call_eas=(),
+                mismatch_ea=None,
                 reason="snippet_capture_active",
             )
             for native_range in requested_ranges
@@ -8313,7 +8319,9 @@ def prepare_requested_detached_call_companions(
                         native_range=normalized_range,
                         component_target_ea=None,
                         captured=False,
-                        call_eas=(),
+                        preopt_call_eas=(),
+                        calls_call_eas=(),
+                        mismatch_ea=None,
                         reason="requested_range_outside_preopt_union",
                     )
                 )
@@ -8331,7 +8339,9 @@ def prepare_requested_detached_call_companions(
                         native_range=normalized_range,
                         component_target_ea=None,
                         captured=False,
-                        call_eas=(),
+                        preopt_call_eas=(),
+                        calls_call_eas=(),
+                        mismatch_ea=None,
                         reason="requested_range_has_no_owned_entry",
                     )
                 )
@@ -8373,7 +8383,9 @@ def prepare_requested_detached_call_companions(
                         native_range=normalized_range,
                         component_target_ea=component_target_ea,
                         captured=False,
-                        call_eas=(),
+                        preopt_call_eas=(),
+                        calls_call_eas=(),
+                        mismatch_ea=None,
                         reason=(
                             "calls_generation_failed:"
                             f"{failure.desc()}"
@@ -8404,7 +8416,15 @@ def prepare_requested_detached_call_companions(
                 native_range=normalized_range,
                 component_target_ea=component_target_ea,
                 captured=bool(capture.captured),
-                call_eas=tuple(int(ea) for ea in capture.call_eas),
+                preopt_call_eas=tuple(int(ea) for ea in capture.call_eas),
+                calls_call_eas=tuple(
+                    int(ea) for ea in capture.observed_call_eas
+                ),
+                mismatch_ea=(
+                    None
+                    if capture.mismatch_ea is None
+                    else int(capture.mismatch_ea)
+                ),
                 reason=str(capture.reason or "captured"),
             )
             outcomes.append(outcome)
