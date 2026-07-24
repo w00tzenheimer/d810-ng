@@ -34,6 +34,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentConditionalSelectEnvelope,
     FragmentDataFlowObligation,
     FragmentDataFlowRole,
     FragmentDirectTransferRewrite,
@@ -346,14 +347,13 @@ def _portable_dispatcher_scc_witnesses(
 
 
 def _merged_imported_ranges(
-    plan: FragmentPlan,
-    block_ids: frozenset[str],
+    blocks: Iterable[FragmentBlock],
     operations: tuple[FragmentOperation, ...],
 ) -> tuple[NativeEaInterval, ...]:
     intervals = [
         interval
-        for block_id in block_ids
-        for interval in plan.block(block_id).stable_identity.native_ranges.intervals
+        for block in blocks
+        for interval in block.stable_identity.native_ranges.intervals
     ]
     for operation in operations:
         normalization = operation.computed_branch_normalization
@@ -381,6 +381,94 @@ def _merged_imported_ranges(
     return tuple(merged)
 
 
+def _prohibited_frontend_replacement_ids(
+    plan: FragmentPlan,
+    *,
+    prohibited_dispatcher_serials: frozenset[int],
+    current_identity_by_serial: Mapping[int, StableBlockIdentity],
+) -> frozenset[str]:
+    """Find frontend replacements whose current owners must disappear."""
+    prohibited_identities = tuple(
+        (serial, current_identity_by_serial.get(serial))
+        for serial in sorted(prohibited_dispatcher_serials)
+    )
+    replacement_ids: set[str] = set()
+    for block in plan.blocks:
+        identity = block.stable_identity
+        if block.role is not FragmentBlockRole.REPLACEMENT or identity is None:
+            continue
+        matches = tuple(
+            (serial, current_identity)
+            for serial, current_identity in prohibited_identities
+            if current_identity is not None
+            and stable_block_identities_refine_at_anchor(
+                identity,
+                current_identity,
+                block.semantic_anchor_ea,
+            )
+        )
+        if len(matches) > 1:
+            raise CanonicalSemanticFragmentRejected(
+                "frontend replacement refines multiple prohibited current owners",
+                reason_code="prohibited_replacement_owner_ambiguous",
+                anchor_ea=int(block.semantic_anchor_ea),
+                payload={
+                    "replacement_block_id": block.block_id,
+                    "current_owner_labels": tuple(
+                        f"blk{serial}@0x{stable_block_identity_semantic_anchor(current_identity):X}"
+                        for serial, current_identity in matches
+                    ),
+                },
+            )
+        if matches:
+            replacement_ids.add(block.block_id)
+    return frozenset(replacement_ids)
+
+
+def _as_imported_frontend_operation(
+    plan: FragmentPlan,
+    operation: FragmentOperation,
+) -> FragmentOperation:
+    """Convert one validated live split envelope into portable import proof."""
+    normalization = operation.computed_branch_normalization
+    envelope = (
+        None
+        if normalization is None
+        else normalization.conditional_select_envelope
+    )
+    if not isinstance(envelope, FragmentConditionalSelectEnvelope):
+        source = plan.block(operation.source_block_id)
+        raise CanonicalSemanticFragmentRejected(
+            "prohibited frontend replacement lacks a portable split envelope",
+            reason_code="prohibited_replacement_envelope_unsupported",
+            anchor_ea=int(source.semantic_anchor_ea),
+            payload={"operation_id": operation.operation_id},
+        )
+    selected = plan.block(envelope.selected_value_block_id)
+    join = plan.block(envelope.join_block_id)
+    if selected.stable_identity is None or join.stable_identity is None:
+        raise CanonicalSemanticFragmentRejected(
+            "prohibited frontend replacement split owners lack stable identity",
+            reason_code="prohibited_replacement_split_identity_missing",
+            anchor_ea=int(envelope.predicate_ea),
+            payload={"operation_id": operation.operation_id},
+        )
+    return replace(
+        operation,
+        computed_branch_normalization=replace(
+            normalization,
+            conditional_select_envelope=(
+                FragmentImportedConditionalSelectEnvelope(
+                    source_branch_ea=int(envelope.predicate_ea),
+                    selected_value_ea=int(envelope.predicate_ea),
+                    selected_value_identity=selected.stable_identity,
+                    join_identity=join.stable_identity,
+                )
+            ),
+        ),
+    )
+
+
 def _detached_target_component(
     graph: FlowGraph,
     plan: FragmentPlan,
@@ -388,6 +476,7 @@ def _detached_target_component(
     *,
     current_identity_by_serial: Mapping[int, StableBlockIdentity],
     canonical_proof_id: str,
+    prohibited_dispatcher_serials: frozenset[int],
 ) -> tuple[
     tuple[FragmentBlock, ...],
     tuple[FragmentOperation, ...],
@@ -406,6 +495,11 @@ def _detached_target_component(
     operation_by_source = {
         operation.source_block_id: operation for operation in plan.operations
     }
+    reimportable_replacement_ids = _prohibited_frontend_replacement_ids(
+        plan,
+        prohibited_dispatcher_serials=prohibited_dispatcher_serials,
+        current_identity_by_serial=current_identity_by_serial,
+    )
     selected_ids: set[str] = set()
     selected_operation_ids: set[str] = set()
     published_imported_identity_by_id: dict[str, StableBlockIdentity] = {}
@@ -414,13 +508,23 @@ def _detached_target_component(
         block_id = pending.pop()
         if block_id in selected_ids:
             continue
-        if block_id not in native_block_ids:
+        if (
+            block_id not in native_block_ids
+            and block_id not in reimportable_replacement_ids
+        ):
             raise CanonicalSemanticFragmentRejected(
                 "detached canonical target component escapes its native body"
             )
         selected_ids.add(block_id)
         operation = operation_by_source.get(block_id)
         if operation is None:
+            if block_id in reimportable_replacement_ids:
+                raise CanonicalSemanticFragmentRejected(
+                    "prohibited frontend replacement lacks semantic topology",
+                    reason_code="prohibited_replacement_topology_missing",
+                    anchor_ea=int(plan.block(block_id).semantic_anchor_ea),
+                    payload={"replacement_block_id": block_id},
+                )
             if block_id not in native_body.terminal_block_ids:
                 raise CanonicalSemanticFragmentRejected(
                     "detached canonical target component lacks closed topology"
@@ -439,6 +543,35 @@ def _detached_target_component(
                     edge_target.stable_identity,
                     current_identity_by_serial=current_identity_by_serial,
                 )
+                prohibited_owners = tuple(
+                    owner
+                    for owner in current_owners
+                    if int(owner[0]) in prohibited_dispatcher_serials
+                )
+                if prohibited_owners:
+                    nonprohibited_owners = tuple(
+                        owner
+                        for owner in current_owners
+                        if int(owner[0]) not in prohibited_dispatcher_serials
+                    )
+                    if nonprohibited_owners:
+                        raise CanonicalSemanticFragmentRejected(
+                            "imported body identity has mixed prohibited and "
+                            "published current owners",
+                            reason_code=(
+                                "imported_boundary_current_owner_mixed"
+                            ),
+                            anchor_ea=int(edge_target.semantic_anchor_ea),
+                            payload={
+                                "boundary_block_id": edge_target.block_id,
+                                "current_owner_labels": tuple(
+                                    f"blk{serial}@0x{anchor_ea:X}"
+                                    for serial, anchor_ea, _identity in current_owners
+                                ),
+                            },
+                        )
+                    pending.append(edge_target.block_id)
+                    continue
                 if (
                     edge_target.block_id != target.block_id
                     and len(current_owners) > 1
@@ -467,6 +600,8 @@ def _detached_target_component(
                     ] = current_owners[0][2]
                     continue
                 pending.append(edge_target.block_id)
+            elif edge_target.block_id in reimportable_replacement_ids:
+                pending.append(edge_target.block_id)
             else:
                 selected_ids.add(edge_target.block_id)
 
@@ -475,13 +610,19 @@ def _detached_target_component(
         for operation in plan.operations
         if operation.operation_id in selected_operation_ids
     )
-    selected_imported_ids = frozenset(
+    selected_native_imported_ids = frozenset(
         block_id
         for block_id in selected_ids
         if (
             plan.block(block_id).role is FragmentBlockRole.IMPORTED
             and block_id not in published_imported_identity_by_id
         )
+    )
+    selected_reimported_ids = frozenset(
+        selected_ids.intersection(reimportable_replacement_ids)
+    )
+    selected_import_source_ids = (
+        selected_native_imported_ids | selected_reimported_ids
     )
     scoped_body_id = (
         f"{native_body.body_id}:canonical:{canonical_proof_id}"
@@ -491,7 +632,7 @@ def _detached_target_component(
     for block in plan.blocks:
         if (
             block.block_id not in selected_ids
-            or block.block_id in selected_imported_ids
+            or block.block_id in selected_import_source_ids
         ):
             continue
         identity = published_imported_identity_by_id.get(
@@ -540,46 +681,104 @@ def _detached_target_component(
         projected_boundary_by_id[projected_id] = projected
         boundary_id_by_source_id[block.block_id] = projected_id
 
-    selected_operations = tuple(
-        replace(
-            operation,
-            edges=tuple(
-                replace(
-                    edge,
-                    target_block_id=boundary_id_by_source_id.get(
-                        edge.target_block_id,
-                        edge.target_block_id,
-                    ),
-                )
-                for edge in operation.edges
-            ),
+    imported_id_by_source_id: dict[str, str] = {}
+    occupied_block_ids = {
+        *(block.block_id for block in plan.blocks),
+        *projected_boundary_by_id,
+    }
+    for source_id in selected_reimported_ids:
+        source = plan.block(source_id)
+        identity = source.stable_identity
+        if identity is None:
+            raise CanonicalSemanticFragmentRejected(
+                "prohibited frontend replacement lacks stable identity",
+                reason_code="prohibited_replacement_identity_missing",
+                anchor_ea=int(source.semantic_anchor_ea),
+                payload={"replacement_block_id": source_id},
+            )
+        imported_id = (
+            f"native[{stable_block_identity_token(identity)}]:imported"
         )
-        for operation in selected_operations
-    )
+        if imported_id in occupied_block_ids and imported_id != source_id:
+            raise CanonicalSemanticFragmentRejected(
+                "prohibited frontend replacement import identity conflicts",
+                reason_code="prohibited_replacement_import_id_conflict",
+                anchor_ea=int(source.semantic_anchor_ea),
+                payload={
+                    "replacement_block_id": source_id,
+                    "imported_block_id": imported_id,
+                },
+            )
+        occupied_block_ids.add(imported_id)
+        imported_id_by_source_id[source_id] = imported_id
+
+    selected_imported_blocks: list[FragmentBlock] = []
+    for block in plan.blocks:
+        if block.block_id in selected_native_imported_ids:
+            selected_imported_blocks.append(
+                replace(block, native_body_id=scoped_body_id)
+            )
+            continue
+        if block.block_id not in selected_reimported_ids:
+            continue
+        selected_imported_blocks.append(
+            FragmentBlock(
+                block_id=imported_id_by_source_id[block.block_id],
+                role=FragmentBlockRole.IMPORTED,
+                materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+                semantic_anchor_ea=int(block.semantic_anchor_ea),
+                stable_identity=block.stable_identity,
+                native_body_id=scoped_body_id,
+            )
+        )
+
+    rewritten_operations: list[FragmentOperation] = []
+    for operation in selected_operations:
+        rewritten = (
+            _as_imported_frontend_operation(plan, operation)
+            if operation.source_block_id in selected_reimported_ids
+            else operation
+        )
+        rewritten_operations.append(
+            replace(
+                rewritten,
+                source_block_id=imported_id_by_source_id.get(
+                    rewritten.source_block_id,
+                    rewritten.source_block_id,
+                ),
+                edges=tuple(
+                    replace(
+                        edge,
+                        target_block_id=imported_id_by_source_id.get(
+                            edge.target_block_id,
+                            boundary_id_by_source_id.get(
+                                edge.target_block_id,
+                                edge.target_block_id,
+                            ),
+                        ),
+                    )
+                    for edge in rewritten.edges
+                ),
+            )
+        )
+    selected_operations = tuple(rewritten_operations)
     selected_blocks = (
         *tuple(projected_boundary_by_id.values()),
-        *tuple(
-            replace(block, native_body_id=scoped_body_id)
-            for block in plan.blocks
-            if block.block_id in selected_imported_ids
-        ),
+        *selected_imported_blocks,
     )
     selected_native_body = FragmentNativeBody(
         body_id=scoped_body_id,
         block_ids=tuple(
-            block_id
-            for block_id in native_body.block_ids
-            if block_id in selected_imported_ids
+            block.block_id for block in selected_imported_blocks
         ),
         entry_block_ids=(target.block_id,),
         terminal_block_ids=tuple(
-            block_id
+            imported_id_by_source_id.get(block_id, block_id)
             for block_id in native_body.terminal_block_ids
-            if block_id in selected_imported_ids
+            if block_id in selected_native_imported_ids
         ),
         native_ranges=_merged_imported_ranges(
-            plan,
-            selected_imported_ids,
+            selected_imported_blocks,
             selected_operations,
         ),
         proof_ids=tuple(
@@ -1076,6 +1275,10 @@ def compose_canonical_semantic_fragment_plan(
         int(serial): identity
         for serial, identity in current_identity_by_serial.items()
     }
+    all_prohibited_serials = tuple(
+        dict.fromkeys(int(value) for value in prohibited_dispatcher_serials)
+    )
+    prohibited_serial_set = frozenset(all_prohibited_serials)
     if any(
         not isinstance(identity, StableBlockIdentity)
         for identity in current_identity_by_serial.values()
@@ -1192,6 +1395,7 @@ def compose_canonical_semantic_fragment_plan(
             canonical_proof_id="+".join(
                 item.proof_id for item in evidence.route_proofs
             ),
+            prohibited_dispatcher_serials=prohibited_serial_set,
         )
     )
     (
@@ -1222,6 +1426,7 @@ def compose_canonical_semantic_fragment_plan(
                     ),
                 )
             ),
+            prohibited_dispatcher_serials=prohibited_serial_set,
         )
     )
     nested_rewrite_by_operation_id = {
@@ -1568,10 +1773,6 @@ def compose_canonical_semantic_fragment_plan(
                 )
             )
 
-    all_prohibited_serials = tuple(
-        dict.fromkeys(int(value) for value in prohibited_dispatcher_serials)
-    )
-    prohibited_serial_set = frozenset(all_prohibited_serials)
     prohibited_witness_serials = _portable_dispatcher_scc_witnesses(
         graph,
         all_prohibited_serials,

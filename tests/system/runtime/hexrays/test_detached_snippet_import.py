@@ -2265,6 +2265,7 @@ def test_preopt_native_body_materializes_storage_predicate_before_staging(
         "join_opcode",
         "join_flags",
         "continuation_flags",
+        "source_select_shared",
         "normalization_succeeds",
     ),
     (
@@ -2275,6 +2276,7 @@ def test_preopt_native_body_materializes_storage_predicate_before_staging(
             ida_hexrays.m_ijmp,
             0,
             0,
+            False,
             True,
         ),
         (
@@ -2285,6 +2287,7 @@ def test_preopt_native_body_materializes_storage_predicate_before_staging(
             0,
             0,
             False,
+            False,
         ),
         (
             PredicateKind.EQ,
@@ -2293,6 +2296,7 @@ def test_preopt_native_body_materializes_storage_predicate_before_staging(
             ida_hexrays.m_icall,
             ida_hexrays.MBL_TCAL,
             ida_hexrays.MBL_FAKE,
+            False,
             True,
         ),
         (
@@ -2302,6 +2306,7 @@ def test_preopt_native_body_materializes_storage_predicate_before_staging(
             ida_hexrays.m_icall,
             0,
             ida_hexrays.MBL_FAKE,
+            False,
             False,
         ),
         (
@@ -2312,6 +2317,7 @@ def test_preopt_native_body_materializes_storage_predicate_before_staging(
             ida_hexrays.MBL_TCAL | ida_hexrays.MBL_CALL,
             ida_hexrays.MBL_FAKE,
             False,
+            False,
         ),
         (
             PredicateKind.EQ,
@@ -2321,6 +2327,7 @@ def test_preopt_native_body_materializes_storage_predicate_before_staging(
             ida_hexrays.MBL_TCAL,
             0,
             False,
+            False,
         ),
         (
             PredicateKind.SLT,
@@ -2329,6 +2336,7 @@ def test_preopt_native_body_materializes_storage_predicate_before_staging(
             ida_hexrays.m_ijmp,
             0,
             0,
+            False,
             True,
         ),
         (
@@ -2339,6 +2347,17 @@ def test_preopt_native_body_materializes_storage_predicate_before_staging(
             0,
             0,
             False,
+            False,
+        ),
+        (
+            PredicateKind.SLT,
+            ida_hexrays.m_xor,
+            ida_hexrays.m_mov,
+            ida_hexrays.m_ijmp,
+            0,
+            0,
+            True,
+            True,
         ),
     ),
 )
@@ -2350,6 +2369,7 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
     join_opcode,
     join_flags,
     continuation_flags,
+    source_select_shared,
     normalization_succeeds,
 ) -> None:
     _install_runtime_fakes(monkeypatch)
@@ -2533,9 +2553,18 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
         materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
         semantic_anchor_ea=source_ea,
         stable_identity=StableBlockIdentity.from_intervals(
-            (NativeEaInterval(source_ea, selected_ea),),
+            (
+                NativeEaInterval(
+                    source_ea,
+                    selected_ea + int(source_select_shared),
+                ),
+            ),
             native_key=NATIVE_KEY,
-            exact_instruction_eas=(source_ea, predicate_ea),
+            exact_instruction_eas=(
+                source_ea,
+                predicate_ea,
+                *((selected_ea,) if source_select_shared else ()),
+            ),
         ),
         native_body_id=body_id,
     )
@@ -2567,7 +2596,11 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
                             unresolved_transfer_ea=unresolved_transfer_ea,
                             conditional_select_envelope=(
                                 FragmentImportedConditionalSelectEnvelope(
-                                    source_branch_ea=selected_ea - 1,
+                                    source_branch_ea=(
+                                        selected_ea
+                                        if source_select_shared
+                                        else selected_ea - 1
+                                    ),
                                     selected_value_ea=selected_ea,
                                     selected_value_identity=(
                                         StableBlockIdentity.from_intervals(
