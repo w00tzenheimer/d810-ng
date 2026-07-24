@@ -1569,3 +1569,66 @@ must give the 23-block missing component one explicit GLBOPT1-safe realization
 contract or move its canonical publication to a maturity with matching
 analyzed authority. It must not relax the PREOPT materializer invariant,
 rematerialize the 71 blocks already cut away, or add a dual-authority fallback.
+
+**2026-07-24T12:45:09Z**
+
+Commit `02b727dce` completes the call-free CALLS native-body realization
+slice. Canonical publication now receives a distinct
+`CallsCallFreeSemanticNativeBodyMaterializer` when the destination is exactly
+`MMAT_CALLS`. It reuses the existing detached-source capture, topology,
+stack, and preparation preflights, rejects `m_call`, `m_icall`, and `m_ret`
+anywhere in captured or prepared instruction trees, and populates only
+unpublished blocks through the mutation gateway. PREOPT continues to use the
+existing PREOPT-only materializer; unsupported maturities reject instead of
+falling back.
+
+The first implementation hypothesis incorrectly targeted GLBOPT1. The
+uncommitted diagnostic canary at
+`.tmp/logs/d810_logs/000000000040a560_1784896632_11.diag.sqlite3` disproved
+that hypothesis: `fact_consumers` records that canonical route composition is
+admitted at `MMAT_CALLS`, while later GLBOPT1 observes
+`canonical_composition_requires_calls`. The policy was corrected before the
+code commit rather than preserving a compatibility path.
+
+Targeted TDD is 7/7 green, the broader local canonical, backend, import, and
+manager suite is 280/280 green, and the pinned
+`d810-idapro-9.3-test-runtime:py313-v1` Docker runtime gate is 177/177 green;
+artifact: `.tmp/calls-call-free-native-body-runtime.txt`. Changed-file Ruff,
+diff checks, ast-grep, all 14 worktree-local import contracts, commit hooks,
+and `graphify update .` pass.
+
+The mandatory corrected A560 canary completed in 20.37 seconds, with pytest
+finishing in 17.65 seconds and the worker returning normally. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784896861_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-calls-call-free.txt`. The semantic oracle remains red with
+one residual `while ( 1 )`, so this is not A560 acceptance.
+
+The native-body materializer now succeeds. Canonical transaction
+`ff9972bac8264b5c8d37c3c014528793` plans 73 operations and applies 70 before
+the next prepublication rejection. The highest contiguous canary level
+remains C3. The first failed C4 obligation is:
+
+`stage_failure / stage / SemanticFragmentBackendRejected: fragment plan must
+own exactly one projected function entry`.
+
+The failed transaction then records two secondary rollback defects. SDK 9.3
+`verify.cpp` defines `INTERR 50856` as a block successor-count/type mismatch.
+SDK 9.3 `hexrays.hpp` defines `INTERR 52719` at
+`mba_t::get_mblock(uint n)` as `n < qty`, so it is an out-of-range,
+snapshot-local block lookup. These are decoded SDK assertions, not an OS
+segfault, and neither supersedes the initiating projected-entry ownership
+obligation.
+
+There is also a diagnostic maturity-label discrepancy to resolve without
+guessing: `fact_consumers` and materializer admission prove the canonical
+consumer executes at CALLS, while the lifecycle plan and receipt rows label
+the transaction `MMAT_GLBOPT1`. Treat the live evidence as contradictory
+until callback/context timing is traced.
+
+Continue the v3.1 vertical loop by identifying why the 23-block projected
+component does not own exactly one function-entry projection, reproducing that
+shape in a focused portable/backend test, and fixing ownership without
+weakening validation or broadening to the 91-route publication. Preserve
+fragment atomicity. Make rollback safe as a separately proven consequence if
+the projection failure exercises it, but keep projected-entry ownership as
+the primary C4 obligation.
