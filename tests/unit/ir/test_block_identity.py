@@ -16,6 +16,8 @@ def test_exposes_the_portable_block_identity_contract() -> None:
         "NativeEaInterval",
         "NativeEaIntervalSet",
         "StableBlockIdentity",
+        "CurrentMbaBlockIdentityBinding",
+        "CurrentMbaIdentityBindingSnapshot",
         "MbaBlockHandle",
         "BlockHandleProvenance",
         "RebindStatus",
@@ -39,6 +41,20 @@ def test_identity_layout_keeps_serial_out_of_durable_identity() -> None:
         "exact_instruction_eas",
         "native_ranges",
     ]
+    assert [
+        field.name
+        for field in fields(block_identity.CurrentMbaBlockIdentityBinding)
+    ] == [
+        "stable_identity",
+        "live_instruction_eas",
+    ]
+    assert [
+        field.name
+        for field in fields(block_identity.CurrentMbaIdentityBindingSnapshot)
+    ] == [
+        "instruction_origins",
+        "block_bindings",
+    ]
     assert [field.name for field in fields(block_identity.MbaBlockHandle)] == [
         "session_id",
         "token",
@@ -54,6 +70,36 @@ def test_identity_layout_keeps_serial_out_of_durable_identity() -> None:
     assert "serial" not in {
         field.name for field in fields(block_identity.StableBlockIdentity)
     }
+    assert "serial" not in {
+        field.name
+        for field in fields(block_identity.CurrentMbaBlockIdentityBinding)
+    }
+    assert "serial" not in {
+        field.name
+        for field in fields(block_identity.CurrentMbaIdentityBindingSnapshot)
+    }
+
+
+def test_current_mba_identity_snapshot_ties_full_ranges_to_live_anchors() -> None:
+    identity = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40C623, 0x40C696),),
+        native_key=make_native_key(),
+        exact_instruction_eas=(0x40C64B,),
+    )
+    binding = block_identity.CurrentMbaBlockIdentityBinding(
+        stable_identity=identity,
+        live_instruction_eas=frozenset({0xFFFFFFFFFFFFFF01}),
+    )
+
+    snapshot = block_identity.CurrentMbaIdentityBindingSnapshot(
+        instruction_origins=((0xFFFFFFFFFFFFFF01, 0x40C64B),),
+        block_bindings=(binding,),
+    )
+
+    assert snapshot.instruction_origins == (
+        (0xFFFFFFFFFFFFFF01, 0x40C64B),
+    )
+    assert snapshot.block_bindings == (binding,)
 
 
 def test_identity_contract_exposes_explicit_construction_and_rebind_results() -> None:

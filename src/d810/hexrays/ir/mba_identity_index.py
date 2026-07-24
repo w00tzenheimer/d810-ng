@@ -16,6 +16,7 @@ from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import (
     BlockHandleProvenance,
     BoundBlock,
+    CurrentMbaIdentityBindingSnapshot,
     MbaBlockHandle,
     NativeEaInterval,
     RebindResult,
@@ -156,6 +157,7 @@ class MbaBlockIdentityIndex:
         evidence_generation: int | None = None,
         session_id: str = "live-mba",
         imported_instruction_origins: Mapping[int, int] | None = None,
+        current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None,
         decision_observer: Callable[[IdentityRebindObservation], None] | None = None,
     ) -> MbaBlockIdentityIndex:
         """Build current bindings directly from a callback-local live MBA.
@@ -174,7 +176,38 @@ class MbaBlockIdentityIndex:
             generation=generation,
             evidence_generation=evidence_generation,
         )
-        imported_instruction_origins = imported_instruction_origins or {}
+        if current_mba_identity_binding is not None and not isinstance(
+            current_mba_identity_binding,
+            CurrentMbaIdentityBindingSnapshot,
+        ):
+            raise TypeError(
+                "current-MBA identity binding must be a portable binding snapshot"
+            )
+        normalized_imported_origins = {
+            int(live_ea): int(native_ea)
+            for live_ea, native_ea in (imported_instruction_origins or {}).items()
+        }
+        current_block_bindings = ()
+        if current_mba_identity_binding is not None:
+            snapshot_origins = dict(
+                current_mba_identity_binding.instruction_origins
+            )
+            if (
+                imported_instruction_origins is not None
+                and normalized_imported_origins != snapshot_origins
+            ):
+                raise ValueError(
+                    "current-MBA identity binding conflicts with imported origins"
+                )
+            normalized_imported_origins = snapshot_origins
+            current_block_bindings = current_mba_identity_binding.block_bindings
+            if any(
+                binding.stable_identity.native_key != native_key
+                for binding in current_block_bindings
+            ):
+                raise ValueError(
+                    "current-MBA identity binding uses a different native key"
+                )
         quantity = int(getattr(mba, "qty", 0) or 0)
         for serial in range(quantity):
             block = mba.get_mblock(serial)
@@ -186,11 +219,35 @@ class MbaBlockIdentityIndex:
             while instruction is not None:
                 instruction_ea = int(getattr(instruction, "ea", -1) or -1)
                 anchors.add(instruction_ea)
-                if instruction_ea in imported_instruction_origins:
+                if instruction_ea in normalized_imported_origins:
                     imported_anchors.add(
-                        int(imported_instruction_origins[instruction_ea])
+                        normalized_imported_origins[instruction_ea]
                     )
                 instruction = getattr(instruction, "next", None)
+            current_bindings = tuple(
+                binding
+                for binding in current_block_bindings
+                if anchors.intersection(binding.live_instruction_eas)
+            )
+            if current_bindings:
+                stable_identities = {
+                    binding.stable_identity for binding in current_bindings
+                }
+                imported_identity = StableBlockIdentity.from_intervals(
+                    (
+                        interval
+                        for identity in stable_identities
+                        for interval in identity.native_ranges.intervals
+                    ),
+                    native_key=native_key,
+                    exact_instruction_eas=imported_anchors,
+                )
+                index._bind_new_native(
+                    imported_identity,
+                    serial,
+                    provenance=BlockHandleProvenance.IMPORTED_NATIVE,
+                )
+                continue
             imported_eas = tuple(
                 ea for ea in sorted(imported_anchors) if 0 <= ea < 0xFFFFFFFFFFFFFFFF
             )
@@ -987,10 +1044,17 @@ class MbaBlockIdentityIndex:
             )
             if not tokens:
                 continue
-            for interval in identity.native_ranges.intervals:
-                anchor_ea = int(interval.start_ea)
-                if region.native_ranges.contains(anchor_ea):
-                    tokens_by_anchor[anchor_ea].update(tokens)
+            for token in tokens:
+                handle = self._handles_by_token[token]
+                anchors = set(identity.exact_instruction_eas)
+                if handle.provenance is not BlockHandleProvenance.IMPORTED_NATIVE:
+                    anchors.update(
+                        interval.start_ea
+                        for interval in identity.native_ranges.intervals
+                    )
+                for anchor_ea in anchors:
+                    if region.native_ranges.contains(anchor_ea):
+                        tokens_by_anchor[int(anchor_ea)].add(token)
 
         intervals = region.native_ranges.intervals
         for interval in intervals if entry else reversed(intervals):
@@ -1002,6 +1066,22 @@ class MbaBlockIdentityIndex:
             if anchors:
                 boundary_anchor = min(anchors) if entry else max(anchors)
                 return self._bound_for_tokens(tokens_by_anchor[boundary_anchor])
+        boundary_ea = (
+            intervals[0].start_ea
+            if entry
+            else intervals[-1].end_ea - 1
+        )
+        imported_tokens = tuple(
+            token
+            for token, handle in self._handles_by_token.items()
+            if handle.provenance is BlockHandleProvenance.IMPORTED_NATIVE
+            and handle.stable_identity is not None
+            and handle.stable_identity.native_key == region.native_key
+            and handle.stable_identity.native_ranges.contains(boundary_ea)
+            and self.resolve(handle) is not None
+        )
+        if imported_tokens:
+            return self._bound_for_tokens(imported_tokens)
         return RebindResult.missing()
 
     def rebind_region_entry(
@@ -1327,6 +1407,7 @@ class MbaBlockIdentityIndex:
         mba: object,
         *,
         imported_instruction_origins: Mapping[int, int] | None = None,
+        current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None,
     ) -> None:
         """Rebuild bindings from a callback-local MBA after an unknown SDK effect."""
         self._replace_with_rebuilt(
@@ -1337,6 +1418,7 @@ class MbaBlockIdentityIndex:
                 evidence_generation=self.evidence_generation,
                 session_id=self.session_id,
                 imported_instruction_origins=imported_instruction_origins,
+                current_mba_identity_binding=current_mba_identity_binding,
             )
         )
 
