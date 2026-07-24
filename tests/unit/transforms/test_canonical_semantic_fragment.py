@@ -405,6 +405,7 @@ def test_canonical_route_composes_live_source_with_detached_target_body() -> Non
         graph,
         normalization_plan,
         evidence,
+        available_evidence=evidence,
         current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
@@ -611,6 +612,7 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
         graph,
         normalization_plan,
         evidence,
+        available_evidence=evidence,
         current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
@@ -654,6 +656,170 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
     ) == (0x1200, 0x1250, 0x1260)
 
 
+def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> None:
+    graph, normalization_plan, root_evidence = (
+        _live_source_detached_target_case()
+    )
+    (native_body,) = normalization_plan.native_bodies
+    route_source = FragmentBlock(
+        block_id="nested-route-source",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1210,
+        stable_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x1210, 0x1220),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(0x1210,),
+        ),
+        native_body_id=native_body.body_id,
+    )
+    route_target = FragmentBlock(
+        block_id="nested-route-target",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=_identity(0x1250),
+        native_body_id=native_body.body_id,
+    )
+    raw_dispatcher = FragmentBlock(
+        block_id="nested-raw-dispatcher",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x1400,
+        stable_identity=_identity(0x1400),
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *normalization_plan.blocks,
+            route_source,
+            route_target,
+            raw_dispatcher,
+        ),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="native-body-edge@0x1200",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=route_source.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="native-body-edge@0x1210",
+                source_block_id=route_source.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=raw_dispatcher.block_id,
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    route_source.block_id,
+                    route_target.block_id,
+                ),
+                terminal_block_ids=(route_target.block_id,),
+                native_ranges=(
+                    NativeEaInterval(0x1200, 0x1201),
+                    NativeEaInterval(0x1210, 0x1220),
+                    NativeEaInterval(0x1250, 0x1251),
+                ),
+                proof_ids=(
+                    *native_body.proof_ids,
+                    "native-body-edge@0x1200",
+                    "native-body-edge@0x1210",
+                ),
+            ),
+        ),
+    )
+    (root_proof,) = root_evidence.route_proofs
+    nested_proof = SemanticRouteProof(
+        proof_id="state-assignment@0x1218",
+        atomic_group_id=root_evidence.atomic_group_id,
+        proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+        shape=SemanticRouteShape.DIRECT,
+        source_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x1218, 0x1220),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(0x1218,),
+        ),
+        source_anchor_ea=0x1218,
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.DIRECT,
+                state_constant=0x44,
+                target_identity=route_target.stable_identity,
+                target_anchor_ea=0x1250,
+            ),
+        ),
+        state_write=SemanticStateWriteProof(
+            identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(0x1210, 0x1218),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=(0x1210,),
+            ),
+            instruction_ea=0x1210,
+            state_variable=StorageIdentity(
+                StorageIdentityKind.REGISTER,
+                20,
+            ),
+            width=4,
+            state_constant=0x44,
+            corridor_instruction_eas=(0x1210, 0x1218),
+        ),
+    )
+    available_evidence = replace(
+        root_evidence,
+        route_proofs=(root_proof, nested_proof),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        root_evidence,
+        available_evidence=available_evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            root_evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    operations = {
+        operation.operation_id: operation for operation in plan.operations
+    }
+    assert "native-body-edge@0x1210" not in operations
+    nested_operation = operations[f"route:{nested_proof.proof_id}"]
+    assert nested_operation.source_block_id == route_source.block_id
+    assert tuple(
+        (
+            edge.role,
+            plan.block(edge.target_block_id).semantic_anchor_ea,
+        )
+        for edge in nested_operation.edges
+    ) == ((SemanticEdgeRole.DIRECT, 0x1250),)
+    assert all(
+        edge.target_block_id != raw_dispatcher.block_id
+        for operation in plan.operations
+        for edge in operation.edges
+    )
+    (planned_native_body,) = plan.native_bodies
+    assert (
+        f"route:{nested_proof.proof_id}"
+        in planned_native_body.proof_ids
+    )
+
+
 def test_detached_component_rebinds_published_replacement_boundary_as_external() -> None:
     graph, normalization_plan, evidence = (
         _live_source_detached_target_case()
@@ -681,6 +847,7 @@ def test_detached_component_rebinds_published_replacement_boundary_as_external()
         graph,
         normalization_plan,
         evidence,
+        available_evidence=evidence,
         current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
@@ -777,6 +944,7 @@ def test_detached_component_stops_at_unique_current_imported_successor() -> None
         graph,
         normalization_plan,
         evidence,
+        available_evidence=evidence,
         current_identity_by_serial=current_identity_by_serial,
         normalization_authority=_normalization_authority(
             normalization_plan,
@@ -864,6 +1032,7 @@ def test_detached_component_rejects_ambiguous_current_imported_successor() -> No
             graph,
             normalization_plan,
             evidence,
+            available_evidence=evidence,
             current_identity_by_serial=_current_identity_authority(graph),
             normalization_authority=_normalization_authority(
                 normalization_plan,
@@ -942,6 +1111,7 @@ def test_projected_boundary_reuses_its_unique_current_owner_role() -> None:
         graph,
         normalization_plan,
         evidence,
+        available_evidence=evidence,
         current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
@@ -1011,6 +1181,7 @@ def test_projected_boundary_rejects_multiple_current_owner_roles(
             graph,
             normalization_plan,
             evidence,
+            available_evidence=evidence,
             current_identity_by_serial=_current_identity_authority(graph),
             normalization_authority=_normalization_authority(
                 normalization_plan,
@@ -1079,6 +1250,7 @@ def test_detached_component_keeps_proof_owned_imported_branch_normalization() ->
         graph,
         normalization_plan,
         evidence,
+        available_evidence=evidence,
         current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
@@ -1103,6 +1275,7 @@ def test_canonical_route_rebinds_retained_corridor_to_live_source_subset() -> No
         graph,
         normalization_plan,
         evidence,
+        available_evidence=evidence,
         current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
@@ -1149,6 +1322,7 @@ def test_canonical_composition_ids_external_blocks_by_stable_identity() -> None:
         graph,
         normalization_plan,
         evidence,
+        available_evidence=evidence,
         current_identity_by_serial=_current_identity_authority(graph),
         normalization_authority=_normalization_authority(
             normalization_plan,
@@ -1197,6 +1371,7 @@ def test_canonical_composition_uses_current_external_identity_authority() -> Non
         graph,
         normalization_plan,
         evidence,
+        available_evidence=evidence,
         normalization_authority=_normalization_authority(
             normalization_plan,
             evidence,
@@ -1251,6 +1426,7 @@ def test_canonical_composition_uses_one_portable_dispatcher_scc_witness() -> Non
         graph,
         normalization_plan,
         evidence,
+        available_evidence=evidence,
         current_identity_by_serial={
             10: _identity(0x1000),
             20: _identity(0x1100),
@@ -1302,6 +1478,7 @@ def test_canonical_composition_does_not_guess_dispatcher_scc_witness() -> None:
         graph,
         normalization_plan,
         evidence,
+        available_evidence=evidence,
         current_identity_by_serial={
             10: _identity(0x1000),
             20: _identity(0x1100),
@@ -1356,6 +1533,7 @@ def test_canonical_composition_rejects_shared_external_stable_identity() -> None
             graph,
             normalization_plan,
             evidence,
+            available_evidence=evidence,
             current_identity_by_serial=_current_identity_authority(graph),
             normalization_authority=_normalization_authority(
                 normalization_plan,
@@ -1394,6 +1572,7 @@ def test_canonical_route_rejects_split_materialized_delivery_ownership() -> None
             graph,
             normalization_plan,
             evidence,
+            available_evidence=evidence,
             current_identity_by_serial=_current_identity_authority(graph),
             normalization_authority=_normalization_authority(
                 normalization_plan,
@@ -1444,6 +1623,7 @@ def test_canonical_composition_rejects_ambiguous_detached_target_owner() -> None
             graph,
             ambiguous,
             evidence,
+            available_evidence=evidence,
             current_identity_by_serial=_current_identity_authority(graph),
             normalization_authority=_normalization_authority(
                 normalization_plan,
