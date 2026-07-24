@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import ida_hexrays
 import ida_range
 
-from d810.core.typing import Protocol, TYPE_CHECKING, runtime_checkable
+from d810.core.typing import Mapping, Protocol, TYPE_CHECKING, runtime_checkable
 from d810.hexrays.ir.exact_data_flow import (
     find_reaching_defs_for_reg_use,
     find_reaching_defs_for_stkvar_use,
@@ -113,6 +113,24 @@ def _capture_predicate_insn_snapshot(instruction) -> InsnSnapshot:
 
 class SemanticFragmentBackendRejected(RuntimeError):
     """The live backend cannot realize a plan without guessing."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str | None = None,
+        anchor_ea: int | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(str(message))
+        normalized_reason = (
+            None if reason_code is None else str(reason_code).strip()
+        )
+        if reason_code is not None and not normalized_reason:
+            raise ValueError("semantic backend rejection reason must not be empty")
+        self.reason_code = normalized_reason
+        self.anchor_ea = None if anchor_ea is None else int(anchor_ea)
+        self.payload = dict(payload or {})
 
 
 @dataclass(frozen=True, slots=True)
@@ -2445,8 +2463,31 @@ def plan_semantic_fragment_root_inventory(
                 f"root inventory block {block.block_id!r} is absent from the MBA"
             )
         if int(live.serial) in ids_by_serial:
+            existing_block_id = ids_by_serial[int(live.serial)]
+            existing_block = plan.block(existing_block_id)
+            physical_label = f"blk{int(live.serial)}@0x{int(live.start):X}"
             raise SemanticFragmentBackendRejected(
-                "root inventory maps two plan blocks to one physical version"
+                f"root inventory blocks {existing_block_id!r} and "
+                f"{block.block_id!r} map to {physical_label}",
+                reason_code="root_inventory_physical_version_alias",
+                anchor_ea=int(live.start),
+                payload={
+                    "atomic_group_id": plan.atomic_group_id,
+                    "colliding_anchor_ea": (
+                        f"0x{int(block.semantic_anchor_ea):X}"
+                    ),
+                    "colliding_block_id": block.block_id,
+                    "colliding_identity": block.stable_identity.to_dict(),
+                    "existing_anchor_ea": (
+                        f"0x{int(existing_block.semantic_anchor_ea):X}"
+                    ),
+                    "existing_block_id": existing_block_id,
+                    "existing_identity": (
+                        existing_block.stable_identity.to_dict()
+                    ),
+                    "physical_block": physical_label,
+                    "plan_id": plan.plan_id,
+                },
             )
         live_by_id[block.block_id] = live
         ids_by_serial[int(live.serial)] = block.block_id

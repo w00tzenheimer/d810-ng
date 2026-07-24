@@ -1848,6 +1848,51 @@ def test_backend_stages_hidden_replacement_and_projects_root_publication() -> No
     assert gateway.active is False
 
 
+def test_root_inventory_collision_reports_both_logical_identities() -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
+    original_block = plan.block("original")
+    alias = replace(
+        original_block,
+        block_id="predicate-anchor",
+        role=FragmentBlockRole.EXTERNAL,
+    )
+    plan = replace(plan, blocks=(*plan.blocks, alias))
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match=(
+            "root inventory blocks 'original' and 'predicate-anchor' "
+            "map to blk1@0x401010"
+        ),
+    ) as exc_info:
+        modifier._plan_semantic_fragment_root_publication_inventory(plan)
+
+    error = exc_info.value
+    assert error.reason_code == "root_inventory_physical_version_alias"
+    assert error.anchor_ea == 0x401010
+    assert error.payload == {
+        "atomic_group_id": plan.atomic_group_id,
+        "colliding_anchor_ea": "0x401010",
+        "colliding_block_id": "predicate-anchor",
+        "colliding_identity": alias.stable_identity.to_dict(),
+        "existing_anchor_ea": "0x401010",
+        "existing_block_id": "original",
+        "existing_identity": original_block.stable_identity.to_dict(),
+        "physical_block": "blk1@0x401010",
+        "plan_id": plan.plan_id,
+    }
+
+
 def test_backend_stages_native_body_inside_active_fragment_transaction(
     monkeypatch,
 ) -> None:

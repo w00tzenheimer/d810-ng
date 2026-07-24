@@ -47,6 +47,9 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
 )
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.hexrays.mutation.semantic_fragment_backend import (
+    SemanticFragmentBackendRejected,
+)
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     ResolverSessionState,
 )
@@ -1680,6 +1683,52 @@ def test_unexpected_canonical_pipeline_exception_is_reported_and_reraised() -> N
         "anchor_ea": f"0x{_EA:X}",
         "exception_detail": "canonical composition exploded",
         "exception_type": "builtins.RuntimeError",
+    }
+
+
+def test_structured_backend_rejection_is_reported_and_reraised() -> None:
+    reported = []
+    rule = _fresh_rule()
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    mba = SimpleNamespace(entry_ea=_EA, maturity=_MAT2)
+    failure = SemanticFragmentBackendRejected(
+        "two logical blocks share one physical version",
+        reason_code="root_inventory_physical_version_alias",
+        anchor_ea=0x40A5F0,
+        payload={
+            "existing_block_id": "original@0x40A5F0",
+            "colliding_block_id": "predicate@0x40A5F6",
+            "physical_block": "blk4@0x40A5F0",
+        },
+    )
+
+    def run_pipeline() -> None:
+        raise failure
+
+    with pytest.raises(SemanticFragmentBackendRejected) as caught:
+        rule._run_pipeline_with_canonical_diagnostics(
+            mba,
+            canonical_composition_ready=True,
+            run_pipeline=run_pipeline,
+        )
+
+    assert caught.value is failure
+    assert len(reported) == 1
+    record = reported[0]
+    assert record.fact_id == "canonical_pipeline:0x40A5F0"
+    assert record.reason == "root_inventory_physical_version_alias"
+    assert record.payload == {
+        "anchor_ea": "0x40A5F0",
+        "colliding_block_id": "predicate@0x40A5F6",
+        "exception_detail": "two logical blocks share one physical version",
+        "exception_type": (
+            "d810.hexrays.mutation.semantic_fragment_backend."
+            "SemanticFragmentBackendRejected"
+        ),
+        "existing_block_id": "original@0x40A5F0",
+        "physical_block": "blk4@0x40A5F0",
     }
 
 

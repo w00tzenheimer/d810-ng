@@ -1267,3 +1267,32 @@ must first make that collision self-contained in the diagnostic DB, then prove
 whether the two plan identities are legitimate roles on one logical published
 version or an incorrect composition split. It must not silently deduplicate by
 serial, weaken unique ownership, or broaden beyond this fragment.
+
+**2026-07-24T10:38:56Z**
+
+The root-inventory collision is now self-contained in the diagnostic DB without
+changing its fail-closed behavior. `SemanticFragmentBackendRejected` may carry
+a typed reason, native anchor, and portable payload. The root-inventory alias
+rejection records both plan block ids, both complete stable identities, the
+plan and atomic-group lineage, and one physical `blkN@EA` label. The canonical
+exception boundary preserves that structure while still re-raising the same
+exception; unstructured exceptions retain the existing generic diagnostic.
+
+The two full affected pinned Docker runtime files are 144/144 green, and
+changed-file Ruff and diff checks pass. The mandatory A560 canary completed in
+15.46 seconds without a process segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784889382_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-root-inventory-collision-diag.txt`. The semantic oracle
+remains red with one residual `while ( 1 )`, and the highest contiguous canary
+level remains C3.
+
+The DB proves the C4 failure is a composition-time owner alias. Projected
+boundary block
+`native[0x40A5F0-0x40A5F1,0x40A5F6-0x40A5F7,0x40A5F8-0x40A5F9,0x40A5FE-0x40A5FF;exact=0x40A5F0,0x40A5F6,0x40A5F8,0x40A5FE]`
+and narrower current-graph block
+`native[0x40A5F0-0x40A5F1,0x40A5F6-0x40A5F7;exact=0x40A5F6]`
+both rebind uniquely to `blk4@0x40A5F0`. The next slice must canonicalize
+these roles through the one proven current owner during plan composition, then
+let fragment validation expose whether that shared block is also prohibited
+dispatcher residue. The backend must continue rejecting arbitrary duplicate
+physical bindings.
