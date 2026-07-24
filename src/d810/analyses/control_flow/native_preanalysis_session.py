@@ -1083,7 +1083,6 @@ class PreoptUnionPreparationResult:
     seed_eas: tuple[int, ...] = ()
     native_ranges: tuple[tuple[int, int], ...] = ()
     imported_block_entry_eas: tuple[int, ...] = ()
-    entry_consumer_routes: tuple[MaterializedIndirectTransfer, ...] = ()
     entry_consumer_port_diagnostic: tuple[tuple[str, object], ...] = ()
     abstention_reasons: tuple[str, ...] = ()
 
@@ -1120,6 +1119,7 @@ class ResolverPortableEvidence:
     preopt_union_preparation: PreoptUnionPreparationResult | None = None
     prepatch_preopt_union_source: PrepatchPreoptUnionSource | None = None
     preopt_entry_bridges: tuple[EntryBridgeEvidence, ...] = ()
+    entry_consumer_routes: tuple[MaterializedIndirectTransfer, ...] = ()
 
     def require_key(self, expected: NativePreanalysisKey) -> None:
         """Reject resolver evidence captured for another native identity."""
@@ -1800,11 +1800,8 @@ class NativePreanalysisSessionState:
         """Project current portable routes without claiming normalized authority."""
         resolver_evidence = self._resolver_evidence_for(key)
         generation = int(self.evidence_generation)
-        preparation = resolver_evidence.preopt_union_preparation
-        entry_consumer_routes = (
-            ()
-            if preparation is None
-            else tuple(dict.fromkeys(preparation.entry_consumer_routes))
+        entry_consumer_routes = tuple(
+            dict.fromkeys(resolver_evidence.entry_consumer_routes)
         )
         if (
             generation <= 0
@@ -1890,12 +1887,7 @@ class NativePreanalysisSessionState:
         conditional_proofs: list[SemanticRouteProof] = []
         if entry_consumer_routes:
             facts = self.facts
-            if (
-                facts is None
-                or preparation is None
-                or not preparation.prepared
-                or not preparation.published
-            ):
+            if facts is None:
                 return None
             facts.require_key(key)
             for route in entry_consumer_routes:
@@ -2250,6 +2242,37 @@ class NativePreanalysisSessionState:
             evidence_family="preopt_entry_bridge",
             evidence_reason="PREOPT entry-bridge evidence changed",
             preopt_entry_bridges=merged,
+        )
+
+    def merge_entry_consumer_routes(
+        self,
+        key: NativePreanalysisKey,
+        routes: tuple[MaterializedIndirectTransfer, ...],
+    ) -> bool:
+        """Publish complete carried choices independently of import state."""
+        if any(
+            not isinstance(route, MaterializedIndirectTransfer)
+            for route in routes
+        ):
+            raise TypeError("entry-consumer routes must be portable evidence")
+        current = self._resolver_evidence_for(key)
+        merged = tuple(
+            sorted(
+                set((*current.entry_consumer_routes, *routes)),
+                key=lambda route: (
+                    int(route.source_jmp_ea),
+                    int(route.source_block_ea),
+                    tuple(int(ea) for ea in route.materialized_anchor_eas),
+                    tuple(int(ea) for ea in route.target_eas),
+                    repr(route),
+                ),
+            )
+        )
+        return self._replace_resolver_evidence(
+            key,
+            evidence_family="entry_consumer_routes",
+            evidence_reason="portable entry-consumer route evidence changed",
+            entry_consumer_routes=merged,
         )
 
     def record_bootstrap_route_binding(
