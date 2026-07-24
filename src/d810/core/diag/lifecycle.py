@@ -533,11 +533,25 @@ def persist_mutation_receipt(
 
         transaction_events: list[tuple[str, str, dict[str, object]]] = [
             (
+                f"{failure.failure_kind}_failure",
+                "failed",
+                {
+                    "phase": failure.phase,
+                    "error_type": failure.error_type,
+                    "error_message": failure.error_message,
+                    "interr_code": failure.interr_code,
+                    "verification_context": failure.verification_context,
+                },
+            )
+            for failure in event.fragment_failures
+        ]
+        transaction_events.extend([
+            (
                 "fragment_staged",
                 "completed" if event.fragment_staged else "failed",
                 {},
             ),
-        ]
+        ])
         for phase in ("prepublication", "postpublication"):
             outcomes = tuple(
                 outcome

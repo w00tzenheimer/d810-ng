@@ -26,6 +26,9 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventory,
     semantic_fragment_root_group_id,
 )
+from d810.hexrays.mutation.semantic_fragment_failure import (
+    MbaSemanticFragmentFailure,
+)
 from d810.ir.block_identity import (
     CurrentMbaIdentityBindingSnapshot,
     MbaBlockHandle,
@@ -343,6 +346,7 @@ class MbaMutationAborted:
     rollback_succeeded: bool | None = None
     prepublication_validation: FragmentValidationResult | None = None
     postpublication_validation: FragmentValidationResult | None = None
+    fragment_failures: tuple[MbaSemanticFragmentFailure, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,6 +437,11 @@ class MbaMutationGateway:
         init=False,
         repr=False,
     )
+    _active_fragment_failures: list[MbaSemanticFragmentFailure] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.generation = int(self.generation)
@@ -494,6 +503,7 @@ class MbaMutationGateway:
         self._applied_fragment_effects.clear()
         self._active_current_mba_identity_binding = None
         self._active_current_mba_identity_binding_recorded = False
+        self._active_fragment_failures.clear()
 
     def new_transaction(self) -> MbaMutationGateway:
         """Return a fresh batch controller over this current-MBA index.
@@ -877,6 +887,18 @@ class MbaMutationGateway:
     def _record_fragment_staged(self, plan: FragmentPlan) -> None:
         self._require_active_fragment(plan)
         self._active_fragment_staged = True
+
+    def _record_fragment_failure(
+        self,
+        plan: FragmentPlan,
+        failure: MbaSemanticFragmentFailure,
+    ) -> None:
+        self._require_active_fragment(plan)
+        if not isinstance(failure, MbaSemanticFragmentFailure):
+            raise TypeError(
+                "semantic-fragment failure must be a structured failure fact"
+            )
+        self._active_fragment_failures.append(failure)
 
     def _record_fragment_current_mba_identity_binding(
         self,
@@ -1666,6 +1688,7 @@ class MbaMutationGateway:
                     postpublication_validation=(
                         self._active_postpublication_validation
                     ),
+                    fragment_failures=tuple(self._active_fragment_failures),
                 ),
                 mutation_batch_id=aborted_batch_id,
             )

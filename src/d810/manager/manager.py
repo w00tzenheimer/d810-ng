@@ -1046,6 +1046,24 @@ class D810Manager:
         return tuple(observations)
 
     @staticmethod
+    def _fragment_failure_observations(failures):
+        from d810.core.observability_events import (
+            SemanticFragmentFailureObserved,
+        )
+
+        return tuple(
+            SemanticFragmentFailureObserved(
+                failure_kind=failure.failure_kind,
+                phase=failure.phase,
+                error_type=failure.error_type,
+                error_message=failure.error_message,
+                interr_code=failure.interr_code,
+                verification_context=failure.verification_context,
+            )
+            for failure in failures
+        )
+
+    @staticmethod
     def _committed_version_transition_observations(transitions):
         observations = []
         for transition in transitions:
@@ -1222,6 +1240,11 @@ class D810Manager:
                             "postpublication",
                             event.postpublication_validation,
                         ),
+                    )
+                ),
+                fragment_failures=(
+                    D810Manager._fragment_failure_observations(
+                        event.fragment_failures
                     )
                 ),
                 version_transitions=(
