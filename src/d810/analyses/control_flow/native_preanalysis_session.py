@@ -804,6 +804,84 @@ def _static_state_choice_frontend_proof(
     )
 
 
+def _without_superseded_frontier_patch_proofs(
+    patch_proofs: tuple[NativeIndirectTransferProof, ...],
+    state_choice_proofs: tuple[NativeIndirectTransferProof, ...],
+) -> tuple[
+    tuple[NativeIndirectTransferProof, ...],
+    tuple[NativeIndirectTransferProof, ...],
+]:
+    """Give one complete state choice sole authority over its direct frontier."""
+
+    def contains_identity(
+        owner: StableBlockIdentity,
+        candidate: StableBlockIdentity,
+    ) -> bool:
+        return bool(
+            owner.native_key == candidate.native_key
+            and all(
+                any(
+                    int(owner_interval.start_ea)
+                    <= int(candidate_interval.start_ea)
+                    and int(candidate_interval.end_ea)
+                    <= int(owner_interval.end_ea)
+                    for owner_interval in owner.native_ranges.intervals
+                )
+                for candidate_interval in candidate.native_ranges.intervals
+            )
+        )
+
+    retained_patch_proofs: list[NativeIndirectTransferProof] = []
+    superseded_by_state_choice: dict[str, list[str]] = {}
+    for patch_proof in patch_proofs:
+        owners = tuple(
+            state_choice_proof
+            for state_choice_proof in state_choice_proofs
+            if patch_proof.shape is NativeTransferShape.DIRECT
+            and int(patch_proof.source_transfer_ea)
+            == int(state_choice_proof.source_transfer_ea)
+            and contains_identity(
+                state_choice_proof.source_identity,
+                patch_proof.source_identity,
+            )
+        )
+        if len(owners) > 1:
+            raise FrontendNormalizationEvidenceRejected(
+                f"direct frontier proof {patch_proof.proof_id!r} has multiple "
+                "state-choice owners"
+            )
+        if not owners:
+            retained_patch_proofs.append(patch_proof)
+            continue
+        superseded_by_state_choice.setdefault(
+            owners[0].proof_id,
+            [],
+        ).append(patch_proof.proof_id)
+
+    annotated_state_choice_proofs = tuple(
+        (
+            state_choice_proof
+            if state_choice_proof.proof_id not in superseded_by_state_choice
+            else replace(
+                state_choice_proof,
+                diagnostic_provenance=(
+                    *state_choice_proof.diagnostic_provenance,
+                    *(
+                        ("superseded_patch_proof", proof_id)
+                        for proof_id in sorted(
+                            superseded_by_state_choice[
+                                state_choice_proof.proof_id
+                            ]
+                        )
+                    ),
+                ),
+            )
+        )
+        for state_choice_proof in state_choice_proofs
+    )
+    return tuple(retained_patch_proofs), annotated_state_choice_proofs
+
+
 def _semantic_corridor_point(
     native_key: NativePreanalysisKey,
     native_cfg: NativeCfg,
@@ -1589,6 +1667,12 @@ class NativePreanalysisSessionState:
                     ),
                 )
                 if proof is not None
+            )
+        )
+        patch_proofs, state_choice_proofs = (
+            _without_superseded_frontier_patch_proofs(
+                patch_proofs,
+                state_choice_proofs,
             )
         )
         return FrontendNormalizationEvidence(
