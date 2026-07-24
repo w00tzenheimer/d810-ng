@@ -173,7 +173,9 @@ def test_lifecycle_tracks_normalization_and_semantic_generations_independently()
     assert state.mark_canonical_semantic_plan_ready()
     assert state._fragment_publication_mark_semantic_fragment_staged()
     assert state._fragment_publication_mark_semantic_fragment_validated()
-    assert state._fragment_publication_mark_semantic_fragment_published_and_postvalidated()
+    assert (
+        state._fragment_publication_mark_semantic_fragment_published_and_postvalidated()
+    )
     assert state._fragment_publication_mark_receipt_committed()
     assert state.canonical_semantic_plan_generation == 1
     assert state.semantic_fragment_staged_generation == 1
@@ -249,7 +251,9 @@ def test_normalization_abort_preserves_previous_published_authority() -> None:
     assert state.evidence_generation == 2
     state._fragment_publication_mark_normalization_staged()
     state._fragment_publication_mark_normalization_validated()
-    assert state._fragment_publication_abort_normalization(reason="postpublication validation failed")
+    assert state._fragment_publication_abort_normalization(
+        reason="postpublication validation failed"
+    )
 
     assert state.portable_evidence_ready_generation == 2
     assert state.normalization_staged_generation == 1
@@ -290,7 +294,9 @@ def test_semantic_abort_preserves_previous_receipt_authority() -> None:
     state.mark_canonical_semantic_plan_ready()
     state._fragment_publication_mark_semantic_fragment_staged()
     state._fragment_publication_mark_semantic_fragment_validated()
-    assert state._fragment_publication_abort_semantic_fragment(reason="published graph drifted")
+    assert state._fragment_publication_abort_semantic_fragment(
+        reason="published graph drifted"
+    )
 
     assert state.normalization_published_postvalidated_generation == 2
     assert state.canonical_semantic_plan_generation == 2
@@ -522,9 +528,7 @@ def test_lifecycle_owns_portable_terminal_return_carrier_semantics() -> None:
         )
 
 
-def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() -> (
-    None
-):
+def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() -> None:
     write_identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x40A5B2, 0x40A5B8),),
         native_key=NATIVE_KEY,
@@ -572,10 +576,7 @@ def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() 
         unreachable_obligation_ids=(),
     )
     assert state.normalization_published_postvalidated_generation is None
-    assert (
-        state.canonical_semantic_candidate_evidence_for(NATIVE_KEY)
-        == candidate
-    )
+    assert state.canonical_semantic_candidate_evidence_for(NATIVE_KEY) == candidate
     assert state.canonical_semantic_evidence_for(NATIVE_KEY) is None
 
     _publish_normalization(state)
@@ -1277,9 +1278,7 @@ def test_lifecycle_merges_native_transfer_facts_and_static_bootstrap_routes() ->
     assert len(state.bootstrap_routes) == 1
 
 
-def test_lifecycle_projects_complete_native_patch_ledger_as_frontend_evidence() -> (
-    None
-):
+def test_lifecycle_projects_complete_native_patch_ledger_as_frontend_evidence() -> None:
     producer_ea = 0x1005
     predicate_ea = 0x1014
     direct_ea = 0x1100
@@ -1427,12 +1426,9 @@ def test_lifecycle_projects_complete_native_patch_ledger_as_frontend_evidence() 
         )
         for identity in conditional_proof.flag_corridor
     ) == ((0x1000, 0x1010), (0x1010, 0x1020))
-    assert conditional_proof.permitted_flag_write_eas == frozenset(
-        {producer_ea}
-    )
+    assert conditional_proof.permitted_flag_write_eas == frozenset({producer_ea})
     assert {
-        (endpoint.role, endpoint.anchor_ea)
-        for endpoint in conditional_proof.endpoints
+        (endpoint.role, endpoint.anchor_ea) for endpoint in conditional_proof.endpoints
     } == {
         (SemanticEdgeRole.CONDITIONAL_TAKEN, true_target_ea),
         (SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, false_target_ea),
@@ -1549,9 +1545,7 @@ def test_frontend_evidence_projects_complete_static_state_choice_envelope() -> N
         function_ea=0x1000,
         jmp_targets={
             unrelated_patch_plan.jmp_ea: unrelated_patch_plan.target_eas,
-            superseded_frontier_plan.jmp_ea: (
-                superseded_frontier_plan.target_eas
-            ),
+            superseded_frontier_plan.jmp_ea: (superseded_frontier_plan.target_eas),
         },
         reachable_eas=(0x1000,),
         arch="x86",
@@ -1614,10 +1608,7 @@ def test_frontend_evidence_projects_complete_static_state_choice_envelope() -> N
         NativeEaInterval(compare_ea, selected_ea),
     )
     assert proof.permitted_flag_write_eas == frozenset({compare_ea})
-    assert {
-        (endpoint.role, endpoint.anchor_ea)
-        for endpoint in proof.endpoints
-    } == {
+    assert {(endpoint.role, endpoint.anchor_ea) for endpoint in proof.endpoints} == {
         (SemanticEdgeRole.CONDITIONAL_TAKEN, true_target_ea),
         (SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, false_target_ea),
     }
@@ -1806,18 +1797,14 @@ def test_frontend_evidence_owns_patch_corridor_and_ledger_target() -> None:
         for endpoint in conditional_proof.endpoints
         if endpoint.role is SemanticEdgeRole.CONDITIONAL_TAKEN
     )
-    assert taken_endpoint.identity.exact_instruction_eas == frozenset(
-        {true_target_ea}
-    )
+    assert taken_endpoint.identity.exact_instruction_eas == frozenset({true_target_ea})
     assert taken_endpoint.identity.native_ranges.intervals == (
         NativeEaInterval(true_target_ea, true_target_ea + 1),
     )
     assert downstream_proof.source_anchor_ea == true_target_ea
 
 
-def test_frontend_evidence_rejects_the_whole_ledger_without_a_flag_producer() -> (
-    None
-):
+def test_frontend_evidence_rejects_the_whole_ledger_without_a_flag_producer() -> None:
     predicate_ea = 0x1014
     direct_ea = 0x1100
     true_target_ea = 0x2000
