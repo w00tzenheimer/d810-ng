@@ -11,6 +11,13 @@ from d810.diagnostics.workbench_models import (
     DiagnosticRecord,
     DiagnosticViewKind,
 )
+from d810.core.deobfuscation_case import (
+    CaseEvidenceLevel,
+    CaseFinding,
+    CaseFindingKind,
+    CaseVerdict,
+    DeobfuscationCaseEvidence,
+)
 
 
 def _context(kind: DiagnosticGraphKind) -> DiagnosticGraphContext:
@@ -135,6 +142,31 @@ class _Records:
             raise self.error
         return self.values[kind]
 
+    def case(self, path: str, function_ea: int) -> DeobfuscationCaseEvidence | None:
+        del path, function_ea
+        return DeobfuscationCaseEvidence(
+            schema_version=1,
+            function_fingerprint="target",
+            runtime_identity="diagnostic-runtime",
+            run_identity="diagnostic-session:17",
+            findings=(
+                CaseFinding(
+                    finding_id="receipt:0x180012C9F",
+                    kind=CaseFindingKind.RECEIPT,
+                    summary="receipt",
+                    detail="publication receipt",
+                    native_ea=0x180012C9F,
+                    confidence=1.0,
+                    provenance=("diagnostic-session:17",),
+                ),
+            ),
+            verdict=CaseVerdict(
+                level=CaseEvidenceLevel.C5_PUBLICATION,
+                summary="publication",
+                first_blocked_obligation="semantic witness required",
+            ),
+        )
+
 
 class _Navigation:
     def __init__(self) -> None:
@@ -216,6 +248,22 @@ def test_controller_maps_explorer_context_and_reuses_one_view() -> None:
     ]
     assert view.focus_count == 2
     assert len(view.rendered) == 2
+
+
+def test_controller_projects_a_case_lineage_only_when_case_evidence_exists() -> None:
+    controller, _, _, view = _controller()
+    context = controller.context_for_explorer(
+        database_path="/tmp/diag.sqlite3",
+        snapshot_id=17,
+        function_ea=0x180012B60,
+        function_name="target",
+        view_value="case",
+    )
+
+    assert context is not None
+    assert context.kind is DiagnosticGraphKind.CASE_LINEAGE
+    controller.open(context)
+    assert view.rendered[-1].nodes[0].category == "case_function"
 
 
 def test_controller_centers_selected_record_without_reprojecting_and_jumps_anchor() -> None:

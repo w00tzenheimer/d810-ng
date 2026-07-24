@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import enum
 
+from d810.core.deobfuscation_case import DeobfuscationCaseEvidence
 from d810.diagnostics.workbench_models import DiagnosticRecord
 
 
@@ -13,6 +14,7 @@ class DiagnosticGraphKind(str, enum.Enum):
 
     BLOCK_CFG = "block_cfg"
     STATE_MACHINE = "state_machine"
+    CASE_LINEAGE = "case_lineage"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -46,6 +48,7 @@ class DiagnosticGraphNode:
     hint_fields: tuple[tuple[str, str], ...]
     record_refs: tuple[DiagnosticRecordRef, ...]
     expandable: bool = False
+    requires_anchor: bool = False
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -119,6 +122,7 @@ class DiagnosticGraphProjectionRequest:
     primary_records: tuple[DiagnosticRecord, ...]
     block_records: tuple[DiagnosticRecord, ...] = ()
     expanded_state_model_id: str | None = None
+    case_evidence: DeobfuscationCaseEvidence | None = None
 
 
 def record_ref(record: DiagnosticRecord) -> DiagnosticRecordRef:

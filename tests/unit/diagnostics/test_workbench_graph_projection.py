@@ -9,7 +9,15 @@ from d810.diagnostics.workbench_graph_models import (
 )
 from d810.diagnostics.workbench_graph_projection import (
     project_block_cfg,
+    project_case_lineage_graph,
     project_state_machine,
+)
+from d810.core.deobfuscation_case import (
+    CaseEvidenceLevel,
+    CaseFinding,
+    CaseFindingKind,
+    CaseVerdict,
+    DeobfuscationCaseEvidence,
 )
 from d810.diagnostics.workbench_models import (
     DiagnosticField,
@@ -57,6 +65,45 @@ def _request(*records: DiagnosticRecord) -> DiagnosticGraphProjectionRequest:
     )
 
 
+def _case_request() -> DiagnosticGraphProjectionRequest:
+    evidence = DeobfuscationCaseEvidence(
+        schema_version=1,
+        function_fingerprint="target",
+        runtime_identity="diagnostic-runtime",
+        run_identity="diagnostic-session:17",
+        findings=(
+            CaseFinding(
+                finding_id="plan:0x180012C9F",
+                kind=CaseFindingKind.FRAGMENT_PLAN,
+                summary="fragment staged",
+                detail="one fragment plan",
+                native_ea=0x180012C9F,
+                confidence=1.0,
+                provenance=("diagnostic-session:17",),
+            ),
+            CaseFinding(
+                finding_id="receipt:0x180012D10",
+                kind=CaseFindingKind.RECEIPT,
+                summary="publication receipt",
+                detail="published without semantic witness",
+                native_ea=0x180012D10,
+                confidence=1.0,
+                provenance=("diagnostic-session:17",),
+            ),
+        ),
+        verdict=CaseVerdict(
+            level=CaseEvidenceLevel.C5_PUBLICATION,
+            summary="publication evidence",
+            first_blocked_obligation="semantic witness is still required",
+        ),
+    )
+    return DiagnosticGraphProjectionRequest(
+        context=_context(DiagnosticGraphKind.CASE_LINEAGE),
+        primary_records=(),
+        case_evidence=evidence,
+    )
+
+
 def test_block_cfg_projects_anchored_nodes_and_only_evidenced_edges() -> None:
     graph = project_block_cfg(
         _request(
@@ -73,6 +120,15 @@ def test_block_cfg_projects_anchored_nodes_and_only_evidenced_edges() -> None:
         ("block:blk7@0x180012C9F", "block:blk8@0x180012D10")
     ]
     assert graph.nodes[0].record_refs[0].ordinal == 1
+
+
+def test_case_graph_nodes_include_native_ea_in_every_required_block_label() -> None:
+    graph = project_case_lineage_graph(_case_request())
+
+    assert graph.status.startswith("Deobfuscation case")
+    assert all("0x" in node.label for node in graph.nodes if node.requires_anchor)
+    assert graph.nodes[-1].category == "case_receipt"
+    assert all(node.category != "semantic_result" for node in graph.nodes)
 
 
 def test_block_cfg_omits_dangling_edges_and_unanchored_blocks_with_warnings() -> None:

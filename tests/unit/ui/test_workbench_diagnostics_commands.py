@@ -20,6 +20,10 @@ def test_adapter_delegates_inventory_views_plans_execution_and_navigation() -> N
             ("records", path, snapshot_id, kind)
         )
         or ("record",),
+        get_diagnostic_case_evidence=lambda path, function_ea: events.append(
+            ("case", path, function_ea)
+        )
+        or "case",
         plan_diagnostic_selected_snapshots=lambda path, ids: events.append(
             ("selected_snapshots", path, ids)
         )
@@ -54,6 +58,8 @@ def test_adapter_delegates_inventory_views_plans_execution_and_navigation() -> N
     assert adapter.snapshots("/a") == ("snapshot",)
     assert adapter.records("/a", 7, "blocks") == ("record",)
     assert events[-1][-1] is DiagnosticViewKind.BLOCKS
+    assert adapter.case("/a", 0x401000) == "case"
+    assert events[-1] == ("case", "/a", 0x401000)
     assert (
         adapter.plan("delete_selected_snapshots", path="/a", snapshot_ids=(2, 1))
         is plan

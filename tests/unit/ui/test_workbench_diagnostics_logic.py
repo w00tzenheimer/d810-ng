@@ -17,6 +17,13 @@ from d810.diagnostics.workbench_models import (
     DiagnosticSnapshotSummary,
     DiagnosticViewKind,
 )
+from d810.core.deobfuscation_case import (
+    CaseEvidenceLevel,
+    CaseFinding,
+    CaseFindingKind,
+    CaseVerdict,
+    DeobfuscationCaseEvidence,
+)
 from d810.ui import workbench_diagnostics_logic as logic
 
 
@@ -64,6 +71,40 @@ def _snapshot(
         block_count=blocks,
         recorded_at=timestamp,
         row_count=rows,
+    )
+
+
+def _case_evidence(
+    *,
+    level: CaseEvidenceLevel = CaseEvidenceLevel.C1_DISCOVERY,
+    blocked: str | None = "unique realization of native body failed",
+    findings: tuple[CaseFinding, ...] | None = None,
+) -> DeobfuscationCaseEvidence:
+    return DeobfuscationCaseEvidence(
+        schema_version=1,
+        function_fingerprint="function:401000",
+        runtime_identity="diagnostic-runtime",
+        run_identity="diagnostic-session:17",
+        findings=(
+            findings
+            if findings is not None
+            else (
+                CaseFinding(
+                    finding_id="discovery:0x401000",
+                    kind=CaseFindingKind.OBSERVATION,
+                    summary="dispatcher candidate discovered",
+                    detail="candidate is not yet uniquely realized",
+                    native_ea=0x401000,
+                    confidence=0.8,
+                    provenance=("diagnostic-session:17",),
+                ),
+            )
+        ),
+        verdict=CaseVerdict(
+            level=level,
+            summary="case evidence summary",
+            first_blocked_obligation=blocked,
+        ),
     )
 
 
@@ -344,3 +385,110 @@ def test_cleanup_result_projection_separates_transaction_integrity_sidecars_and_
     assert "Integrity check" in text
     assert "WAL / sidecars" in text
     assert "Vacuum" in text
+
+
+def test_case_timeline_reports_the_first_blocked_obligation_without_claiming_success():
+    view = logic.project_case_timeline(_case_evidence(), snapshot_id=17)
+
+    assert view.highest_level_label == "Discovery evidence recorded"
+    assert view.first_blocked_obligation == "unique realization of native body failed"
+    assert view.semantic_verified is False
+    assert view.rows[0].record.source_table == "deobfuscation_case"
+    assert view.rows[0].record.snapshot_id == 17
+
+
+def test_case_timeline_keeps_c5_receipts_distinct_from_c6_semantic_success():
+    receipt = CaseFinding(
+        finding_id="receipt:0x401020",
+        kind=CaseFindingKind.RECEIPT,
+        summary="publication receipt recorded",
+        detail="rewrites were published",
+        native_ea=0x401020,
+        confidence=1.0,
+        provenance=("diagnostic-session:17",),
+    )
+
+    view = logic.project_case_timeline(
+        _case_evidence(level=CaseEvidenceLevel.C5_PUBLICATION, findings=(receipt,)),
+        snapshot_id=17,
+    )
+
+    assert view.highest_level_label == "Publication receipt recorded"
+    assert view.semantic_verified is False
+    assert "receipt" in view.rows[0].summary
+
+
+def test_canary_comparison_reports_lost_facts_before_new_failures():
+    previous = _case_evidence(
+        findings=(
+            CaseFinding(
+                finding_id="predicate:0x4010F0",
+                kind=CaseFindingKind.PORTABLE_EVIDENCE,
+                summary="state predicate established",
+                detail="portable predicate",
+                native_ea=0x4010F0,
+                confidence=0.9,
+                provenance=("diagnostic-session:16",),
+            ),
+        ),
+    )
+    current = _case_evidence(
+        findings=(
+            CaseFinding(
+                finding_id="rejection:0x401100",
+                kind=CaseFindingKind.REJECTION,
+                summary="new uniqueness failure",
+                detail="rejected competing realization",
+                native_ea=0x401100,
+                confidence=1.0,
+                provenance=("diagnostic-session:17",),
+            ),
+        ),
+    )
+
+    comparison = logic.compare_case_runs(
+        previous,
+        current,
+        baseline_recorded_at=10.0,
+        current_recorded_at=17.5,
+        baseline_maturity="MMAT_PREOPTIMIZED",
+        current_maturity="MMAT_GLBOPT1",
+    )
+
+    assert comparison.comparable is True
+    assert comparison.lost_finding_ids == ("predicate:0x4010F0",)
+    assert comparison.first_regression == "predicate:0x4010F0"
+    assert comparison.validation_outcome_ids == ("rejection:0x401100",)
+    assert comparison.timing_delta_seconds == 7.5
+    assert comparison.maturity_delta == "MMAT_PREOPTIMIZED -> MMAT_GLBOPT1"
+
+
+def test_cleanup_candidate_filter_never_includes_the_active_case_baseline():
+    candidates = logic.filter_cleanup_candidate_paths(
+        ("/current.diag.sqlite3", "/baseline.diag.sqlite3"),
+        protected_paths=("/baseline.diag.sqlite3",),
+    )
+
+    assert candidates == ("/current.diag.sqlite3",)
+
+
+def test_case_baseline_selects_only_the_nearest_earlier_closed_matching_database():
+    selected = _database(
+        "/current", recorded_at=30, function_ea=0x401000, size=1, snapshots=1
+    )
+    nearest = _database(
+        "/nearest", recorded_at=20, function_ea=0x401000, size=1, snapshots=1
+    )
+    active = _database(
+        "/active", recorded_at=25, function_ea=0x401000, size=1, snapshots=1,
+        active=True,
+    )
+
+    baseline = logic.select_case_baseline(
+        (selected, nearest, active),
+        current_path=selected.path,
+        current_recorded_at=selected.recorded_at,
+        function_ea=0x401000,
+    )
+
+    assert baseline is nearest

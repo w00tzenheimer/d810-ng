@@ -83,6 +83,8 @@ def test_panel_projects_inventory_records_actions_plans_and_results_through_logi
         "project_cleanup_plan",
         "cleanup_confirmation_matches",
         "project_cleanup_result",
+        "project_case_timeline",
+        "filter_cleanup_candidate_paths",
     }.issubset(calls)
 
 
@@ -181,3 +183,15 @@ def test_panel_publishes_graph_context_without_projecting_or_refiltering_it() ->
     assert "project_diagnostic_graph" not in source
     assert "_publish_graph_context()" in load_source
     assert "_publish_graph_context" not in refilter_source
+
+
+def test_panel_exposes_case_timeline_canary_comparison_and_protects_baseline_cleanup() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    load_source = _method_source("_load_records")
+    cleanup_source = _method_source("_plan_cleanup")
+
+    assert '"Deobfuscation case", "case"' in source
+    assert "Compare selected run" in source
+    assert "case_summary" in source
+    assert "project_case_timeline" in load_source
+    assert "filter_cleanup_candidate_paths" in cleanup_source

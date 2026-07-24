@@ -94,3 +94,17 @@ def test_graph_rejects_edge_with_missing_endpoint() -> None:
             warnings=(),
             status="status",
         )
+
+
+def test_graph_node_exposes_when_its_label_must_carry_a_native_anchor() -> None:
+    node = DiagnosticGraphNode(
+        model_id="case:receipt:0x180012C9F",
+        label="receipt:0x180012C9F | published",
+        category="case_receipt",
+        anchor_ea=0x180012C9F,
+        hint_fields=(),
+        record_refs=(),
+        requires_anchor=True,
+    )
+
+    assert node.requires_anchor is True
