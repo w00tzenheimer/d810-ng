@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from d810.analyses.control_flow.frontend_normalization import (
+    FrontendNormalizationEvidence,
+    NativeIndirectTransferProof,
+    NativeTransferEndpoint,
+    NativeTransferShape,
+)
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     SemanticRouteDestination,
@@ -13,7 +19,13 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticStateWriteProof,
     bind_canonical_semantic_evidence,
 )
+from d810.capabilities.frontend_normalization import (
+    FrontendNormalizationEvidenceCapability,
+)
 from d810.capabilities.resolver import CapabilitySet
+from d810.capabilities.semantic_routes import (
+    CanonicalSemanticCandidateEvidenceCapability,
+)
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -29,6 +41,10 @@ from d810.passes.state_machine_spine import (
 from d810.passes.unflatten.state_machine import (
     BOUND_CANONICAL_SEMANTIC_EVIDENCE,
     LowerCanonicalSemanticFragment,
+)
+from d810.passes.unflatten import state_machine as state_machine_module
+from d810.transforms.canonical_semantic_fragment import (
+    build_canonical_semantic_fragment_plan,
 )
 from d810.transforms.fragment_plan import FragmentPublicationPurpose
 from d810.transforms.plan import PatchPlan
@@ -154,6 +170,123 @@ def test_canonical_semantic_lowering_returns_only_a_fragment_plan() -> None:
     metadata = result.analysis_outputs["lower_state_machine_plan_metadata"]
     assert metadata["evidence_generation"] == 7
     assert "serial" not in repr(metadata)
+
+
+def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
+    monkeypatch,
+) -> None:
+    graph, bound = _graph_and_bound_evidence()
+    candidate = bound.evidence
+    frontend_evidence = FrontendNormalizationEvidence(
+        native_key=NATIVE_KEY,
+        generation=candidate.generation,
+        atomic_group_id="frontend-normalization:g7",
+        transfer_proofs=(
+            NativeIndirectTransferProof(
+                proof_id="native-transfer@0x1100",
+                atomic_group_id="frontend-normalization:g7",
+                shape=NativeTransferShape.DIRECT,
+                source_identity=_identity(0x1100),
+                source_anchor_ea=0x1100,
+                source_transfer_ea=0x1100,
+                endpoints=(
+                    NativeTransferEndpoint(
+                        role=SemanticEdgeRole.DIRECT,
+                        identity=_identity(0x1200),
+                        anchor_ea=0x1200,
+                    ),
+                ),
+            ),
+        ),
+    )
+    expected_plan = build_canonical_semantic_fragment_plan(
+        graph,
+        bound,
+        prohibited_dispatcher_serials=(30,),
+    )
+    calls = []
+    monkeypatch.setattr(
+        state_machine_module,
+        "plan_frontend_computed_branch_normalization",
+        lambda current_graph, evidence: (
+            calls.append(("normalization", current_graph, evidence))
+            or expected_plan
+        ),
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "compose_canonical_semantic_fragment_plan",
+        lambda current_graph, normalization_plan, evidence, **kwargs: (
+            calls.append(
+                (
+                    "composition",
+                    current_graph,
+                    normalization_plan,
+                    evidence,
+                    kwargs,
+                )
+            )
+            or expected_plan
+        ),
+    )
+
+    class _CandidateProvider:
+        def candidate_evidence_for(self, function_ea: int):
+            return candidate if int(function_ea) == graph.func_ea else None
+
+    class _FrontendProvider:
+        def evidence_for(self, function_ea: int):
+            return (
+                frontend_evidence
+                if int(function_ea) == graph.func_ea
+                else None
+            )
+
+    analyses = AnalysisManager(graph)
+    analyses.put_analysis(
+        "recover_dispatcher",
+        SimpleNamespace(
+            dispatcher_block_serial=30,
+            dispatch_map=SimpleNamespace(dispatcher_blocks=frozenset({30})),
+        ),
+    )
+    capabilities = (
+        CapabilitySet()
+        .with_capability(
+            CanonicalSemanticCandidateEvidenceCapability,
+            _CandidateProvider(),
+        )
+        .with_capability(
+            FrontendNormalizationEvidenceCapability,
+            _FrontendProvider(),
+        )
+    )
+    context = FunctionPipelineContext(
+        source=None,
+        graph=graph,
+        maturity=None,
+        project_config=None,
+        facts=analyses.view(),
+        capabilities=capabilities,
+    )
+
+    result = LowerCanonicalSemanticFragment().run(context)
+
+    assert result.fragment_plan == expected_plan
+    assert calls[0] == ("normalization", graph, frontend_evidence)
+    assert calls[1][0:4] == (
+        "composition",
+        graph,
+        expected_plan,
+        candidate,
+    )
+    assert calls[1][4] == {"prohibited_dispatcher_serials": (30,)}
+    assert (
+        result.analysis_outputs["lower_state_machine_plan_metadata"][
+            "evidence_generation"
+        ]
+        == candidate.generation
+    )
 
 
 def test_semantic_evidence_spine_declares_fragment_publication_authority() -> None:

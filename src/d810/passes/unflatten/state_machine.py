@@ -15,7 +15,7 @@ additive + behavior-neutral (not wired into the maturity hook).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
@@ -61,6 +61,9 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     bind_canonical_semantic_evidence,
 )
+from d810.analyses.control_flow.frontend_normalization import (
+    FrontendNormalizationEvidence,
+)
 from d810.analyses.control_flow.transition_builder import (
     transition_result_from_resolutions,
 )
@@ -71,12 +74,21 @@ from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
 from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
     build_canonical_semantic_fragment_plan,
+    compose_canonical_semantic_fragment_plan,
+)
+from d810.transforms.frontend_normalization import (
+    plan_frontend_computed_branch_normalization,
+)
+from d810.transforms.fragment_plan import FragmentPlan
+from d810.capabilities.frontend_normalization import (
+    FrontendNormalizationEvidenceCapability,
 )
 from d810.capabilities.branch_witness import BranchWitnessCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
 from d810.capabilities.machine_engines import MachineRecoveryEnginesCapability
 from d810.capabilities.semantic_routes import (
+    CanonicalSemanticCandidateEvidenceCapability,
     CanonicalSemanticEvidenceCapability,
 )
 from d810.analyses.data_flow.concolic import EmulationCapability
@@ -649,6 +661,107 @@ class PlanSemanticRegions(PipelinePass):
         )
 
 
+def _single_route_candidate(
+    evidence: CanonicalSemanticEvidence,
+    route_index: int,
+) -> CanonicalSemanticEvidence:
+    if len(evidence.route_proofs) == 1:
+        return evidence
+    proof = evidence.route_proofs[int(route_index)]
+    atomic_group_id = (
+        f"{evidence.atomic_group_id}:work-item:{proof.proof_id}"
+    )
+    return CanonicalSemanticEvidence(
+        native_key=evidence.native_key,
+        generation=evidence.generation,
+        atomic_group_id=atomic_group_id,
+        route_proofs=(
+            replace(proof, atomic_group_id=atomic_group_id),
+        ),
+    )
+
+
+def _compose_candidate_semantic_fragment(
+    context: FunctionPipelineContext,
+    *,
+    prohibited_dispatcher_serials: tuple[int, ...],
+) -> tuple[FragmentPlan, int]:
+    candidate_provider = context.capabilities.optional(
+        CanonicalSemanticCandidateEvidenceCapability
+    )
+    frontend_provider = context.capabilities.optional(
+        FrontendNormalizationEvidenceCapability
+    )
+    if candidate_provider is None or frontend_provider is None:
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition requires candidate and normalization evidence"
+        )
+    function_ea = int(context.graph.func_ea)
+    candidate = candidate_provider.candidate_evidence_for(function_ea)
+    frontend_evidence = frontend_provider.evidence_for(function_ea)
+    if not isinstance(candidate, CanonicalSemanticEvidence):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition has no current candidate evidence"
+        )
+    if not isinstance(frontend_evidence, FrontendNormalizationEvidence):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition has no current normalization evidence"
+        )
+    if (
+        candidate.native_key != frontend_evidence.native_key
+        or candidate.generation != frontend_evidence.generation
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition evidence generation drifted"
+        )
+    normalization_plan = plan_frontend_computed_branch_normalization(
+        context.graph,
+        frontend_evidence,
+    )
+    if normalization_plan is None:
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition has no unpublished normalization plan"
+        )
+
+    plans: list[FragmentPlan] = []
+    first_rejection: str | None = None
+    for route_index, _proof in enumerate(candidate.route_proofs):
+        route_candidate = _single_route_candidate(candidate, route_index)
+        try:
+            plan = compose_canonical_semantic_fragment_plan(
+                context.graph,
+                normalization_plan,
+                route_candidate,
+                prohibited_dispatcher_serials=(
+                    prohibited_dispatcher_serials
+                ),
+            )
+        except CanonicalSemanticFragmentRejected as exc:
+            if first_rejection is None:
+                first_rejection = str(exc)
+            continue
+        plans.append(plan)
+    if not plans:
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition found no complete route"
+            + (
+                ""
+                if first_rejection is None
+                else f": {first_rejection}"
+            )
+        )
+    plan = min(
+        plans,
+        key=lambda item: (
+            len(item.operations),
+            len(item.blocks),
+            int(item.block(item.roots[0]).semantic_anchor_ea),
+            item.plan_id,
+        ),
+    )
+    return plan, int(candidate.generation)
+
+
 class LowerCanonicalSemanticFragment(PipelinePass):
     """Lower one bound atomic evidence group through fragment publication only."""
 
@@ -656,10 +769,6 @@ class LowerCanonicalSemanticFragment(PipelinePass):
 
     def run(self, context: FunctionPipelineContext) -> PassResult:
         bound = _analysis(context, BOUND_CANONICAL_SEMANTIC_EVIDENCE)
-        if bound is None:
-            raise CanonicalSemanticFragmentRejected(
-                "canonical semantic lowering requires one fully bound evidence group"
-            )
         recovery = _analysis(context, "recover_dispatcher")
         range_evidence = _analysis(context, "range_evidence")
         dispatch_map = (
@@ -703,15 +812,24 @@ class LowerCanonicalSemanticFragment(PipelinePass):
                 "canonical semantic lowering requires residual dispatcher identity"
             )
 
-        plan = build_canonical_semantic_fragment_plan(
-            context.graph,
-            bound,
-            prohibited_dispatcher_serials=dispatcher_serials,
-        )
+        if bound is None:
+            plan, evidence_generation = _compose_candidate_semantic_fragment(
+                context,
+                prohibited_dispatcher_serials=tuple(
+                    sorted(dispatcher_serials)
+                ),
+            )
+        else:
+            plan = build_canonical_semantic_fragment_plan(
+                context.graph,
+                bound,
+                prohibited_dispatcher_serials=dispatcher_serials,
+            )
+            evidence_generation = int(bound.evidence.generation)
         metadata = {
             "plan_id": plan.plan_id,
             "atomic_group_id": plan.atomic_group_id,
-            "evidence_generation": int(bound.evidence.generation),
+            "evidence_generation": evidence_generation,
             "operation_count": len(plan.operations),
             "owned_original_count": len(plan.owned_originals),
             "prohibited_dispatcher_count": len(
