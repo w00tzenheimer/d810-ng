@@ -46,6 +46,7 @@ from d810.analyses.control_flow.detached_handler_island import (
 from d810.analyses.control_flow.native_semantic_closure import (
     NativeCfg,
     NativeEdgeKind,
+    NativeRange,
     NativeSemanticClosure,
     NativeTerminalKind,
     ResolverProvenHandlerEntry,
@@ -8753,21 +8754,30 @@ def _plan_frontend_normalization_union_source(
             ),
         )
         return None
-    handler_entry_eas = tuple(
-        int(seed_ea)
-        for seed_ea, native_ranges in handler_region.seed_native_ranges
-        if any(
-            int(start_ea) <= int(seed_ea) < int(end_ea)
+    handler_ranges_by_entry = {
+        int(seed_ea): tuple(
+            NativeRange(int(start_ea), int(end_ea))
             for start_ea, end_ea in native_ranges
         )
-    )
-    if len(handler_entry_eas) != len(handler_region.seed_native_ranges):
+        for seed_ea, native_ranges in handler_region.seed_native_ranges
+    }
+    if any(
+        sum(
+            int(native_range.start_ea)
+            <= int(seed_ea)
+            < int(native_range.end_ea)
+            for native_range in native_ranges
+        )
+        != 1
+        for seed_ea, native_ranges in handler_ranges_by_entry.items()
+    ):
         logger.info(
             "frontend normalization source abstained: func=0x%X "
             "reason=handler_seed_outside_owned_range",
             key,
         )
         return None
+    handler_entry_eas = tuple(sorted(handler_ranges_by_entry))
 
     source_entry_eas = tuple(
         sorted({int(plan.block_entry) for plan in resolution.patch_plans})
@@ -8813,26 +8823,32 @@ def _plan_frontend_normalization_union_source(
         )
         return None
 
+    seed_provenance_rows = {
+        **{
+            (int(entry_ea), "computed_transfer_source"): ()
+            for entry_ea in source_entry_eas
+        },
+        **{
+            (int(entry_ea), "computed_transfer_target"): ()
+            for entry_ea in target_eas
+        },
+        **{
+            (int(entry_ea), "static_handler_entry_route"): native_ranges
+            for entry_ea, native_ranges in handler_ranges_by_entry.items()
+        },
+    }
     seed_provenance = tuple(
         ResolverProvenHandlerEntry(
             entry_ea=int(entry_ea),
             provenance=provenance,
+            owned_native_ranges=owned_native_ranges,
         )
-        for entry_ea, provenance in sorted(
-            {
-                *(
-                    (int(entry_ea), "computed_transfer_source")
-                    for entry_ea in source_entry_eas
-                ),
-                *(
-                    (int(entry_ea), "computed_transfer_target")
-                    for entry_ea in target_eas
-                ),
-                *(
-                    (int(entry_ea), "static_handler_entry_route")
-                    for entry_ea in handler_entry_eas
-                ),
-            }
+        for (
+            entry_ea,
+            provenance,
+        ), owned_native_ranges in sorted(
+            seed_provenance_rows.items(),
+            key=lambda item: (int(item[0][0]), str(item[0][1])),
         )
     )
     closure = plan_native_semantic_closure(

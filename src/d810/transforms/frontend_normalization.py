@@ -490,13 +490,38 @@ def _publication_native_entry_eas(
     request: DetachedSemanticClosureImportRequest,
 ) -> frozenset[int]:
     """Select the control-flow component exposed by the missing-entry roots."""
+    range_owned_seed_eas: list[int] = []
+    for seed in request.semantic_closure.seed_provenance:
+        if not seed.owned_native_ranges:
+            continue
+        if any(
+            not any(
+                int(closure_range.start_ea) <= int(owned_range.start_ea)
+                and int(owned_range.end_ea) <= int(closure_range.end_ea)
+                for closure_range in request.semantic_closure.native_ranges
+            )
+            for owned_range in seed.owned_native_ranges
+        ):
+            raise FrontendNormalizationEvidenceRejected(
+                f"range-owned handler seed 0x{int(seed.entry_ea):X} "
+                "escapes its semantic closure"
+            )
+        range_owned_seed_eas.append(int(seed.entry_ea))
+    publication_root_eas = tuple(
+        sorted(
+            {
+                *(int(entry_ea) for entry_ea in request.required_entry_eas),
+                *range_owned_seed_eas,
+            }
+        )
+    )
     pending = [
         int(native_block.start_ea)
-        for entry_ea in request.required_entry_eas
+        for entry_ea in publication_root_eas
         for native_block in (_request_native_block(request, int(entry_ea)),)
         if native_block is not None
     ]
-    if len(pending) != len(request.required_entry_eas):
+    if len(pending) != len(publication_root_eas):
         raise FrontendNormalizationEvidenceRejected(
             "detached import entry is not owned by one native closure block"
         )
