@@ -1,4 +1,5 @@
 """Tests for MBA diagnostic snapshot schema creation."""
+
 import sqlite3
 
 import pytest
@@ -37,6 +38,10 @@ def test_create_tables_creates_all_expected_tables():
     assert "switch_case_transition_facts" in tables
     assert "branch_ownership_proofs" in tables
     assert "semantic_fragment_root_publication_groups" in tables
+    assert "semantic_route_oracle_runs" in tables
+    assert "semantic_route_reference_rewrites" in tables
+    assert "semantic_route_oracle_captures" in tables
+    assert "semantic_route_oracle_comparisons" in tables
 
 
 def test_create_tables_idempotent():
@@ -46,17 +51,12 @@ def test_create_tables_idempotent():
 
 def test_instruction_schema_exposes_indexed_assertion_state() -> None:
     conn = create_diag_database(":memory:").connection()
-    columns = [
-        row[1] for row in conn.execute("PRAGMA table_info(instructions)")
-    ]
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(instructions)")]
     assert columns[7:9] == ["iprops", "is_assert"]
 
     indexed_columns = {
         tuple(
-            column[2]
-            for column in conn.execute(
-                f"PRAGMA index_info({index_row[1]})"
-            )
+            column[2] for column in conn.execute(f"PRAGMA index_info({index_row[1]})")
         )
         for index_row in conn.execute("PRAGMA index_list(instructions)")
     }
@@ -95,9 +95,7 @@ def test_logical_version_transition_schema_is_serial_free_and_reconstructible():
     conn = create_diag_database(":memory:").connection()
     columns = [
         row[1]
-        for row in conn.execute(
-            "PRAGMA table_info(logical_block_version_transitions)"
-        )
+        for row in conn.execute("PRAGMA table_info(logical_block_version_transitions)")
     ]
     assert columns == [
         "event_id",
@@ -175,7 +173,14 @@ def test_phase_check_constraint_rejects_invalid():
 def test_phase_check_constraint_accepts_valid():
     """Verify CHECK constraint accepts all valid phase values."""
     conn = create_diag_database(":memory:").connection()
-    valid_phases = ['pre_d810', 'post_apply', 'post_gut_wire', 'post_pipeline', 'post_d810', 'unknown']
+    valid_phases = [
+        "pre_d810",
+        "post_apply",
+        "post_gut_wire",
+        "post_pipeline",
+        "post_d810",
+        "unknown",
+    ]
     for i, phase in enumerate(valid_phases):
         conn.execute(
             "INSERT INTO snapshots VALUES "

@@ -24,6 +24,7 @@ Composite-PK columns that were nullable in the DDL (e.g.
 force NOT NULL on non-AutoField PK columns -- so they must match pristine
 exactly.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -74,6 +75,72 @@ EXPECTED = {
 # ALLOWED_PK_NOTNULL_DIFFS below.
 # --------------------------------------------------------------------------- #
 EXPECTED_TABLE_INFO = {
+    "semantic_route_oracle_runs": [
+        ("run_id", "TEXT", 1, 1),
+        ("func_ea_hex", "TEXT", 1, 0),
+        ("func_ea_i64", "INTEGER", 1, 0),
+        ("fixture_sha256", "TEXT", 1, 0),
+        ("reference_binary_sha256", "TEXT", 1, 0),
+        ("candidate_binary_sha256", "TEXT", 1, 0),
+        ("reference_commit", "TEXT", 1, 0),
+        ("runtime_image", "TEXT", 1, 0),
+        ("runtime_image_id", "TEXT", 1, 0),
+        ("cache_disabled", "INTEGER", 1, 0),
+        ("created_at", "REAL", 1, 0),
+        ("metadata_json", "TEXT", 1, 0),
+    ],
+    "semantic_route_reference_rewrites": [
+        ("run_id", "TEXT", 1, 1),
+        ("route_id", "TEXT", 1, 2),
+        ("func_ea_hex", "TEXT", 1, 0),
+        ("func_ea_i64", "INTEGER", 1, 0),
+        ("phase", "TEXT", 1, 0),
+        ("owner_ea_hex", "TEXT", 1, 0),
+        ("owner_ea_i64", "INTEGER", 1, 0),
+        ("rewrite_anchor_ea_hex", "TEXT", 1, 0),
+        ("rewrite_anchor_ea_i64", "INTEGER", 1, 0),
+        ("corridor_json", "TEXT", 1, 0),
+        ("original_transfer_kind", "TEXT", 1, 0),
+        ("final_transfer_kind", "TEXT", 1, 0),
+        ("direct_target_ea_hex", "TEXT", 0, 0),
+        ("direct_target_ea_i64", "INTEGER", 0, 0),
+        ("true_target_ea_hex", "TEXT", 0, 0),
+        ("true_target_ea_i64", "INTEGER", 0, 0),
+        ("false_target_ea_hex", "TEXT", 0, 0),
+        ("false_target_ea_i64", "INTEGER", 0, 0),
+        ("predicate_kind", "TEXT", 0, 0),
+        ("reference_ledger_identity", "TEXT", 1, 0),
+        ("reference_ledger_json", "TEXT", 1, 0),
+    ],
+    "semantic_route_oracle_captures": [
+        ("run_id", "TEXT", 1, 1),
+        ("lane", "TEXT", 1, 2),
+        ("candidate_variant", "TEXT", 1, 3),
+        ("maturity", "TEXT", 1, 4),
+        ("snapshot_id", "INTEGER", 1, 0),
+        ("binary_sha256", "TEXT", 1, 0),
+        ("d810_enabled", "INTEGER", 1, 0),
+        ("cache_disabled", "INTEGER", 1, 0),
+        ("metadata_json", "TEXT", 1, 0),
+    ],
+    "semantic_route_oracle_comparisons": [
+        ("run_id", "TEXT", 1, 1),
+        ("route_id", "TEXT", 1, 2),
+        ("maturity", "TEXT", 1, 3),
+        ("candidate_variant", "TEXT", 1, 4),
+        ("reference_snapshot_id", "INTEGER", 1, 0),
+        ("candidate_snapshot_id", "INTEGER", 1, 0),
+        ("outcome", "TEXT", 1, 0),
+        ("first_divergence", "INTEGER", 1, 0),
+        ("failed_invariant", "TEXT", 0, 0),
+        ("owner_ea_hex", "TEXT", 1, 0),
+        ("owner_ea_i64", "INTEGER", 1, 0),
+        ("rewrite_anchor_ea_hex", "TEXT", 1, 0),
+        ("rewrite_anchor_ea_i64", "INTEGER", 1, 0),
+        ("oracle_shape_json", "TEXT", 0, 0),
+        ("candidate_shape_json", "TEXT", 0, 0),
+        ("reason", "TEXT", 1, 0),
+    ],
     "blocks": [
         ("snapshot_id", "INTEGER", 1, 1),
         ("serial", "INTEGER", 1, 2),
@@ -535,6 +602,25 @@ EXPECTED_TABLE_INFO = {
 # Index *names* may differ (peewee names them ``<table>_<col>``); assert
 # presence + indexed columns, not legacy names.
 EXPECTED_INDEXES = {
+    "semantic_route_oracle_runs": [
+        ("c", ("func_ea_i64", "created_at")),
+        ("pk", ("run_id",)),
+    ],
+    "semantic_route_reference_rewrites": [
+        ("c", ("func_ea_i64", "route_id")),
+        ("c", ("rewrite_anchor_ea_i64",)),
+        ("pk", ("run_id", "route_id")),
+    ],
+    "semantic_route_oracle_captures": [
+        ("c", ("snapshot_id",)),
+        ("pk", ("run_id", "lane", "candidate_variant", "maturity")),
+    ],
+    "semantic_route_oracle_comparisons": [
+        ("c", ("first_divergence", "outcome")),
+        ("c", ("rewrite_anchor_ea_i64", "outcome")),
+        ("c", ("route_id", "maturity")),
+        ("pk", ("run_id", "route_id", "maturity", "candidate_variant")),
+    ],
     "blocks": [("pk", ("snapshot_id", "serial"))],
     "block_observations": [
         ("c", ("body_fingerprint",)),
@@ -632,9 +718,7 @@ EXPECTED_INDEXES = {
     "snapshot_modifications": [("pk", ("snapshot_id", "mod_index"))],
     "block_classification": [("pk", ("snapshot_id", "serial"))],
     "rendered_programs": [("pk", ("snapshot_id", "variant_name"))],
-    "rendered_program_nodes": [
-        ("pk", ("snapshot_id", "variant_name", "node_index"))
-    ],
+    "rendered_program_nodes": [("pk", ("snapshot_id", "variant_name", "node_index"))],
     "rendered_program_lines": [
         ("c", ("snapshot_id", "variant_name", "node_index", "line_no")),
         ("pk", ("snapshot_id", "variant_name", "line_no")),
@@ -785,7 +869,7 @@ class TestModeledSchemaEquivalence:
         """
         all_tables = set(EXPECTED) | set(EXPECTED_TABLE_INFO)
         # Slice-1 tables introduce no allowed diffs.
-        for (table, _col) in ALLOWED_PK_NOTNULL_DIFFS:
+        for table, _col in ALLOWED_PK_NOTNULL_DIFFS:
             assert table in all_tables, table
         # Every allowed diff must reference an existing PK column.
         info = {**EXPECTED, **EXPECTED_TABLE_INFO}
@@ -816,4 +900,4 @@ class TestModeledSchemaEquivalence:
 
     def test_modeled_count(self) -> None:
         # Phase A models the non-slice-1, non-view tables.
-        assert len(EXPECTED_TABLE_INFO) == 33
+        assert len(EXPECTED_TABLE_INFO) == 37

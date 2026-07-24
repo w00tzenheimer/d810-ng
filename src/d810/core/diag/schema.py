@@ -5,13 +5,14 @@ defined by peewee **Models** in :mod:`d810.core.diag.models` (schema source of
 truth); only analytical SQL views remain raw DDL. Diagnostic databases are
 disposable: readers and writers reject every schema except the current one.
 """
+
 from __future__ import annotations
 
 
 from d810._vendor.peewee import SqliteDatabase
 from d810.core.diag.models import DiagnosticSchemaVersion, MODELS
 
-DIAGNOSTIC_SCHEMA_VERSION = 6
+DIAGNOSTIC_SCHEMA_VERSION = 7
 
 
 class DiagnosticSchemaMismatch(RuntimeError):
@@ -25,6 +26,7 @@ class DiagnosticSchemaMismatch(RuntimeError):
             "diagnostic schema mismatch: "
             f"expected={self.expected} observed={self.observed!r} path={self.path}"
         )
+
 
 # Only VIEWs remain raw DDL; every base table is a peewee Model (see models.py).
 #
@@ -73,8 +75,7 @@ FROM lifecycle_events le;
 def _observed_version(db: SqliteDatabase) -> int | None:
     conn = db.connection()
     exists = conn.execute(
-        "SELECT 1 FROM sqlite_master "
-        "WHERE type='table' AND name='diagnostic_schema'"
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='diagnostic_schema'"
     ).fetchone()
     if exists is None:
         return None
@@ -101,9 +102,12 @@ def create_tables(db: SqliteDatabase) -> None:
     Fresh databases receive the modeled tables and exact version marker.
     """
     conn = db.connection()
-    has_objects = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
-    ).fetchone() is not None
+    has_objects = (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
+        ).fetchone()
+        is not None
+    )
     if has_objects:
         require_current_schema(db)
     with db.bind_ctx(MODELS):
