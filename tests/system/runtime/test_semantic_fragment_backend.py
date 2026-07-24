@@ -2655,6 +2655,13 @@ def test_cached_preopt_call_materializes_with_gateway_owned_fallthrough(
     assert imported.successors == (helper.block_id,)
     assert helper.successors == ("target",)
     assert helper.physical_position == imported.physical_position + 1
+    observation = sfb.observe_published_semantic_fragment(modifier, plan)
+    assert tuple(
+        operation.operation_id for operation in observation.observable_operations
+    ) == (
+        plan.operations[0].operation_id,
+        "imported-call-continuation",
+    )
     assert gateway.receipts == ()
 
     modifier._discard_staged_semantic_fragment(plan)
