@@ -1402,6 +1402,7 @@ def test_preoptimized_hook_owns_top_level_structural_mutation() -> None:
     session = SimpleNamespace(native_preanalysis_depth=0)
     identity_index = object()
     mutation_gateway = object()
+    materializer = object()
     lifecycle_calls: list[tuple[object, ...]] = []
     events: list[object] = []
     lifecycle = SimpleNamespace(
@@ -1409,6 +1410,7 @@ def test_preoptimized_hook_owns_top_level_structural_mutation() -> None:
         current_session=lambda function_ea: session,
         build_current_mba_identity_index=lambda **kwargs: identity_index,
         new_current_mba_mutation_gateway=lambda **kwargs: mutation_gateway,
+        new_semantic_native_body_materializer=lambda **kwargs: materializer,
         preopt_ready_was_emitted=lambda **kwargs: False,
         mark_preopt_ready_emitted=lambda **kwargs: lifecycle_calls.append(
             (
@@ -1442,6 +1444,7 @@ def test_preoptimized_hook_owns_top_level_structural_mutation() -> None:
                     "session": session,
                     "identity_index": identity_index,
                     "mutation_gateway": mutation_gateway,
+                    "semantic_native_body_materializer": materializer,
                     "microcode_modified": True,
                 },
             },

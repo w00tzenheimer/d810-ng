@@ -505,11 +505,23 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 function_ea,
             )
             return False
+        materializer = lifecycle.new_semantic_native_body_materializer(
+            function_ea=function_ea,
+            mba=mba,
+        )
+        if materializer is None:
+            optimizer_logger.debug(
+                "instruction PREOPT seam abstain: func=0x%x "
+                "reason=no_native_body_materializer",
+                function_ea,
+            )
+            return False
         decision: dict[str, object] = {
             "request_redo": False,
             "session": session,
             "identity_index": index,
             "mutation_gateway": gateway,
+            "semantic_native_body_materializer": materializer,
         }
         emitter.emit(
             DecompilationEvent.HEXRAYS_PREOPT_READY,

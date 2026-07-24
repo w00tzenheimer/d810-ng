@@ -112,6 +112,20 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
                     )
                     if gateway is not None:
                         decision["mutation_gateway"] = gateway
+                        new_materializer = getattr(
+                            lifecycle,
+                            "new_semantic_native_body_materializer",
+                            None,
+                        )
+                        if callable(new_materializer):
+                            materializer = new_materializer(
+                                function_ea=function_ea,
+                                mba=mba,
+                            )
+                            if materializer is not None:
+                                decision[
+                                    "semantic_native_body_materializer"
+                                ] = materializer
         return decision
 
     def _ensure_lifecycle_session(
