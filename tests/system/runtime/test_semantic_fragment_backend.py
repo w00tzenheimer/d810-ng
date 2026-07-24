@@ -3736,6 +3736,98 @@ def test_backend_projects_exact_data_flow_without_hiding_extra_uses(
     gateway.abort(reason="runtime data-flow projection cleanup")
 
 
+def test_backend_rebinds_data_flow_instruction_origins(monkeypatch) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    monkeypatch.setattr(
+        mba,
+        "stkoff_ida2vd",
+        lambda offset: int(offset) + 0x30,
+    )
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _with_data_flow(
+        _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
+        StorageIdentity(StorageIdentityKind.STACK, offset=0x20),
+    )
+    live_ea = 0xF1000010
+    state = sfb.SemanticFragmentBackendState(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        instruction_origins_by_block_id={
+            "replacement": {live_ea: 0x401010},
+        },
+    )
+
+    def _reaching_definitions(
+        _mba,
+        block_serial: int,
+        use_ea: int,
+        identifier: int,
+        size: int,
+    ) -> list[DefSite]:
+        assert block_serial == original.serial
+        assert use_ea == live_ea
+        assert identifier == 0x50
+        assert size == 4
+        return [DefSite(block_serial, live_ea, ida_hexrays.m_mov)]
+
+    def _reached_uses(
+        _mba,
+        block_serial: int,
+        definition_ea: int,
+        identifier: int,
+        size: int,
+    ) -> list[UseSite]:
+        assert block_serial == original.serial
+        assert definition_ea == live_ea
+        assert identifier == 0x50
+        assert size == 4
+        return [UseSite(block_serial, live_ea, ida_hexrays.m_mov)]
+
+    monkeypatch.setattr(
+        sfb,
+        "find_reaching_defs_for_stkvar_use",
+        _reaching_definitions,
+    )
+    monkeypatch.setattr(
+        sfb,
+        "find_uses_reached_by_stkvar_definition",
+        _reached_uses,
+    )
+
+    relations = sfb._project_data_flow_relations(
+        modifier,
+        plan,
+        state,
+        {"replacement": original},
+        {original.serial: "replacement"},
+    )
+
+    assert relations == (
+        ProjectedDataFlowRelation(
+            value_id="state",
+            definition_site_id="state.def",
+            use_site_id="state.use",
+            use_def_observed=False,
+            def_use_observed=True,
+        ),
+        ProjectedDataFlowRelation(
+            value_id="state",
+            definition_site_id="state.def",
+            use_site_id="state.use",
+            use_def_observed=True,
+            def_use_observed=False,
+        ),
+    )
+
+
 def test_backend_rejects_duplicate_physical_data_flow_anchors(
     monkeypatch,
 ) -> None:
