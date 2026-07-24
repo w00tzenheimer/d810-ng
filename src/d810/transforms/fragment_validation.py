@@ -1233,10 +1233,14 @@ def _validate_data_flow(
 ) -> None:
     definition = obligation.definition
     expected_use_ids = {use.site_id for use in obligation.uses}
-    sites_present = _site_present(definition, blocks) and all(
-        _site_present(use, blocks) for use in obligation.uses
+    missing_site_ids = tuple(
+        site.site_id
+        for site in (definition, *obligation.uses)
+        if not _site_present(site, blocks)
     )
+    sites_present = not missing_site_ids
     use_def_valid = sites_present
+    observed_use_def: list[tuple[str, tuple[str, ...], int]] = []
     for use in obligation.uses:
         actual_relations = tuple(
             relation
@@ -1248,6 +1252,13 @@ def _validate_data_flow(
         actual_definitions = {
             relation.definition_site_id for relation in actual_relations
         }
+        observed_use_def.append(
+            (
+                use.site_id,
+                tuple(sorted(actual_definitions)),
+                len(actual_relations),
+            )
+        )
         if actual_definitions != {definition.site_id} or len(actual_relations) != 1:
             use_def_valid = False
     _outcome(
@@ -1257,23 +1268,27 @@ def _validate_data_flow(
         use_def_valid,
         "every planned use has exactly the planned reaching definition"
         if use_def_valid
-        else "a planned use is missing, ambiguous, or reached by another definition",
+        else (
+            "a planned use is missing, ambiguous, or reached by another definition; "
+            f"missing_sites={missing_site_ids!r}; "
+            f"observed_use_def={tuple(observed_use_def)!r}"
+        ),
         definition.block_id,
         *(use.block_id for use in obligation.uses),
     )
 
-    actual_relations = tuple(
+    def_use_relations = tuple(
         relation
         for relation in relations
         if relation.value_id == definition.value_id
         and relation.definition_site_id == definition.site_id
         and relation.def_use_observed
     )
-    actual_use_ids = {relation.use_site_id for relation in actual_relations}
+    actual_use_ids = {relation.use_site_id for relation in def_use_relations}
     def_use_valid = (
         sites_present
         and actual_use_ids == expected_use_ids
-        and len(actual_relations) == len(expected_use_ids)
+        and len(def_use_relations) == len(expected_use_ids)
     )
     _outcome(
         outcomes,
@@ -1282,7 +1297,13 @@ def _validate_data_flow(
         def_use_valid,
         "the planned definition reaches exactly its declared uses"
         if def_use_valid
-        else "the planned definition lost a use or reaches an undeclared use",
+        else (
+            "the planned definition lost a use or reaches an undeclared use; "
+            f"missing_sites={missing_site_ids!r}; "
+            f"expected_uses={tuple(sorted(expected_use_ids))!r}; "
+            f"observed_uses={tuple(sorted(actual_use_ids))!r}; "
+            f"observed_relation_count={len(def_use_relations)}"
+        ),
         definition.block_id,
         *(use.block_id for use in obligation.uses),
     )
