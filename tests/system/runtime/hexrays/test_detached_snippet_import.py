@@ -1084,6 +1084,315 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
 
 
 @pytest.mark.parametrize(
+    (
+        "selected_opcode",
+        "join_opcode",
+        "join_flags",
+        "continuation_flags",
+        "normalization_succeeds",
+    ),
+    (
+        (ida_hexrays.m_mov, ida_hexrays.m_ijmp, 0, 0, True),
+        (ida_hexrays.m_add, ida_hexrays.m_ijmp, 0, 0, False),
+        (
+            ida_hexrays.m_mov,
+            ida_hexrays.m_icall,
+            ida_hexrays.MBL_TCAL,
+            ida_hexrays.MBL_FAKE,
+            True,
+        ),
+        (
+            ida_hexrays.m_mov,
+            ida_hexrays.m_icall,
+            0,
+            ida_hexrays.MBL_FAKE,
+            False,
+        ),
+        (
+            ida_hexrays.m_mov,
+            ida_hexrays.m_icall,
+            ida_hexrays.MBL_TCAL | ida_hexrays.MBL_CALL,
+            ida_hexrays.MBL_FAKE,
+            False,
+        ),
+        (
+            ida_hexrays.m_mov,
+            ida_hexrays.m_icall,
+            ida_hexrays.MBL_TCAL,
+            0,
+            False,
+        ),
+    ),
+)
+def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
+    monkeypatch,
+    selected_opcode,
+    join_opcode,
+    join_flags,
+    continuation_flags,
+    normalization_succeeds,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    source_ea = 0x40A5CA
+    predicate_ea = 0x40A5D0
+    selected_ea = 0x40A5DC
+    join_ea = 0x40A5DF
+    unresolved_transfer_ea = 0x40A5E3
+    zero_flag_register = 55
+    zero_flag = _Operand(
+        ida_hexrays.mop_r,
+        register=zero_flag_register,
+        size=1,
+    )
+    skip_selected = _Instruction(
+        ida_hexrays.m_lnot,
+        selected_ea,
+        left=zero_flag,
+        dest=_Operand(
+            ida_hexrays.mop_r,
+            register=56,
+            size=1,
+        ),
+    )
+    source = _Block(
+        0,
+        source_ea,
+        (
+            _Instruction(
+                ida_hexrays.m_setb,
+                source_ea,
+                dest=_Operand(ida_hexrays.mop_r, register=51, size=1),
+            ),
+            _Instruction(
+                ida_hexrays.m_seto,
+                source_ea,
+                dest=_Operand(ida_hexrays.mop_r, register=52, size=1),
+            ),
+            _Instruction(
+                ida_hexrays.m_setz,
+                source_ea,
+                dest=zero_flag,
+            ),
+            _Instruction(
+                ida_hexrays.m_setp,
+                source_ea,
+                dest=_Operand(ida_hexrays.mop_r, register=53, size=1),
+            ),
+            _Instruction(
+                ida_hexrays.m_sets,
+                source_ea,
+                dest=_Operand(ida_hexrays.mop_r, register=54, size=1),
+            ),
+            _Instruction(ida_hexrays.m_mov, predicate_ea),
+            _Instruction(ida_hexrays.m_mov, 0x40A5D6),
+            _Instruction(
+                ida_hexrays.m_jcnd,
+                selected_ea,
+                left=_Operand(
+                    ida_hexrays.mop_d,
+                    nested=skip_selected,
+                    size=1,
+                ),
+                dest=_Operand(ida_hexrays.mop_b, block_ref=2),
+            ),
+        ),
+        (1, 2),
+    )
+    source.type = int(ida_hexrays.BLT_2WAY)
+    selected = _Block(
+        1,
+        selected_ea,
+        (_Instruction(selected_opcode, selected_ea),),
+        (2,),
+    )
+    selected.type = int(ida_hexrays.BLT_1WAY)
+    join = _Block(
+        2,
+        join_ea,
+        (
+            _Instruction(ida_hexrays.m_add, 0x40A5E1),
+            _Instruction(
+                join_opcode,
+                unresolved_transfer_ea,
+                left=_Operand(
+                    ida_hexrays.mop_r,
+                    register=7,
+                    size=(
+                        2
+                        if int(join_opcode) == int(ida_hexrays.m_icall)
+                        else 4
+                    ),
+                ),
+                right=(
+                    _Operand(ida_hexrays.mop_r, register=8, size=4)
+                    if int(join_opcode) == int(ida_hexrays.m_icall)
+                    else None
+                ),
+            ),
+        ),
+        (() if int(join_opcode) == int(ida_hexrays.m_ijmp) else (3,)),
+    )
+    if int(join_opcode) == int(ida_hexrays.m_icall):
+        join.type = int(ida_hexrays.BLT_1WAY)
+        join.flags |= int(join_flags)
+    continuation = _Block(
+        3,
+        unresolved_transfer_ea,
+        (_Instruction(ida_hexrays.m_ret, unresolved_transfer_ea),),
+    )
+    continuation.type = int(ida_hexrays.BLT_STOP)
+    continuation.flags |= int(continuation_flags)
+    native = _MBA(
+        (
+            source,
+            selected,
+            join,
+            *((continuation,) if int(join_opcode) == int(ida_hexrays.m_icall) else ()),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        source_ea,
+        native,
+        (
+            (
+                source_ea,
+                unresolved_transfer_ea
+                + (2 if int(join_opcode) == int(ida_hexrays.m_icall) else 1),
+            ),
+        ),
+        owned_block_entry_eas=(
+            source_ea,
+            selected_ea,
+            join_ea,
+            *(
+                (unresolved_transfer_ea,)
+                if int(join_opcode) == int(ida_hexrays.m_icall)
+                else ()
+            ),
+        ),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    body_id = "native-body:split-conditional-select"
+    imported = _imported_fragment_block(
+        "imported-split-conditional-select",
+        body_id,
+        source_ea,
+        unresolved_transfer_ea + 1,
+    )
+    operation_id = "native-indirect-transfer@0x40A5E3"
+    native_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=(imported.block_id,),
+        entry_block_ids=(imported.block_id,),
+        terminal_block_ids=(),
+        native_ranges=(
+            NativeEaInterval(source_ea, unresolved_transfer_ea + 1),
+        ),
+        proof_ids=(operation_id,),
+    )
+    context = _NativeBodyStagingContext(
+        destination,
+        _NativeBodyPlan(
+            (imported,),
+            operations=(
+                FragmentOperation(
+                    operation_id=operation_id,
+                    source_block_id=imported.block_id,
+                    predicate_anchor_ea=predicate_ea,
+                    computed_branch_normalization=(
+                        FragmentComputedBranchNormalization(
+                            predicate_kind=PredicateKind.EQ,
+                            condition_producer_ea=source_ea,
+                            unresolved_transfer_ea=unresolved_transfer_ea,
+                        )
+                    ),
+                    edges=(
+                        FragmentEdge(
+                            role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                            target_block_id="taken",
+                        ),
+                        FragmentEdge(
+                            role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                            target_block_id="fallthrough",
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    materializer = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=function_ea,
+    )
+    if not normalization_succeeds:
+        rejection = pytest.raises(
+            detached_handler_island.SemanticFragmentBackendRejected,
+            match="split conditional-select envelope",
+        )
+        with rejection as raised:
+            materializer.stage_native_body(
+                context=context,
+                native_body=native_body,
+            )
+        if int(join_opcode) == int(ida_hexrays.m_icall):
+            reason = str(raised.value)
+            assert "join_successors=('blk3@0x40A5E3',)" in reason
+            assert "join_successor_shapes=" in reason
+            assert f"join_flags=0x{int(join_flags):X}" in reason
+            assert (
+                f"join_is_tail_call={bool(int(join_flags) & int(ida_hexrays.MBL_TCAL))}"
+                in reason
+            )
+            assert "join_has_callinfo=False" in reason
+            assert (
+                "join_tail_operands="
+                f"(('l', {int(ida_hexrays.mop_r)}, 2), "
+                f"('r', {int(ida_hexrays.mop_r)}, 4), "
+                f"('d', {int(ida_hexrays.mop_z)}, 4))"
+                in reason
+            )
+        assert context.staged_block_ids == []
+        return
+
+    materializer.stage_native_body(
+        context=context,
+        native_body=native_body,
+    )
+
+    staged = context.blocks[imported.block_id].instructions()
+    assert tuple(int(instruction.opcode) for instruction in staged) == (
+        int(ida_hexrays.m_setb),
+        int(ida_hexrays.m_seto),
+        int(ida_hexrays.m_setz),
+        int(ida_hexrays.m_setp),
+        int(ida_hexrays.m_sets),
+        int(ida_hexrays.m_jnz),
+    )
+    branch = staged[-1]
+    assert int(branch.l.t) == int(ida_hexrays.mop_r)
+    assert int(branch.l.r) == zero_flag_register
+    assert int(branch.r.t) == int(ida_hexrays.mop_n)
+    assert int(branch.r.nnn.value) == 0
+    assert set(context.instruction_origins.values()) == {
+        source_ea,
+        predicate_ea,
+    }
+
+
+@pytest.mark.parametrize(
     ("semantic_predicate", "combine_opcode", "expected_branch_opcode"),
     (
         (PredicateKind.SLT, ida_hexrays.m_xor, ida_hexrays.m_jnz),
