@@ -170,11 +170,7 @@ def _persisted_version_transition_row(version, from_state: str, to_state: str):
         version.handle.token,
         version.generation,
         version.handle.provenance.value,
-        (
-            None
-            if identity is None
-            else json.dumps(identity.to_dict(), sort_keys=True)
-        ),
+        (None if identity is None else json.dumps(identity.to_dict(), sort_keys=True)),
         None if anchor_ea is None else f"0x{anchor_ea:016x}",
         anchor_ea,
         None if predecessor is None else predecessor.version,
@@ -229,10 +225,7 @@ class _AddressRange:
 
 class _AddressRangeVector:
     def __init__(self, ranges=()):
-        self.values = [
-            _AddressRange(start_ea, end_ea)
-            for start_ea, end_ea in ranges
-        ]
+        self.values = [_AddressRange(start_ea, end_ea) for start_ea, end_ea in ranges]
 
     def __getitem__(self, index: int) -> _AddressRange:
         return self.values[int(index)]
@@ -715,10 +708,7 @@ def _change_fake_zero_way_successor_preserving_instructions(
 ) -> bool:
     del verify
     target_serial = int(target_serial)
-    if (
-        block.tail is not None
-        and int(block.tail.opcode) == int(ida_hexrays.m_goto)
-    ):
+    if block.tail is not None and int(block.tail.opcode) == int(ida_hexrays.m_goto):
         block.tail.l.make_blkref(target_serial)
     else:
         goto = _Instruction(
@@ -1050,9 +1040,7 @@ class _PreparedDirectNativeBodyMaterializer:
         context.stage_block("imported-direct-source")
         context.populate_block(
             block_id="imported-direct-source",
-            instructions=(
-                (0x500000, _Instruction(ida_hexrays.m_goto, 0x500000)),
-            ),
+            instructions=((0x500000, _Instruction(ida_hexrays.m_goto, 0x500000)),),
             block_flags=0,
         )
         context.materialize_direct_transfer(
@@ -1421,12 +1409,8 @@ def _plan_with_imported_conditional(
                     else FragmentComputedBranchNormalization(
                         predicate_kind=PredicateKind.NE,
                         normalization_start_ea=int(predicate_native_ea),
-                        condition_producer_ea=int(
-                            condition_producer_native_ea
-                        ),
-                        unresolved_transfer_ea=int(
-                            unresolved_transfer_native_ea
-                        ),
+                        condition_producer_ea=int(condition_producer_native_ea),
+                        unresolved_transfer_ea=int(unresolved_transfer_native_ea),
                     )
                 ),
                 edges=(
@@ -2194,10 +2178,7 @@ def test_backend_projects_opaque_published_fallthrough_witness() -> None:
         "unowned:blk3@0x401030",
         "unowned:blk4@0x401040",
     )
-    assert (
-        projected_target.adjacent_fallthrough_target_id
-        == "unowned:blk3@0x401030"
-    )
+    assert projected_target.adjacent_fallthrough_target_id == "unowned:blk3@0x401030"
     result = validate_fragment_projection(plan, projection)
     assert result.passed, result.failures
 
@@ -2285,9 +2266,7 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
         dispatcher=3,
     )
     original_ranges = _outline_ranges(mba)
-    assert not int(mba.get_mba_flags2()) & int(
-        ida_hexrays.MBA2_HAS_OUTLINES
-    )
+    assert not int(mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
     root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
     gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
     transaction_id = gateway.active_batch_id
@@ -2321,18 +2300,14 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
         *original_ranges,
         (0x500000, 0x500010),
     )
-    assert int(mba.get_mba_flags2()) & int(
-        ida_hexrays.MBA2_HAS_OUTLINES
-    )
+    assert int(mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="runtime imported native-body staging cleanup")
 
     assert mba.qty == 5
     assert _outline_ranges(mba) == original_ranges
-    assert not int(mba.get_mba_flags2()) & int(
-        ida_hexrays.MBA2_HAS_OUTLINES
-    )
+    assert not int(mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
     assert gateway.active is False
     assert gateway.receipts == ()
 
@@ -2358,9 +2333,7 @@ def test_backend_does_not_realize_prepared_imported_direct_transfer_twice(
     modifier = dm.DeferredGraphModifier(
         mba,
         mutation_gateway=gateway,
-        semantic_native_body_materializer=(
-            _PreparedDirectNativeBodyMaterializer()
-        ),
+        semantic_native_body_materializer=(_PreparedDirectNativeBodyMaterializer()),
     )
     plan = _plan_with_prepared_imported_direct_transfer(
         gateway,
@@ -2468,8 +2441,8 @@ def test_backend_prepares_all_native_bodies_before_live_staging(
 def test_backend_materializes_and_observes_terminal_effects_from_live_mba(
     monkeypatch,
 ) -> None:
-    mba, gateway, modifier, plan, _entry, _original = (
-        _terminal_effect_runtime_case(monkeypatch)
+    mba, gateway, modifier, plan, _entry, _original = _terminal_effect_runtime_case(
+        monkeypatch
     )
     root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
     gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
@@ -2532,8 +2505,8 @@ def test_backend_materializes_and_observes_terminal_effects_from_live_mba(
 def test_gateway_receipts_terminal_effects_in_atomic_publication_inventory(
     monkeypatch,
 ) -> None:
-    _mba, gateway, modifier, plan, _entry, _original = (
-        _terminal_effect_runtime_case(monkeypatch)
+    _mba, gateway, modifier, plan, _entry, _original = _terminal_effect_runtime_case(
+        monkeypatch
     )
     emitter = EventEmitter()
     planned: list[MbaMutationPlanned] = []
@@ -2563,8 +2536,8 @@ def test_gateway_receipts_terminal_effects_in_atomic_publication_inventory(
 def test_live_fragment_publication_is_reconstructible_from_diagnostic_db(
     monkeypatch,
 ) -> None:
-    _mba, gateway, modifier, plan, _entry, _original = (
-        _terminal_effect_runtime_case(monkeypatch)
+    _mba, gateway, modifier, plan, _entry, _original = _terminal_effect_runtime_case(
+        monkeypatch
     )
     diag_conn = create_diag_database(":memory:").connection()
     reset_diagnostic_bus()
@@ -2655,12 +2628,15 @@ def test_live_fragment_publication_is_reconstructible_from_diagnostic_db(
                     "published",
                 )
             )
-    assert diag_conn.execute(
-        "SELECT proxy_token,version,physical_handle_token,generation,"
-        "provenance,stable_identity_json,anchor_ea_hex,anchor_ea_i64,"
-        "predecessor_version,from_state,to_state "
-        "FROM logical_block_version_transitions ORDER BY transition_index"
-    ).fetchall() == expected_version_rows
+    assert (
+        diag_conn.execute(
+            "SELECT proxy_token,version,physical_handle_token,generation,"
+            "provenance,stable_identity_json,anchor_ea_hex,anchor_ea_i64,"
+            "predecessor_version,from_state,to_state "
+            "FROM logical_block_version_transitions ORDER BY transition_index"
+        ).fetchall()
+        == expected_version_rows
+    )
     root_group = diag_conn.execute(
         "SELECT group_id,predecessor_block_id,predecessor_anchor_ea_i64,"
         "edge_ids_json,edge_roles_json,original_block_ids_json,"
@@ -2990,13 +2966,11 @@ def test_backend_round_trips_portable_terminal_carrier_sources(
     expected_opcode: int,
     expected_type: int,
 ) -> None:
-    _mba, gateway, modifier, plan, _entry, _original = (
-        _terminal_effect_runtime_case(
-            monkeypatch,
-            source=source,
-            operation=operation,
-            return_width=return_width,
-        )
+    _mba, gateway, modifier, plan, _entry, _original = _terminal_effect_runtime_case(
+        monkeypatch,
+        source=source,
+        operation=operation,
+        return_width=return_width,
     )
     root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
     gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
@@ -3385,14 +3359,16 @@ def test_cached_preopt_body_binds_one_native_block_split_into_select_microblocks
         _BlockReference,
         "equal_mops",
         lambda left, right, _flags: (
-            int(left.t),
-            int(left.size),
-            int(left.r),
-        )
-        == (
-            int(right.t),
-            int(right.size),
-            int(right.r),
+            (
+                int(left.t),
+                int(left.size),
+                int(left.r),
+            )
+            == (
+                int(right.t),
+                int(right.size),
+                int(right.r),
+            )
         ),
         raising=False,
     )
@@ -3468,9 +3444,7 @@ def test_cached_preopt_call_materializes_with_gateway_owned_fallthrough(
                 source_serial=0,
                 native_entry_ea=0x500000,
                 native_end_ea=0x500010,
-                instructions=(
-                    _Instruction(ida_hexrays.m_call, call_native_ea),
-                ),
+                instructions=(_Instruction(ida_hexrays.m_call, call_native_ea),),
                 block_type=int(ida_hexrays.BLT_0WAY),
                 block_flags=0,
                 successor_serials=(),
@@ -3504,9 +3478,7 @@ def test_cached_preopt_call_materializes_with_gateway_owned_fallthrough(
     projection = modifier._stage_semantic_fragment(plan)
 
     imported = projection.block("imported-call")
-    helper = projection.block(
-        "fallthrough-helper:imported-call-continuation"
-    )
+    helper = projection.block("fallthrough-helper:imported-call-continuation")
     assert imported.instruction_eas == (call_native_ea,)
     assert imported.successors == (helper.block_id,)
     assert helper.successors == ("target",)
@@ -3615,14 +3587,12 @@ def test_gateway_publishes_native_body_in_one_balanced_receipt(monkeypatch) -> N
         *original_ranges,
         (0x500000, 0x500010),
     )
-    assert int(mba.get_mba_flags2()) & int(
-        ida_hexrays.MBA2_HAS_OUTLINES
-    )
+    assert int(mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
 
 
 def test_gateway_receipts_exact_native_body_identity_binding(monkeypatch) -> None:
-    mba, gateway, modifier, plan, _entry, _original = (
-        _terminal_effect_runtime_case(monkeypatch)
+    mba, gateway, modifier, plan, _entry, _original = _terminal_effect_runtime_case(
+        monkeypatch
     )
 
     receipt = gateway.publish_semantic_fragment(modifier, plan)
@@ -3635,9 +3605,7 @@ def test_gateway_receipts_exact_native_body_identity_binding(monkeypatch) -> Non
         0x500004,
         0x500100,
     }
-    assert {
-        binding.stable_identity for binding in snapshot.block_bindings
-    } == {
+    assert {binding.stable_identity for binding in snapshot.block_bindings} == {
         plan.block("imported-carrier").stable_identity,
         plan.block("imported-return").stable_identity,
     }
@@ -4596,9 +4564,7 @@ def test_gateway_allows_staged_internal_predecessor_for_publication_root() -> No
     _connect(original_a, dispatcher)
     _connect(bridge, original_b)
     _connect(original_b, dispatcher)
-    mba = _Mba(
-        (entry, original_a, bridge, original_b, target, dispatcher, stop)
-    )
+    mba = _Mba((entry, original_a, bridge, original_b, target, dispatcher, stop))
     gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     original_a_handle = gateway.identity_index.handle_for_serial(original_a.serial)
@@ -4970,10 +4936,7 @@ def test_gateway_publishes_one_way_call_root_through_owned_helper(
         if (
             fail_after_root_write
             and not root_write_failed
-            and any(
-                int(block.start) == int(call_predecessor.start)
-                for block in blocks
-            )
+            and any(int(block.start) == int(call_predecessor.start) for block in blocks)
         ):
             root_write_failed = True
             raise RuntimeError("failure after one-way call root write")
@@ -5405,9 +5368,7 @@ def test_backend_normalizes_conditional_select_only_on_detached_replacement(
     mba = _Mba((entry, original, selected, join, taken, fallthrough, stop))
     gateway = make_fragment_publication_gateway(
         mba,
-        publication_purpose=(
-            FragmentPublicationPurpose.FRONTEND_NORMALIZATION
-        ),
+        publication_purpose=(FragmentPublicationPurpose.FRONTEND_NORMALIZATION),
     )
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     monkeypatch.setattr(sfb.ida_hexrays, "minsn_t", deepcopy)
@@ -5522,9 +5483,7 @@ def test_backend_clones_nested_signed_skip_before_replacing_parent(
     mba = _Mba((entry, original, selected, join, taken, fallthrough, stop))
     gateway = make_fragment_publication_gateway(
         mba,
-        publication_purpose=(
-            FragmentPublicationPurpose.FRONTEND_NORMALIZATION
-        ),
+        publication_purpose=(FragmentPublicationPurpose.FRONTEND_NORMALIZATION),
     )
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
 
@@ -5534,15 +5493,11 @@ def test_backend_clones_nested_signed_skip_before_replacing_parent(
         destination: _BlockReference,
         source: _BlockReference,
     ):
-        nested = (
-            destination.d is not None
-            and source
-            in {
-                destination.d.l,
-                destination.d.r,
-                destination.d.d,
-            }
-        )
+        nested = destination.d is not None and source in {
+            destination.d.l,
+            destination.d.r,
+            destination.d.d,
+        }
         if nested:
             destination.erase()
             return destination
@@ -5639,9 +5594,7 @@ def test_backend_rejects_stale_conditional_select_copy_shape(monkeypatch) -> Non
     mba = _Mba((entry, original, selected, join, taken, fallthrough, stop))
     gateway = make_fragment_publication_gateway(
         mba,
-        publication_purpose=(
-            FragmentPublicationPurpose.FRONTEND_NORMALIZATION
-        ),
+        publication_purpose=(FragmentPublicationPurpose.FRONTEND_NORMALIZATION),
     )
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     monkeypatch.setattr(sfb.ida_hexrays, "minsn_t", deepcopy)

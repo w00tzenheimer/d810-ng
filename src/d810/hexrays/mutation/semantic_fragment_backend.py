@@ -124,9 +124,7 @@ class SemanticFragmentBackendRejected(RuntimeError):
         payload: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__(str(message))
-        normalized_reason = (
-            None if reason_code is None else str(reason_code).strip()
-        )
+        normalized_reason = None if reason_code is None else str(reason_code).strip()
         if reason_code is not None and not normalized_reason:
             raise ValueError("semantic backend rejection reason must not be empty")
         self.reason_code = normalized_reason
@@ -214,9 +212,7 @@ class SemanticFragmentBackendState:
     instruction_origins_by_block_id: dict[str, dict[int, int]] = field(
         default_factory=dict
     )
-    predicate_live_eas_by_operation_id: dict[str, int] = field(
-        default_factory=dict
-    )
+    predicate_live_eas_by_operation_id: dict[str, int] = field(default_factory=dict)
     detached_operation_ids: set[str] = field(default_factory=set)
     original_mba_outline_ranges: tuple[tuple[int, int], ...] | None = None
     staged_mba_outline_ranges: tuple[tuple[int, int], ...] = ()
@@ -265,9 +261,7 @@ class SemanticFragmentBackendState:
             )
         try:
             live_ea = int(
-                self.predicate_live_eas_by_operation_id[
-                    operation.operation_id
-                ]
+                self.predicate_live_eas_by_operation_id[operation.operation_id]
             )
         except KeyError as exc:
             raise SemanticFragmentBackendRejected(
@@ -400,12 +394,10 @@ class SemanticNativeBodyStagingContext:
             raise SemanticFragmentBackendRejected(
                 f"native body block {block_id!r} was populated more than once"
             )
-        origin_bindings = (
-            self._modifier._populate_imported_native_semantic_block(
-                version=self.state.binding(block_id).version,
-                instructions=instructions,
-                block_flags=int(block_flags),
-            )
+        origin_bindings = self._modifier._populate_imported_native_semantic_block(
+            version=self.state.binding(block_id).version,
+            instructions=instructions,
+            block_flags=int(block_flags),
         )
         for live_ea, native_ea in origin_bindings:
             self.bind_instruction_origin(
@@ -484,11 +476,7 @@ class SemanticNativeBodyStagingContext:
             self.state.binding(block_id),
         )
         branch = live_block.tail
-        live_ea = (
-            None
-            if branch is None
-            else int(getattr(branch, "ea", -1) or -1)
-        )
+        live_ea = None if branch is None else int(getattr(branch, "ea", -1) or -1)
         origins = self.state.instruction_origins_by_block_id.get(
             block_id,
             {},
@@ -499,18 +487,14 @@ class SemanticNativeBodyStagingContext:
             or live_ea < 0
             or not ida_hexrays.is_mcode_jcond(int(branch.opcode))
             or origins.get(live_ea) != int(operation.predicate_anchor_ea)
-            or operation.operation_id
-            in self.state.predicate_live_eas_by_operation_id
-            or live_ea
-            in self.state.predicate_live_eas_by_operation_id.values()
+            or operation.operation_id in self.state.predicate_live_eas_by_operation_id
+            or live_ea in self.state.predicate_live_eas_by_operation_id.values()
         ):
             raise SemanticFragmentBackendRejected(
                 f"native body synthesized predicate binding changed for "
                 f"{operation.operation_id!r} at {block_id}"
             )
-        self.state.predicate_live_eas_by_operation_id[
-            operation.operation_id
-        ] = live_ea
+        self.state.predicate_live_eas_by_operation_id[operation.operation_id] = live_ea
 
     def materialize_direct_transfer(self, *, operation_id: str) -> None:
         """Bind one already-prepared direct route while its body is unpublished."""
@@ -527,17 +511,14 @@ class SemanticNativeBodyStagingContext:
             or operation.operation_id in self.state.detached_operation_ids
         ):
             raise SemanticFragmentBackendRejected(
-                f"native body cannot materialize direct operation "
-                f"{operation_id!r}"
+                f"native body cannot materialize direct operation {operation_id!r}"
             )
         target_block_id = operation.edges[0].target_block_id
         source_binding = self.state.binding(source_block_id)
         target_binding = self.state.binding(target_block_id)
         source = _live_block_for_binding(self._modifier, source_binding)
         tail = source.tail
-        live_anchor_ea = (
-            None if tail is None else int(getattr(tail, "ea", -1) or -1)
-        )
+        live_anchor_ea = None if tail is None else int(getattr(tail, "ea", -1) or -1)
         origins = self.state.instruction_origins_by_block_id.get(
             source_block_id,
             {},
@@ -590,12 +571,10 @@ class SemanticNativeBodyStagingContext:
                     f"native body {self.native_body.body_id!r} has an "
                     f"unbound live instruction in {block_id!r}"
                 )
-            for live_ea, native_ea in (
-                self.state.instruction_origins_by_block_id.get(
-                    block_id,
-                    {},
-                ).items()
-            ):
+            for live_ea, native_ea in self.state.instruction_origins_by_block_id.get(
+                block_id,
+                {},
+            ).items():
                 mapped_ea = int(self._modifier.mba.map_fict_ea(int(live_ea)))
                 if mapped_ea != int(native_ea) or not _ranges_cover_interval(
                     _mba_outline_ranges(self._modifier.mba),
@@ -616,8 +595,7 @@ class SemanticNativeBodyStagingContext:
             )
         }
         if any(
-            operation_id
-            not in self.state.predicate_live_eas_by_operation_id
+            operation_id not in self.state.predicate_live_eas_by_operation_id
             for operation_id in expected_predicate_operations
         ):
             raise SemanticFragmentBackendRejected(
@@ -690,8 +668,7 @@ def _merge_native_ranges(
 ) -> tuple[tuple[int, int], ...]:
     merged: list[tuple[int, int]] = []
     for start_ea, end_ea in sorted(
-        (int(start_ea), int(end_ea))
-        for start_ea, end_ea in ranges
+        (int(start_ea), int(end_ea)) for start_ea, end_ea in ranges
     ):
         if start_ea < 0 or end_ea <= start_ea or end_ea >= _BADADDR:
             raise SemanticFragmentBackendRejected(
@@ -714,9 +691,7 @@ def _replace_mba_outline_ranges(
 ) -> None:
     mba.mbr.ranges.clear()
     for start_ea, end_ea in ranges:
-        mba.mbr.ranges.push_back(
-            ida_range.range_t(int(start_ea), int(end_ea))
-        )
+        mba.mbr.ranges.push_back(ida_range.range_t(int(start_ea), int(end_ea)))
 
 
 def _ranges_cover_interval(
@@ -725,8 +700,7 @@ def _ranges_cover_interval(
     end_ea: int,
 ) -> bool:
     return any(
-        int(owned_start) <= int(start_ea)
-        and int(end_ea) <= int(owned_end)
+        int(owned_start) <= int(start_ea) and int(end_ea) <= int(owned_end)
         for owned_start, owned_end in ranges
     )
 
@@ -753,8 +727,7 @@ def _stage_native_body_address_ranges(
     original = _mba_outline_ranges(modifier.mba)
     merged = _merge_native_ranges((*original, *requested))
     had_outlines = bool(
-        int(modifier.mba.get_mba_flags2())
-        & int(ida_hexrays.MBA2_HAS_OUTLINES)
+        int(modifier.mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
     )
     state.original_mba_outline_ranges = original
     state.original_mba_had_outlines = had_outlines
@@ -857,11 +830,9 @@ def _stage_native_bodies(
     materializer = _native_body_materializer(modifier, plan)
     assert materializer is not None
     preparation_by_body_id = dict(preparations)
-    if (
-        len(preparation_by_body_id) != len(preparations)
-        or set(preparation_by_body_id)
-        != {native_body.body_id for native_body in plan.native_bodies}
-    ):
+    if len(preparation_by_body_id) != len(preparations) or set(
+        preparation_by_body_id
+    ) != {native_body.body_id for native_body in plan.native_bodies}:
         raise SemanticFragmentBackendRejected(
             "native-body preparations do not match the fragment plan"
         )
@@ -965,9 +936,7 @@ def _normalize_conditional_select_replacement(
     """Rewrite one proven live conditional-select only on its detached clone."""
     normalization = operation.computed_branch_normalization
     envelope = (
-        None
-        if normalization is None
-        else normalization.conditional_select_envelope
+        None if normalization is None else normalization.conditional_select_envelope
     )
     if normalization is None or envelope is None:
         return
@@ -1029,8 +998,7 @@ def _normalize_conditional_select_replacement(
     )
     explicit_target = (
         None
-        if original_tail is None
-        or int(original_tail.d.t) != int(ida_hexrays.mop_b)
+        if original_tail is None or int(original_tail.d.t) != int(ida_hexrays.mop_b)
         else int(original_tail.d.b)
     )
     original_successors = tuple(int(value) for value in original.succset)
@@ -1044,8 +1012,7 @@ def _normalize_conditional_select_replacement(
         semantic_true_target = explicit_target
     elif (
         observed_predicate is not None
-        and inverted_predicate_kind(observed_predicate)
-        is normalization.predicate_kind
+        and inverted_predicate_kind(observed_predicate) is normalization.predicate_kind
         and len(nonexplicit_targets) == 1
     ):
         semantic_true_target = nonexplicit_targets[0]
@@ -1082,10 +1049,8 @@ def _normalize_conditional_select_replacement(
             for instruction in original_instructions
         )
         or int(selected.type) != int(ida_hexrays.BLT_1WAY)
-        or tuple(int(value) for value in selected.succset)
-        != (int(join.serial),)
-        or tuple(int(value) for value in selected.predset)
-        != (int(original.serial),)
+        or tuple(int(value) for value in selected.succset) != (int(join.serial),)
+        or tuple(int(value) for value in selected.predset) != (int(original.serial),)
         or selected.nextb is None
         or int(selected.nextb.serial) != int(join.serial)
         or len(selected_instructions) != 1
@@ -1110,14 +1075,8 @@ def _normalize_conditional_select_replacement(
     branch = ida_hexrays.minsn_t(replacement_tail)
     branch.ea = int(operation.predicate_anchor_ea)
     if int(branch.opcode) == int(ida_hexrays.m_jcnd):
-        expression = (
-            None
-            if int(branch.l.t) != int(ida_hexrays.mop_d)
-            else branch.l.d
-        )
-        if (
-            observed_predicate is normalization.predicate_kind
-        ):
+        expression = None if int(branch.l.t) != int(ida_hexrays.mop_d) else branch.l.d
+        if observed_predicate is normalization.predicate_kind:
             pass
         elif (
             observed_predicate is PredicateKind.SGE
@@ -1140,9 +1099,7 @@ def _normalize_conditional_select_replacement(
                 f"oriented exactly; {label}"
             )
     else:
-        branch_opcode = branch_opcode_for_predicate(
-            normalization.predicate_kind
-        )
+        branch_opcode = branch_opcode_for_predicate(normalization.predicate_kind)
         if branch_opcode is None:
             raise SemanticFragmentBackendRejected(
                 "live conditional-select predicate has no Hex-Rays branch "
@@ -1163,10 +1120,7 @@ def _normalize_replacement_computed_branches(
 ) -> None:
     for operation in plan.operations:
         normalization = operation.computed_branch_normalization
-        if (
-            normalization is None
-            or normalization.conditional_select_envelope is None
-        ):
+        if normalization is None or normalization.conditional_select_envelope is None:
             continue
         _normalize_conditional_select_replacement(
             modifier,
@@ -1211,8 +1165,7 @@ def _realize_operations(
         for operation in plan.operations
         if (
             operation.direct_transfer_rewrite is not None
-            and plan.block(operation.source_block_id).role
-            is FragmentBlockRole.IMPORTED
+            and plan.block(operation.source_block_id).role is FragmentBlockRole.IMPORTED
         )
     }
     if not state.detached_operation_ids <= detached_capable_operation_ids:
@@ -1699,9 +1652,7 @@ def _observe_terminal_return(
     ):
         return None
 
-    carrier_by_id = {
-        carrier.carrier_id: carrier for carrier in observed_carriers
-    }
+    carrier_by_id = {carrier.carrier_id: carrier for carrier in observed_carriers}
     linked_routes = tuple(
         route for route in plan.terminal_routes if route.return_id == planned.return_id
     )
@@ -1891,9 +1842,7 @@ def _materialize_terminal_return(
         block,
         block_type=int(ida_hexrays.BLT_0WAY),
         flags=(
-            int(block.flags)
-            & ~int(ida_hexrays.MBL_GOTO)
-            & ~int(ida_hexrays.MBL_CALL)
+            int(block.flags) & ~int(ida_hexrays.MBL_GOTO) & ~int(ida_hexrays.MBL_CALL)
         ),
     )
     modifier.mark_blocks_dirty_now(block)
@@ -2016,8 +1965,7 @@ def _require_logical_flag_producer(
         )
     try:
         writer_count = sum(
-            instruction_writes_condition_codes(instruction)
-            for instruction in matches
+            instruction_writes_condition_codes(instruction) for instruction in matches
         )
     except ConditionCodeQueryUnavailable as exc:
         raise SemanticFragmentBackendRejected(
@@ -2068,8 +2016,7 @@ def _project_flag_writes(
             ) from exc
         origins = state.instruction_origins_by_block_id.get(str(block_id), {})
         result[block_id] = frozenset(
-            int(origins.get(int(live_ea), int(live_ea)))
-            for live_ea in observations
+            int(origins.get(int(live_ea), int(live_ea))) for live_ea in observations
         )
     return result
 
@@ -2534,9 +2481,7 @@ def _project_fragment(
             successors=tuple(successors[block_id]),
             predecessors=tuple(predecessors[block_id]),
             physical_position=physical_positions[block_id],
-            adjacent_fallthrough_target_id=(
-                adjacent_fallthrough_target_ids[block_id]
-            ),
+            adjacent_fallthrough_target_id=(adjacent_fallthrough_target_ids[block_id]),
             instruction_eas=instruction_eas[block_id],
             flag_write_eas=flag_write_eas[block_id],
         )
@@ -2770,18 +2715,14 @@ def plan_semantic_fragment_root_inventory(
                 anchor_ea=int(live.start),
                 payload={
                     "atomic_group_id": plan.atomic_group_id,
-                    "colliding_anchor_ea": (
-                        f"0x{int(block.semantic_anchor_ea):X}"
-                    ),
+                    "colliding_anchor_ea": (f"0x{int(block.semantic_anchor_ea):X}"),
                     "colliding_block_id": block.block_id,
                     "colliding_identity": block.stable_identity.to_dict(),
                     "existing_anchor_ea": (
                         f"0x{int(existing_block.semantic_anchor_ea):X}"
                     ),
                     "existing_block_id": existing_block_id,
-                    "existing_identity": (
-                        existing_block.stable_identity.to_dict()
-                    ),
+                    "existing_identity": (existing_block.stable_identity.to_dict()),
                     "physical_block": physical_label,
                     "plan_id": plan.plan_id,
                 },
@@ -2947,18 +2888,13 @@ def _group_semantic_fragment_root_edges(
                 state,
                 successors[0],
             )
-            if (
-                grouped_edges[0].original.version
-                is not original_fallthrough.version
-            ):
+            if grouped_edges[0].original.version is not original_fallthrough.version:
                 raise SemanticFragmentBackendRejected(
                     "call root edge does not match its captured fallthrough"
                 )
             groups.append(
                 SemanticFragmentRootPublicationGroup(
-                    group_id=semantic_fragment_root_group_id(
-                        predecessor_block_id
-                    ),
+                    group_id=semantic_fragment_root_group_id(predecessor_block_id),
                     predecessor=predecessor_binding,
                     edges=tuple(grouped_edges),
                     original_predecessor_type=int(predecessor.type),
@@ -2975,9 +2911,7 @@ def _group_semantic_fragment_root_edges(
                 )
             groups.append(
                 SemanticFragmentRootPublicationGroup(
-                    group_id=semantic_fragment_root_group_id(
-                        predecessor_block_id
-                    ),
+                    group_id=semantic_fragment_root_group_id(predecessor_block_id),
                     predecessor=predecessor_binding,
                     edges=tuple(grouped_edges),
                     original_predecessor_type=int(predecessor.type),
@@ -3044,9 +2978,7 @@ def _group_semantic_fragment_root_edges(
                 )
         groups.append(
             SemanticFragmentRootPublicationGroup(
-                group_id=semantic_fragment_root_group_id(
-                    predecessor_block_id
-                ),
+                group_id=semantic_fragment_root_group_id(predecessor_block_id),
                 predecessor=predecessor_binding,
                 edges=tuple(grouped_edges),
                 original_predecessor_type=int(predecessor.type),
@@ -3200,9 +3132,7 @@ def prepare_semantic_fragment_root_publication(
         state,
         tuple(edges),
     )
-    grouped_edge_ids = tuple(
-        edge.edge_id for group in groups for edge in group.edges
-    )
+    grouped_edge_ids = tuple(edge.edge_id for group in groups for edge in group.edges)
     if set(grouped_edge_ids) != set(edge_ids) or len(grouped_edge_ids) != len(edge_ids):
         raise SemanticFragmentBackendRejected(
             "root publication groups do not cover the complete edge inventory"
@@ -3253,9 +3183,7 @@ def observe_published_semantic_fragment(
                 SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
             }
         ):
-            required_topology.add(
-                FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY
-            )
+            required_topology.add(FragmentValidationPostcondition.FALLTHROUGH_TOPOLOGY)
         topology = tuple(
             outcome
             for outcome in relevant
@@ -3263,8 +3191,7 @@ def observe_published_semantic_fragment(
         )
         if (
             len(topology) == len(required_topology)
-            and {outcome.postcondition for outcome in topology}
-            == required_topology
+            and {outcome.postcondition for outcome in topology} == required_topology
             and all(outcome.passed for outcome in topology)
         ):
             observable_operations.append(operation)
