@@ -51,6 +51,11 @@ from d810.transforms.canonical_semantic_fragment import (
     build_canonical_semantic_fragment_plan,
 )
 from d810.transforms.fragment_plan import FragmentPublicationPurpose
+from d810.transforms.frontend_normalization import (
+    FrontendNormalizationCorridorRejected,
+    ProjectedRouteCorridorBlock,
+    ProjectedRouteCorridorFailure,
+)
 from d810.transforms.plan import PatchPlan
 from tests.native_preanalysis import make_native_key
 
@@ -324,6 +329,54 @@ def test_candidate_normalization_rejection_names_attempted_route(
     assert rejection.payload == {
         "normalization_reason": "original route corridor is not closed",
         "route_proof_id": "state-assignment@0x1100",
+    }
+
+
+def test_candidate_normalization_rejection_retains_corridor_boundary(
+    monkeypatch,
+) -> None:
+    graph, bound = _graph_and_bound_evidence()
+    candidate = bound.evidence
+    frontend_evidence = object()
+    failure = ProjectedRouteCorridorFailure(
+        reason_code="external_predecessor",
+        edge_role="incoming_predecessor",
+        context_anchor_ea=0x1000,
+        corridor_block=ProjectedRouteCorridorBlock(
+            serial=2,
+            anchor_ea=0x1200,
+        ),
+        boundary_block=ProjectedRouteCorridorBlock(
+            serial=4,
+            anchor_ea=0x1400,
+        ),
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "plan_frontend_computed_branch_normalization",
+        lambda _graph, _evidence: (_ for _ in ()).throw(
+            FrontendNormalizationCorridorRejected(failure)
+        ),
+    )
+
+    with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
+        state_machine_module._plan_candidate_normalization(
+            SimpleNamespace(graph=graph),
+            candidate,
+            frontend_evidence,
+        )
+
+    rejection = exc_info.value
+    assert rejection.reason_code == "frontend_normalization_plan_rejected"
+    assert rejection.anchor_ea == 0x1100
+    assert rejection.payload == {
+        "normalization_reason": (
+            "original route corridor is not closed: "
+            "external predecessor blk4@0x1400 -> blk2@0x1200"
+        ),
+        "normalization_reason_code": "external_predecessor",
+        "route_proof_id": "state-assignment@0x1100",
+        "corridor_failure": failure.to_payload(),
     }
 
 

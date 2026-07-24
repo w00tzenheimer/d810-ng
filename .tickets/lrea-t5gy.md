@@ -1007,3 +1007,47 @@ explain which relevant live or detached edge leaves the projected
 normalization corridor, make that edge identity visible to the diagnostic DB,
 and either close one candidate fragment or decline with a narrower stable-EA
 reason.
+
+**2026-07-24T09:05:35Z**
+
+The corridor-boundary observability slice is verified and ready for its own
+commit. Frontend normalization still rejects open projected corridors, but the
+rejection now records a deterministic reason, edge role, and both snapshot-local
+block references paired with EA anchors. Canonical composition preserves that
+structured failure in the diagnostic DB. The focused frontend and canonical
+tests are 38/38 green; the broader canonical transform, pipeline, frontend
+lifecycle, session-authority, and live capability suite is 163/163 green.
+Ruff and diff checks pass.
+
+The mandatory A560 diagnostic canary completed in 16.58 seconds without a
+process segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784883737_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-corridor-boundary-db.txt`. The semantic oracle remains red
+with one residual `while ( 1 )`.
+
+The highest contiguous production level remains C2. The generation-1
+frontend-normalization transaction still commits 260/260 operations, the DB
+still contains 141 identity decisions and no canonical plan, and no earlier
+canary obligation regressed. The first failed C3 obligation remains
+`state_assignment@0x40A5C8:0xABB95547`, but its exact closure boundary is now
+queryable: external predecessor `blk7@0x40A560` enters corridor block
+`blk4@0x40A5F0`.
+
+That boundary is unrelated to the attempted route. In the same CALLS snapshot,
+`blk6@0x40A560` compares `ebx` with terminal state `0x19A7218A`, its
+fallthrough `blk7@0x40A560` jumps to `blk4@0x40A5F0`, and the candidate owns
+state `0xABB95547`. The committed normalization plan identifies
+`0x40A5F0` as the root replacement for
+`native-indirect-transfer@0x40A605`; its imported
+`native-indirect-transfer@0x40A5E3` independently routes terminal target
+`0x40C898` or falls back to that root. The full-inventory planner is therefore
+rejecting the candidate because a separately published terminal envelope enters
+the common root, not because the `0x40A5C8` candidate corridor itself is open.
+
+Next falsifiable hypothesis: canonical composition must consume a
+candidate-scoped frontend-normalization projection, or the retained portable
+component of the already validated normalization plan, rather than first
+requiring closure of the complete transfer inventory against the later CALLS
+graph. Strict corridor closure must remain unchanged inside the selected
+component. Do not add `blk7@0x40A560` to the candidate by reachability, weaken
+the external-predecessor veto, or broaden to the 91-route transaction.

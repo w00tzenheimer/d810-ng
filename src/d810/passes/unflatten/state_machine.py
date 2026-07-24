@@ -78,6 +78,7 @@ from d810.transforms.canonical_semantic_fragment import (
     compose_canonical_semantic_fragment_plan,
 )
 from d810.transforms.frontend_normalization import (
+    FrontendNormalizationCorridorRejected,
     plan_frontend_computed_branch_normalization,
 )
 from d810.transforms.fragment_plan import FragmentPlan
@@ -705,6 +706,13 @@ def _plan_candidate_normalization(
         payload = {"normalization_reason": str(exc)}
         if first_proof is not None:
             payload["route_proof_id"] = first_proof.proof_id
+        if isinstance(exc, FrontendNormalizationCorridorRejected):
+            payload.update(
+                {
+                    "normalization_reason_code": exc.failure.reason_code,
+                    "corridor_failure": exc.failure.to_payload(),
+                }
+            )
         raise CanonicalSemanticFragmentRejected(
             f"candidate route 0x{anchor_ea:X} normalization rejected: {exc}",
             reason_code="frontend_normalization_plan_rejected",

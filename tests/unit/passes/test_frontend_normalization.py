@@ -68,6 +68,7 @@ from d810.transforms.fragment_plan import (
     FragmentPublicationPurpose,
 )
 from d810.transforms.frontend_normalization import (
+    FrontendNormalizationCorridorRejected,
     plan_frontend_computed_branch_normalization,
     plan_next_frontend_normalization_work_item,
 )
@@ -2085,11 +2086,26 @@ def test_normalization_rejects_when_original_route_corridor_is_not_closed() -> N
         ),
     )
 
-    with pytest.raises(
-        FrontendNormalizationEvidenceRejected,
-        match="original route corridor is not closed",
-    ):
+    with pytest.raises(FrontendNormalizationCorridorRejected) as exc_info:
         plan_frontend_computed_branch_normalization(graph, evidence)
+
+    rejection = exc_info.value
+    assert str(rejection).startswith("original route corridor is not closed")
+    assert rejection.failure.to_payload() == {
+        "reason_code": "external_predecessor",
+        "edge_role": "incoming_predecessor",
+        "context_anchor_ea": "0x1000",
+        "corridor_block": {
+            "label": "blk2@0x1200",
+            "serial": 2,
+            "anchor_ea": "0x1200",
+        },
+        "boundary_block": {
+            "label": "blk4@0x1400",
+            "serial": 4,
+            "anchor_ea": "0x1400",
+        },
+    }
 
 
 def test_normalization_ids_distinguish_same_range_topology_and_instruction_blocks() -> (
