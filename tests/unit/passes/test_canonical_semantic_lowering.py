@@ -15,6 +15,10 @@ from d810.analyses.control_flow.frontend_normalization import (
 )
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    SemanticCarrierProof,
+    SemanticCorridorPoint,
+    SemanticPredicateKind,
+    SemanticPredicateProof,
     SemanticRouteDestination,
     SemanticRouteProof,
     SemanticRouteProofKind,
@@ -186,6 +190,75 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
 ) -> None:
     graph, bound = _graph_and_bound_evidence()
     candidate = bound.evidence
+    (direct_proof,) = candidate.route_proofs
+    consumer_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1200, 0x1210),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1200,),
+    )
+    predicate_storage = StorageIdentity(StorageIdentityKind.STACK, 0x40)
+    carrier_storage = StorageIdentity(StorageIdentityKind.STACK, 0x44)
+    state_choice = SemanticRouteProof(
+        proof_id="state-choice@0x1200",
+        atomic_group_id=candidate.atomic_group_id,
+        proof_kind=SemanticRouteProofKind.STATE_CHOICE,
+        shape=SemanticRouteShape.CONDITIONAL,
+        source_identity=consumer_identity,
+        source_anchor_ea=0x1200,
+        source_owner_identity=consumer_identity,
+        source_owner_anchor_ea=0x1200,
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                state_constant=0x22,
+                target_identity=_identity(0x1250),
+                target_anchor_ea=0x1250,
+            ),
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                state_constant=0x33,
+                target_identity=_identity(0x1260),
+                target_anchor_ea=0x1260,
+            ),
+        ),
+        predicate=SemanticPredicateProof(
+            kind=SemanticPredicateKind.STORAGE_EQUALS,
+            origin=SemanticCorridorPoint(direct_proof.source_identity, 0x1100),
+            consumer=SemanticCorridorPoint(consumer_identity, 0x1200),
+            corridor=(
+                SemanticCorridorPoint(direct_proof.source_identity, 0x1100),
+                SemanticCorridorPoint(consumer_identity, 0x1200),
+            ),
+            storage_identity=predicate_storage,
+            width=4,
+            compare_constant=0,
+        ),
+        carriers=(
+            SemanticCarrierProof(
+                carrier_id="entry-state",
+                definition=SemanticCorridorPoint(
+                    direct_proof.source_identity,
+                    0x1100,
+                ),
+                consumers=(SemanticCorridorPoint(consumer_identity, 0x1200),),
+                corridor=(
+                    SemanticCorridorPoint(
+                        direct_proof.source_identity,
+                        0x1100,
+                    ),
+                    SemanticCorridorPoint(consumer_identity, 0x1200),
+                ),
+                storage_identity=carrier_storage,
+                width=4,
+                state_values=(0x22, 0x33),
+                permitted_write_eas=frozenset({0x1100}),
+            ),
+        ),
+    )
+    candidate = replace(
+        candidate,
+        route_proofs=(direct_proof, state_choice),
+    )
     frontend_evidence = FrontendNormalizationEvidence(
         native_key=NATIVE_KEY,
         generation=candidate.generation,
@@ -324,6 +397,10 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
     result = LowerCanonicalSemanticFragment().run(context)
 
     assert result.fragment_plan == expected_plan
+    composition_calls = [
+        call for call in calls if call[0] == "composition"
+    ]
+    assert len(composition_calls) == 1
     assert calls[0] == ("plan", graph.func_ea, candidate.generation)
     assert calls[1][0:4] == (
         "composition",

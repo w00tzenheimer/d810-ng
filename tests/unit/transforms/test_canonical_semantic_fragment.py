@@ -452,6 +452,196 @@ def test_canonical_route_composes_live_source_with_detached_target_body() -> Non
     )
 
 
+def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    (native_body,) = normalization_plan.native_bodies
+    consumer_id = native_body.entry_block_ids[0]
+    consumer_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1200, 0x1210),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1200,),
+    )
+    taken = FragmentBlock(
+        block_id="detached-taken",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=_identity(0x1250),
+        native_body_id=native_body.body_id,
+    )
+    fallthrough = FragmentBlock(
+        block_id="detached-fallthrough",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1260,
+        stable_identity=_identity(0x1260),
+        native_body_id=native_body.body_id,
+    )
+    raw_dispatcher = FragmentBlock(
+        block_id="raw-dispatcher",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x1400,
+        stable_identity=_identity(0x1400),
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *(
+                replace(block, stable_identity=consumer_identity)
+                if block.block_id == consumer_id
+                else block
+                for block in normalization_plan.blocks
+            ),
+            taken,
+            fallthrough,
+            raw_dispatcher,
+        ),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="raw-consumer-dispatch",
+                source_block_id=consumer_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=raw_dispatcher.block_id,
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    taken.block_id,
+                    fallthrough.block_id,
+                ),
+                terminal_block_ids=(
+                    taken.block_id,
+                    fallthrough.block_id,
+                ),
+                native_ranges=(
+                    NativeEaInterval(0x1200, 0x1210),
+                    NativeEaInterval(0x1250, 0x1251),
+                    NativeEaInterval(0x1260, 0x1261),
+                ),
+                proof_ids=(
+                    *native_body.proof_ids,
+                    "raw-consumer-dispatch",
+                ),
+            ),
+        ),
+    )
+    (direct_proof,) = evidence.route_proofs
+    portable_producer_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1100, 0x1110),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1100,),
+    )
+    predicate_storage = StorageIdentity(StorageIdentityKind.STACK, 0x40)
+    carrier_storage = StorageIdentity(StorageIdentityKind.STACK, 0x44)
+    state_choice = SemanticRouteProof(
+        proof_id="state-choice@0x1200",
+        atomic_group_id=evidence.atomic_group_id,
+        proof_kind=SemanticRouteProofKind.STATE_CHOICE,
+        shape=SemanticRouteShape.CONDITIONAL,
+        source_identity=consumer_identity,
+        source_anchor_ea=0x1200,
+        source_owner_identity=consumer_identity,
+        source_owner_anchor_ea=0x1200,
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                state_constant=0x22,
+                target_identity=taken.stable_identity,
+                target_anchor_ea=0x1250,
+            ),
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                state_constant=0x33,
+                target_identity=fallthrough.stable_identity,
+                target_anchor_ea=0x1260,
+            ),
+        ),
+        predicate=SemanticPredicateProof(
+            kind=SemanticPredicateKind.STORAGE_EQUALS,
+            origin=SemanticCorridorPoint(portable_producer_identity, 0x1100),
+            consumer=SemanticCorridorPoint(consumer_identity, 0x1200),
+            corridor=(
+                SemanticCorridorPoint(portable_producer_identity, 0x1100),
+                SemanticCorridorPoint(consumer_identity, 0x1200),
+            ),
+            storage_identity=predicate_storage,
+            width=4,
+            compare_constant=0,
+        ),
+        carriers=(
+            SemanticCarrierProof(
+                carrier_id="entry-state",
+                definition=SemanticCorridorPoint(
+                    portable_producer_identity,
+                    0x1100,
+                ),
+                consumers=(SemanticCorridorPoint(consumer_identity, 0x1200),),
+                corridor=(
+                    SemanticCorridorPoint(
+                        portable_producer_identity,
+                        0x1100,
+                    ),
+                    SemanticCorridorPoint(consumer_identity, 0x1200),
+                ),
+                storage_identity=carrier_storage,
+                width=4,
+                state_values=(0x22, 0x33),
+                permitted_write_eas=frozenset({0x1100}),
+            ),
+        ),
+    )
+    evidence = replace(
+        evidence,
+        route_proofs=(direct_proof, state_choice),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    operations = {operation.operation_id: operation for operation in plan.operations}
+    assert "raw-consumer-dispatch" not in operations
+    assert tuple(
+        plan.block(edge.target_block_id).semantic_anchor_ea
+        for edge in operations[f"route:{state_choice.proof_id}"].edges
+    ) == (0x1250, 0x1260)
+    assert all(
+        plan.block(edge.target_block_id).semantic_anchor_ea != 0x1400
+        for operation in plan.operations
+        for edge in operation.edges
+    )
+    assert {
+        obligation.role for obligation in plan.data_flow_obligations
+    } == {
+        FragmentDataFlowRole.CONDITION,
+        FragmentDataFlowRole.CARRIER,
+    }
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea
+        for body in plan.native_bodies
+        for block_id in body.block_ids
+    ) == (0x1200, 0x1250, 0x1260)
+
+
 def test_detached_component_rebinds_published_replacement_boundary_as_external() -> None:
     graph, normalization_plan, evidence = (
         _live_source_detached_target_case()

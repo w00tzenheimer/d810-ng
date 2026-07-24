@@ -229,6 +229,45 @@ def stable_block_identity_semantic_anchor(
     return identity.native_ranges.intervals[0].start_ea
 
 
+def _stable_identity_ranges_contain(
+    owner: StableBlockIdentity,
+    candidate: StableBlockIdentity,
+) -> bool:
+    return all(
+        any(
+            int(owner_interval.start_ea)
+            <= int(candidate_interval.start_ea)
+            and int(candidate_interval.end_ea)
+            <= int(owner_interval.end_ea)
+            for owner_interval in owner.native_ranges.intervals
+        )
+        for candidate_interval in candidate.native_ranges.intervals
+    )
+
+
+def stable_block_identities_refine_at_anchor(
+    first: StableBlockIdentity,
+    second: StableBlockIdentity,
+    anchor_ea: int,
+) -> bool:
+    """Match one logical block across a native/live range refinement."""
+    if not isinstance(first, StableBlockIdentity) or not isinstance(
+        second,
+        StableBlockIdentity,
+    ):
+        raise TypeError("identity refinement requires stable block identities")
+    anchor_ea = int(anchor_ea)
+    return bool(
+        first.native_key == second.native_key
+        and anchor_ea in first.exact_instruction_eas
+        and anchor_ea in second.exact_instruction_eas
+        and (
+            _stable_identity_ranges_contain(first, second)
+            or _stable_identity_ranges_contain(second, first)
+        )
+    )
+
+
 def stable_block_identity_token(identity: StableBlockIdentity) -> str:
     """Encode a serial-free plan-local token from complete native ownership."""
     if not isinstance(identity, StableBlockIdentity):
@@ -773,6 +812,7 @@ __all__ = [
     "hex64",
     "instruction_fingerprint",
     "maturity_label",
+    "stable_block_identities_refine_at_anchor",
     "stable_block_identity_semantic_anchor",
     "stable_block_identity_from_snapshot",
     "stable_block_identity_token",

@@ -60,6 +60,7 @@ from d810.analyses.control_flow.semantic_transition import resolve_state_transit
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     bind_canonical_semantic_evidence,
+    semantic_route_proof_reaches_consumer,
 )
 from d810.analyses.control_flow.frontend_normalization import (
     FrontendNormalizationEvidence,
@@ -663,22 +664,40 @@ class PlanSemanticRegions(PipelinePass):
         )
 
 
-def _single_route_candidate(
+def _connected_route_candidate(
     evidence: CanonicalSemanticEvidence,
     route_index: int,
 ) -> CanonicalSemanticEvidence:
-    if len(evidence.route_proofs) == 1:
+    """Keep downstream semantic consumers in the same atomic work item."""
+    root = evidence.route_proofs[int(route_index)]
+    selected = [root]
+    selected_ids = {root.proof_id}
+    changed = True
+    while changed:
+        changed = False
+        for candidate in evidence.route_proofs:
+            if candidate.proof_id in selected_ids:
+                continue
+            if not any(
+                semantic_route_proof_reaches_consumer(proof, candidate)
+                for proof in selected
+            ):
+                continue
+            selected.append(candidate)
+            selected_ids.add(candidate.proof_id)
+            changed = True
+    if len(selected) == len(evidence.route_proofs):
         return evidence
-    proof = evidence.route_proofs[int(route_index)]
     atomic_group_id = (
-        f"{evidence.atomic_group_id}:work-item:{proof.proof_id}"
+        f"{evidence.atomic_group_id}:work-item:{root.proof_id}"
     )
     return CanonicalSemanticEvidence(
         native_key=evidence.native_key,
         generation=evidence.generation,
         atomic_group_id=atomic_group_id,
-        route_proofs=(
-            replace(proof, atomic_group_id=atomic_group_id),
+        route_proofs=tuple(
+            replace(proof, atomic_group_id=atomic_group_id)
+            for proof in selected
         ),
     )
 
@@ -834,7 +853,13 @@ def _compose_candidate_semantic_fragment(
     first_rejection: CanonicalSemanticFragmentRejected | None = None
     first_rejected_proof = None
     for route_index, proof in enumerate(candidate.route_proofs):
-        route_candidate = _single_route_candidate(candidate, route_index)
+        if any(
+            semantic_route_proof_reaches_consumer(parent, proof)
+            for parent in candidate.route_proofs
+            if parent.proof_id != proof.proof_id
+        ):
+            continue
+        route_candidate = _connected_route_candidate(candidate, route_index)
         try:
             plan = compose_canonical_semantic_fragment_plan(
                 context.graph,
