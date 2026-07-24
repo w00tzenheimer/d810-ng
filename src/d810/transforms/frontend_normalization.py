@@ -1428,6 +1428,11 @@ def _select_frontend_root_component(
         (root_block_id, *root_component(root_block_id))
         for root_block_id in plan.roots
     )
+    root_reachable_operation_ids = {
+        operation_id
+        for _root_block_id, _block_ids, operation_ids, _corridors in root_components
+        for operation_id in operation_ids
+    }
     (
         selected_root,
         selected_block_ids,
@@ -1481,6 +1486,12 @@ def _select_frontend_root_component(
         proof_id
         for proof_id in pending_proof_ids
         if proof_id not in selected_proof_ids
+        and proof_id in root_reachable_operation_ids
+    )
+    unreachable_proof_ids = tuple(
+        proof_id
+        for proof_id in pending_proof_ids
+        if proof_id not in root_reachable_operation_ids
     )
 
     selected_operations = tuple(
@@ -1579,7 +1590,7 @@ def _select_frontend_root_component(
             work_item_id=f"{plan.plan_id}:{work_item_suffix}",
             selected_obligation_ids=selected_proof_ids,
             remaining_obligation_ids=remaining_proof_ids,
-            unreachable_obligation_ids=(),
+            unreachable_obligation_ids=unreachable_proof_ids,
         ),
         native_bodies=selected_native_bodies,
         flag_corridors=selected_flag_corridors,
