@@ -136,6 +136,7 @@ from d810.hexrays.hooks.optimization_suppression import (
 from d810.hexrays.mutation.detached_handler_island import (
     bind_preopt_union_snippet_boundary_ports,
     capture_detached_callinfo_templates,
+    capture_preopt_union_call_companion_template,
     capture_preopt_union_snippet_template,
     detached_callinfo_template_eas,
     detached_preopt_call_stack_points,
@@ -8224,6 +8225,196 @@ def capture_detached_route_callinfo_templates(
     return tuple(sorted(captured))
 
 
+class CallCompanionPreparationOutcome(NamedTuple):
+    """One manager-preflight result keyed only by a portable native range."""
+
+    native_range: tuple[int, int]
+    component_target_ea: int | None
+    captured: bool
+    call_eas: tuple[int, ...]
+    reason: str
+
+
+def _native_range_is_covered(
+    requested: tuple[int, int],
+    owned_ranges: Sequence[tuple[int, int]],
+) -> bool:
+    """Return whether a sorted interval union completely owns one request."""
+    start_ea, end_ea = map(int, requested)
+    cursor = start_ea
+    for owned_start, owned_end in sorted(
+        (int(start), int(end)) for start, end in owned_ranges
+    ):
+        if owned_end <= cursor:
+            continue
+        if owned_start > cursor:
+            break
+        cursor = max(cursor, owned_end)
+        if cursor >= end_ea:
+            return True
+    return False
+
+
+def prepare_requested_detached_call_companions(
+    state: ResolverSessionState,
+) -> tuple[CallCompanionPreparationOutcome, ...]:
+    """Generate exact CALLS components requested by canonical preparation.
+
+    This runs only between top-level decompilations.  The current live MBA is
+    never retained or mutated: a failed canonical preparation queues portable
+    native ranges, the manager generates detached CALLS authority here, and
+    the controlled follow-up consumes that authority on a fresh MBA.
+    """
+    requested_ranges = tuple(state.pending_call_companion_ranges)
+    if not requested_ranges:
+        return ()
+    resolution = state.portable_evidence.computed_goto_resolution
+    source = state.portable_evidence.prepatch_preopt_union_source
+    if (
+        not isinstance(resolution, ComputedGotoResolution)
+        or not isinstance(source, _PrepatchPreoptUnionSource)
+    ):
+        return tuple(
+            CallCompanionPreparationOutcome(
+                native_range=native_range,
+                component_target_ea=None,
+                captured=False,
+                call_eas=(),
+                reason="portable_preopt_union_source_missing",
+            )
+            for native_range in requested_ranges
+        )
+    key = int(resolution.function_ea)
+    if state.snippet_capture_active or not state.begin_snippet_capture(key):
+        return tuple(
+            CallCompanionPreparationOutcome(
+                native_range=native_range,
+                component_target_ea=None,
+                captured=False,
+                call_eas=(),
+                reason="snippet_capture_active",
+            )
+            for native_range in requested_ranges
+        )
+
+    outcomes: list[CallCompanionPreparationOutcome] = []
+    try:
+        for native_range in requested_ranges:
+            normalized_range = (
+                int(native_range[0]),
+                int(native_range[1]),
+            )
+            if not _native_range_is_covered(
+                normalized_range,
+                source.native_ranges,
+            ):
+                outcomes.append(
+                    CallCompanionPreparationOutcome(
+                        native_range=normalized_range,
+                        component_target_ea=None,
+                        captured=False,
+                        call_eas=(),
+                        reason="requested_range_outside_preopt_union",
+                    )
+                )
+                continue
+            owned_entries = tuple(
+                int(entry_ea)
+                for entry_ea in source.imported_block_entry_eas
+                if normalized_range[0]
+                <= int(entry_ea)
+                < normalized_range[1]
+            )
+            if not owned_entries:
+                outcomes.append(
+                    CallCompanionPreparationOutcome(
+                        native_range=normalized_range,
+                        component_target_ea=None,
+                        captured=False,
+                        call_eas=(),
+                        reason="requested_range_has_no_owned_entry",
+                    )
+                )
+                continue
+            component_target_ea = int(min(owned_entries))
+            ranges = ida_hexrays.mba_ranges_t()
+            ranges.ranges.push_back(
+                idaapi.range_t(
+                    normalized_range[0],
+                    normalized_range[1],
+                )
+            )
+            failure = ida_hexrays.hexrays_failure_t()
+            try:
+                calls_mba = _generate_microcode_without_d810(
+                    ida_hexrays.gen_microcode,
+                    ranges,
+                    failure,
+                    None,
+                    int(
+                        ida_hexrays.DECOMP_NO_WAIT
+                        | ida_hexrays.DECOMP_ALL_BLKS
+                    ),
+                    int(ida_hexrays.MMAT_CALLS),
+                )
+            except Exception:
+                logger.info(
+                    "requested CALLS companion generation failed: "
+                    "func=0x%X range=[0x%X,0x%X)",
+                    key,
+                    normalized_range[0],
+                    normalized_range[1],
+                    exc_info=True,
+                )
+                calls_mba = None
+            if calls_mba is None:
+                outcomes.append(
+                    CallCompanionPreparationOutcome(
+                        native_range=normalized_range,
+                        component_target_ea=component_target_ea,
+                        captured=False,
+                        call_eas=(),
+                        reason=(
+                            "calls_generation_failed:"
+                            f"{failure.desc()}"
+                        ),
+                    )
+                )
+                continue
+            calls_mba.build_graph()
+            stack_offsets = {
+                int(instruction_ea): tuple(int(value) for value in offsets)
+                for instruction_ea, offsets in dict(
+                    resolution.native_stack_frame_offsets
+                ).items()
+                if normalized_range[0]
+                <= int(instruction_ea)
+                < normalized_range[1]
+            }
+            capture = capture_preopt_union_call_companion_template(
+                key,
+                int(source.primary_seed_ea),
+                component_target_ea,
+                calls_mba,
+                normalized_range,
+                owned_block_entry_eas=owned_entries,
+                native_stack_frame_offsets_by_ea=stack_offsets,
+            )
+            outcome = CallCompanionPreparationOutcome(
+                native_range=normalized_range,
+                component_target_ea=component_target_ea,
+                captured=bool(capture.captured),
+                call_eas=tuple(int(ea) for ea in capture.call_eas),
+                reason=str(capture.reason or "captured"),
+            )
+            outcomes.append(outcome)
+            if outcome.captured:
+                state.acknowledge_call_companion_range(normalized_range)
+    finally:
+        state.finish_snippet_capture()
+    return tuple(outcomes)
+
+
 def _live_mba_native_eas(
     mba: object,
     *,
@@ -12060,6 +12251,7 @@ __all__ = [
     "resolve_computed_gotos_static",
     "stage_computed_goto_preanalysis",
     "prepare_detached_handler_snippets",
+    "prepare_requested_detached_call_companions",
     "prepare_preopt_union_closure",
     "get_prepared_preopt_union_closure",
     "prepare_terminal_return_carrier_evidence",

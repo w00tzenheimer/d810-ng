@@ -283,9 +283,9 @@ def test_manager_constructs_the_semantic_native_body_materializer() -> None:
     assert materializer.function_ea == 0x40A560
 
 
-def test_manager_constructs_the_calls_call_free_native_body_materializer() -> None:
+def test_manager_constructs_the_calls_native_body_materializer() -> None:
     from d810.hexrays.mutation.detached_handler_island import (
-        CallsCallFreeSemanticNativeBodyMaterializer,
+        CallsSemanticNativeBodyMaterializer,
     )
 
     mba = SimpleNamespace(maturity=ida_hexrays.MMAT_CALLS)
@@ -296,10 +296,51 @@ def test_manager_constructs_the_calls_call_free_native_body_materializer() -> No
 
     assert isinstance(
         materializer,
-        CallsCallFreeSemanticNativeBodyMaterializer,
+        CallsSemanticNativeBodyMaterializer,
     )
     assert materializer.mba is mba
     assert materializer.function_ea == 0x40A560
+
+
+def test_calls_native_body_companion_request_queues_range_and_restart(
+    monkeypatch,
+) -> None:
+    import d810.core.observability as observability
+
+    session = DecompilationSessionContext(
+        function_ea=0x40A560,
+        database_identity="test",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+    events: list[object] = []
+    monkeypatch.setattr(observability, "emit", events.append)
+    materializer = _new_semantic_native_body_materializer(
+        session=session,
+        mba=SimpleNamespace(maturity=ida_hexrays.MMAT_CALLS),
+    )
+    native_range = (0x40B9A6, 0x40BB75)
+
+    assert materializer.request_call_companions is not None
+    assert materializer.request_call_companions((native_range,))
+
+    state = resolver_session_state(session)
+    assert state.pending_call_companion_ranges == (native_range,)
+    assert session.native_preanalysis.has_pending_generated_restart
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_kind == "semantic_native_body_companion_request"
+    assert event.payload == {
+        "ranges": [
+            {
+                "start_ea": native_range[0],
+                "end_ea": native_range[1],
+            }
+        ],
+        "queue_changed": True,
+        "restart_requested": True,
+        "accepted": True,
+    }
 
 
 def test_manager_rejects_unsupported_native_body_materializer_maturity() -> None:

@@ -226,7 +226,7 @@ def _new_current_mba_mutation_gateway(
 def _new_semantic_native_body_materializer(*, session, mba):
     """Construct the sole Hex-Rays native-body materialization capability."""
     from d810.hexrays.mutation.detached_handler_island import (
-        CallsCallFreeSemanticNativeBodyMaterializer,
+        CallsSemanticNativeBodyMaterializer,
         PreoptUnionSemanticNativeBodyMaterializer,
     )
 
@@ -241,9 +241,68 @@ def _new_semantic_native_body_materializer(*, session, mba):
             function_ea=int(session.function_ea),
         )
     if native_maturity is HexRaysMaturity.MMAT_CALLS:
-        return CallsCallFreeSemanticNativeBodyMaterializer(
+        def request_call_companions(
+            ranges: tuple[tuple[int, int], ...],
+        ) -> bool:
+            from d810.core.observability import emit as emit_diagnostic
+            from d810.core.observability_events import LifecycleEventObserved
+            from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+                resolver_session_state,
+            )
+
+            state = resolver_session_state(session)
+            changed = state.request_call_companion_ranges(ranges)
+            restart_requested = (
+                session.native_preanalysis.request_generated_restart()
+            )
+            accepted = bool(
+                all(
+                    tuple(map(int, native_range))
+                    in state.pending_call_companion_ranges
+                    for native_range in ranges
+                )
+                and (
+                    restart_requested
+                    or session.native_preanalysis.has_pending_generated_restart
+                )
+            )
+            emit_diagnostic(
+                LifecycleEventObserved(
+                    session_id=session.identity_key,
+                    func_ea=int(session.function_ea),
+                    event_kind="semantic_native_body_companion_request",
+                    provider="semantic_native_body_materializer",
+                    maturity="MMAT_CALLS",
+                    phase="canonical_semantic_preparation",
+                    evidence_generation=int(
+                        session.native_preanalysis.evidence_generation
+                    ),
+                    mba_generation_before=int(session.current_mba_generation),
+                    mba_generation_after=int(session.current_mba_generation),
+                    summary=(
+                        "analyzed CALLS companion preparation "
+                        f"{'requested' if accepted else 'rejected'}"
+                    ),
+                    payload={
+                        "ranges": [
+                            {
+                                "start_ea": int(start_ea),
+                                "end_ea": int(end_ea),
+                            }
+                            for start_ea, end_ea in ranges
+                        ],
+                        "queue_changed": bool(changed),
+                        "restart_requested": bool(restart_requested),
+                        "accepted": bool(accepted),
+                    },
+                )
+            )
+            return accepted
+
+        return CallsSemanticNativeBodyMaterializer(
             mba=mba,
             function_ea=int(session.function_ea),
+            request_call_companions=request_call_companions,
         )
     raise ValueError(
         "unsupported semantic native-body materializer maturity: "
@@ -381,6 +440,7 @@ class D810Manager:
                 _has_unresolved_computed_goto,
                 discover_static_native_bootstrap_routes,
                 prepare_detached_handler_snippets,
+                prepare_requested_detached_call_companions,
                 prepare_terminal_return_carrier_evidence,
                 stage_computed_goto_preanalysis,
             )
@@ -405,6 +465,71 @@ class D810Manager:
                 state.begin_materialization(resolution)
             lifecycle.begin_native_preanalysis(session)
             try:
+                companion_outcomes = (
+                    prepare_requested_detached_call_companions(state)
+                )
+                if companion_outcomes:
+                    from d810.core.observability import emit as emit_diagnostic
+                    from d810.core.observability_events import (
+                        LifecycleEventObserved,
+                    )
+
+                    for outcome in companion_outcomes:
+                        emit_diagnostic(
+                            LifecycleEventObserved(
+                                session_id=session.identity_key,
+                                func_ea=int(session.function_ea),
+                                event_kind=(
+                                    "semantic_native_body_companion_prepared"
+                                ),
+                                provider="manager_native_preanalysis",
+                                phase="detached_calls_preparation",
+                                evidence_generation=int(
+                                    session.native_preanalysis.evidence_generation
+                                ),
+                                mba_generation_before=int(
+                                    session.current_mba_generation
+                                ),
+                                mba_generation_after=int(
+                                    session.current_mba_generation
+                                ),
+                                summary=(
+                                    "analyzed CALLS companion "
+                                    f"{'captured' if outcome.captured else 'abstained'}"
+                                ),
+                                payload={
+                                    "native_range": {
+                                        "start_ea": int(
+                                            outcome.native_range[0]
+                                        ),
+                                        "end_ea": int(
+                                            outcome.native_range[1]
+                                        ),
+                                    },
+                                    "component_target_ea": (
+                                        None
+                                        if outcome.component_target_ea is None
+                                        else int(
+                                            outcome.component_target_ea
+                                        )
+                                    ),
+                                    "call_eas": [
+                                        int(ea) for ea in outcome.call_eas
+                                    ],
+                                    "captured": bool(outcome.captured),
+                                    "reason": str(outcome.reason),
+                                    "pending_ranges": [
+                                        {
+                                            "start_ea": int(start_ea),
+                                            "end_ea": int(end_ea),
+                                        }
+                                        for start_ea, end_ea in (
+                                            state.pending_call_companion_ranges
+                                        )
+                                    ],
+                                },
+                            )
+                        )
                 prepared_carriers = prepare_terminal_return_carrier_evidence(state)
                 prepared_snippets = prepare_detached_handler_snippets(state)
                 # Snippet preparation publishes the portable transfer
@@ -413,7 +538,14 @@ class D810Manager:
                 # earlier always abstains with no selectors, while the later
                 # flowchart fallback may already see materialization complete.
                 discover_static_native_bootstrap_routes(function_ea, state)
-                return int(prepared_carriers) + int(prepared_snippets)
+                return (
+                    sum(
+                        int(outcome.captured)
+                        for outcome in companion_outcomes
+                    )
+                    + int(prepared_carriers)
+                    + int(prepared_snippets)
+                )
             finally:
                 lifecycle.finish_native_preanalysis(session)
         except Exception:

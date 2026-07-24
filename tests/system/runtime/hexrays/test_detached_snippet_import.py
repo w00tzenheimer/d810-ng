@@ -806,7 +806,7 @@ def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
     assert destination.verify_calls == 0
 
 
-def test_calls_call_free_native_body_materializer_populates_unpublished_body(
+def test_calls_native_body_materializer_populates_call_free_unpublished_body(
     monkeypatch,
 ) -> None:
     _install_runtime_fakes(monkeypatch)
@@ -820,7 +820,7 @@ def test_calls_call_free_native_body_materializer_populates_unpublished_body(
     )
 
     _prepare_and_stage_native_body(
-        detached_handler_island.CallsCallFreeSemanticNativeBodyMaterializer(
+        detached_handler_island.CallsSemanticNativeBodyMaterializer(
             mba=destination,
             function_ea=function_ea,
         ),
@@ -839,33 +839,31 @@ def test_calls_call_free_native_body_materializer_populates_unpublished_body(
     assert destination.verify_calls == 0
 
 
-@pytest.mark.parametrize(
-    "opcode",
-    (
-        ida_hexrays.m_call,
-        ida_hexrays.m_icall,
-        ida_hexrays.m_ret,
-    ),
-)
-def test_calls_call_free_native_body_rejects_calls_and_returns_before_staging(
+def test_calls_native_body_rejects_returns_before_staging(
     monkeypatch,
-    opcode: int,
 ) -> None:
     _install_runtime_fakes(monkeypatch)
     function_ea = 0xB000
     destination, native_body, context = _single_block_native_body_runtime(
         function_ea=function_ea,
-        entry_ea=0x3350 + int(opcode),
-        opcode=opcode,
+        entry_ea=0x3350,
+        opcode=ida_hexrays.m_ret,
         destination_maturity=ida_hexrays.MMAT_CALLS,
+    )
+    native_body = replace(
+        native_body,
+        terminal_block_ids=("imported-single",),
+    )
+    context.plan = _NativeBodyPlan(
+        (context.plan.block("imported-single"),),
     )
 
     with pytest.raises(
         detached_handler_island.SemanticFragmentBackendRejected,
-        match="CALLS native body must be call/return-free",
+        match="CALLS native body cannot contain a return",
     ):
         _prepare_and_stage_native_body(
-            detached_handler_island.CallsCallFreeSemanticNativeBodyMaterializer(
+            detached_handler_island.CallsSemanticNativeBodyMaterializer(
                 mba=destination,
                 function_ea=function_ea,
             ),
@@ -879,7 +877,7 @@ def test_calls_call_free_native_body_rejects_calls_and_returns_before_staging(
     assert destination.chains_dirty == 0
 
 
-def test_calls_call_free_native_body_rejects_other_maturity_before_staging(
+def test_calls_native_body_rejects_other_maturity_before_staging(
     monkeypatch,
 ) -> None:
     _install_runtime_fakes(monkeypatch)
@@ -896,7 +894,7 @@ def test_calls_call_free_native_body_rejects_other_maturity_before_staging(
         match="CALLS native body requires an MMAT_CALLS destination MBA",
     ):
         _prepare_and_stage_native_body(
-            detached_handler_island.CallsCallFreeSemanticNativeBodyMaterializer(
+            detached_handler_island.CallsSemanticNativeBodyMaterializer(
                 mba=destination,
                 function_ea=function_ea,
             ),
@@ -908,6 +906,275 @@ def test_calls_call_free_native_body_rejects_other_maturity_before_staging(
     assert context.populated_block_ids == []
     assert destination.qty == 1
     assert destination.chains_dirty == 0
+
+
+def _calls_native_body_with_raw_call(
+    monkeypatch,
+    *,
+    capture_companion: bool,
+):
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    entry_ea = 0x3340
+    first_push_ea = 0x3344
+    second_push_ea = 0x3346
+    call_ea = 0x3348
+    continuation_ea = 0x3350
+    callee_ea = 0x500000
+    raw_entry = _Block(
+        0,
+        entry_ea,
+        (
+            _Instruction(
+                ida_hexrays.m_push,
+                first_push_ea,
+                left=_Operand(ida_hexrays.mop_n, value=1),
+            ),
+            _Instruction(
+                ida_hexrays.m_push,
+                second_push_ea,
+                left=_Operand(ida_hexrays.mop_n, value=2),
+            ),
+            _Instruction(
+                ida_hexrays.m_call,
+                call_ea,
+                left=_Operand(ida_hexrays.mop_v, target_ea=callee_ea),
+            ),
+        ),
+        (1,),
+    )
+    raw_entry.type = int(ida_hexrays.BLT_1WAY)
+    raw_entry.flags = int(ida_hexrays.MBL_PUSH)
+    raw_continuation = _Block(
+        1,
+        continuation_ea,
+        (_Instruction(ida_hexrays.m_nop, continuation_ea),),
+        (1,),
+    )
+    raw_continuation.type = int(ida_hexrays.BLT_1WAY)
+    raw_source = _MBA(
+        (raw_entry, raw_continuation),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    component_range = (entry_ea, continuation_ea + 1)
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        entry_ea,
+        raw_source,
+        (component_range,),
+        owned_block_entry_eas=(entry_ea, continuation_ea),
+    )
+
+    if capture_companion:
+        call_arguments = _Operand(
+            ida_hexrays.mop_f,
+            arguments=(
+                _Operand(ida_hexrays.mop_n, value=1),
+                _Operand(ida_hexrays.mop_n, value=2),
+            ),
+        )
+        call_arguments.f.call_spd = 0x20
+        call_arguments.f.stkargs_top = 0x28
+        analyzed_call = _Instruction(
+            ida_hexrays.m_call,
+            call_ea,
+            left=_Operand(ida_hexrays.mop_v, target_ea=callee_ea),
+            dest=call_arguments,
+        )
+        analyzed_owner = _Instruction(
+            ida_hexrays.m_mov,
+            call_ea,
+            left=_Operand(ida_hexrays.mop_d, nested=analyzed_call),
+            dest=_Operand(ida_hexrays.mop_r, register=7),
+        )
+        calls_entry = _Block(0, entry_ea, (analyzed_owner,), (1,))
+        calls_entry.type = int(ida_hexrays.BLT_1WAY)
+        calls_continuation = _Block(
+            1,
+            continuation_ea,
+            (_Instruction(ida_hexrays.m_nop, continuation_ea),),
+            (1,),
+        )
+        calls_continuation.type = int(ida_hexrays.BLT_1WAY)
+        calls_source = _MBA(
+            (calls_entry, calls_continuation),
+            maturity=ida_hexrays.MMAT_CALLS,
+        )
+        result = (
+            detached_handler_island.capture_preopt_union_call_companion_template(
+                function_ea,
+                entry_ea,
+                entry_ea,
+                calls_source,
+                component_range,
+                owned_block_entry_eas=(entry_ea, continuation_ea),
+            )
+        )
+        assert result.captured is True
+        assert result.call_eas == (call_ea,)
+
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_CALLS,
+        ida_to_vd_delta=0x80,
+    )
+    body_id = "native-body:call-companion"
+    entry_block = _imported_fragment_block(
+        "imported-call-entry",
+        body_id,
+        entry_ea,
+        continuation_ea,
+    )
+    continuation_block = _imported_fragment_block(
+        "imported-call-continuation",
+        body_id,
+        continuation_ea,
+        continuation_ea + 1,
+    )
+    native_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=(entry_block.block_id, continuation_block.block_id),
+        entry_block_ids=(entry_block.block_id,),
+        terminal_block_ids=(),
+        native_ranges=(NativeEaInterval(*component_range),),
+        proof_ids=("proof:call-companion",),
+    )
+    context = _NativeBodyStagingContext(
+        destination,
+        _NativeBodyPlan(
+            (entry_block, continuation_block),
+            operations=(
+                FragmentOperation(
+                    operation_id="native-body-call-fallthrough",
+                    source_block_id=entry_block.block_id,
+                    edges=(
+                        FragmentEdge(
+                            role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                            target_block_id=continuation_block.block_id,
+                        ),
+                    ),
+                ),
+                FragmentOperation(
+                    operation_id="native-body-continuation",
+                    source_block_id=continuation_block.block_id,
+                    edges=(
+                        FragmentEdge(
+                            role=SemanticEdgeRole.DIRECT,
+                            target_block_id=continuation_block.block_id,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    return (
+        destination,
+        native_body,
+        context,
+        component_range,
+        call_ea,
+        (first_push_ea, second_push_ea),
+    )
+
+
+def test_calls_native_body_requests_missing_companion_before_staging(
+    monkeypatch,
+) -> None:
+    (
+        destination,
+        native_body,
+        context,
+        component_range,
+        _call_ea,
+        _push_eas,
+    ) = _calls_native_body_with_raw_call(
+        monkeypatch,
+        capture_companion=False,
+    )
+    requested: list[tuple[tuple[int, int], ...]] = []
+    materializer = detached_handler_island.CallsSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=0xB000,
+        request_call_companions=lambda ranges: requested.append(ranges) or True,
+    )
+
+    with pytest.raises(
+        detached_handler_island.SemanticFragmentBackendRejected,
+        match="CALLS companion preparation requested",
+    ):
+        materializer.prepare_native_body(
+            plan=context.plan,
+            native_body=native_body,
+        )
+
+    assert requested == [((int(component_range[0]), int(component_range[1])),)]
+    assert context.staged_block_ids == []
+    assert context.populated_block_ids == []
+    assert destination.qty == 1
+    assert destination.chains_dirty == 0
+
+
+def test_calls_native_body_uses_exact_companion_and_removes_raw_pushes(
+    monkeypatch,
+) -> None:
+    (
+        destination,
+        native_body,
+        context,
+        _component_range,
+        call_ea,
+        push_eas,
+    ) = _calls_native_body_with_raw_call(
+        monkeypatch,
+        capture_companion=True,
+    )
+    materializer = detached_handler_island.CallsSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=0xB000,
+    )
+
+    preparation = materializer.prepare_native_body(
+        plan=context.plan,
+        native_body=native_body,
+    )
+
+    assert destination.qty == 1
+    assert context.staged_block_ids == []
+    materializer.stage_native_body(
+        context=context,
+        native_body=native_body,
+        preparation=preparation,
+    )
+
+    imported = context.blocks["imported-call-entry"]
+    rows = imported.instructions()
+    assert tuple(
+        context.instruction_origins[
+            ("imported-call-entry", int(instruction.ea))
+        ]
+        for instruction in rows
+    ) == (call_ea,)
+    assert not set(push_eas).intersection(
+        context.instruction_origins.values()
+    )
+    assert len(rows) == 1
+    owner = rows[0]
+    assert int(owner.opcode) == int(ida_hexrays.m_mov)
+    assert int(owner.l.t) == int(ida_hexrays.mop_d)
+    analyzed_call = owner.l.d
+    assert int(analyzed_call.opcode) == int(ida_hexrays.m_call)
+    assert int(analyzed_call.d.t) == int(ida_hexrays.mop_f)
+    assert len(analyzed_call.d.f.args) == 2
+    assert int(analyzed_call.d.f.call_spd) == 0x78
+    assert int(analyzed_call.d.f.stkargs_top) == 0x80
+    assert not int(imported.flags) & int(ida_hexrays.MBL_PUSH)
+    assert destination.verify_calls == 0
 
 
 def test_preopt_native_body_rejects_non_control_block_refs_before_staging(

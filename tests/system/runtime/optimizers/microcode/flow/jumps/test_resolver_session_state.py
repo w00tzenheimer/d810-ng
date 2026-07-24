@@ -428,6 +428,41 @@ def test_generated_restart_is_staged_once_then_consumed_by_flowchart(
     assert not state.native_preanalysis.has_pending_generated_restart
 
 
+def test_call_companion_requests_are_portable_monotonic_and_acknowledged() -> None:
+    state = ResolverSessionState(
+        native_preanalysis=NativePreanalysisSessionState(),
+        native_key=NATIVE_KEY,
+    )
+
+    assert state.request_call_companion_ranges(
+        (
+            (0x40C26D, 0x40C2FB),
+            (0x40B9A6, 0x40BB75),
+            (0x40B9A6, 0x40BB75),
+        )
+    )
+    assert state.pending_call_companion_ranges == (
+        (0x40B9A6, 0x40BB75),
+        (0x40C26D, 0x40C2FB),
+    )
+    assert not state.request_call_companion_ranges(
+        ((0x40C26D, 0x40C2FB),)
+    )
+
+    assert state.acknowledge_call_companion_range(
+        (0x40B9A6, 0x40BB75)
+    )
+    assert state.pending_call_companion_ranges == (
+        (0x40C26D, 0x40C2FB),
+    )
+    assert not state.acknowledge_call_companion_range(
+        (0x40B9A6, 0x40BB75)
+    )
+
+    state.release_live_bindings()
+    assert state.pending_call_companion_ranges == ()
+
+
 def test_callinfo_transfer_stages_one_controller_restart_and_rebinds_next_generation(
     monkeypatch,
 ) -> None:

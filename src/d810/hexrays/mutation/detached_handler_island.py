@@ -2483,10 +2483,14 @@ class PreoptUnionSemanticNativeBodyMaterializer:
 
 
 @dataclass(slots=True)
-class CallsCallFreeSemanticNativeBodyMaterializer(
+class CallsSemanticNativeBodyMaterializer(
     PreoptUnionSemanticNativeBodyMaterializer
 ):
-    """Populate one call/return-free body during canonical CALLS lowering."""
+    """Populate one canonical CALLS body from PREOPT plus analyzed companions."""
+
+    request_call_companions: (
+        Callable[[tuple[tuple[int, int], ...]], bool] | None
+    ) = None
 
     @staticmethod
     def _instruction_tree(instruction: object) -> tuple[object, ...]:
@@ -2507,32 +2511,228 @@ class CallsCallFreeSemanticNativeBodyMaterializer(
         return tuple(result)
 
     @classmethod
-    def _require_call_free_instructions(
+    def _require_analyzed_calls_without_returns(
         cls,
         *,
         rows: Mapping[str, tuple[tuple[int, object], ...]],
+        expected_call_eas: Collection[int],
     ) -> None:
-        forbidden_opcodes = {
-            int(ida_hexrays.m_call),
-            int(ida_hexrays.m_icall),
-            int(ida_hexrays.m_ret),
-        }
+        observed_call_eas: list[int] = []
         for block_id, instructions in rows.items():
             for native_ea, instruction in instructions:
-                forbidden = next(
-                    (
-                        nested
-                        for nested in cls._instruction_tree(instruction)
-                        if int(nested.opcode) in forbidden_opcodes
-                    ),
-                    None,
+                for nested in cls._instruction_tree(instruction):
+                    opcode = int(nested.opcode)
+                    if opcode == int(ida_hexrays.m_ret):
+                        raise SemanticFragmentBackendRejected(
+                            "CALLS native body cannot contain a return; "
+                            f"block={block_id!r}@0x{int(native_ea):X}"
+                        )
+                    if opcode not in {
+                        int(ida_hexrays.m_call),
+                        int(ida_hexrays.m_icall),
+                    }:
+                        continue
+                    if int(nested.d.t) != int(ida_hexrays.mop_f):
+                        raise SemanticFragmentBackendRejected(
+                            "CALLS native body contains a call without analyzed "
+                            f"authority; block={block_id!r}@0x{int(native_ea):X} "
+                            f"call=0x{int(nested.ea):X}"
+                        )
+                    observed_call_eas.append(int(nested.ea))
+        if (
+            len(observed_call_eas) != len(set(observed_call_eas))
+            or frozenset(observed_call_eas)
+            != frozenset(int(ea) for ea in expected_call_eas)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "CALLS native body analyzed call inventory changed; "
+                f"expected={tuple(hex(int(ea)) for ea in sorted(expected_call_eas))!r} "
+                f"observed={tuple(hex(int(ea)) for ea in sorted(observed_call_eas))!r}"
+            )
+
+    @classmethod
+    def _raw_calls_by_ea(
+        cls,
+        matched: Mapping[str, DetachedSnippetBlockTemplate],
+    ) -> dict[int, tuple[str, object]]:
+        calls: dict[int, tuple[str, object]] = {}
+        for block_id, template_block in matched.items():
+            for instruction in template_block.instructions:
+                nested_calls = tuple(
+                    nested
+                    for nested in cls._instruction_tree(instruction)
+                    if int(nested.opcode)
+                    in {
+                        int(ida_hexrays.m_call),
+                        int(ida_hexrays.m_icall),
+                    }
                 )
-                if forbidden is not None:
+                if not nested_calls:
+                    continue
+                if (
+                    len(nested_calls) != 1
+                    or nested_calls[0] is not instruction
+                    or int(nested_calls[0].ea) != int(instruction.ea)
+                ):
                     raise SemanticFragmentBackendRejected(
-                        "CALLS native body must be call/return-free; "
-                        f"block={block_id!r}@0x{int(native_ea):X} "
-                        f"opcode={int(forbidden.opcode)}"
+                        "PREOPT native body call ownership is not one top-level "
+                        f"instruction; block={block_id!r}@0x{int(instruction.ea):X}"
                     )
+                call_ea = int(instruction.ea)
+                if call_ea in calls:
+                    raise SemanticFragmentBackendRejected(
+                        "PREOPT native body contains duplicate native call "
+                        f"identity 0x{call_ea:X}"
+                    )
+                calls[call_ea] = (str(block_id), instruction)
+        return calls
+
+    def _call_companion(
+        self,
+        *,
+        call_ea: int,
+        raw_call: object,
+    ) -> tuple[DetachedSnippetTemplate, _AnalyzedCallReplacement] | None:
+        candidates: list[
+            tuple[DetachedSnippetTemplate, _AnalyzedCallReplacement]
+        ] = []
+        for (owner_ea, target_ea), template in (
+            _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES.items()
+        ):
+            if (
+                int(owner_ea) != int(self.function_ea)
+                or int(template.maturity) != int(ida_hexrays.MMAT_CALLS)
+                or not _ea_in_ranges(int(call_ea), template.owned_ranges)
+            ):
+                continue
+            replacement = _analyzed_replacement_calls_by_ea(
+                int(self.function_ea),
+                int(target_ea),
+            ).get(int(call_ea))
+            if replacement is None:
+                continue
+            analyzed_calls = tuple(
+                nested
+                for nested in self._instruction_tree(replacement.instruction)
+                if int(nested.opcode)
+                in {
+                    int(ida_hexrays.m_call),
+                    int(ida_hexrays.m_icall),
+                }
+                and int(nested.ea) == int(call_ea)
+            )
+            if (
+                len(analyzed_calls) != 1
+                or int(replacement.call_opcode) != int(raw_call.opcode)
+                or int(analyzed_calls[0].d.t) != int(ida_hexrays.mop_f)
+                or not raw_call.l.equal_mops(
+                    analyzed_calls[0].l,
+                    int(ida_hexrays.EQ_IGNSIZE),
+                )
+            ):
+                continue
+            candidates.append((template, replacement))
+        if len(candidates) > 1:
+            raise SemanticFragmentBackendRejected(
+                "CALLS native body requires exactly one analyzed companion; "
+                f"call=0x{int(call_ea):X} candidates={len(candidates)}"
+            )
+        return candidates[0] if candidates else None
+
+    @staticmethod
+    def _requested_ranges_for_calls(
+        native_body: FragmentNativeBody,
+        call_eas: Collection[int],
+    ) -> tuple[tuple[int, int], ...]:
+        requested: set[tuple[int, int]] = set()
+        for call_ea in call_eas:
+            matches = tuple(
+                native_range
+                for native_range in native_body.native_ranges
+                if int(native_range.start_ea)
+                <= int(call_ea)
+                < int(native_range.end_ea)
+            )
+            if len(matches) != 1:
+                raise SemanticFragmentBackendRejected(
+                    "CALLS native call lacks one owned native range; "
+                    f"call=0x{int(call_ea):X} matches={len(matches)}"
+                )
+            requested.add(
+                (int(matches[0].start_ea), int(matches[0].end_ea))
+            )
+        return tuple(sorted(requested))
+
+    def _prepare_analyzed_replacement(
+        self,
+        *,
+        raw_template: DetachedSnippetTemplate,
+        companion_template: DetachedSnippetTemplate,
+        call_ea: int,
+        replacement: _AnalyzedCallReplacement,
+    ) -> object:
+        instruction = ida_hexrays.minsn_t(replacement.instruction)
+        if any(
+            int(operand.t) == int(ida_hexrays.mop_l)
+            for operand in _instruction_operands(instruction)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "CALLS companion contains an unportable local variable; "
+                f"call=0x{int(call_ea):X}"
+            )
+        stack_map = _stack_map_with_positive_identity_overrides(
+            _analyzed_destination_stack_map(
+                self.mba,
+                raw_template,
+                companion_template,
+            ),
+            _stable_destination_stack_map(self.mba, companion_template),
+        )
+        stack_map = _stack_map_with_positive_identity_overrides(
+            stack_map,
+            _instruction_destination_stack_map(
+                self.mba,
+                companion_template,
+                int(call_ea),
+            ),
+        )
+        if not all(
+            _rebase_template_operand(self.mba, root, stack_map)
+            for root in (instruction.l, instruction.r, instruction.d)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "CALLS companion stack identity cannot be rebound; "
+                f"call=0x{int(call_ea):X}"
+            )
+        analyzed_calls = tuple(
+            nested
+            for nested in self._instruction_tree(instruction)
+            if int(nested.opcode)
+            in {
+                int(ida_hexrays.m_call),
+                int(ida_hexrays.m_icall),
+            }
+        )
+        if (
+            len(analyzed_calls) != 1
+            or int(analyzed_calls[0].ea) != int(call_ea)
+            or int(analyzed_calls[0].d.t) != int(ida_hexrays.mop_f)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "CALLS companion call owner changed during preparation; "
+                f"call=0x{int(call_ea):X}"
+            )
+        callinfo = analyzed_calls[0].d.f
+        stack_span = _callinfo_stack_span(callinfo)
+        destination_top = int(self.mba.stkoff_ida2vd(0))
+        if stack_span is None or destination_top < int(stack_span):
+            raise SemanticFragmentBackendRejected(
+                "CALLS companion stack window cannot be rebound; "
+                f"call=0x{int(call_ea):X} top={destination_top} span={stack_span}"
+            )
+        callinfo.stkargs_top = destination_top
+        callinfo.call_spd = destination_top - int(stack_span)
+        return instruction
 
     def prepare_native_body(
         self,
@@ -2540,21 +2740,46 @@ class CallsCallFreeSemanticNativeBodyMaterializer(
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
     ) -> object:
-        """Prepare one call-free CALLS body without changing the live graph."""
+        """Prepare one analyzed CALLS body without changing the live graph."""
         if int(self.mba.maturity) != int(ida_hexrays.MMAT_CALLS):
             raise SemanticFragmentBackendRejected(
                 "CALLS native body requires an MMAT_CALLS destination MBA"
             )
         template, matched = self._select_template_blocks(plan, native_body)
-        self._require_call_free_instructions(
-            rows={
-                block_id: tuple(
-                    (int(instruction.ea), instruction)
-                    for instruction in template_block.instructions
+        raw_calls = self._raw_calls_by_ea(matched)
+        companions: dict[
+            int,
+            tuple[DetachedSnippetTemplate, _AnalyzedCallReplacement],
+        ] = {}
+        missing_call_eas: list[int] = []
+        for call_ea, (_block_id, raw_call) in raw_calls.items():
+            companion = self._call_companion(
+                call_ea=int(call_ea),
+                raw_call=raw_call,
+            )
+            if companion is None:
+                missing_call_eas.append(int(call_ea))
+            else:
+                companions[int(call_ea)] = companion
+        if missing_call_eas:
+            requested_ranges = self._requested_ranges_for_calls(
+                native_body,
+                missing_call_eas,
+            )
+            requested = bool(
+                self.request_call_companions is not None
+                and self.request_call_companions(requested_ranges)
+            )
+            raise SemanticFragmentBackendRejected(
+                (
+                    "CALLS companion preparation requested"
+                    if requested
+                    else "CALLS native body lacks analyzed companion authority"
                 )
-                for block_id, template_block in matched.items()
-            },
-        )
+                + "; "
+                f"calls={tuple(hex(ea) for ea in sorted(missing_call_eas))!r} "
+                f"ranges={tuple((hex(start), hex(end)) for start, end in requested_ranges)!r}"
+            )
         stack_map, computed_normalizations = self._preflight_stack_rebase(
             template,
             matched,
@@ -2567,12 +2792,67 @@ class CallsCallFreeSemanticNativeBodyMaterializer(
             stack_map=stack_map,
             computed_normalizations=computed_normalizations,
         )
-        self._require_call_free_instructions(rows=prepared)
-        return self._prepared_native_body(
-            plan=plan,
-            native_body=native_body,
-            matched=matched,
-            prepared=prepared,
+        subsumed_setup_eas: set[int] = set()
+        for companion_template in {
+            id(template): template for template, _replacement in companions.values()
+        }.values():
+            companion_calls = {
+                call_ea: replacement
+                for call_ea, (candidate, replacement) in companions.items()
+                if candidate is companion_template
+            }
+            subsumed_setup_eas.update(
+                _subsumed_raw_call_setup_instruction_eas(
+                    template,
+                    companion_template,
+                    companion_calls,
+                )
+            )
+        transformed: dict[str, tuple[tuple[int, object], ...]] = {}
+        block_flags: dict[str, int] = {}
+        for block_id, rows in prepared.items():
+            transformed_rows: list[tuple[int, object]] = []
+            removed_setup = False
+            for native_ea, instruction in rows:
+                if int(native_ea) in subsumed_setup_eas:
+                    removed_setup = True
+                    continue
+                companion = companions.get(int(native_ea))
+                if companion is None:
+                    transformed_rows.append((int(native_ea), instruction))
+                    continue
+                companion_template, replacement = companion
+                transformed_rows.append(
+                    (
+                        int(native_ea),
+                        self._prepare_analyzed_replacement(
+                            raw_template=template,
+                            companion_template=companion_template,
+                            call_ea=int(native_ea),
+                            replacement=replacement,
+                        ),
+                    )
+                )
+            transformed[str(block_id)] = tuple(transformed_rows)
+            flags = int(matched[str(block_id)].block_flags)
+            if removed_setup:
+                flags &= ~int(ida_hexrays.MBL_PUSH)
+            block_flags[str(block_id)] = flags
+        self._require_analyzed_calls_without_returns(
+            rows=transformed,
+            expected_call_eas=raw_calls,
+        )
+        return _PreparedSemanticNativeBody(
+            plan_id=plan.plan_id,
+            body_id=native_body.body_id,
+            rows=tuple(
+                (
+                    block_id,
+                    block_flags[block_id],
+                    transformed[block_id],
+                )
+                for block_id in native_body.block_ids
+            ),
         )
 
 
@@ -5067,6 +5347,237 @@ def validate_detached_call_companion(
     )
 
 
+def _template_call_signatures_in_range(
+    template: DetachedSnippetTemplate,
+    native_range: tuple[int, int],
+) -> tuple[dict[int, _DetachedCallSignature], int | None]:
+    """Return exact calls owned by one PREOPT-union native component."""
+    start_ea, end_ea = map(int, native_range)
+    signatures: dict[int, _DetachedCallSignature] = {}
+    for block in template.blocks:
+        for owner in block.instructions:
+            for instruction in _instruction_tree(owner):
+                opcode = int(instruction.opcode)
+                call_ea = int(instruction.ea)
+                if (
+                    opcode
+                    not in {
+                        int(ida_hexrays.m_call),
+                        int(ida_hexrays.m_icall),
+                    }
+                    or not start_ea <= call_ea < end_ea
+                ):
+                    continue
+                if call_ea in signatures:
+                    return signatures, call_ea
+                signatures[call_ea] = _DetachedCallSignature(
+                    opcode=opcode,
+                    direct_callee_ea=(
+                        int(instruction.l.g)
+                        if opcode == int(ida_hexrays.m_call)
+                        and int(instruction.l.t) == int(ida_hexrays.mop_v)
+                        else None
+                    ),
+                    has_arglist=(int(instruction.d.t) == int(ida_hexrays.mop_f)),
+                )
+    return signatures, None
+
+
+def _mba_call_signatures_in_range(
+    mba: object,
+    native_range: tuple[int, int],
+) -> tuple[dict[int, _DetachedCallSignature], int | None]:
+    """Return analyzed calls whose stable native EAs belong to one component."""
+    start_ea, end_ea = map(int, native_range)
+    signatures: dict[int, _DetachedCallSignature] = {}
+    for serial in range(int(mba.qty)):
+        block = mba.get_mblock(serial)
+        for owner in _instructions(block):
+            for instruction in _instruction_tree(owner):
+                opcode = int(instruction.opcode)
+                call_ea = int(instruction.ea)
+                if (
+                    opcode
+                    not in {
+                        int(ida_hexrays.m_call),
+                        int(ida_hexrays.m_icall),
+                    }
+                    or not start_ea <= call_ea < end_ea
+                ):
+                    continue
+                if call_ea in signatures:
+                    return signatures, call_ea
+                signatures[call_ea] = _DetachedCallSignature(
+                    opcode=opcode,
+                    direct_callee_ea=(
+                        int(instruction.l.g)
+                        if opcode == int(ida_hexrays.m_call)
+                        and int(instruction.l.t) == int(ida_hexrays.mop_v)
+                        else None
+                    ),
+                    has_arglist=(int(instruction.d.t) == int(ida_hexrays.mop_f)),
+                )
+    return signatures, None
+
+
+def capture_preopt_union_call_companion_template(
+    function_ea: int,
+    union_target_ea: int,
+    component_target_ea: int,
+    calls_mba: object,
+    native_range: tuple[int, int],
+    *,
+    owned_block_entry_eas: Collection[int] | None = None,
+    native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]] | None = None,
+) -> DetachedSnippetCompanionCaptureResult:
+    """Cache CALLS authority only when it matches the pristine union exactly.
+
+    Regenerating the same component at PREOPT is not an authority check:
+    isolated generation can classify a resolver exit as a tail call.  The
+    pristine union is the frontend-normalization source, so its exact native
+    call-EA inventory is matched against the detached CALLS component instead.
+    """
+    function_key = int(function_ea)
+    union_key = (function_key, int(union_target_ea))
+    raw_template = _PREOPT_UNION_SNIPPET_TEMPLATES.get(union_key)
+    if raw_template is None:
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=True,
+            reason="preopt_union_template_missing",
+        )
+    if int(calls_mba.maturity) != int(ida_hexrays.MMAT_CALLS):
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=True,
+            reason="calls_maturity_mismatch",
+        )
+    normalized_range = (int(native_range[0]), int(native_range[1]))
+    if (
+        normalized_range[0] <= 0
+        or normalized_range[1] <= normalized_range[0]
+        or not normalized_range[0] <= int(component_target_ea) < normalized_range[1]
+    ):
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=True,
+            reason="component_range_invalid",
+        )
+
+    raw_calls, raw_duplicate = _template_call_signatures_in_range(
+        raw_template,
+        normalized_range,
+    )
+    call_eas = tuple(sorted(raw_calls))
+    if raw_duplicate is not None:
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=True,
+            call_eas=call_eas,
+            reason="preopt_union_duplicate_call_ea",
+            mismatch_ea=int(raw_duplicate),
+        )
+    if not raw_calls:
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=False,
+            reason="preopt_union_call_inventory_empty",
+        )
+    analyzed_calls, analyzed_duplicate = _mba_call_signatures_in_range(
+        calls_mba,
+        normalized_range,
+    )
+    if analyzed_duplicate is not None:
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=True,
+            call_eas=call_eas,
+            reason="calls_duplicate_call_ea",
+            mismatch_ea=int(analyzed_duplicate),
+        )
+    if frozenset(raw_calls) != frozenset(analyzed_calls):
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=True,
+            call_eas=call_eas,
+            reason="call_ea_set_mismatch",
+            mismatch_ea=min(frozenset(raw_calls).symmetric_difference(analyzed_calls)),
+        )
+    for call_ea in call_eas:
+        raw = raw_calls[call_ea]
+        analyzed = analyzed_calls[call_ea]
+        if raw.opcode != analyzed.opcode:
+            return DetachedSnippetCompanionCaptureResult(
+                captured=False,
+                replacement_required=True,
+                call_eas=call_eas,
+                reason="call_opcode_mismatch",
+                mismatch_ea=int(call_ea),
+            )
+        if raw.direct_callee_ea != analyzed.direct_callee_ea:
+            return DetachedSnippetCompanionCaptureResult(
+                captured=False,
+                replacement_required=True,
+                call_eas=call_eas,
+                reason="direct_callee_mismatch",
+                mismatch_ea=int(call_ea),
+            )
+        if not analyzed.has_arglist:
+            return DetachedSnippetCompanionCaptureResult(
+                captured=False,
+                replacement_required=True,
+                call_eas=call_eas,
+                reason="analyzed_arglist_missing",
+                mismatch_ea=int(call_ea),
+            )
+
+    replacement_key = (function_key, int(component_target_ea))
+    missing = object()
+    previous = _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES.get(
+        replacement_key,
+        missing,
+    )
+    if not capture_detached_replacement_snippet_template(
+        function_key,
+        int(component_target_ea),
+        calls_mba,
+        (normalized_range,),
+        owned_block_entry_eas=owned_block_entry_eas,
+        native_stack_frame_offsets_by_ea=native_stack_frame_offsets_by_ea,
+    ):
+        if previous is missing:
+            _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES.pop(replacement_key, None)
+        else:
+            _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES[replacement_key] = previous
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=True,
+            call_eas=call_eas,
+            reason="replacement_capture_failed",
+        )
+    replacements = _analyzed_replacement_calls_by_ea(
+        function_key,
+        int(component_target_ea),
+    )
+    if frozenset(replacements) != frozenset(raw_calls):
+        if previous is missing:
+            _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES.pop(replacement_key, None)
+        else:
+            _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES[replacement_key] = previous
+        return DetachedSnippetCompanionCaptureResult(
+            captured=False,
+            replacement_required=True,
+            call_eas=call_eas,
+            reason="replacement_call_inventory_mismatch",
+            mismatch_ea=min(frozenset(replacements).symmetric_difference(raw_calls)),
+        )
+    return DetachedSnippetCompanionCaptureResult(
+        captured=True,
+        replacement_required=True,
+        call_eas=call_eas,
+    )
+
+
 def capture_detached_snippet_companion_templates(
     function_ea: int,
     target_ea: int,
@@ -5279,13 +5790,13 @@ def _subsumed_raw_call_setup_instruction_eas(
     analyzed_template: DetachedSnippetTemplate | None,
     analyzed_calls: dict[int, _AnalyzedCallReplacement],
 ) -> frozenset[int]:
-    """Return transient raw stack stores represented by analyzed call args.
+    """Return raw outgoing-argument setup represented by analyzed call args.
 
-    A PREOPTIMIZED call still has explicit outgoing-argument stores. Its CALLS
-    counterpart owns the same call EA with a complete ``mop_f`` argument list
-    and no longer contains those stores. Only same-block stores with a negative
-    raw IDA stack identity are eligible; positive identities are persistent
-    function locals and must survive import.
+    PREOPT retains explicit ``m_push`` operations and outgoing stack stores.
+    CALLS owns those values in its complete ``mop_f`` argument list.  Every
+    same-block push since the preceding call is transient call setup.  A stack
+    store is eligible only with a negative raw IDA stack identity; positive
+    identities are persistent function locals and must survive import.
     """
     if analyzed_template is None or not analyzed_calls:
         return frozenset()
@@ -5314,6 +5825,9 @@ def _subsumed_raw_call_setup_instruction_eas(
             for candidate in instructions[previous_call_index + 1 : call_index]:
                 candidate_ea = int(candidate.ea)
                 if candidate_ea in analyzed_instruction_eas:
+                    continue
+                if int(candidate.opcode) == int(ida_hexrays.m_push):
+                    subsumed.add(candidate_ea)
                     continue
                 if int(candidate.d.t) != int(ida_hexrays.mop_S):
                     continue
@@ -11620,6 +12134,7 @@ __all__ = [
     "DetachedSnippetCompanionCaptureResult",
     "DetachedSnippetBlockTemplate",
     "DetachedSnippetTemplate",
+    "CallsSemanticNativeBodyMaterializer",
     "PreoptUnionSemanticNativeBodyMaterializer",
     "capture_call_result_carriers",
     "capture_terminal_return_carrier_template",
@@ -11627,6 +12142,7 @@ __all__ = [
     "capture_detached_replacement_snippet_template",
     "capture_detached_snippet_companion_templates",
     "capture_detached_snippet_template",
+    "capture_preopt_union_call_companion_template",
     "capture_preopt_union_snippet_template",
     "apply_live_conditional_boundary_ports",
     "bind_preopt_union_snippet_boundary_ports",
