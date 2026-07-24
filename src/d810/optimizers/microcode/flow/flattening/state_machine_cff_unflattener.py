@@ -118,7 +118,10 @@ from d810.capabilities.machine_engines import MachineRecoveryEnginesCapability
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.capabilities.resolver import CapabilitySet
-from d810.capabilities.semantic_routes import CanonicalSemanticEvidenceCapability
+from d810.capabilities.semantic_routes import (
+    CanonicalSemanticCandidateEvidenceCapability,
+    CanonicalSemanticEvidenceCapability,
+)
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.core import logging
@@ -3253,12 +3256,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
         )
         if isinstance(resolver_state, ResolverSessionState):
+            semantic_evidence_provider = SessionCanonicalSemanticEvidenceProvider(
+                function_ea=int(mba.entry_ea),
+                native_key=resolver_state.native_key,
+                state=resolver_state.native_preanalysis,
+            )
             cap_instances[CanonicalSemanticEvidenceCapability] = (
-                SessionCanonicalSemanticEvidenceProvider(
-                    function_ea=int(mba.entry_ea),
-                    native_key=resolver_state.native_key,
-                    state=resolver_state.native_preanalysis,
-                )
+                semantic_evidence_provider
+            )
+            cap_instances[CanonicalSemanticCandidateEvidenceCapability] = (
+                semantic_evidence_provider
             )
         return CapabilitySet(cap_instances)
 

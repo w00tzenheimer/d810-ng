@@ -7,7 +7,10 @@ from types import SimpleNamespace
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
-from d810.capabilities.semantic_routes import CanonicalSemanticEvidenceCapability
+from d810.capabilities.semantic_routes import (
+    CanonicalSemanticCandidateEvidenceCapability,
+    CanonicalSemanticEvidenceCapability,
+)
 from d810.optimizers.microcode.flow.flattening import (
     state_machine_cff_unflattener as unflattener_module,
 )
@@ -27,11 +30,19 @@ def test_live_unflattener_injects_session_canonical_semantic_evidence(
     native_key = make_native_key(function_rva=0x1000)
     state = NativePreanalysisSessionState()
     expected_evidence = object()
+    expected_candidate = object()
     monkeypatch.setattr(
         NativePreanalysisSessionState,
         "canonical_semantic_evidence_for",
         lambda self, key: (
             expected_evidence if self is state and key == native_key else None
+        ),
+    )
+    monkeypatch.setattr(
+        NativePreanalysisSessionState,
+        "canonical_semantic_candidate_evidence_for",
+        lambda self, key: (
+            expected_candidate if self is state and key == native_key else None
         ),
     )
     monkeypatch.setattr(
@@ -66,3 +77,11 @@ def test_live_unflattener_injects_session_canonical_semantic_evidence(
     provider = capabilities.require(CanonicalSemanticEvidenceCapability)
     assert provider.evidence_for(function_ea) is expected_evidence
     assert provider.evidence_for(function_ea + 1) is None
+    candidate_provider = capabilities.require(
+        CanonicalSemanticCandidateEvidenceCapability
+    )
+    assert (
+        candidate_provider.candidate_evidence_for(function_ea)
+        is expected_candidate
+    )
+    assert candidate_provider.candidate_evidence_for(function_ea + 1) is None
