@@ -1689,6 +1689,20 @@ class NativePreanalysisSessionState:
         key: NativePreanalysisKey,
     ) -> CanonicalSemanticEvidence | None:
         """Project postvalidated native state delivery into canonical proofs."""
+        generation = int(self.evidence_generation)
+        if (
+            generation <= 0
+            or self.normalization_published_postvalidated_generation
+            != generation
+        ):
+            return None
+        return self.canonical_semantic_candidate_evidence_for(key)
+
+    def canonical_semantic_candidate_evidence_for(
+        self,
+        key: NativePreanalysisKey,
+    ) -> CanonicalSemanticEvidence | None:
+        """Project current portable routes without claiming normalized authority."""
         resolver_evidence = self._resolver_evidence_for(key)
         generation = int(self.evidence_generation)
         preparation = resolver_evidence.preopt_union_preparation
@@ -1699,7 +1713,6 @@ class NativePreanalysisSessionState:
         )
         if (
             generation <= 0
-            or self.normalization_published_postvalidated_generation != generation
             or (not resolver_evidence.state_write_routes and not entry_consumer_routes)
         ):
             return None
