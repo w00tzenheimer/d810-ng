@@ -2723,12 +2723,60 @@ class CallsSemanticNativeBodyMaterializer(
                 f"call=0x{int(call_ea):X}"
             )
         callinfo = analyzed_calls[0].d.f
+        source_call_spd = int(callinfo.call_spd)
+        source_stkargs_top = int(callinfo.stkargs_top)
         stack_span = _callinfo_stack_span(callinfo)
         destination_top = int(self.mba.stkoff_ida2vd(0))
-        if stack_span is None or destination_top < int(stack_span):
+
+        def destination_coordinate(name: str) -> int | None:
+            value = getattr(self.mba, name, None)
+            try:
+                return None if value is None else int(value)
+            except (TypeError, ValueError):
+                return None
+
+        diagnostic_payload = {
+            "argument_count": len(callinfo.args),
+            "destination_frregs": destination_coordinate("frregs"),
+            "destination_frsize": destination_coordinate("frsize"),
+            "destination_fullsize": destination_coordinate("fullsize"),
+            "destination_minstkref": destination_coordinate("minstkref"),
+            "destination_stack_zero_vd": destination_top,
+            "destination_stacksize": destination_coordinate("stacksize"),
+            "destination_tmpstk_size": destination_coordinate("tmpstk_size"),
+            "source_call_spd": source_call_spd,
+            "source_stack_span": stack_span,
+            "source_stkargs_top": source_stkargs_top,
+        }
+        if stack_span is None:
             raise SemanticFragmentBackendRejected(
                 "CALLS companion stack window cannot be rebound; "
-                f"call=0x{int(call_ea):X} top={destination_top} span={stack_span}"
+                f"call=0x{int(call_ea):X} top={destination_top} span={stack_span}",
+                reason_code="calls_companion_source_stack_window_invalid",
+                anchor_ea=int(call_ea),
+                payload={
+                    **diagnostic_payload,
+                    "failed_invariant": (
+                        "source_stkargs_top >= source_call_spd"
+                    ),
+                    "required_stack_growth": None,
+                },
+            )
+        if destination_top < int(stack_span):
+            raise SemanticFragmentBackendRejected(
+                "CALLS companion stack window cannot be rebound; "
+                f"call=0x{int(call_ea):X} top={destination_top} span={stack_span}",
+                reason_code=(
+                    "calls_companion_destination_stack_window_insufficient"
+                ),
+                anchor_ea=int(call_ea),
+                payload={
+                    **diagnostic_payload,
+                    "failed_invariant": (
+                        "destination_stack_zero_vd >= source_stack_span"
+                    ),
+                    "required_stack_growth": int(stack_span) - destination_top,
+                },
             )
         callinfo.stkargs_top = destination_top
         callinfo.call_spd = destination_top - int(stack_span)

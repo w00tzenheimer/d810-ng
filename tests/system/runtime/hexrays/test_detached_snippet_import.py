@@ -1316,6 +1316,62 @@ def test_calls_native_body_uses_exact_companion_and_removes_raw_pushes(
     assert destination.verify_calls == 0
 
 
+def test_calls_native_body_reports_insufficient_destination_stack_window(
+    monkeypatch,
+) -> None:
+    (
+        destination,
+        native_body,
+        context,
+        _component_range,
+        call_ea,
+        _push_eas,
+    ) = _calls_native_body_with_raw_call(
+        monkeypatch,
+        capture_companion=True,
+    )
+    destination.ida_to_vd_delta = 4
+    materializer = detached_handler_island.CallsSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=0xB000,
+    )
+
+    with pytest.raises(
+        detached_handler_island.SemanticFragmentBackendRejected,
+        match="CALLS companion stack window cannot be rebound",
+    ) as caught:
+        materializer.prepare_native_body(
+            plan=context.plan,
+            native_body=native_body,
+        )
+
+    error = caught.value
+    assert error.reason_code == (
+        "calls_companion_destination_stack_window_insufficient"
+    )
+    assert error.anchor_ea == call_ea
+    assert error.payload == {
+        "argument_count": 2,
+        "destination_frregs": 0,
+        "destination_frsize": 0,
+        "destination_fullsize": None,
+        "destination_minstkref": None,
+        "destination_stack_zero_vd": 4,
+        "destination_stacksize": 0,
+        "destination_tmpstk_size": None,
+        "failed_invariant": (
+            "destination_stack_zero_vd >= source_stack_span"
+        ),
+        "required_stack_growth": 4,
+        "source_call_spd": 0x20,
+        "source_stack_span": 8,
+        "source_stkargs_top": 0x28,
+    }
+    assert context.staged_block_ids == []
+    assert context.populated_block_ids == []
+    assert destination.qty == 1
+
+
 def test_preopt_native_body_rejects_non_control_block_refs_before_staging(
     monkeypatch,
 ) -> None:
