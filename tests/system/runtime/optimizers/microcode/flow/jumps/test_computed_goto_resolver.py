@@ -8552,6 +8552,122 @@ def test_preopt_resolver_cuts_exclude_materialized_multi_target_sites() -> None:
     assert computed_goto_resolver._preopt_resolver_cut_eas(resolution) == (0x1010,)
 
 
+def test_frontend_union_source_seeds_proof_owned_static_handler_body(
+    monkeypatch,
+) -> None:
+    import ida_funcs
+
+    function_ea = 0x1000
+    computed_target_ea = 0x1200
+    handler_entry_ea = 0x2000
+    plan = _PatchPlan(
+        jmp_ea=0x1010,
+        block_entry=function_ea,
+        patch_start=0x1008,
+        patch_bytes=b"\x90",
+        region_end=0x1012,
+        insn_heads=(0x1008,),
+        new_block_eas=(),
+        target_eas=(computed_target_ea,),
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={plan.jmp_ea: plan.target_eas},
+        reachable_eas=(function_ea, computed_target_ea, handler_entry_ea),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+        patch_plans=(plan,),
+    )
+    handler_route = MaterializedIndirectTransfer(
+        source_jmp_ea=0x1800,
+        source_block_ea=0x1800,
+        materialized_anchor_eas=(),
+        target_eas=(handler_entry_ea,),
+        resolver_kind="static_handler_entry_route",
+        selector_state_var_reg=20,
+        selector_state_constant=0x22C02855,
+        owned_native_ranges=((handler_entry_ea, 0x2020),),
+    )
+    function = object()
+    monkeypatch.setattr(
+        ida_funcs,
+        "get_func",
+        lambda ea: function if int(ea) == function_ea else None,
+    )
+    cfg_calls: list[dict[str, object]] = []
+
+    def build_cfg(candidate: object, **kwargs: object) -> object:
+        cfg_calls.append({"function": candidate, **kwargs})
+        return SimpleNamespace(
+            cfg=NativeCfg(
+                {
+                    function_ea: NativeBlock(
+                        function_ea,
+                        0x1020,
+                        terminal=NativeTerminalKind.RETURN,
+                    ),
+                    computed_target_ea: NativeBlock(
+                        computed_target_ea,
+                        0x1220,
+                        terminal=NativeTerminalKind.RETURN,
+                    ),
+                    handler_entry_ea: NativeBlock(
+                        handler_entry_ea,
+                        0x2010,
+                        outgoing_edges=(
+                            NativeEdge(NativeEdgeKind.CALL, 0x5000),
+                            NativeEdge(
+                                NativeEdgeKind.CALL_FALLTHROUGH,
+                                0x2010,
+                            ),
+                        ),
+                    ),
+                    0x2010: NativeBlock(
+                        0x2010,
+                        0x2020,
+                        outgoing_edges=(
+                            NativeEdge(
+                                NativeEdgeKind.INDIRECT,
+                                computed_target_ea,
+                                resolver_proven=True,
+                                provenance="static_handler_exit_route",
+                                source_instruction_ea=0x201C,
+                            ),
+                        ),
+                    ),
+                }
+            ),
+            abstentions=(),
+        )
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "build_native_semantic_cfg",
+        build_cfg,
+    )
+
+    source = computed_goto_resolver._plan_frontend_normalization_union_source(
+        resolution,
+        transfers=(handler_route,),
+    )
+
+    assert source is not None
+    assert len(cfg_calls) == 1
+    assert handler_entry_ea in cfg_calls[0]["seed_eas"]
+    assert handler_entry_ea in cfg_calls[0]["resolver_proven_unmarked_entry_eas"]
+    assert (
+        ResolverProvenHandlerEntry(
+            entry_ea=handler_entry_ea,
+            provenance="static_handler_entry_route",
+        )
+        in source.closure.seed_provenance
+    )
+    assert handler_entry_ea in source.closure.included_block_eas
+    assert 0x2010 in source.closure.included_block_eas
+    assert NativeRange(handler_entry_ea, 0x2020) in source.closure.native_ranges
+
+
 def _install_preopt_union_success_harness(
     monkeypatch,
     *,
