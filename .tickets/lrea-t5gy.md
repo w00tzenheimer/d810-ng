@@ -1426,3 +1426,48 @@ stage error from `fragment_staged` detail. The next slice must persist stage,
 rollback, and verifier causes separately before wiring the materializer port,
 then retry the same fragment. It must not treat rollback verification as the
 primary semantic failure or claim C4.
+
+**2026-07-24T11:49:37Z**
+
+Commit `0b2be5244` completes the fragment-failure observability slice. An
+aborted fragment receipt now preserves an ordered, typed failure chain across
+the gateway, manager observation bridge, SQLite transaction timeline, and
+diagnostic renderer. `safe_verify` attaches the captured numeric INTERR and
+verification context to the propagated exception. The publication orchestrator
+records the initiating transaction phase separately from rollback and verifier
+failures; it does not infer the primary cause from the final wrapper message.
+The shared failure value type lives in its own mutation-domain module, so no
+gateway/publication import cycle or compatibility re-export exists.
+
+The focused local semantic-fragment and diagnostic suite is 137/137 green. The
+same 137 tests pass in the pinned
+`d810-idapro-9.3-test-runtime:py313-v1` Docker image; artifact:
+`.tmp/fragment-failure-diagnostics-runtime.txt`. Ast-grep, all 14
+worktree-local import contracts, changed-line Ruff, diff checks, commit hooks,
+and `graphify update .` pass. A wider local probe found 13 pre-existing fake-MBA
+failures whose test doubles lack the now-required `map_fict_ea` identity port;
+production compatibility was not added to conceal those fixture deficiencies.
+
+The mandatory exact A560 diagnostic canary completed in 11.94 seconds without
+an OS segfault. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784893734_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-fragment-failure-chain.txt`. The semantic oracle remains
+red with one residual `while ( 1 )`, so this is not A560 acceptance.
+
+The highest contiguous canary level remains C3. The DB records the committed
+frontend-normalization transaction, then the canonical 264-operation plan.
+The canonical transaction timeline identifies the first C4 obligation as:
+
+`stage_failure / stage / SemanticFragmentBackendRejected: fragment plan
+requires an imported native-body materializer`.
+
+It separately records `verifier_failure` with `INTERR 50856` and context
+`staged semantic fragment rollback sweep`, followed by
+`rollback_failure: staged semantic fragment discard cannot remove entry or
+stop blocks`. The matching IDA SDK 9.3 `verify.cpp` meaning remains “wrong size
+of a block successor set.” These are secondary recovery defects, not the
+initiating semantic failure. The next vertical slice must inject the existing
+manager/lifecycle-owned imported native-body materializer into canonical
+publication without constructing an adapter locally, adding a fallback, or
+publishing the broad 91-route transaction. It must rerun this exact canary and
+reach C4 before any broader publication.
