@@ -974,6 +974,55 @@ def _template_block_covers_identity(
     )
 
 
+def _template_block_anchors_split_normalization(
+    block: DetachedSnippetBlockTemplate,
+    identity: StableBlockIdentity,
+    *,
+    semantic_anchor_ea: int,
+    operation: FragmentOperation | None,
+) -> bool:
+    """Admit one explicit normalization whose native block split in PREOPT."""
+    if (
+        operation is None
+        or operation.computed_branch_normalization is None
+        or operation.predicate_anchor_ea is None
+        or len(operation.edges) != 2
+        or {
+            edge.role for edge in operation.edges
+        }
+        != {
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        }
+        or not block.instructions
+    ):
+        return False
+    normalization = operation.computed_branch_normalization
+    source_coordinates = {
+        int(block.native_entry_ea),
+        *(int(instruction.ea) for instruction in block.instructions),
+    }
+    proof_anchors = {
+        int(semantic_anchor_ea),
+        int(normalization.condition_producer_ea),
+        int(operation.predicate_anchor_ea),
+    }
+    tail = block.instructions[-1]
+    return bool(
+        int(semantic_anchor_ea) in source_coordinates
+        and proof_anchors <= identity.exact_instruction_eas
+        and identity.native_ranges.contains(
+            int(normalization.unresolved_transfer_ea)
+        )
+        and all(
+            identity.native_ranges.contains(int(instruction.ea))
+            for instruction in block.instructions
+        )
+        and ida_hexrays.is_mcode_jcond(int(tail.opcode))
+        and int(tail.ea) != int(operation.predicate_anchor_ea)
+    )
+
+
 @dataclass(slots=True)
 class _ImportedSnippetRoot:
     """Renumbering-stable identity for one imported snippet root."""
@@ -1099,6 +1148,16 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             for block_id in native_body.block_ids:
                 plan_block = context.plan.block(block_id)
                 identity = plan_block.stable_identity
+                source_operations = tuple(
+                    operation
+                    for operation in context.plan.operations
+                    if operation.source_block_id == block_id
+                )
+                source_operation = (
+                    source_operations[0]
+                    if len(source_operations) == 1
+                    else None
+                )
                 matches = (
                     ()
                     if identity is None
@@ -1106,9 +1165,19 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     else tuple(
                         template_block
                         for template_block in template.blocks
-                        if _template_block_covers_identity(
-                            template_block,
-                            identity,
+                        if (
+                            _template_block_covers_identity(
+                                template_block,
+                                identity,
+                            )
+                            or _template_block_anchors_split_normalization(
+                                template_block,
+                                identity,
+                                semantic_anchor_ea=int(
+                                    plan_block.semantic_anchor_ea
+                                ),
+                                operation=source_operation,
+                            )
                         )
                     )
                 )
