@@ -100,8 +100,7 @@ def _block(
         flags=0,
         start_ea=ea,
         insn_snapshots=tuple(
-            InsnSnapshot(opcode=0, ea=insn_ea, operands=())
-            for insn_ea in insn_eas
+            InsnSnapshot(opcode=0, ea=insn_ea, operands=()) for insn_ea in insn_eas
         ),
     )
 
@@ -199,8 +198,7 @@ def test_direct_semantic_route_builds_closed_portable_fragment_plan() -> None:
         for block_id in plan.prohibited_dispatcher_blocks
     ) == (0x1400,)
     assert any(
-        block.role is FragmentBlockRole.EXTERNAL
-        and block.semantic_anchor_ea == 0x1000
+        block.role is FragmentBlockRole.EXTERNAL and block.semantic_anchor_ea == 0x1000
         for block in plan.blocks
     )
     assert all("serial" not in block.block_id for block in plan.blocks)
@@ -399,9 +397,7 @@ def _normalization_authority(
 
 
 def test_canonical_route_composes_live_source_with_detached_target_body() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
 
     plan = compose_canonical_semantic_fragment_plan(
         graph,
@@ -451,15 +447,12 @@ def test_canonical_route_composes_live_source_with_detached_target_body() -> Non
         for block_id in native_body.entry_block_ids
     ) == (0x1200,)
     assert all(
-        block.semantic_anchor_ea not in {0x1300, 0x1500}
-        for block in plan.blocks
+        block.semantic_anchor_ea not in {0x1300, 0x1500} for block in plan.blocks
     )
 
 
 def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     (native_body,) = normalization_plan.native_bodies
     consumer_id = native_body.entry_block_ids[0]
     consumer_identity = StableBlockIdentity.from_intervals(
@@ -645,9 +638,7 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
         for operation in plan.operations
         for edge in operation.edges
     )
-    assert {
-        obligation.role for obligation in plan.data_flow_obligations
-    } == {
+    assert {obligation.role for obligation in plan.data_flow_obligations} == {
         FragmentDataFlowRole.CONDITION,
         FragmentDataFlowRole.CARRIER,
     }
@@ -659,9 +650,7 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
 
 
 def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> None:
-    graph, normalization_plan, root_evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, root_evidence = _live_source_detached_target_case()
     (native_body,) = normalization_plan.native_bodies
     route_source = FragmentBlock(
         block_id="nested-route-source",
@@ -797,9 +786,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
         prohibited_dispatcher_serials=(90,),
     )
 
-    operations = {
-        operation.operation_id: operation for operation in plan.operations
-    }
+    operations = {operation.operation_id: operation for operation in plan.operations}
     assert "native-body-edge@0x1210" not in operations
     nested_operation = operations[f"route:{nested_proof.proof_id}"]
     assert nested_operation.source_block_id == route_source.block_id
@@ -808,9 +795,9 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
         nested_proof.proof_id
     )
     assert nested_operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x1218
-    assert (
-        nested_operation.direct_transfer_rewrite.proof_corridor_instruction_eas
-        == (0x1210, 0x1218)
+    assert nested_operation.direct_transfer_rewrite.proof_corridor_instruction_eas == (
+        0x1210,
+        0x1218,
     )
     assert nested_operation.direct_transfer_rewrite.superseded_instruction_eas == (
         0x1218,
@@ -828,16 +815,13 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
         for edge in operation.edges
     )
     (planned_native_body,) = plan.native_bodies
-    assert (
-        f"route:{nested_proof.proof_id}"
-        in planned_native_body.proof_ids
-    )
+    assert f"route:{nested_proof.proof_id}" in planned_native_body.proof_ids
 
 
-def test_detached_component_rebinds_published_replacement_boundary_as_external() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+def test_detached_component_rebinds_published_replacement_boundary_as_external() -> (
+    None
+):
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     (native_body,) = normalization_plan.native_bodies
     normalization_plan = replace(
         normalization_plan,
@@ -878,10 +862,7 @@ def test_detached_component_rebinds_published_replacement_boundary_as_external()
     (detached_edge,) = detached_operation.edges
     boundary = plan.block(detached_edge.target_block_id)
     assert boundary.role is FragmentBlockRole.EXTERNAL
-    assert (
-        boundary.materialization
-        is FragmentBlockMaterialization.REUSE_PUBLISHED
-    )
+    assert boundary.materialization is FragmentBlockMaterialization.REUSE_PUBLISHED
     assert boundary.semantic_anchor_ea == 0x1300
     assert boundary.replaces_block_id is None
     assert tuple(
@@ -890,15 +871,12 @@ def test_detached_component_rebinds_published_replacement_boundary_as_external()
         if block.stable_identity == _identity(0x1300)
     ) == (0x1300,)
     assert tuple(
-        plan.block(block_id).semantic_anchor_ea
-        for block_id in plan.owned_originals
+        plan.block(block_id).semantic_anchor_ea for block_id in plan.owned_originals
     ) == (0x1100,)
 
 
 def test_detached_component_reimports_prohibited_frontend_replacement() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     dispatcher_identity = _wide_identity(0x1400, 0x1408)
     selected_identity = _identity(0x1406)
     join_identity = _wide_identity(0x1410, 0x1414)
@@ -933,8 +911,7 @@ def test_detached_component_reimports_prohibited_frontend_replacement() -> None:
                     semantic_anchor_ea=0x1400,
                     stable_identity=dispatcher_identity,
                 )
-                if block.block_id
-                in {"unrelated-original", "unrelated-replacement"}
+                if block.block_id in {"unrelated-original", "unrelated-replacement"}
                 else block
                 for block in normalization_plan.blocks
             ),
@@ -1012,10 +989,7 @@ def test_detached_component_reimports_prohibited_frontend_replacement() -> None:
     )
     dispatcher = plan.block(dispatcher_operation.source_block_id)
     assert dispatcher.role is FragmentBlockRole.IMPORTED
-    assert (
-        dispatcher.materialization
-        is FragmentBlockMaterialization.IMPORT_NATIVE
-    )
+    assert dispatcher.materialization is FragmentBlockMaterialization.IMPORT_NATIVE
     assert dispatcher.replaces_block_id is None
     normalization = dispatcher_operation.computed_branch_normalization
     assert normalization is not None
@@ -1038,9 +1012,7 @@ def test_detached_component_reimports_prohibited_frontend_replacement() -> None:
 
 
 def test_detached_component_stops_at_unique_current_imported_successor() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = replace(
         graph,
         blocks={
@@ -1120,17 +1092,12 @@ def test_detached_component_stops_at_unique_current_imported_successor() -> None
     (edge,) = operation.edges
     successor = plan.block(edge.target_block_id)
     assert successor.role is FragmentBlockRole.EXTERNAL
-    assert (
-        successor.materialization
-        is FragmentBlockMaterialization.REUSE_PUBLISHED
-    )
+    assert successor.materialization is FragmentBlockMaterialization.REUSE_PUBLISHED
     assert successor.stable_identity == current_identity_by_serial[30]
 
 
 def test_detached_component_rejects_ambiguous_current_imported_successor() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = replace(
         graph,
         blocks={
@@ -1199,8 +1166,7 @@ def test_detached_component_rejects_ambiguous_current_imported_successor() -> No
 
     rejection = exc_info.value
     assert (
-        rejection.reason_code
-        == "published_imported_boundary_current_owner_ambiguous"
+        rejection.reason_code == "published_imported_boundary_current_owner_ambiguous"
     )
     assert rejection.payload["current_owner_labels"] == (
         "blk30@0x1250",
@@ -1209,9 +1175,7 @@ def test_detached_component_rejects_ambiguous_current_imported_successor() -> No
 
 
 def test_projected_boundary_reuses_its_unique_current_owner_role() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = replace(
         graph,
         blocks={
@@ -1289,8 +1253,7 @@ def test_projected_boundary_reuses_its_unique_current_owner_role() -> None:
     assert tuple(
         block.block_id
         for block in plan.blocks
-        if block.materialization
-        is FragmentBlockMaterialization.REUSE_PUBLISHED
+        if block.materialization is FragmentBlockMaterialization.REUSE_PUBLISHED
         and block.stable_identity is not None
         and 0x1301 in block.stable_identity.exact_instruction_eas
     ) == (boundary.block_id,)
@@ -1299,9 +1262,7 @@ def test_projected_boundary_reuses_its_unique_current_owner_role() -> None:
 def test_projected_boundary_rejects_multiple_current_owner_roles(
     monkeypatch,
 ) -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     (native_body,) = normalization_plan.native_bodies
     normalization_plan = replace(
         normalization_plan,
@@ -1355,9 +1316,7 @@ def test_projected_boundary_rejects_multiple_current_owner_roles(
 
 
 def test_detached_component_keeps_proof_owned_imported_branch_normalization() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     (native_body,) = normalization_plan.native_bodies
     detached_identity = _wide_identity(0x1200, 0x1210)
     normalization = FragmentComputedBranchNormalization(
@@ -1464,9 +1423,7 @@ def test_canonical_route_rebinds_retained_corridor_to_live_source_subset() -> No
 
 
 def test_canonical_composition_ids_external_blocks_by_stable_identity() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = replace(
         graph,
         blocks={
@@ -1502,22 +1459,19 @@ def test_canonical_composition_ids_external_blocks_by_stable_identity() -> None:
     )
 
     external_blocks = tuple(
-        block
-        for block in plan.blocks
-        if block.role is FragmentBlockRole.EXTERNAL
+        block for block in plan.blocks if block.role is FragmentBlockRole.EXTERNAL
     )
     assert len(external_blocks) == 2
     assert len({block.block_id for block in external_blocks}) == 2
-    assert tuple(
-        sorted(block.semantic_anchor_ea for block in external_blocks)
-    ) == (0x1001, 0x1400)
+    assert tuple(sorted(block.semantic_anchor_ea for block in external_blocks)) == (
+        0x1001,
+        0x1400,
+    )
     assert all("serial" not in block.block_id for block in external_blocks)
 
 
 def test_canonical_composition_uses_current_external_identity_authority() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = replace(
         graph,
         blocks={
@@ -1562,9 +1516,7 @@ def test_canonical_composition_uses_current_external_identity_authority() -> Non
 
 
 def test_canonical_composition_uses_one_portable_dispatcher_scc_witness() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = replace(
         graph,
         blocks={
@@ -1618,9 +1570,7 @@ def test_canonical_composition_uses_one_portable_dispatcher_scc_witness() -> Non
 
 
 def test_canonical_composition_does_not_guess_dispatcher_scc_witness() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = replace(
         graph,
         blocks={
@@ -1671,9 +1621,7 @@ def test_canonical_composition_does_not_guess_dispatcher_scc_witness() -> None:
 
 
 def test_canonical_composition_rejects_shared_external_stable_identity() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = replace(
         graph,
         blocks={
@@ -1756,9 +1704,7 @@ def test_canonical_route_rejects_split_materialized_delivery_ownership() -> None
 
 
 def test_canonical_composition_rejects_ambiguous_detached_target_owner() -> None:
-    graph, normalization_plan, evidence = (
-        _live_source_detached_target_case()
-    )
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
     (native_body,) = normalization_plan.native_bodies
     duplicate_target = replace(
         normalization_plan.block("detached-target"),
@@ -2037,10 +1983,7 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
 
     assert len(plan.return_carriers) == 1
     assert plan.return_carriers[0].carrier_ea == 0x1105
-    assert (
-        plan.return_carriers[0].source.kind
-        is FragmentReturnSourceKind.STORAGE_VALUE
-    )
+    assert plan.return_carriers[0].source.kind is FragmentReturnSourceKind.STORAGE_VALUE
     assert len(plan.terminal_returns) == 1
     terminal_return = plan.terminal_returns[0]
     assert terminal_return.instruction_ea == 0x1208
@@ -2162,9 +2105,9 @@ def test_terminal_routes_share_one_owned_return_block_atomically() -> None:
     assert len(plan.terminal_routes) == 2
     assert len(plan.terminal_returns) == 1
     assert len(plan.owned_originals) == 3
-    assert {
-        route.return_id for route in plan.terminal_routes
-    } == {plan.terminal_returns[0].return_id}
+    assert {route.return_id for route in plan.terminal_routes} == {
+        plan.terminal_returns[0].return_id
+    }
 
 
 def test_dispatcher_fed_semantic_target_remains_internal_not_a_root() -> None:

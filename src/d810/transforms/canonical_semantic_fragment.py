@@ -77,9 +77,7 @@ def _identity_contains(
 ) -> bool:
     return bool(
         _identity_ranges_contain(owner, candidate)
-        and candidate.exact_instruction_eas.issubset(
-            owner.exact_instruction_eas
-        )
+        and candidate.exact_instruction_eas.issubset(owner.exact_instruction_eas)
     )
 
 
@@ -91,10 +89,8 @@ def _identity_ranges_contain(
         owner.native_key == candidate.native_key
         and all(
             any(
-                int(owner_interval.start_ea)
-                <= int(candidate_interval.start_ea)
-                and int(candidate_interval.end_ea)
-                <= int(owner_interval.end_ea)
+                int(owner_interval.start_ea) <= int(candidate_interval.start_ea)
+                and int(candidate_interval.end_ea) <= int(owner_interval.end_ea)
                 for owner_interval in owner.native_ranges.intervals
             )
             for candidate_interval in candidate.native_ranges.intervals
@@ -308,9 +304,7 @@ def _portable_dispatcher_scc_witnesses(
     prohibited_set = frozenset(int(serial) for serial in prohibited_serials)
     for component in tarjan_scc(adjacency):
         members = tuple(
-            serial
-            for serial in prohibited_serials
-            if int(serial) in component
+            serial for serial in prohibited_serials if int(serial) in component
         )
         if component.intersection(modified_current_serials):
             selected.update(int(serial) for serial in members)
@@ -322,8 +316,7 @@ def _portable_dispatcher_scc_witnesses(
             int(serial)
             for serial in members
             if (
-                (identity := current_identity_by_serial.get(int(serial)))
-                is not None
+                (identity := current_identity_by_serial.get(int(serial))) is not None
                 and identity_counts[identity] == 1
             )
         )
@@ -340,9 +333,7 @@ def _portable_dispatcher_scc_witnesses(
         )
     selected.update(prohibited_set.difference(adjacency))
     return tuple(
-        int(serial)
-        for serial in prohibited_serials
-        if int(serial) in selected
+        int(serial) for serial in prohibited_serials if int(serial) in selected
     )
 
 
@@ -365,9 +356,7 @@ def _merged_imported_ranges(
         envelope = normalization.conditional_select_envelope
         intervals.extend(envelope.selected_value_identity.native_ranges.intervals)
         intervals.extend(envelope.join_identity.native_ranges.intervals)
-    intervals.sort(
-        key=lambda interval: (int(interval.start_ea), int(interval.end_ea))
-    )
+    intervals.sort(key=lambda interval: (int(interval.start_ea), int(interval.end_ea)))
     merged = []
     for interval in intervals:
         if not merged or int(interval.start_ea) > int(merged[-1].end_ea):
@@ -432,9 +421,7 @@ def _as_imported_frontend_operation(
     """Convert one validated live split envelope into portable import proof."""
     normalization = operation.computed_branch_normalization
     envelope = (
-        None
-        if normalization is None
-        else normalization.conditional_select_envelope
+        None if normalization is None else normalization.conditional_select_envelope
     )
     if not isinstance(envelope, FragmentConditionalSelectEnvelope):
         source = plan.block(operation.source_block_id)
@@ -558,9 +545,7 @@ def _detached_target_component(
                         raise CanonicalSemanticFragmentRejected(
                             "imported body identity has mixed prohibited and "
                             "published current owners",
-                            reason_code=(
-                                "imported_boundary_current_owner_mixed"
-                            ),
+                            reason_code=("imported_boundary_current_owner_mixed"),
                             anchor_ea=int(edge_target.semantic_anchor_ea),
                             payload={
                                 "boundary_block_id": edge_target.block_id,
@@ -572,10 +557,7 @@ def _detached_target_component(
                         )
                     pending.append(edge_target.block_id)
                     continue
-                if (
-                    edge_target.block_id != target.block_id
-                    and len(current_owners) > 1
-                ):
+                if edge_target.block_id != target.block_id and len(current_owners) > 1:
                     raise CanonicalSemanticFragmentRejected(
                         "published imported boundary has multiple current owners",
                         reason_code=(
@@ -590,14 +572,11 @@ def _detached_target_component(
                             ),
                         },
                     )
-                if (
-                    edge_target.block_id != target.block_id
-                    and len(current_owners) == 1
-                ):
+                if edge_target.block_id != target.block_id and len(current_owners) == 1:
                     selected_ids.add(edge_target.block_id)
-                    published_imported_identity_by_id[
-                        edge_target.block_id
-                    ] = current_owners[0][2]
+                    published_imported_identity_by_id[edge_target.block_id] = (
+                        current_owners[0][2]
+                    )
                     continue
                 pending.append(edge_target.block_id)
             elif edge_target.block_id in reimportable_replacement_ids:
@@ -621,12 +600,8 @@ def _detached_target_component(
     selected_reimported_ids = frozenset(
         selected_ids.intersection(reimportable_replacement_ids)
     )
-    selected_import_source_ids = (
-        selected_native_imported_ids | selected_reimported_ids
-    )
-    scoped_body_id = (
-        f"{native_body.body_id}:canonical:{canonical_proof_id}"
-    )
+    selected_import_source_ids = selected_native_imported_ids | selected_reimported_ids
+    scoped_body_id = f"{native_body.body_id}:canonical:{canonical_proof_id}"
     boundary_id_by_source_id: dict[str, str] = {}
     projected_boundary_by_id: dict[str, FragmentBlock] = {}
     for block in plan.blocks:
@@ -662,9 +637,7 @@ def _detached_target_component(
             block_id=projected_id,
             role=FragmentBlockRole.EXTERNAL,
             materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
-            semantic_anchor_ea=(
-                stable_block_identity_semantic_anchor(identity)
-            ),
+            semantic_anchor_ea=(stable_block_identity_semantic_anchor(identity)),
             stable_identity=identity,
         )
         existing = projected_boundary_by_id.get(projected_id)
@@ -696,9 +669,7 @@ def _detached_target_component(
                 anchor_ea=int(source.semantic_anchor_ea),
                 payload={"replacement_block_id": source_id},
             )
-        imported_id = (
-            f"native[{stable_block_identity_token(identity)}]:imported"
-        )
+        imported_id = f"native[{stable_block_identity_token(identity)}]:imported"
         if imported_id in occupied_block_ids and imported_id != source_id:
             raise CanonicalSemanticFragmentRejected(
                 "prohibited frontend replacement import identity conflicts",
@@ -768,9 +739,7 @@ def _detached_target_component(
     )
     selected_native_body = FragmentNativeBody(
         body_id=scoped_body_id,
-        block_ids=tuple(
-            block.block_id for block in selected_imported_blocks
-        ),
+        block_ids=tuple(block.block_id for block in selected_imported_blocks),
         entry_block_ids=(target.block_id,),
         terminal_block_ids=tuple(
             imported_id_by_source_id.get(block_id, block_id)
@@ -816,9 +785,7 @@ def _canonical_composition_proofs(
         )
     (root_proof,) = direct
     consumers = tuple(
-        proof
-        for proof in evidence.route_proofs
-        if proof is not root_proof
+        proof for proof in evidence.route_proofs if proof is not root_proof
     )
     if not consumers:
         return root_proof, None
@@ -971,9 +938,7 @@ def _with_semantic_imported_consumer(
     return replace(
         plan,
         operations=tuple(
-            semantic_operation
-            if operation is raw_operation
-            else operation
+            semantic_operation if operation is raw_operation else operation
             for operation in plan.operations
         ),
         native_bodies=native_bodies,
@@ -1029,8 +994,7 @@ def _with_nested_imported_state_assignments(
             or proof.shape is not SemanticRouteShape.DIRECT
             or len(proof.destinations) != 1
             or proof.state_write is None
-            or proof.source_anchor_ea
-            not in proof.source_identity.exact_instruction_eas
+            or proof.source_anchor_ea not in proof.source_identity.exact_instruction_eas
         ):
             continue
         source_matches = tuple(
@@ -1068,9 +1032,7 @@ def _with_nested_imported_state_assignments(
                 block
                 for block in imported_component_blocks
                 if block.stable_identity is not None
-                and block.stable_identity.native_ranges.contains(
-                    int(corridor_ea)
-                )
+                and block.stable_identity.native_ranges.contains(int(corridor_ea))
             )
             if len(owners) != 1:
                 raise CanonicalSemanticFragmentRejected(
@@ -1080,30 +1042,22 @@ def _with_nested_imported_state_assignments(
                     anchor_ea=int(corridor_ea),
                     payload={
                         "route_proof_id": proof.proof_id,
-                        "owner_block_ids": tuple(
-                            block.block_id for block in owners
-                        ),
+                        "owner_block_ids": tuple(block.block_id for block in owners),
                     },
                 )
             corridor_owner_ids.append(owners[0].block_id)
-        source_operations = tuple(
-            operation_by_source.get(source.block_id, ())
-        )
+        source_operations = tuple(operation_by_source.get(source.block_id, ()))
         if len(source_operations) != 1:
             raise CanonicalSemanticFragmentRejected(
-                "nested canonical state route requires one raw imported "
-                "operation",
+                "nested canonical state route requires one raw imported operation",
                 reason_code="nested_state_route_operation_count_mismatch",
                 anchor_ea=int(proof.source_anchor_ea),
                 payload={
                     "route_proof_id": proof.proof_id,
                     "operation_ids": tuple(
-                        operation.operation_id
-                        for operation in source_operations
+                        operation.operation_id for operation in source_operations
                     ),
-                    "corridor_block_ids": tuple(
-                        dict.fromkeys(corridor_owner_ids)
-                    ),
+                    "corridor_block_ids": tuple(dict.fromkeys(corridor_owner_ids)),
                 },
             )
         destination_evidence = proof.destinations[0]
@@ -1205,8 +1159,7 @@ def _with_nested_imported_state_assignments(
                     terminal_block_ids=tuple(
                         block_id
                         for block_id in body.terminal_block_ids
-                        if block_id
-                        not in source_ids_by_body.get(body.body_id, set())
+                        if block_id not in source_ids_by_body.get(body.body_id, set())
                     ),
                     proof_ids=tuple(
                         dict.fromkeys(
@@ -1251,13 +1204,11 @@ def compose_canonical_semantic_fragment_plan(
     ):
         raise CanonicalSemanticFragmentRejected(
             "canonical composition requires frontend-normalization intent"
-    )
+        )
     if not isinstance(evidence, CanonicalSemanticEvidence):
         raise TypeError("canonical composition requires canonical evidence")
     if not isinstance(available_evidence, CanonicalSemanticEvidence):
-        raise TypeError(
-            "canonical composition available evidence must be canonical"
-        )
+        raise TypeError("canonical composition available evidence must be canonical")
     if (
         available_evidence.native_key != evidence.native_key
         or available_evidence.generation != evidence.generation
@@ -1272,8 +1223,7 @@ def compose_canonical_semantic_fragment_plan(
             },
         )
     current_identity_by_serial = {
-        int(serial): identity
-        for serial, identity in current_identity_by_serial.items()
+        int(serial): identity for serial, identity in current_identity_by_serial.items()
     }
     all_prohibited_serials = tuple(
         dict.fromkeys(int(value) for value in prohibited_dispatcher_serials)
@@ -1283,9 +1233,7 @@ def compose_canonical_semantic_fragment_plan(
         not isinstance(identity, StableBlockIdentity)
         for identity in current_identity_by_serial.values()
     ):
-        raise TypeError(
-            "canonical composition current identity authority is invalid"
-        )
+        raise TypeError("canonical composition current identity authority is invalid")
     unknown_serials = frozenset(current_identity_by_serial).difference(
         int(serial) for serial in graph.blocks
     )
@@ -1407,27 +1355,20 @@ def compose_canonical_semantic_fragment_plan(
         component_block_ids=frozenset(
             block.block_id for block in initial_target_blocks
         ),
-        excluded_proof_ids=frozenset(
-            item.proof_id for item in evidence.route_proofs
-        ),
+        excluded_proof_ids=frozenset(item.proof_id for item in evidence.route_proofs),
     )
-    target_blocks, target_operations, native_body = (
-        _detached_target_component(
-            graph,
-            effective_normalization_plan,
-            target,
-            current_identity_by_serial=current_identity_by_serial,
-            canonical_proof_id="+".join(
-                (
-                    *(item.proof_id for item in evidence.route_proofs),
-                    *(
-                        item.proof_id
-                        for item in nested_state_assignment_proofs
-                    ),
-                )
-            ),
-            prohibited_dispatcher_serials=prohibited_serial_set,
-        )
+    target_blocks, target_operations, native_body = _detached_target_component(
+        graph,
+        effective_normalization_plan,
+        target,
+        current_identity_by_serial=current_identity_by_serial,
+        canonical_proof_id="+".join(
+            (
+                *(item.proof_id for item in evidence.route_proofs),
+                *(item.proof_id for item in nested_state_assignment_proofs),
+            )
+        ),
+        prohibited_dispatcher_serials=prohibited_serial_set,
     )
     nested_rewrite_by_operation_id = {
         f"route:{item.proof_id}": _direct_transfer_rewrite(item)
@@ -1473,9 +1414,7 @@ def compose_canonical_semantic_fragment_plan(
                             storage_identity=predicate.storage_identity,
                             width=int(predicate.width),
                             compare_constant=int(predicate.compare_constant),
-                            cut_after_ea=int(
-                                imported_consumer.source_anchor_ea
-                            ),
+                            cut_after_ea=int(imported_consumer.source_anchor_ea),
                         )
                     ),
                 )
@@ -1485,18 +1424,12 @@ def compose_canonical_semantic_fragment_plan(
             for operation in target_operations
         )
     target_external_blocks = tuple(
-        block
-        for block in target_blocks
-        if block.role is FragmentBlockRole.EXTERNAL
+        block for block in target_blocks if block.role is FragmentBlockRole.EXTERNAL
     )
     target_imported_blocks = tuple(
-        block
-        for block in target_blocks
-        if block.role is FragmentBlockRole.IMPORTED
+        block for block in target_blocks if block.role is FragmentBlockRole.IMPORTED
     )
-    if len(target_external_blocks) + len(target_imported_blocks) != len(
-        target_blocks
-    ):
+    if len(target_external_blocks) + len(target_imported_blocks) != len(target_blocks):
         raise CanonicalSemanticFragmentRejected(
             "detached canonical target projection retained an unpublished block"
         )
@@ -1546,9 +1479,7 @@ def compose_canonical_semantic_fragment_plan(
                 payload={
                     "candidate_block_id": boundary.block_id,
                     "existing_block_id": existing_boundary_id,
-                    "current_owner": (
-                        f"blk{owner_serial}@0x{owner_anchor_ea:X}"
-                    ),
+                    "current_owner": (f"blk{owner_serial}@0x{owner_anchor_ea:X}"),
                 },
             )
         _claim_current_external_identity(
@@ -1581,18 +1512,12 @@ def compose_canonical_semantic_fragment_plan(
         _claim_current_external_identity(
             serial,
             identity,
-            owner_serial_by_identity=(
-                external_owner_serial_by_identity
-            ),
+            owner_serial_by_identity=(external_owner_serial_by_identity),
         )
         semantic_anchor_ea = stable_block_identity_semantic_anchor(identity)
         block_id = f"native[{stable_block_identity_token(identity)}]"
         existing_block = next(
-            (
-                item
-                for item in blocks
-                if item.block_id == block_id
-            ),
+            (item for item in blocks if item.block_id == block_id),
             None,
         )
         if existing_block is not None:
@@ -1606,9 +1531,7 @@ def compose_canonical_semantic_fragment_plan(
                     anchor_ea=semantic_anchor_ea,
                     payload={
                         "block_id": block_id,
-                        "current_owner": (
-                            f"blk{serial}@0x{semantic_anchor_ea:X}"
-                        ),
+                        "current_owner": (f"blk{serial}@0x{semantic_anchor_ea:X}"),
                     },
                 )
             external_id_by_serial[serial] = block_id
@@ -1617,9 +1540,7 @@ def compose_canonical_semantic_fragment_plan(
             FragmentBlock(
                 block_id=block_id,
                 role=FragmentBlockRole.EXTERNAL,
-                materialization=(
-                    FragmentBlockMaterialization.REUSE_PUBLISHED
-                ),
+                materialization=(FragmentBlockMaterialization.REUSE_PUBLISHED),
                 semantic_anchor_ea=semantic_anchor_ea,
                 stable_identity=identity,
             )
@@ -1632,18 +1553,14 @@ def compose_canonical_semantic_fragment_plan(
             FragmentBlock(
                 block_id=original_id,
                 role=FragmentBlockRole.ORIGINAL,
-                materialization=(
-                    FragmentBlockMaterialization.REUSE_PUBLISHED
-                ),
+                materialization=(FragmentBlockMaterialization.REUSE_PUBLISHED),
                 semantic_anchor_ea=source_anchor_ea,
                 stable_identity=source_identity,
             ),
             FragmentBlock(
                 block_id=replacement_id,
                 role=FragmentBlockRole.REPLACEMENT,
-                materialization=(
-                    FragmentBlockMaterialization.CLONE_PUBLISHED
-                ),
+                materialization=(FragmentBlockMaterialization.CLONE_PUBLISHED),
                 semantic_anchor_ea=source_anchor_ea,
                 stable_identity=source_identity,
                 replaces_block_id=original_id,
@@ -1693,10 +1610,7 @@ def compose_canonical_semantic_fragment_plan(
                 anchor_ea=int(point.anchor_ea),
                 payload={
                     "owner_labels": tuple(
-                        (
-                            f"blk{serial}@"
-                            f"0x{int(graph.blocks[serial].start_ea):X}"
-                        )
+                        (f"blk{serial}@0x{int(graph.blocks[serial].start_ea):X}")
                         for serial in current_owners
                     ),
                 },
@@ -1809,14 +1723,9 @@ def compose_canonical_semantic_fragment_plan(
         *target_operations,
     )
     return FragmentPlan(
-        plan_id=(
-            f"canonical-composition:{evidence.atomic_group_id}:"
-            f"{proof.proof_id}"
-        ),
+        plan_id=(f"canonical-composition:{evidence.atomic_group_id}:{proof.proof_id}"),
         atomic_group_id=evidence.atomic_group_id,
-        publication_purpose=(
-            FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
-        ),
+        publication_purpose=(FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING),
         native_key=evidence.native_key,
         blocks=tuple(blocks),
         roots=(replacement_id,),
@@ -1861,9 +1770,7 @@ def build_canonical_semantic_fragment_plan(
     if not isinstance(graph, FlowGraph):
         raise TypeError("canonical semantic fragment requires a FlowGraph")
     if not isinstance(bound, BoundCanonicalSemanticEvidence):
-        raise TypeError(
-            "canonical semantic fragment requires bound canonical evidence"
-        )
+        raise TypeError("canonical semantic fragment requires bound canonical evidence")
 
     evidence = bound.evidence
     if tuple(route.evidence for route in bound.routes) != evidence.route_proofs:
@@ -1895,18 +1802,14 @@ def build_canonical_semantic_fragment_plan(
                 FragmentBlock(
                     block_id=original_id,
                     role=FragmentBlockRole.ORIGINAL,
-                    materialization=(
-                        FragmentBlockMaterialization.REUSE_PUBLISHED
-                    ),
+                    materialization=(FragmentBlockMaterialization.REUSE_PUBLISHED),
                     semantic_anchor_ea=int(route.source.anchor_ea),
                     stable_identity=route.source.identity,
                 ),
                 FragmentBlock(
                     block_id=replacement_id,
                     role=FragmentBlockRole.REPLACEMENT,
-                    materialization=(
-                        FragmentBlockMaterialization.CLONE_PUBLISHED
-                    ),
+                    materialization=(FragmentBlockMaterialization.CLONE_PUBLISHED),
                     semantic_anchor_ea=int(route.source.anchor_ea),
                     stable_identity=route.source.identity,
                     replaces_block_id=original_id,
@@ -1924,7 +1827,7 @@ def build_canonical_semantic_fragment_plan(
         if len(route.destinations) != 1:
             raise CanonicalSemanticFragmentRejected(
                 "terminal semantic route requires one bound destination"
-        )
+            )
         destination = route.destinations[0].block
         serial = int(destination.serial)
         existing_terminal = terminal_replacement_id_by_serial.get(serial)
@@ -1934,8 +1837,7 @@ def build_canonical_semantic_fragment_plan(
             )
             if (
                 existing_block.stable_identity != destination.identity
-                or existing_block.semantic_anchor_ea
-                != int(destination.anchor_ea)
+                or existing_block.semantic_anchor_ea != int(destination.anchor_ea)
             ):
                 raise CanonicalSemanticFragmentRejected(
                     "shared terminal return block identity drifted"
@@ -1952,18 +1854,14 @@ def build_canonical_semantic_fragment_plan(
                 FragmentBlock(
                     block_id=original_id,
                     role=FragmentBlockRole.ORIGINAL,
-                    materialization=(
-                        FragmentBlockMaterialization.REUSE_PUBLISHED
-                    ),
+                    materialization=(FragmentBlockMaterialization.REUSE_PUBLISHED),
                     semantic_anchor_ea=int(destination.anchor_ea),
                     stable_identity=destination.identity,
                 ),
                 FragmentBlock(
                     block_id=replacement_id,
                     role=FragmentBlockRole.REPLACEMENT,
-                    materialization=(
-                        FragmentBlockMaterialization.CLONE_PUBLISHED
-                    ),
+                    materialization=(FragmentBlockMaterialization.CLONE_PUBLISHED),
                     semantic_anchor_ea=int(destination.anchor_ea),
                     stable_identity=destination.identity,
                     replaces_block_id=original_id,
@@ -1999,10 +1897,7 @@ def build_canonical_semantic_fragment_plan(
         )
         block_anchor_eas = {
             int(block.start_ea),
-            *(
-                int(instruction.ea)
-                for instruction in block.insn_snapshots
-            ),
+            *(int(instruction.ea) for instruction in block.insn_snapshots),
         }
         if anchor_ea not in block_anchor_eas:
             raise CanonicalSemanticFragmentRejected(
@@ -2024,9 +1919,7 @@ def build_canonical_semantic_fragment_plan(
         _claim_current_external_identity(
             serial,
             identity,
-            owner_serial_by_identity=(
-                external_owner_serial_by_identity
-            ),
+            owner_serial_by_identity=(external_owner_serial_by_identity),
         )
         block_id = f"native[{stable_block_identity_token(identity)}]"
         if any(item.block_id == block_id for item in blocks):
@@ -2188,9 +2081,7 @@ def build_canonical_semantic_fragment_plan(
                             terminal_carrier.source.kind.value
                         ),
                         width=terminal_carrier.source.width,
-                        storage_identity=(
-                            terminal_carrier.source.storage_identity
-                        ),
+                        storage_identity=(terminal_carrier.source.storage_identity),
                         constant=terminal_carrier.source.constant,
                     ),
                     return_width=terminal_carrier.return_width,
@@ -2201,7 +2092,9 @@ def build_canonical_semantic_fragment_plan(
             )
             return_id = terminal_return_id_by_serial.get(destination_serial)
             if return_id is None:
-                return_id = f"terminal-return:0x{terminal_carrier.request.terminal_target_ea:X}"
+                return_id = (
+                    f"terminal-return:0x{terminal_carrier.request.terminal_target_ea:X}"
+                )
                 terminal_returns.append(
                     FragmentTerminalReturn(
                         return_id=return_id,
@@ -2213,9 +2106,7 @@ def build_canonical_semantic_fragment_plan(
                 terminal_return_id_by_serial[destination_serial] = return_id
             else:
                 existing_return = next(
-                    item
-                    for item in terminal_returns
-                    if item.return_id == return_id
+                    item for item in terminal_returns if item.return_id == return_id
                 )
                 if existing_return.return_width != terminal_carrier.return_width:
                     raise CanonicalSemanticFragmentRejected(
@@ -2262,13 +2153,10 @@ def build_canonical_semantic_fragment_plan(
 
     return FragmentPlan(
         plan_id=(
-            f"canonical-semantic-plan:"
-            f"{evidence.atomic_group_id}:g{evidence.generation}"
+            f"canonical-semantic-plan:{evidence.atomic_group_id}:g{evidence.generation}"
         ),
         atomic_group_id=evidence.atomic_group_id,
-        publication_purpose=(
-            FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
-        ),
+        publication_purpose=(FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING),
         native_key=evidence.native_key,
         blocks=tuple(blocks),
         roots=tuple(roots),
