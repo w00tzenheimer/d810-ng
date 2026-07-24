@@ -36,6 +36,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlockRole,
     FragmentDataFlowObligation,
     FragmentDataFlowRole,
+    FragmentDirectTransferRewrite,
     FragmentEdge,
     FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
@@ -650,6 +651,32 @@ def _canonical_composition_proofs(
     return root_proof, consumer
 
 
+def _direct_transfer_rewrite(
+    proof: SemanticRouteProof,
+) -> FragmentDirectTransferRewrite | None:
+    """Carry one proved direct route into detached rewrite coordinates."""
+    if proof.shape is not SemanticRouteShape.DIRECT:
+        return None
+    corridor_instruction_eas = (
+        (int(proof.source_anchor_ea),)
+        if proof.state_write is None
+        else proof.state_write.corridor_instruction_eas
+    )
+    if corridor_instruction_eas[-1] != int(proof.source_anchor_ea):
+        raise CanonicalSemanticFragmentRejected(
+            "direct semantic route corridor does not end at its rewrite anchor",
+            reason_code="direct_route_rewrite_corridor_incomplete",
+            anchor_ea=int(proof.source_anchor_ea),
+            payload={"route_proof_id": proof.proof_id},
+        )
+    return FragmentDirectTransferRewrite(
+        route_proof_id=proof.proof_id,
+        rewrite_anchor_ea=int(proof.source_anchor_ea),
+        proof_corridor_instruction_eas=corridor_instruction_eas,
+        superseded_instruction_eas=(int(proof.source_anchor_ea),),
+    )
+
+
 def _with_semantic_imported_consumer(
     plan: FragmentPlan,
     proof: SemanticRouteProof,
@@ -715,6 +742,7 @@ def _with_semantic_imported_consumer(
             )
         ),
         predicate_anchor_ea=int(proof.source_anchor_ea),
+        direct_transfer_rewrite=_direct_transfer_rewrite(proof),
     )
     native_bodies = tuple(
         replace(
@@ -1196,6 +1224,21 @@ def compose_canonical_semantic_fragment_plan(
             ),
         )
     )
+    nested_rewrite_by_operation_id = {
+        f"route:{item.proof_id}": _direct_transfer_rewrite(item)
+        for item in nested_state_assignment_proofs
+    }
+    target_operations = tuple(
+        replace(
+            operation,
+            direct_transfer_rewrite=nested_rewrite_by_operation_id[
+                operation.operation_id
+            ],
+        )
+        if operation.operation_id in nested_rewrite_by_operation_id
+        else operation
+        for operation in target_operations
+    )
     if imported_consumer is not None:
         predicate = imported_consumer.predicate
         operation_id = f"route:{imported_consumer.proof_id}"
@@ -1554,6 +1597,7 @@ def compose_canonical_semantic_fragment_plan(
         FragmentOperation(
             operation_id=f"route:{proof.proof_id}",
             source_block_id=replacement_id,
+            direct_transfer_rewrite=_direct_transfer_rewrite(proof),
             edges=(
                 FragmentEdge(
                     role=destination.role,
@@ -1848,6 +1892,7 @@ def build_canonical_semantic_fragment_plan(
                 source_block_id=replacement_id_by_serial[int(route.source.serial)],
                 edges=tuple(edges),
                 predicate_anchor_ea=predicate_anchor_ea,
+                direct_transfer_rewrite=_direct_transfer_rewrite(proof),
             )
         )
         predicate = route.predicate

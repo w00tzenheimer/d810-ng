@@ -297,6 +297,10 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
             remaining_obligation_ids=(),
             unreachable_obligation_ids=(),
         ),
+        operations=tuple(
+            replace(operation, direct_transfer_rewrite=None)
+            for operation in expected_plan.operations
+        ),
     )
     normalization_scope = normalization_plan.work_item_scope
     assert normalization_scope is not None
