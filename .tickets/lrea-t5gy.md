@@ -1760,3 +1760,62 @@ block-type/tail versus successor-count invariant, in
 Continue from the `0x40A5F0` dispatcher-absence obligation, preserve the
 identity mismatch as evidence, and do not suppress the prohibited-dispatcher
 check or relabel the block merely to pass validation.
+
+**2026-07-24T13:56:42Z**
+
+Commits `401f8c69d` and `26523b70f` complete the next evidence-authority and
+canonical-composition slices. Entry-consumer routes now live in
+`ResolverPortableEvidence`, are merged through session-owned lifecycle
+authority, and are projected without reading preparation-owned state. The
+canonical planner groups a direct state assignment with its exact downstream
+carried state choice, replaces the imported raw dispatcher operation inside
+the detached plan, and carries predicate plus carrier use-def obligations in
+the same atomic fragment. Portable and live-split identities match only when
+they have the same native key, the same exact anchor, and nested native
+ranges; overlap-only and anchor-only matches still reject.
+
+The first mandatory canary after `401f8c69d` completed without a process
+segfault. Primary DB:
+`.tmp/rhad-a560-semantic-consumer-identity/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pytest log: `.tmp/rhad-a560-v31-semantic-consumer-identity.txt`. Event 6 proves
+that `entry_consumer_routes` reached lifecycle authority. Canonical
+composition then declined at exact anchor `0x40A5AB` with typed reason
+`semantic_corridor_owner_count_mismatch`: the portable corridor owned a full
+native interval while the current MBA exposed the exact split identity
+`blk2@0x40A5AB`. The DB, not the text log, recorded that first incomplete
+obligation in `fact_consumers`.
+
+Commit `26523b70f` added the strict range-refinement relation and reran the
+canary. Primary DB:
+`.tmp/rhad-a560-corridor-refinement/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pytest log: `.tmp/rhad-a560-v31-corridor-refinement.txt`. The selected
+fragment now reaches C3. Transaction
+`fb25dde2de5546258def04f8f3033463` records a complete canonical plan
+containing `state-choice@0x40BECC`. SQLite JSON-tree inspection proves
+`native-indirect-transfer@0x40BEE5` is absent from live plan operations and
+survives only in the preceding normalization receipt's historical
+`remaining_obligation_ids`.
+
+C4 is not reached. The first stage obligation is
+`SemanticFragmentBackendRejected: CALLS native body must be call/return-free`
+for the imported block anchored at `0x40B9A6`, whose captured instruction at
+native `0x40BA56` has opcode 56. The transaction applies one operation before
+this rejection, then its cleanup raises `INTERR 50856` and rollback fails to
+discard entry/stop blocks. SDK 9.3 `verify.cpp` defines 50856 exactly as
+`nsucc() != ns`, the wrong successor-set cardinality for the block type and
+tail. No `INTERR 52719` and no OS segfault occur in this canary.
+
+The highest current A560 level is therefore C3, not C4 or C6. Continue the
+v3.1 vertical loop from the call-bearing native-body boundary and the
+restart-safe staging defect it exposes. Determine whether the call block must
+remain an owned published boundary or be preserved earlier by faithful
+frontend normalization; do not weaken CALLS call/return ownership. Before any
+new realization attempt, make transaction-wide preflight reject the fragment
+before the first live mutation so an expected materializer abstention cannot
+enter the failed rollback path. Do not broaden to 91 routes.
+
+Focused verification for `26523b70f` is 328/328 local tests and 46/46 pinned
+Docker tests at `.tmp/semantic-consumer-refinement-runtime.txt`. Changed-file
+Ruff, diff checks, ast-grep, all 14 worktree-local import contracts, commit
+hooks, and `graphify update .` pass. The semantic oracle remains red with one
+residual `while ( 1 )`; this is a diagnostic canary, not A560 acceptance.
