@@ -745,17 +745,33 @@ def _validate_reachability(
     blocks: dict[str, ProjectedFragmentBlock],
     projection: ProjectedFragment,
     outcomes: list[FragmentValidationOutcome],
+    *,
+    include_detached_native_body_roots: bool,
 ) -> None:
     entry_reachable = _reachable(blocks, (projection.entry_block_id,))
-    internal_roots = (
-        *plan.roots,
-        *(
-            entry_block_id
-            for native_body in plan.native_bodies
-            for entry_block_id in native_body.entry_block_ids
-        ),
+    connectivity_roots = (
+        (
+            *plan.roots,
+            *(
+                entry_block_id
+                for native_body in plan.native_bodies
+                for entry_block_id in native_body.entry_block_ids
+            ),
+        )
+        if include_detached_native_body_roots
+        else (projection.entry_block_id,)
     )
-    fragment_reachable = _reachable(blocks, internal_roots)
+    fragment_reachable = _reachable(blocks, connectivity_roots)
+    connectivity_authority = (
+        "a publication or native-body root"
+        if include_detached_native_body_roots
+        else "the projected function entry"
+    )
+    disconnected_authority = (
+        "all publication and native-body roots"
+        if include_detached_native_body_roots
+        else "the projected function entry"
+    )
     for root in plan.roots:
         passed = root in entry_reachable
         _outcome(
@@ -781,11 +797,11 @@ def _validate_reachability(
             FragmentValidationPostcondition.INTERNAL_CONNECTIVITY,
             block.block_id,
             passed,
-            "staged fragment block is connected to a publication or native-body root"
+            f"staged fragment block is connected to {connectivity_authority}"
             if passed
             else (
-                "staged fragment block is disconnected from all publication "
-                "and native-body roots"
+                "staged fragment block is disconnected from "
+                f"{disconnected_authority}"
             ),
             block.block_id,
         )
@@ -796,11 +812,11 @@ def _validate_reachability(
             FragmentValidationPostcondition.OPERATION_REACHABILITY,
             operation.operation_id,
             passed,
-            "required operation is reachable from a publication or native-body root"
+            f"required operation is reachable from {connectivity_authority}"
             if passed
             else (
-                "required operation is unreachable from every publication "
-                "and native-body root"
+                "required operation is unreachable from "
+                f"{disconnected_authority}"
             ),
             operation.source_block_id,
         )
@@ -1523,11 +1539,12 @@ def _validate_identity(
         )
 
 
-def validate_fragment_projection(
+def _validate_fragment_projection(
     plan: FragmentPlan,
     projection: ProjectedFragment,
+    *,
+    include_detached_native_body_roots: bool,
 ) -> FragmentValidationResult:
-    """Prove all pre-publication semantic postconditions for ``projection``."""
     if not isinstance(plan, FragmentPlan):
         raise TypeError("fragment validation requires a FragmentPlan")
     if not isinstance(projection, ProjectedFragment):
@@ -1536,7 +1553,13 @@ def validate_fragment_projection(
     outcomes: list[FragmentValidationOutcome] = []
     blocks = {block.block_id: block for block in projection.blocks}
     _validate_graph(projection, blocks, outcomes)
-    _validate_reachability(plan, blocks, projection, outcomes)
+    _validate_reachability(
+        plan,
+        blocks,
+        projection,
+        outcomes,
+        include_detached_native_body_roots=include_detached_native_body_roots,
+    )
     known_operation_ids = {operation.operation_id for operation in plan.operations}
     for helper in projection.fallthrough_helpers:
         if helper.operation_id not in known_operation_ids:
@@ -1573,6 +1596,30 @@ def validate_fragment_projection(
         plan_id=plan.plan_id,
         atomic_group_id=plan.atomic_group_id,
         outcomes=tuple(outcomes),
+    )
+
+
+def validate_fragment_projection(
+    plan: FragmentPlan,
+    projection: ProjectedFragment,
+) -> FragmentValidationResult:
+    """Prove a closed detached fragment before root publication."""
+    return _validate_fragment_projection(
+        plan,
+        projection,
+        include_detached_native_body_roots=True,
+    )
+
+
+def validate_published_fragment_projection(
+    plan: FragmentPlan,
+    projection: ProjectedFragment,
+) -> FragmentValidationResult:
+    """Prove every required operation is reachable from published entry authority."""
+    return _validate_fragment_projection(
+        plan,
+        projection,
+        include_detached_native_body_roots=False,
     )
 
 
@@ -1929,5 +1976,6 @@ __all__ = [
     "ProjectedRootFallthroughHelper",
     "ProjectedTerminalEffectDiagnostic",
     "validate_fragment_projection",
+    "validate_published_fragment_projection",
     "validate_published_fragment_observation",
 ]

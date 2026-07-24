@@ -43,6 +43,7 @@ from d810.transforms.fragment_validation import (
     ProjectedRootFallthroughHelper,
     ProjectedTerminalEffectDiagnostic,
     validate_fragment_projection,
+    validate_published_fragment_projection,
     validate_published_fragment_observation,
 )
 from tests.native_preanalysis import make_native_key
@@ -838,7 +839,9 @@ def test_operation_disconnected_from_fragment_roots_is_rejected() -> None:
     assert FragmentValidationPostcondition.OPERATION_REACHABILITY in failed
 
 
-def test_detached_native_body_entry_is_an_internal_connectivity_root() -> None:
+def test_detached_native_body_entry_is_only_a_prepublication_connectivity_root() -> (
+    None
+):
     plan = _plan()
     body_id = "detached-native-body"
     imported = FragmentBlock(
@@ -917,6 +920,20 @@ def test_detached_native_body_entry_is_an_internal_connectivity_root() -> None:
         FragmentValidationPostcondition.INTERNAL_CONNECTIVITY,
         FragmentValidationPostcondition.OPERATION_REACHABILITY,
     }.intersection(outcome.postcondition for outcome in result.failures)
+
+    published = validate_published_fragment_projection(plan, projection)
+    failures = {
+        (outcome.postcondition, outcome.subject_id): outcome
+        for outcome in published.failures
+    }
+    operation_failure = failures[
+        (
+            FragmentValidationPostcondition.OPERATION_REACHABILITY,
+            "detached-native-operation",
+        )
+    ]
+    assert operation_failure.block_ids == (imported.block_id,)
+    assert "function entry" in operation_failure.reason
 
 
 def test_reachable_owned_original_is_rejected() -> None:

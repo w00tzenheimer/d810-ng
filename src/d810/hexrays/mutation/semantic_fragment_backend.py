@@ -74,7 +74,7 @@ from d810.transforms.fragment_validation import (
     ProjectedRangeFact,
     ProjectedRootFallthroughHelper,
     ProjectedTerminalEffectDiagnostic,
-    validate_fragment_projection,
+    validate_published_fragment_projection,
 )
 
 if TYPE_CHECKING:
@@ -2890,7 +2890,7 @@ def observe_published_semantic_fragment(
         state,
         simulate_root_publication=False,
     )
-    validation = validate_fragment_projection(plan, projection)
+    validation = validate_published_fragment_projection(plan, projection)
     outcomes_by_subject: dict[str, list] = {}
     for outcome in validation.outcomes:
         outcomes_by_subject.setdefault(outcome.subject_id, []).append(outcome)
