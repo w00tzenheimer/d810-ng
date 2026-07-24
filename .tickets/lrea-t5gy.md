@@ -413,3 +413,57 @@ The canary falsifies the claim that `0x40B1EA` is absent from the prepatch sourc
 The refined failure is publication-entry ownership. `plan_detached_semantic_closure_import` derives required entries from missing computed-transfer anchors; `_publication_native_entry_eas` then closes forward only from those entries. For this handler, the missing exit proof owns the downstream post-call block containing transfer `0x40B21A`, while the exact handler-entry proof owns `[0x40B1EA,0x40B21C)`. Because the range-owned `static_handler_entry_route` seed at `0x40B1EA` is not itself a publication root, the call-bearing predecessor is filtered before `_select_frontend_root_component` can retain it.
 
 Continue the v3.1 vertical loop by carrying the exact owned native range on `ResolverProvenHandlerEntry` and admitting only such range-owned handler seeds as additional detached publication roots. Prove the real shape with a focused case in which a call-bearing handler entry precedes an already-required exit block. Do not promote generic computed-source seeds, all root-unreachable components, or a range-less provenance string; do not widen identities or bypass fragment validation.
+
+**2026-07-24T05:34:50Z**
+
+Commit `10050536e` carries exact `owned_native_ranges` on range-owned
+`ResolverProvenHandlerEntry` evidence and admits only those exact
+`static_handler_entry_route` seeds as detached publication roots. Generic and
+range-less computed seeds remain ineligible, every admitted target must have
+one containing range, and every owned range must stay within the same native
+semantic closure. The focused portable regression models a call-bearing handler
+entry preceding an already-required indirect-exit block. The affected
+resolver, session, native-closure, and frontend-normalization Docker gate is
+335/335 green. Ruff, ast-grep, all 14 worktree-local import contracts, commit
+hooks, and `graphify update .` pass. No compatibility path, sample-EA guard,
+block-serial authority, architecture ignore, or widened identity was added.
+
+The mandatory production A560 diagnostic canary completed in 9.35 seconds
+without a process segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784871005_11.diag.sqlite3`; log:
+`.tmp/rhad-a560-v31-range-owned-handler-roots.txt`. The highest contiguous
+canary level is C1, not C5 or C6. The transaction plans 1,394 items over 480
+semantic operations, selects all 228 obligations, leaves zero pending and zero
+root-unreachable obligations, then aborts before fragment staging or root
+publication and rolls back successfully. The short
+`JUMPOUT(0x40B6C0)` pseudocode is a consequence of that safe rollback, not a
+new semantic diagnosis.
+
+The intended ownership result is proven: all eleven formerly root-unreachable
+proof-owned handler components now enter the complete plan. The newly exposed
+first C2 obligation is exact predicate ownership for
+`native-body-edge@0x40C4B4`. The portable operation expects native predicate
+EA `0x40C4D2`, but its detached PREOPT source
+`blk637@0x40A560/native@0x40C4B4` ends in synthetic conditional opcode 42 at
+fictitious EA `0xF1C02B3C`. The gateway correctly rejects the mismatch before
+staging.
+
+Native semantics show why accepting the synthetic tail as the raw
+`0x40C4D2` branch would be wrong. The block computes the flow state with
+`cmp [esp+0x44], 5; mov ebx, 0x2B8162DC; mov eax, 0x456A4274; cmove ebx, eax`
+before the dispatcher-navigation corridor and unresolved transfer at
+`0x40C4DA`. Existing portable authority maps state `0x2B8162DC` to handler
+`0x40ADA2` and state `0x456A4274` to handler `0x40B199`, but no conditional
+state-choice evidence currently owns source `0x40C4B4`. This matches the
+reference Rhad algorithm's atomic CMOV rewrite: preserve the original
+condition and install both semantic handler arms together, rather than
+publishing the later dispatcher-navigation predicate.
+
+Continue the v3.1 vertical loop by recovering that exact portable conditional
+state choice, then make one semantic condition-plus-both-arms operation
+supersede every generic imported dispatcher/native-body operation in the same
+envelope. Start with a focused red resolver contract for the
+`CMP/MOV/MOV/CMOV` form and keep the gateway's exact predicate rejection.
+Do not accept arbitrary synthetic tails, preserve the raw dispatcher
+navigation as semantics, add a sample-EA production guard, or broaden
+publication beyond the first failed obligation.
