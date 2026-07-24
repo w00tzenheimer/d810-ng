@@ -371,6 +371,7 @@ def _merged_imported_ranges(
 
 
 def _prohibited_frontend_replacement_ids(
+    graph: FlowGraph,
     plan: FragmentPlan,
     *,
     prohibited_dispatcher_serials: frozenset[int],
@@ -378,7 +379,11 @@ def _prohibited_frontend_replacement_ids(
 ) -> frozenset[str]:
     """Find frontend replacements whose current owners must disappear."""
     prohibited_identities = tuple(
-        (serial, current_identity_by_serial.get(serial))
+        (
+            serial,
+            graph.blocks.get(serial),
+            current_identity_by_serial.get(serial),
+        )
         for serial in sorted(prohibited_dispatcher_serials)
     )
     replacement_ids: set[str] = set()
@@ -387,13 +392,20 @@ def _prohibited_frontend_replacement_ids(
         if block.role is not FragmentBlockRole.REPLACEMENT or identity is None:
             continue
         matches = tuple(
-            (serial, current_identity)
-            for serial, current_identity in prohibited_identities
-            if current_identity is not None
-            and stable_block_identities_refine_at_anchor(
-                identity,
-                current_identity,
-                block.semantic_anchor_ea,
+            (serial, current_block, current_identity)
+            for serial, current_block, current_identity in prohibited_identities
+            if current_block is not None
+            and current_identity is not None
+            and (
+                stable_block_identities_refine_at_anchor(
+                    identity,
+                    current_identity,
+                    block.semantic_anchor_ea,
+                )
+                or (
+                    int(current_block.start_ea) == int(block.semantic_anchor_ea)
+                    and _identity_contains(identity, current_identity)
+                )
             )
         )
         if len(matches) > 1:
@@ -404,8 +416,8 @@ def _prohibited_frontend_replacement_ids(
                 payload={
                     "replacement_block_id": block.block_id,
                     "current_owner_labels": tuple(
-                        f"blk{serial}@0x{stable_block_identity_semantic_anchor(current_identity):X}"
-                        for serial, current_identity in matches
+                        f"blk{serial}@0x{int(current_block.start_ea):X}"
+                        for serial, current_block, _identity in matches
                     ),
                 },
             )
@@ -483,6 +495,7 @@ def _detached_target_component(
         operation.source_block_id: operation for operation in plan.operations
     }
     reimportable_replacement_ids = _prohibited_frontend_replacement_ids(
+        graph,
         plan,
         prohibited_dispatcher_serials=prohibited_dispatcher_serials,
         current_identity_by_serial=current_identity_by_serial,
