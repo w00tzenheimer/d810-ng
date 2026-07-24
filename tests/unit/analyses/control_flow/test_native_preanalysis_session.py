@@ -508,12 +508,31 @@ def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() 
     state = NativePreanalysisSessionState()
     assert state.merge_state_write_routes(NATIVE_KEY, (route,))
 
+    candidate = state.canonical_semantic_candidate_evidence_for(NATIVE_KEY)
+    assert candidate is not None
+    assert candidate.generation == state.evidence_generation == 1
+    assert state.canonical_semantic_evidence_for(NATIVE_KEY) is None
+
+    assert state._fragment_publication_mark_normalization_staged()
+    assert state._fragment_publication_mark_normalization_validated()
+    assert not state._fragment_publication_commit_normalization_work_item(
+        work_item_id="frontend-normalization:g1:first",
+        selected_obligation_ids=("native-transfer:first",),
+        remaining_obligation_ids=("native-transfer:remaining",),
+        unreachable_obligation_ids=(),
+    )
+    assert state.normalization_published_postvalidated_generation is None
+    assert (
+        state.canonical_semantic_candidate_evidence_for(NATIVE_KEY)
+        == candidate
+    )
     assert state.canonical_semantic_evidence_for(NATIVE_KEY) is None
 
     _publish_normalization(state)
     evidence = state.canonical_semantic_evidence_for(NATIVE_KEY)
 
     assert evidence is not None
+    assert evidence == candidate
     assert evidence.native_key == NATIVE_KEY
     assert evidence.generation == state.evidence_generation == 1
     assert evidence.atomic_group_id == "canonical-semantic:g1"
