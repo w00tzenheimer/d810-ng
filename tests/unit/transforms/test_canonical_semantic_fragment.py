@@ -35,12 +35,20 @@ from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
     build_canonical_semantic_fragment_plan,
+    compose_canonical_semantic_fragment_plan,
 )
 from d810.transforms.fragment_plan import (
+    FragmentBlock,
+    FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentDataFlowRole,
+    FragmentEdge,
+    FragmentNativeBody,
+    FragmentOperation,
+    FragmentPlan,
     FragmentPublicationPurpose,
     FragmentReturnSourceKind,
+    FragmentWorkItemScope,
 )
 from tests.native_preanalysis import make_native_key
 
@@ -171,6 +179,229 @@ def test_direct_semantic_route_builds_closed_portable_fragment_plan() -> None:
         for block in plan.blocks
     )
     assert all("serial" not in block.block_id for block in plan.blocks)
+
+
+def _live_source_detached_target_case() -> tuple[
+    FlowGraph,
+    FragmentPlan,
+    CanonicalSemanticEvidence,
+]:
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, 0x1000, succs=(20,), preds=()),
+            20: _block(20, 0x1100, succs=(90,), preds=(10,)),
+            90: _block(90, 0x1400, succs=(20,), preds=(20,)),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    detached_body_id = "native-body:detached"
+    normalization_plan = FragmentPlan(
+        plan_id="frontend-normalization:g3:complete",
+        atomic_group_id="frontend-normalization:g3",
+        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+        native_key=NATIVE_KEY,
+        blocks=(
+            FragmentBlock(
+                block_id="live-route-source",
+                role=FragmentBlockRole.EXTERNAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=0x1100,
+                stable_identity=_identity(0x1100),
+            ),
+            FragmentBlock(
+                block_id="unrelated-original",
+                role=FragmentBlockRole.ORIGINAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=0x1300,
+                stable_identity=_identity(0x1300),
+            ),
+            FragmentBlock(
+                block_id="unrelated-replacement",
+                role=FragmentBlockRole.REPLACEMENT,
+                materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+                semantic_anchor_ea=0x1300,
+                stable_identity=_identity(0x1300),
+                replaces_block_id="unrelated-original",
+            ),
+            FragmentBlock(
+                block_id="unrelated-exit",
+                role=FragmentBlockRole.EXTERNAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=0x1500,
+                stable_identity=_identity(0x1500),
+            ),
+            FragmentBlock(
+                block_id="detached-target",
+                role=FragmentBlockRole.IMPORTED,
+                materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+                semantic_anchor_ea=0x1200,
+                stable_identity=_identity(0x1200),
+                native_body_id=detached_body_id,
+            ),
+        ),
+        roots=("unrelated-replacement",),
+        owned_originals=("unrelated-original",),
+        prohibited_dispatcher_blocks=(),
+        operations=(
+            FragmentOperation(
+                operation_id="unrelated-normalization",
+                source_block_id="unrelated-replacement",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="unrelated-exit",
+                    ),
+                ),
+            ),
+        ),
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id="frontend-normalization:g3:complete",
+            selected_obligation_ids=("unrelated-normalization",),
+            remaining_obligation_ids=("detached-normalization",),
+            unreachable_obligation_ids=(),
+        ),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id=detached_body_id,
+                block_ids=("detached-target",),
+                entry_block_ids=("detached-target",),
+                terminal_block_ids=("detached-target",),
+                native_ranges=(NativeEaInterval(0x1200, 0x1201),),
+                proof_ids=("detached-normalization",),
+            ),
+        ),
+    )
+    source_identity = _identity(0x1100)
+    evidence = CanonicalSemanticEvidence(
+        native_key=NATIVE_KEY,
+        generation=3,
+        atomic_group_id="canonical-semantic:g3:route@0x1100",
+        route_proofs=(
+            SemanticRouteProof(
+                proof_id="state-assignment@0x1100",
+                atomic_group_id="canonical-semantic:g3:route@0x1100",
+                proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+                shape=SemanticRouteShape.DIRECT,
+                source_identity=source_identity,
+                source_anchor_ea=0x1100,
+                destinations=(
+                    SemanticRouteDestination(
+                        role=SemanticEdgeRole.DIRECT,
+                        state_constant=0xAABBCCDD,
+                        target_identity=_identity(0x1200),
+                        target_anchor_ea=0x1200,
+                    ),
+                ),
+                state_write=SemanticStateWriteProof(
+                    identity=source_identity,
+                    instruction_ea=0x1100,
+                    state_variable=StorageIdentity(
+                        StorageIdentityKind.REGISTER,
+                        20,
+                    ),
+                    width=4,
+                    state_constant=0xAABBCCDD,
+                    corridor_instruction_eas=(0x1100,),
+                ),
+            ),
+        ),
+    )
+    return graph, normalization_plan, evidence
+
+
+def test_canonical_route_composes_live_source_with_detached_target_body() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    assert (
+        plan.publication_purpose
+        is FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+    )
+    assert plan.work_item_scope is None
+    assert tuple(plan.block(root).semantic_anchor_ea for root in plan.roots) == (
+        0x1100,
+    )
+    root = plan.block(plan.roots[0])
+    assert root.role is FragmentBlockRole.REPLACEMENT
+    assert plan.block(str(root.replaces_block_id)).role is FragmentBlockRole.ORIGINAL
+    assert tuple(
+        block.semantic_anchor_ea
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.EXTERNAL
+    ) == (0x1000, 0x1400)
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea
+        for block_id in plan.prohibited_dispatcher_blocks
+    ) == (0x1400,)
+    assert len(plan.operations) == 1
+    operation = plan.operations[0]
+    assert plan.block(operation.source_block_id) == root
+    assert tuple(
+        (edge.role, plan.block(edge.target_block_id).semantic_anchor_ea)
+        for edge in operation.edges
+    ) == ((SemanticEdgeRole.DIRECT, 0x1200),)
+    assert len(plan.native_bodies) == 1
+    native_body = plan.native_bodies[0]
+    assert native_body.entry_block_ids == native_body.terminal_block_ids
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea
+        for block_id in native_body.entry_block_ids
+    ) == (0x1200,)
+    assert all(
+        block.semantic_anchor_ea not in {0x1300, 0x1500}
+        for block in plan.blocks
+    )
+
+
+def test_canonical_composition_rejects_ambiguous_detached_target_owner() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    (native_body,) = normalization_plan.native_bodies
+    duplicate_target = replace(
+        normalization_plan.block("detached-target"),
+        block_id="detached-target-duplicate",
+    )
+    ambiguous = replace(
+        normalization_plan,
+        blocks=(*normalization_plan.blocks, duplicate_target),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    duplicate_target.block_id,
+                ),
+                terminal_block_ids=(
+                    *native_body.terminal_block_ids,
+                    duplicate_target.block_id,
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        CanonicalSemanticFragmentRejected,
+        match=(
+            "canonical route target 0x1200 requires one "
+            "normalization-plan owner, observed 2"
+        ),
+    ):
+        compose_canonical_semantic_fragment_plan(
+            graph,
+            ambiguous,
+            evidence,
+            prohibited_dispatcher_serials=(90,),
+        )
 
 
 def test_partial_bound_atomic_group_is_rejected() -> None:
