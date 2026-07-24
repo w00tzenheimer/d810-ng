@@ -93,7 +93,11 @@ def _initialize_resolver_attachment(session):
         resolver_session_state,
     )
 
-    return resolver_session_state(session)
+    state = resolver_session_state(session)
+    state.frontend_normalization_plan_provider = (
+        session.frontend_normalization_plan_authority
+    )
+    return state
 
 
 def _build_current_mba_identity_index(*, session, mba):

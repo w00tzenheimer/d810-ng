@@ -63,7 +63,6 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 )
 from d810.analyses.control_flow.frontend_normalization import (
     FrontendNormalizationEvidence,
-    FrontendNormalizationEvidenceRejected,
 )
 from d810.analyses.control_flow.transition_builder import (
     transition_result_from_resolutions,
@@ -77,13 +76,13 @@ from d810.transforms.canonical_semantic_fragment import (
     build_canonical_semantic_fragment_plan,
     compose_canonical_semantic_fragment_plan,
 )
-from d810.transforms.frontend_normalization import (
-    FrontendNormalizationCorridorRejected,
-    plan_frontend_computed_branch_normalization,
+from d810.transforms.fragment_plan import (
+    FragmentPlan,
+    FragmentPublicationPurpose,
 )
-from d810.transforms.fragment_plan import FragmentPlan
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
+    FrontendNormalizationPlanCapability,
 )
 from d810.capabilities.branch_witness import BranchWitnessCapability
 from d810.capabilities.value_range import ValRangeCapability
@@ -686,39 +685,51 @@ def _single_route_candidate(
 def _plan_candidate_normalization(
     context: FunctionPipelineContext,
     candidate: CanonicalSemanticEvidence,
-    frontend_evidence: FrontendNormalizationEvidence,
+    plan_provider: FrontendNormalizationPlanCapability,
 ) -> FragmentPlan | None:
-    """Plan candidate prerequisites while retaining its stable route identity."""
-    try:
-        return plan_frontend_computed_branch_normalization(
-            context.graph,
-            frontend_evidence,
-        )
-    except FrontendNormalizationEvidenceRejected as exc:
-        first_proof = (
-            candidate.route_proofs[0] if candidate.route_proofs else None
-        )
-        anchor_ea = (
-            int(first_proof.source_anchor_ea)
-            if first_proof is not None
-            else int(context.graph.func_ea)
-        )
-        payload = {"normalization_reason": str(exc)}
+    """Read receipt-associated PREOPT intent for one exact evidence generation."""
+    first_proof = candidate.route_proofs[0] if candidate.route_proofs else None
+    anchor_ea = (
+        int(first_proof.source_anchor_ea)
+        if first_proof is not None
+        else int(context.graph.func_ea)
+    )
+    plan = plan_provider.plan_for(
+        int(context.graph.func_ea),
+        int(candidate.generation),
+    )
+    if plan is None:
+        payload = {"evidence_generation": int(candidate.generation)}
         if first_proof is not None:
             payload["route_proof_id"] = first_proof.proof_id
-        if isinstance(exc, FrontendNormalizationCorridorRejected):
-            payload.update(
-                {
-                    "normalization_reason_code": exc.failure.reason_code,
-                    "corridor_failure": exc.failure.to_payload(),
-                }
-            )
         raise CanonicalSemanticFragmentRejected(
-            f"candidate route 0x{anchor_ea:X} normalization rejected: {exc}",
-            reason_code="frontend_normalization_plan_rejected",
+            f"candidate route 0x{anchor_ea:X} has no receipt-associated "
+            "PREOPT plan intent",
+            reason_code="frontend_normalization_plan_intent_missing",
             anchor_ea=anchor_ea,
             payload=payload,
-        ) from exc
+        )
+    if not isinstance(plan, FragmentPlan):
+        raise TypeError(
+            "frontend normalization plan capability returned non-portable intent"
+        )
+    if (
+        plan.publication_purpose
+        is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+        or plan.native_key != candidate.native_key
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            f"candidate route 0x{anchor_ea:X} PREOPT plan authority drifted",
+            reason_code="frontend_normalization_plan_intent_drift",
+            anchor_ea=anchor_ea,
+            payload={
+                "evidence_generation": int(candidate.generation),
+                "route_proof_id": (
+                    None if first_proof is None else first_proof.proof_id
+                ),
+            },
+        )
+    return plan
 
 
 def _compose_candidate_semantic_fragment(
@@ -732,9 +743,17 @@ def _compose_candidate_semantic_fragment(
     frontend_provider = context.capabilities.optional(
         FrontendNormalizationEvidenceCapability
     )
-    if candidate_provider is None or frontend_provider is None:
+    plan_provider = context.capabilities.optional(
+        FrontendNormalizationPlanCapability
+    )
+    if (
+        candidate_provider is None
+        or frontend_provider is None
+        or plan_provider is None
+    ):
         raise CanonicalSemanticFragmentRejected(
-            "canonical composition requires candidate and normalization evidence",
+            "canonical composition requires candidate evidence, normalization "
+            "evidence, and receipt-associated PREOPT plan intent",
             reason_code="canonical_composition_capability_missing",
             anchor_ea=int(context.graph.func_ea),
         )
@@ -769,7 +788,7 @@ def _compose_candidate_semantic_fragment(
     normalization_plan = _plan_candidate_normalization(
         context,
         candidate,
-        frontend_evidence,
+        plan_provider,
     )
     if normalization_plan is None:
         first_route_anchor = (

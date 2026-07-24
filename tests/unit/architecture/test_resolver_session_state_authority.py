@@ -141,6 +141,10 @@ RESOLVER_SESSION_FIELD_INVENTORY = {
         FieldLifetime.LIFECYCLE_BINDING,
         "portable owner key used to reject cross-session evidence",
     ),
+    "frontend_normalization_plan_provider": FieldInventory(
+        FieldLifetime.LIFECYCLE_BINDING,
+        "read-only port to manager-owned receipt-associated PREOPT plan intent",
+    ),
     "identity_index": FieldInventory(
         FieldLifetime.CALLBACK_LOCAL,
         "current-MBA bindings invalidated on mutation or regeneration",

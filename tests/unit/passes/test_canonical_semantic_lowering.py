@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from d810.analyses.control_flow.frontend_normalization import (
     FrontendNormalizationEvidence,
-    FrontendNormalizationEvidenceRejected,
     NativeIndirectTransferProof,
     NativeTransferEndpoint,
     NativeTransferShape,
@@ -24,6 +24,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 )
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
+    FrontendNormalizationPlanCapability,
 )
 from d810.capabilities.resolver import CapabilitySet
 from d810.capabilities.semantic_routes import (
@@ -50,11 +51,9 @@ from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
     build_canonical_semantic_fragment_plan,
 )
-from d810.transforms.fragment_plan import FragmentPublicationPurpose
-from d810.transforms.frontend_normalization import (
-    FrontendNormalizationCorridorRejected,
-    ProjectedRouteCorridorBlock,
-    ProjectedRouteCorridorFailure,
+from d810.transforms.fragment_plan import (
+    FragmentPublicationPurpose,
+    FragmentWorkItemScope,
 )
 from d810.transforms.plan import PatchPlan
 from tests.native_preanalysis import make_native_key
@@ -213,15 +212,19 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
         bound,
         prohibited_dispatcher_serials=(30,),
     )
-    calls = []
-    monkeypatch.setattr(
-        state_machine_module,
-        "plan_frontend_computed_branch_normalization",
-        lambda current_graph, evidence: (
-            calls.append(("normalization", current_graph, evidence))
-            or expected_plan
+    normalization_plan = replace(
+        expected_plan,
+        plan_id="frontend-normalization:0x1000:g7",
+        atomic_group_id="frontend-normalization:g7",
+        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id="frontend-normalization:0x1000:g7:complete",
+            selected_obligation_ids=("native-transfer@0x1100",),
+            remaining_obligation_ids=(),
+            unreachable_obligation_ids=(),
         ),
     )
+    calls = []
     monkeypatch.setattr(
         state_machine_module,
         "compose_canonical_semantic_fragment_plan",
@@ -251,6 +254,18 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
                 else None
             )
 
+    class _PlanProvider:
+        def plan_for(self, function_ea: int, evidence_generation: int):
+            calls.append(("plan", function_ea, evidence_generation))
+            return (
+                normalization_plan
+                if (
+                    int(function_ea) == graph.func_ea
+                    and int(evidence_generation) == candidate.generation
+                )
+                else None
+            )
+
     analyses = AnalysisManager(graph)
     analyses.put_analysis(
         "recover_dispatcher",
@@ -269,6 +284,10 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
             FrontendNormalizationEvidenceCapability,
             _FrontendProvider(),
         )
+        .with_capability(
+            FrontendNormalizationPlanCapability,
+            _PlanProvider(),
+        )
     )
     context = FunctionPipelineContext(
         source=None,
@@ -282,11 +301,11 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
     result = LowerCanonicalSemanticFragment().run(context)
 
     assert result.fragment_plan == expected_plan
-    assert calls[0] == ("normalization", graph, frontend_evidence)
+    assert calls[0] == ("plan", graph.func_ea, candidate.generation)
     assert calls[1][0:4] == (
         "composition",
         graph,
-        expected_plan,
+        normalization_plan,
         candidate,
     )
     assert calls[1][4] == {"prohibited_dispatcher_serials": (30,)}
@@ -298,21 +317,13 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
     )
 
 
-def test_candidate_normalization_rejection_names_attempted_route(
-    monkeypatch,
-) -> None:
+def test_candidate_normalization_rejects_missing_receipted_plan_intent() -> None:
     graph, bound = _graph_and_bound_evidence()
     candidate = bound.evidence
-    frontend_evidence = object()
-    monkeypatch.setattr(
-        state_machine_module,
-        "plan_frontend_computed_branch_normalization",
-        lambda _graph, _evidence: (_ for _ in ()).throw(
-            FrontendNormalizationEvidenceRejected(
-                "original route corridor is not closed"
-            )
-        ),
-    )
+
+    class _PlanProvider:
+        def plan_for(self, function_ea: int, evidence_generation: int):
+            return None
 
     with pytest.raises(
         CanonicalSemanticFragmentRejected,
@@ -320,63 +331,15 @@ def test_candidate_normalization_rejection_names_attempted_route(
         state_machine_module._plan_candidate_normalization(
             SimpleNamespace(graph=graph),
             candidate,
-            frontend_evidence,
+            _PlanProvider(),
         )
 
     rejection = exc_info.value
-    assert rejection.reason_code == "frontend_normalization_plan_rejected"
+    assert rejection.reason_code == "frontend_normalization_plan_intent_missing"
     assert rejection.anchor_ea == 0x1100
     assert rejection.payload == {
-        "normalization_reason": "original route corridor is not closed",
+        "evidence_generation": 7,
         "route_proof_id": "state-assignment@0x1100",
-    }
-
-
-def test_candidate_normalization_rejection_retains_corridor_boundary(
-    monkeypatch,
-) -> None:
-    graph, bound = _graph_and_bound_evidence()
-    candidate = bound.evidence
-    frontend_evidence = object()
-    failure = ProjectedRouteCorridorFailure(
-        reason_code="external_predecessor",
-        edge_role="incoming_predecessor",
-        context_anchor_ea=0x1000,
-        corridor_block=ProjectedRouteCorridorBlock(
-            serial=2,
-            anchor_ea=0x1200,
-        ),
-        boundary_block=ProjectedRouteCorridorBlock(
-            serial=4,
-            anchor_ea=0x1400,
-        ),
-    )
-    monkeypatch.setattr(
-        state_machine_module,
-        "plan_frontend_computed_branch_normalization",
-        lambda _graph, _evidence: (_ for _ in ()).throw(
-            FrontendNormalizationCorridorRejected(failure)
-        ),
-    )
-
-    with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
-        state_machine_module._plan_candidate_normalization(
-            SimpleNamespace(graph=graph),
-            candidate,
-            frontend_evidence,
-        )
-
-    rejection = exc_info.value
-    assert rejection.reason_code == "frontend_normalization_plan_rejected"
-    assert rejection.anchor_ea == 0x1100
-    assert rejection.payload == {
-        "normalization_reason": (
-            "original route corridor is not closed: "
-            "external predecessor blk4@0x1400 -> blk2@0x1200"
-        ),
-        "normalization_reason_code": "external_predecessor",
-        "route_proof_id": "state-assignment@0x1100",
-        "corridor_failure": failure.to_payload(),
     }
 
 

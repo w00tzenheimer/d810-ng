@@ -32,8 +32,10 @@ from d810.ir.block_identity import (
 from d810.manager.manager import (
     D810Manager,
     _build_current_mba_identity_index,
+    _initialize_resolver_attachment,
     _new_current_mba_mutation_gateway,
 )
+from d810.manager.decompilation_lifecycle import DecompilationSessionContext
 from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     resolver_session_state,
@@ -59,6 +61,22 @@ def _current_mba_identity_binding() -> CurrentMbaIdentityBindingSnapshot:
                 live_instruction_eas=frozenset({live_ea}),
             ),
         ),
+    )
+
+
+def test_resolver_attachment_reads_manager_owned_normalization_plan_port() -> None:
+    session = DecompilationSessionContext(
+        function_ea=0x40A560,
+        database_identity="test",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+
+    state = _initialize_resolver_attachment(session)
+
+    assert (
+        state.frontend_normalization_plan_provider
+        is session.frontend_normalization_plan_authority
     )
 
 

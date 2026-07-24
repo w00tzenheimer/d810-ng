@@ -123,6 +123,7 @@ from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
+    FrontendNormalizationPlanCapability,
 )
 from d810.capabilities.resolver import CapabilitySet
 from d810.capabilities.semantic_routes import (
@@ -3408,6 +3409,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     state=resolver_state.native_preanalysis,
                 )
             )
+            plan_provider = (
+                resolver_state.frontend_normalization_plan_provider
+            )
+            if isinstance(
+                plan_provider,
+                FrontendNormalizationPlanCapability,
+            ):
+                cap_instances[FrontendNormalizationPlanCapability] = (
+                    plan_provider
+                )
         return CapabilitySet(cap_instances)
 
     def _select_family(

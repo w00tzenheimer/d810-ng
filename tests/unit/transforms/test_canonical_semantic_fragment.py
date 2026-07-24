@@ -310,6 +310,51 @@ def _live_source_detached_target_case() -> tuple[
     return graph, normalization_plan, evidence
 
 
+def _omitted_delivery_source_case() -> tuple[
+    FlowGraph,
+    FragmentPlan,
+    CanonicalSemanticEvidence,
+]:
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
+    delivery_ea = 0x1110
+    retained_source_identity = StableBlockIdentity.from_instruction_eas(
+        (0x1100, delivery_ea),
+        native_key=NATIVE_KEY,
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=tuple(
+            replace(
+                block,
+                semantic_anchor_ea=delivery_ea,
+                stable_identity=retained_source_identity,
+            )
+            if block.block_id == "live-route-source"
+            else block
+            for block in normalization_plan.blocks
+        ),
+    )
+    (proof,) = evidence.route_proofs
+    evidence = replace(
+        evidence,
+        route_proofs=(
+            replace(
+                proof,
+                proof_id=f"state-assignment@0x{delivery_ea:X}",
+                source_identity=_identity(delivery_ea),
+                source_anchor_ea=delivery_ea,
+                state_write=replace(
+                    proof.state_write,
+                    identity=_identity(0x1100),
+                    instruction_ea=0x1100,
+                    corridor_instruction_eas=(0x1100, delivery_ea),
+                ),
+            ),
+        ),
+    )
+    return graph, normalization_plan, evidence
+
+
 def test_canonical_route_composes_live_source_with_detached_target_body() -> None:
     graph, normalization_plan, evidence = (
         _live_source_detached_target_case()
@@ -360,6 +405,50 @@ def test_canonical_route_composes_live_source_with_detached_target_body() -> Non
         block.semantic_anchor_ea not in {0x1300, 0x1500}
         for block in plan.blocks
     )
+
+
+def test_canonical_route_rebinds_retained_corridor_to_live_source_subset() -> None:
+    graph, normalization_plan, evidence = _omitted_delivery_source_case()
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    root = plan.block(plan.roots[0])
+    assert root.semantic_anchor_ea == 0x1100
+    assert root.stable_identity == _identity(0x1100)
+    assert (
+        normalization_plan.block("live-route-source").stable_identity
+        != root.stable_identity
+    )
+
+
+def test_canonical_route_rejects_split_materialized_delivery_ownership() -> None:
+    graph, normalization_plan, evidence = _omitted_delivery_source_case()
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            25: _block(25, 0x1110, succs=(), preds=()),
+        },
+    )
+
+    with pytest.raises(
+        CanonicalSemanticFragmentRejected,
+        match="canonical route corridor has split current-graph ownership",
+    ) as exc_info:
+        compose_canonical_semantic_fragment_plan(
+            graph,
+            normalization_plan,
+            evidence,
+            prohibited_dispatcher_serials=(90,),
+        )
+
+    assert exc_info.value.reason_code == "split_route_corridor_ownership"
+    assert exc_info.value.anchor_ea == 0x1110
 
 
 def test_canonical_composition_rejects_ambiguous_detached_target_owner() -> None:

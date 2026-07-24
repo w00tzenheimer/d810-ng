@@ -26,6 +26,9 @@ from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
 )
+from d810.manager.frontend_normalization import (
+    SessionFrontendNormalizationPlanAuthority,
+)
 
 logger = getLogger("D810.decompilation_lifecycle")
 
@@ -51,6 +54,17 @@ class DecompilationSessionContext:
     preopt_ready_emitted_for_current_mba: bool = False
     preopt_refresh_consumers_for_current_mba: set[str] = field(default_factory=set)
     resolver_attachment: ResolverEvidenceAttachment | None = None
+    frontend_normalization_plan_authority: (
+        SessionFrontendNormalizationPlanAuthority
+    ) = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.frontend_normalization_plan_authority = (
+            SessionFrontendNormalizationPlanAuthority(
+                function_ea=int(self.function_ea),
+                native_key=self.native_key,
+            )
+        )
 
     @property
     def identity_key(self) -> str:

@@ -17,12 +17,14 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 )
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
+    FrontendNormalizationPlanCapability,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.manager.frontend_normalization import (
     FrontendNormalizationPublicationError,
+    SessionFrontendNormalizationPlanAuthority,
     run_frontend_normalization_pipeline,
 )
 from tests.native_preanalysis import make_native_key
@@ -179,7 +181,14 @@ class _Backend:
                     unreachable_obligation_ids=(),
                 )
             else:
-                self.state._fragment_publication_mark_normalization_published_and_postvalidated()
+                scope = plan.work_item_scope
+                assert scope is not None
+                self.state._fragment_publication_commit_normalization_work_item(
+                    work_item_id=scope.work_item_id,
+                    selected_obligation_ids=scope.selected_obligation_ids,
+                    remaining_obligation_ids=scope.remaining_obligation_ids,
+                    unreachable_obligation_ids=scope.unreachable_obligation_ids,
+                )
         return _graph(normalized=True)
 
 
@@ -195,23 +204,39 @@ def _state() -> NativePreanalysisSessionState:
     return NativePreanalysisSessionState(evidence_generation=GENERATION)
 
 
+def _plan_authority() -> SessionFrontendNormalizationPlanAuthority:
+    return SessionFrontendNormalizationPlanAuthority(
+        function_ea=0x1000,
+        native_key=NATIVE_KEY,
+    )
+
+
 def test_pipeline_reports_modification_only_after_current_receipt_generation() -> None:
     state = _state()
     backend = _Backend(state, publish_receipt=True)
+    plan_authority = _plan_authority()
 
     result = run_frontend_normalization_pipeline(
         source=_source(_graph(normalized=False)),
         backend=backend,
         evidence_provider=_Provider(_evidence()),
+        plan_authority=plan_authority,
         lifecycle_state=state,
         native_key=NATIVE_KEY,
     )
 
     assert isinstance(_Provider(_evidence()), FrontendNormalizationEvidenceCapability)
+    assert isinstance(plan_authority, FrontendNormalizationPlanCapability)
     assert result.microcode_modified is True
     assert result.published_generation == GENERATION
     assert result.graph == _graph(normalized=True)
     assert len(backend.plans) == 1
+    retained_plan = plan_authority.plan_for(0x1000, GENERATION)
+    assert retained_plan is not None
+    assert retained_plan.plan_id == "frontend-normalization:0x1000:g7"
+    assert retained_plan is not backend.plans[0]
+    assert plan_authority.plan_for(0x1000, GENERATION + 1) is None
+    assert plan_authority.plan_for(0x1001, GENERATION) is None
 
 
 def test_pipeline_rejects_changed_graph_without_current_receipt_generation() -> None:
@@ -222,16 +247,19 @@ def test_pipeline_rejects_changed_graph_without_current_receipt_generation() -> 
         FrontendNormalizationPublicationError,
         match="without a current receipt-backed normalization publication",
     ):
+        plan_authority = _plan_authority()
         run_frontend_normalization_pipeline(
             source=_source(_graph(normalized=False)),
             backend=backend,
             evidence_provider=_Provider(_evidence()),
+            plan_authority=plan_authority,
             lifecycle_state=state,
             native_key=NATIVE_KEY,
         )
 
     assert state.normalization_published_postvalidated_generation is None
     assert len(backend.plans) == 1
+    assert plan_authority.plan_for(0x1000, GENERATION) is None
 
 
 def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance() -> (
@@ -248,6 +276,7 @@ def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance
         source=_source(_graph(normalized=False)),
         backend=backend,
         evidence_provider=_Provider(_evidence()),
+        plan_authority=_plan_authority(),
         lifecycle_state=state,
         native_key=NATIVE_KEY,
     )
@@ -275,6 +304,7 @@ def test_pipeline_does_not_republish_a_generation_already_authoritative() -> Non
         source=_source(graph),
         backend=backend,
         evidence_provider=_Provider(_evidence()),
+        plan_authority=_plan_authority(),
         lifecycle_state=state,
         native_key=NATIVE_KEY,
     )
@@ -294,6 +324,7 @@ def test_pipeline_without_portable_evidence_is_a_noop() -> None:
         source=_source(graph),
         backend=backend,
         evidence_provider=_Provider(None),
+        plan_authority=_plan_authority(),
         lifecycle_state=state,
         native_key=NATIVE_KEY,
     )
