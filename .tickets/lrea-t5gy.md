@@ -823,3 +823,56 @@ must not restore detached native-body roots as independent postpublication
 reachability authorities. Preserve the committed strict C5 fragment as the
 regression baseline while deciding how normalization hands the retained body
 inventory to canonical state-route ownership.
+
+**2026-07-24T07:37:06Z**
+
+Correction to the preceding checkpoint: under v3.1's cumulative C0-C6
+definitions, the latest production A560 canary reaches C2, not C5. Transaction
+`e7675afc0b1340369106cb352ac75415` proves receipt-backed frontend
+normalization for 40 selected obligations and independently proves that the
+gateway can complete staging, publication, postvalidation, and receipt
+mechanics for that normalization fragment. It does not reach C3 because the
+canonical spine produces no semantic `FragmentPlan`. C4 and C5 therefore
+cannot be claimed as the highest contiguous production-canary level. The
+controlled terminal-fragment checkpoint at `385c3df3f` remains the separate
+real-Rhad canonical C5 milestone; it does not substitute for production
+pipeline integration.
+
+Current authoritative source state is clean commit `0ca26ac1f9`. The primary
+production evidence remains
+`.tmp/logs/d810_logs/000000000040a560_1784877620_11.diag.sqlite3`. Its first
+failed C3 obligation is the typed recovery-gate decision
+`preopt_evidence_generation_unbound`: a partial, receipted normalization work
+item deliberately leaves
+`normalization_published_postvalidated_generation` unset while 188 obligations
+remain, and both the early unflatten gate and
+`canonical_semantic_evidence_for()` require whole-generation normalization
+authority.
+
+The DB also disproves a simple gate relaxation. At the MMAT_CALLS pre-D810
+snapshot, none of the 91 state-route proofs has its source-write, delivery, and
+target native anchors all represented directly in the portable `FlowGraph`.
+The published imported blocks carry fictitious instruction addresses and
+function-entry block starts; their native ownership survives in
+`MbaBlockIdentityIndex` and the mutation receipt instead. The current canonical
+binder consults only `FlowGraph` anchors, groups all 91 routes into one atomic
+evidence object, and requires every route to bind. The canonical planner also
+has no detached-native-body operand. Relaxing the lifecycle gate would
+therefore run an all-or-nothing planner without the imported identity authority
+it needs and would risk recreating stale physical-index failures. Any future
+INTERR must first be decoded from the matching SDK source; `52719` is
+`mba_t::get_mblock(n)` asserting `n < qty`, specifically an out-of-range
+physical block index.
+
+Falsifiable next hypothesis: the first production C3 fragment requires
+canonical composition before publication, not another independent detached
+PREOPT publication. A canonical pass must bind one route group against the
+unpublished normalization plan plus current logical identity authority,
+supersede the corresponding unresolved dispatcher operation, include the
+required detached target body, and hand one closed atomic `FragmentPlan` to
+the gateway. If this is correct, a focused portable contract will turn one
+live delivery plus one detached target into one entry-reachable canonical plan
+while ambiguous or incomplete identity remains a typed abstention. The next
+A560 DB should then either record that one C3 plan or identify its first
+missing stable-EA obligation; it must not advance whole-generation
+normalization authority or publish a detached body on its own.
