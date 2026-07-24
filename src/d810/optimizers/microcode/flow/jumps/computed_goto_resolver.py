@@ -7275,6 +7275,10 @@ def _condition_chain_handler_transfers_from_recovery(
         source_ea = int(source.start_ea)
         if target_ea <= 0 or source_ea <= 0:
             continue
+        if target_ea in dispatcher_router_eas:
+            # A condition-chain row may route into another comparison subtree.
+            # That landing is dispatcher navigation, not handler authority.
+            continue
         if state not in existing_live_states:
             evidence.append(
                 MaterializedIndirectTransfer(
