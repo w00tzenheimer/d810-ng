@@ -38,6 +38,7 @@ from d810.transforms.fragment_plan import (
     FragmentComputedBranchNormalization,
     FragmentEdge,
     FragmentFlagCorridor,
+    FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
@@ -83,6 +84,16 @@ class _BoundConditionalSelectEnvelope:
     observed_predicate_kind: PredicateKind
     selected_value: BlockSnapshot
     join: BlockSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundImportedConditionalSelectEnvelope:
+    """Exact native routing blocks consumed by one imported semantic branch."""
+
+    source_branch_ea: int
+    selected_value_ea: int
+    selected_value: NativeBlock
+    join: NativeBlock
 
 
 def _semantic_anchor(identity: StableBlockIdentity) -> int:
@@ -646,6 +657,106 @@ def _bind_imported_proof(
     )
 
 
+def _bind_imported_conditional_select_envelope(
+    request: DetachedSemanticClosureImportRequest,
+    binding: _ImportedTransferProof,
+) -> _BoundImportedConditionalSelectEnvelope | None:
+    """Own an exact source/select/join shape when the transfer is downstream."""
+    proof = binding.proof
+    source = binding.source
+    transfer_ea = int(proof.source_transfer_ea)
+    if proof.shape is not NativeTransferShape.CONDITIONAL:
+        return None
+    if int(source.start_ea) <= transfer_ea < int(source.end_ea):
+        return None
+
+    control_edges = tuple(
+        edge
+        for edge in source.outgoing_edges
+        if edge.kind is not NativeEdgeKind.CALL
+    )
+    edge_by_kind = {edge.kind: edge for edge in control_edges}
+    branch_eas = {
+        edge.source_instruction_ea for edge in control_edges
+    }
+    join = _request_native_block(request, transfer_ea)
+    if (
+        len(control_edges) != 2
+        or set(edge_by_kind)
+        != {
+            NativeEdgeKind.CONDITIONAL_TRUE,
+            NativeEdgeKind.CONDITIONAL_FALSE,
+        }
+        or None in branch_eas
+        or len(branch_eas) != 1
+        or join is None
+        or int(join.start_ea) == int(source.start_ea)
+    ):
+        raise FrontendNormalizationEvidenceRejected(
+            f"transfer proof {proof.proof_id!r} imported conditional-select "
+            "source or join is incomplete"
+        )
+    successor_entries = {
+        int(target.start_ea)
+        for edge in control_edges
+        if edge.target_ea is not None
+        for target in (_request_native_block(request, int(edge.target_ea)),)
+        if target is not None
+    }
+    join_entry_ea = int(join.start_ea)
+    selected_entries = successor_entries - {join_entry_ea}
+    if (
+        len(successor_entries) != 2
+        or join_entry_ea not in successor_entries
+        or len(selected_entries) != 1
+    ):
+        raise FrontendNormalizationEvidenceRejected(
+            f"transfer proof {proof.proof_id!r} imported conditional-select "
+            "source does not own one selected-value arm and one join arm"
+        )
+    selected = request.native_cfg.blocks_by_ea.get(next(iter(selected_entries)))
+    selected_control_edges = (
+        ()
+        if selected is None
+        else tuple(
+            edge
+            for edge in selected.outgoing_edges
+            if edge.kind is not NativeEdgeKind.CALL
+        )
+    )
+    join_control_edges = tuple(
+        edge
+        for edge in join.outgoing_edges
+        if edge.kind is not NativeEdgeKind.CALL
+    )
+    if (
+        selected is None
+        or len(selected_control_edges) != 1
+        or selected_control_edges[0].kind
+        not in {
+            NativeEdgeKind.DIRECT_JUMP,
+            NativeEdgeKind.FALLTHROUGH,
+        }
+        or selected_control_edges[0].target_ea is None
+        or int(selected_control_edges[0].target_ea) != join_entry_ea
+        or len(join_control_edges) != 1
+        or join_control_edges[0].kind is not NativeEdgeKind.INDIRECT
+        or not join_control_edges[0].resolver_proven
+        or join_control_edges[0].source_instruction_ea is None
+        or int(join_control_edges[0].source_instruction_ea) != transfer_ea
+    ):
+        raise FrontendNormalizationEvidenceRejected(
+            f"transfer proof {proof.proof_id!r} imported conditional-select "
+            "selected-value or indirect-join topology is incomplete"
+        )
+    return _BoundImportedConditionalSelectEnvelope(
+        source_branch_ea=int(next(iter(branch_eas))),
+        selected_value_ea=int(selected.start_ea),
+        selected_value=selected,
+        join=join,
+    )
+
+
 def _live_block_at_native_ea(
     graph: FlowGraph,
     ea: int,
@@ -850,11 +961,50 @@ def plan_frontend_computed_branch_normalization(
                 f"detached source 0x{entry_ea:X} has multiple proof owners"
             )
         imported_binding_by_entry[entry_ea] = binding
+    imported_conditional_selects = {
+        binding.proof.proof_id: envelope
+        for binding in imported_bindings
+        for envelope in (
+            (
+                None
+                if import_request is None
+                else _bind_imported_conditional_select_envelope(
+                    import_request,
+                    binding,
+                )
+            ),
+        )
+        if envelope is not None
+    }
+    absorbed_native_entry_owners: dict[int, str] = {}
+    for proof_id, envelope in imported_conditional_selects.items():
+        for native_block in (envelope.selected_value, envelope.join):
+            entry_ea = int(native_block.start_ea)
+            previous_owner = absorbed_native_entry_owners.setdefault(
+                entry_ea,
+                proof_id,
+            )
+            if previous_owner != proof_id:
+                raise FrontendNormalizationEvidenceRejected(
+                    f"imported conditional-select block 0x{entry_ea:X} "
+                    "belongs to multiple semantic envelopes"
+                )
+    absorbed_native_entries = frozenset(absorbed_native_entry_owners)
+    overlapping_proof_sources = (
+        absorbed_native_entries & set(imported_binding_by_entry)
+    )
+    if overlapping_proof_sources:
+        raise FrontendNormalizationEvidenceRejected(
+            "imported conditional-select routing blocks overlap transfer "
+            f"sources {tuple(hex(ea) for ea in sorted(overlapping_proof_sources))!r}"
+        )
     proof_owned_native_entries = frozenset(imported_binding_by_entry)
     if import_request is not None:
         publication_native_entries = _publication_native_entry_eas(import_request)
         for entry_ea in import_request.semantic_closure.included_block_eas:
             if int(entry_ea) not in publication_native_entries:
+                continue
+            if int(entry_ea) in absorbed_native_entries:
                 continue
             native_block = import_request.native_cfg.blocks_by_ea[int(entry_ea)]
             imported_binding = imported_binding_by_entry.get(int(entry_ea))
@@ -1110,6 +1260,9 @@ def plan_frontend_computed_branch_normalization(
     for binding in imported_bindings:
         proof = binding.proof
         source_block_id = imported_ids[int(binding.source.start_ea)]
+        imported_conditional_select = imported_conditional_selects.get(
+            proof.proof_id
+        )
         imported_edges: list[FragmentEdge] = []
         for endpoint, live_target, native_target in binding.endpoints:
             target_block_id = (
@@ -1136,6 +1289,32 @@ def plan_frontend_computed_branch_normalization(
                         normalization_start_ea=int(proof.source_anchor_ea),
                         condition_producer_ea=int(proof.condition_producer_ea),
                         unresolved_transfer_ea=int(proof.source_transfer_ea),
+                        conditional_select_envelope=(
+                            None
+                            if imported_conditional_select is None
+                            else FragmentImportedConditionalSelectEnvelope(
+                                source_branch_ea=(
+                                    imported_conditional_select.source_branch_ea
+                                ),
+                                selected_value_ea=(
+                                    imported_conditional_select.selected_value_ea
+                                ),
+                                selected_value_identity=_native_block_identity(
+                                    imported_conditional_select.selected_value,
+                                    evidence,
+                                    exact_instruction_eas=(
+                                        imported_conditional_select.selected_value_ea,
+                                    ),
+                                ),
+                                join_identity=_native_block_identity(
+                                    imported_conditional_select.join,
+                                    evidence,
+                                    exact_instruction_eas=(
+                                        proof.source_transfer_ea,
+                                    ),
+                                ),
+                            )
+                        ),
                     )
                 ),
                 edges=tuple(imported_edges),
@@ -1372,11 +1551,34 @@ def _merged_native_ranges(
     plan: FragmentPlan,
     block_ids: set[str],
 ) -> tuple[NativeEaInterval, ...]:
+    consumed_envelope_identities = tuple(
+        identity
+        for operation in plan.operations
+        if operation.source_block_id in block_ids
+        and operation.computed_branch_normalization is not None
+        and isinstance(
+            operation.computed_branch_normalization.conditional_select_envelope,
+            FragmentImportedConditionalSelectEnvelope,
+        )
+        for identity in (
+            operation.computed_branch_normalization.conditional_select_envelope.selected_value_identity,
+            operation.computed_branch_normalization.conditional_select_envelope.join_identity,
+        )
+    )
     intervals = sorted(
         (
-            interval
-            for block_id in block_ids
-            for interval in plan.block(block_id).stable_identity.native_ranges.intervals
+            *(
+                interval
+                for block_id in block_ids
+                for interval in plan.block(
+                    block_id
+                ).stable_identity.native_ranges.intervals
+            ),
+            *(
+                interval
+                for identity in consumed_envelope_identities
+                for interval in identity.native_ranges.intervals
+            ),
         ),
         key=lambda interval: (int(interval.start_ea), int(interval.end_ea)),
     )

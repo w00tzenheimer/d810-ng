@@ -25,6 +25,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlockRole,
     FragmentComputedBranchNormalization,
     FragmentEdge,
+    FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
     FragmentOperation,
 )
@@ -1372,11 +1373,17 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
         maturity=ida_hexrays.MMAT_PREOPTIMIZED,
     )
     body_id = "native-body:split-conditional-select"
-    imported = _imported_fragment_block(
-        "imported-split-conditional-select",
-        body_id,
-        source_ea,
-        unresolved_transfer_ea + 1,
+    imported = FragmentBlock(
+        block_id="imported-split-conditional-select",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=source_ea,
+        stable_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(source_ea, selected_ea),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(source_ea, predicate_ea),
+        ),
+        native_body_id=body_id,
     )
     operation_id = "native-indirect-transfer@0x40A5E3"
     native_body = FragmentNativeBody(
@@ -1404,6 +1411,39 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
                             normalization_start_ea=predicate_ea,
                             condition_producer_ea=source_ea,
                             unresolved_transfer_ea=unresolved_transfer_ea,
+                            conditional_select_envelope=(
+                                FragmentImportedConditionalSelectEnvelope(
+                                    source_branch_ea=selected_ea - 1,
+                                    selected_value_ea=selected_ea,
+                                    selected_value_identity=(
+                                        StableBlockIdentity.from_intervals(
+                                            (
+                                                NativeEaInterval(
+                                                    selected_ea,
+                                                    join_ea,
+                                                ),
+                                            ),
+                                            native_key=NATIVE_KEY,
+                                            exact_instruction_eas=(selected_ea,),
+                                        )
+                                    ),
+                                    join_identity=(
+                                        StableBlockIdentity.from_intervals(
+                                            (
+                                                NativeEaInterval(
+                                                    join_ea,
+                                                    unresolved_transfer_ea + 1,
+                                                ),
+                                            ),
+                                            native_key=NATIVE_KEY,
+                                            exact_instruction_eas=(
+                                                join_ea,
+                                                unresolved_transfer_ea,
+                                            ),
+                                        )
+                                    ),
+                                )
+                            ),
                         )
                     ),
                     edges=(

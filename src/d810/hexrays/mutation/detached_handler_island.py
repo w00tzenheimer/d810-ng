@@ -63,6 +63,7 @@ from d810.transforms.graph_modification import (
 )
 from d810.transforms.fragment_plan import (
     FragmentComputedBranchNormalization,
+    FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
     FragmentOperation,
 )
@@ -998,6 +999,7 @@ def _template_block_anchors_split_normalization(
     ):
         return False
     normalization = operation.computed_branch_normalization
+    envelope = normalization.conditional_select_envelope
     source_coordinates = {
         int(block.native_entry_ea),
         *(int(instruction.ea) for instruction in block.instructions),
@@ -1008,6 +1010,18 @@ def _template_block_anchors_split_normalization(
         int(operation.predicate_anchor_ea),
     }
     tail = block.instructions[-1]
+    if isinstance(envelope, FragmentImportedConditionalSelectEnvelope):
+        return bool(
+            int(semantic_anchor_ea) in source_coordinates
+            and proof_anchors <= identity.exact_instruction_eas
+            and identity.native_ranges.contains(envelope.source_branch_ea)
+            and all(
+                identity.native_ranges.contains(int(instruction.ea))
+                for instruction in block.instructions[:-1]
+            )
+            and ida_hexrays.is_mcode_jcond(int(tail.opcode))
+            and int(tail.ea) != int(operation.predicate_anchor_ea)
+        )
     return bool(
         int(semantic_anchor_ea) in source_coordinates
         and proof_anchors <= identity.exact_instruction_eas
@@ -1615,6 +1629,38 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             if selected is None or len(selected.instructions) != 1
             else selected.instructions[0]
         )
+        imported_envelope = (
+            normalization.conditional_select_envelope
+            if isinstance(
+                normalization.conditional_select_envelope,
+                FragmentImportedConditionalSelectEnvelope,
+            )
+            else None
+        )
+        selected_owner_exact = bool(
+            imported_envelope is None
+            or (
+                selected is not None
+                and int(selected.native_entry_ea)
+                == int(imported_envelope.selected_value_ea)
+                and imported_envelope.selected_value_identity.native_ranges.contains(
+                    int(selected.native_entry_ea)
+                )
+                and int(imported_envelope.selected_value_ea)
+                in imported_envelope.selected_value_identity.exact_instruction_eas
+            )
+        )
+        join_owner_exact = bool(
+            imported_envelope is None
+            or (
+                join is not None
+                and imported_envelope.join_identity.native_ranges.contains(
+                    int(join.native_entry_ea)
+                )
+                and int(normalization.unresolved_transfer_ea)
+                in imported_envelope.join_identity.exact_instruction_eas
+            )
+        )
         producer_row = (
             None if len(oriented_producers) != 1 else oriented_producers[0]
         )
@@ -1741,6 +1787,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 and tail is not None
                 and int(selected_instruction.ea) == int(tail.ea),
             ),
+            ("selected_owner_exact", selected_owner_exact),
+            ("join_owner_exact", join_owner_exact),
             (
                 "join_transfer_topology_supported",
                 direct_unresolved_transfer
