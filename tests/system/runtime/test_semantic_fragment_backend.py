@@ -3618,10 +3618,10 @@ def test_gateway_receipts_exact_native_body_identity_binding(monkeypatch) -> Non
 
 
 @pytest.mark.parametrize(
-    ("storage_kind", "storage_offset"),
+    ("storage_kind", "storage_offset", "live_identifier"),
     (
-        (StorageIdentityKind.REGISTER, 10),
-        (StorageIdentityKind.STACK, 0x20),
+        (StorageIdentityKind.REGISTER, 10, 10),
+        (StorageIdentityKind.STACK, 0x20, 0x50),
     ),
 )
 @pytest.mark.parametrize("extra_use", (False, True))
@@ -3629,6 +3629,7 @@ def test_backend_projects_exact_data_flow_without_hiding_extra_uses(
     monkeypatch,
     storage_kind: StorageIdentityKind,
     storage_offset: int,
+    live_identifier: int,
     extra_use: bool,
 ) -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
@@ -3639,6 +3640,11 @@ def test_backend_projects_exact_data_flow_without_hiding_extra_uses(
     _connect(entry, original)
     _connect(original, dispatcher)
     mba = _Mba((entry, original, target, dispatcher, stop))
+    monkeypatch.setattr(
+        mba,
+        "stkoff_ida2vd",
+        lambda offset: int(offset) + 0x30,
+    )
     gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     plan = _with_data_flow(
@@ -3654,7 +3660,7 @@ def test_backend_projects_exact_data_flow_without_hiding_extra_uses(
         size: int,
     ) -> list[DefSite]:
         assert use_ea == 0x401010
-        assert identifier == storage_offset
+        assert identifier == live_identifier
         assert size == 4
         return [DefSite(block_serial, 0x401010, ida_hexrays.m_mov)]
 
@@ -3666,7 +3672,7 @@ def test_backend_projects_exact_data_flow_without_hiding_extra_uses(
         size: int,
     ) -> list[UseSite]:
         assert definition_ea == 0x401010
-        assert identifier == storage_offset
+        assert identifier == live_identifier
         assert size == 4
         result = [UseSite(block_serial, 0x401010, ida_hexrays.m_mov)]
         if extra_use:

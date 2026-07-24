@@ -2101,11 +2101,18 @@ def _query_reaching_definitions(
             int(site.width),
         )
     if storage.kind is StorageIdentityKind.STACK:
+        try:
+            live_stack_offset = int(modifier.mba.stkoff_ida2vd(int(storage.offset)))
+        except Exception as exc:
+            raise SemanticFragmentBackendRejected(
+                f"data-flow use {site.site_id!r} stack identity cannot bind "
+                "to the live MBA"
+            ) from exc
         return find_reaching_defs_for_stkvar_use(
             modifier.mba,
             int(live_block.serial),
             int(site.instruction_ea),
-            int(storage.offset),
+            live_stack_offset,
             int(site.width),
         )
     raise SemanticFragmentBackendRejected(
@@ -2133,11 +2140,18 @@ def _query_reached_uses(
             int(site.width),
         )
     if storage.kind is StorageIdentityKind.STACK:
+        try:
+            live_stack_offset = int(modifier.mba.stkoff_ida2vd(int(storage.offset)))
+        except Exception as exc:
+            raise SemanticFragmentBackendRejected(
+                f"data-flow definition {site.site_id!r} stack identity cannot "
+                "bind to the live MBA"
+            ) from exc
         return find_uses_reached_by_stkvar_definition(
             modifier.mba,
             int(live_block.serial),
             int(site.instruction_ea),
-            int(storage.offset),
+            live_stack_offset,
             int(site.width),
         )
     raise SemanticFragmentBackendRejected(
