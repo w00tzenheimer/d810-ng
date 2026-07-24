@@ -877,6 +877,19 @@ def test_detached_component_rebinds_published_replacement_boundary_as_external()
 
 def test_detached_component_reimports_prohibited_frontend_replacement() -> None:
     graph, normalization_plan, evidence = _live_source_detached_target_case()
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            90: _block(
+                90,
+                0x1400,
+                succs=(20,),
+                preds=(20,),
+                insn_eas=(0x1402,),
+            ),
+        },
+    )
     dispatcher_identity = _wide_identity(0x1400, 0x1408)
     selected_identity = _identity(0x1406)
     join_identity = _wide_identity(0x1410, 0x1414)
