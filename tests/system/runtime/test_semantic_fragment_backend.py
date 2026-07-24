@@ -3764,6 +3764,12 @@ def test_backend_rebinds_data_flow_instruction_origins(monkeypatch) -> None:
             "replacement": {live_ea: 0x401010},
         },
     )
+    instruction = _Instruction(ida_hexrays.m_mov, live_ea)
+    instruction.l.make_stkvar(mba, 0x50)
+    instruction.l.size = 4
+    instruction.d.make_stkvar(mba, 0x50)
+    instruction.d.size = 4
+    original.insert_into_block(instruction, None)
 
     def _reaching_definitions(
         _mba,
@@ -3826,6 +3832,153 @@ def test_backend_rebinds_data_flow_instruction_origins(monkeypatch) -> None:
             def_use_observed=False,
         ),
     )
+
+
+def test_backend_disambiguates_lowered_data_flow_sites_by_storage_and_role(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    monkeypatch.setattr(
+        mba,
+        "stkoff_ida2vd",
+        lambda offset: int(offset) + 0x30,
+    )
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _with_data_flow(
+        _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
+        StorageIdentity(StorageIdentityKind.STACK, offset=0x20),
+    )
+    definition_live_ea = 0xF1000010
+    use_live_ea = 0xF1000011
+    definition_instruction = _Instruction(ida_hexrays.m_mov, definition_live_ea)
+    definition_instruction.d.make_stkvar(mba, 0x50)
+    definition_instruction.d.size = 4
+    use_instruction = _Instruction(ida_hexrays.m_mov, use_live_ea)
+    use_instruction.l.make_stkvar(mba, 0x50)
+    use_instruction.l.size = 4
+    original.insert_into_block(definition_instruction, None)
+    original.insert_into_block(use_instruction, definition_instruction)
+    state = sfb.SemanticFragmentBackendState(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        instruction_origins_by_block_id={
+            "replacement": {
+                definition_live_ea: 0x401010,
+                use_live_ea: 0x401010,
+            },
+        },
+    )
+
+    def _reaching_definitions(
+        _mba,
+        block_serial: int,
+        use_ea: int,
+        identifier: int,
+        size: int,
+    ) -> list[DefSite]:
+        assert block_serial == original.serial
+        assert use_ea == use_live_ea
+        assert identifier == 0x50
+        assert size == 4
+        return [
+            DefSite(block_serial, definition_live_ea, ida_hexrays.m_mov),
+        ]
+
+    def _reached_uses(
+        _mba,
+        block_serial: int,
+        definition_ea: int,
+        identifier: int,
+        size: int,
+    ) -> list[UseSite]:
+        assert block_serial == original.serial
+        assert definition_ea == definition_live_ea
+        assert identifier == 0x50
+        assert size == 4
+        return [UseSite(block_serial, use_live_ea, ida_hexrays.m_mov)]
+
+    monkeypatch.setattr(
+        sfb,
+        "find_reaching_defs_for_stkvar_use",
+        _reaching_definitions,
+    )
+    monkeypatch.setattr(
+        sfb,
+        "find_uses_reached_by_stkvar_definition",
+        _reached_uses,
+    )
+
+    relations = sfb._project_data_flow_relations(
+        modifier,
+        plan,
+        state,
+        {"replacement": original},
+        {original.serial: "replacement"},
+    )
+
+    assert len(relations) == 2
+    assert {
+        (relation.use_def_observed, relation.def_use_observed)
+        for relation in relations
+    } == {(True, False), (False, True)}
+
+
+def test_backend_rejects_ambiguous_lowered_data_flow_sites_for_same_role() -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _with_data_flow(
+        _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
+        StorageIdentity(StorageIdentityKind.REGISTER, offset=10),
+    )
+    first_live_ea = 0xF1000010
+    second_live_ea = 0xF1000011
+    first_use = _Instruction(ida_hexrays.m_mov, first_live_ea)
+    first_use.l.make_reg(10, 4)
+    second_use = _Instruction(ida_hexrays.m_mov, second_live_ea)
+    second_use.l.make_reg(10, 4)
+    original.insert_into_block(first_use, None)
+    original.insert_into_block(second_use, first_use)
+    state = sfb.SemanticFragmentBackendState(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        instruction_origins_by_block_id={
+            "replacement": {
+                first_live_ea: 0x401010,
+                second_live_ea: 0x401010,
+            },
+        },
+    )
+    use = plan.data_flow_obligations[0].uses[0]
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match=(
+            "data-flow use .* has ambiguous live storage access at "
+            "replacement@0x401010"
+        ),
+    ):
+        sfb._query_reaching_definitions(
+            modifier,
+            state,
+            use,
+            original,
+        )
 
 
 def test_backend_rejects_duplicate_physical_data_flow_anchors(
