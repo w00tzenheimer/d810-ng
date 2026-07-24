@@ -48,6 +48,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
     _without_superseded_frontier_patch_proofs,
 )
+from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.analyses.control_flow.native_semantic_closure import (
     NativeBlock,
@@ -179,6 +180,55 @@ def test_lifecycle_tracks_normalization_and_semantic_generations_independently()
     assert state.semantic_fragment_validated_generation == 1
     assert state.semantic_fragment_published_postvalidated_generation == 1
     assert state.receipt_committed_generation == 1
+
+
+def test_receipted_work_item_can_authorize_one_canonical_plan() -> None:
+    state = NativePreanalysisSessionState(evidence_generation=1)
+    assert state._fragment_publication_mark_normalization_staged()
+    assert state._fragment_publication_mark_normalization_validated()
+    assert not state._fragment_publication_commit_normalization_work_item(
+        work_item_id="frontend-normalization:g1:root@0x40A5F0",
+        selected_obligation_ids=("native-indirect-transfer@0x40A605",),
+        remaining_obligation_ids=("native-indirect-transfer@0x40A5E3",),
+        unreachable_obligation_ids=(),
+    )
+    authority = NormalizationWorkItemAuthority(
+        evidence_generation=1,
+        publication_revision=1,
+        source_plan_id="frontend-normalization:0xA560:g1",
+        source_atomic_group_id="frontend-normalization:g1",
+        work_item_id="frontend-normalization:g1:root@0x40A5F0",
+        selected_obligation_ids=("native-indirect-transfer@0x40A605",),
+        remaining_obligation_ids=("native-indirect-transfer@0x40A5E3",),
+        unreachable_obligation_ids=(),
+    )
+
+    assert state.normalization_published_postvalidated_generation is None
+    assert state.mark_canonical_semantic_plan_ready(authority)
+    assert state.canonical_semantic_plan_generation == 1
+    assert state.canonical_semantic_normalization_authority == authority
+
+    assert state._fragment_publication_mark_normalization_staged()
+    assert state._fragment_publication_mark_normalization_validated()
+    assert not state._fragment_publication_commit_normalization_work_item(
+        work_item_id="frontend-normalization:g1:root@0x40A5E3",
+        selected_obligation_ids=("native-indirect-transfer@0x40A5E3",),
+        remaining_obligation_ids=("native-indirect-transfer@0x40A5D0",),
+        unreachable_obligation_ids=(),
+    )
+    next_authority = replace(
+        authority,
+        publication_revision=2,
+        work_item_id="frontend-normalization:g1:root@0x40A5E3",
+        selected_obligation_ids=("native-indirect-transfer@0x40A5E3",),
+        remaining_obligation_ids=("native-indirect-transfer@0x40A5D0",),
+    )
+
+    assert state.mark_canonical_semantic_plan_ready(next_authority)
+    assert state.canonical_semantic_normalization_authority == next_authority
+
+    with pytest.raises(RuntimeError, match="normalization work-item scope drifted"):
+        state.mark_canonical_semantic_plan_ready(authority)
 
 
 def test_normalization_abort_preserves_previous_published_authority() -> None:

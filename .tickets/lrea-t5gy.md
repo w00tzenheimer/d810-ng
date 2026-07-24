@@ -1223,3 +1223,47 @@ although the candidate is backed by one committed normalization work item with
 other obligations intentionally remaining. The next slice must model
 receipt-scoped normalized authority for that selected obligation set; it must
 not mark the entire generation normalized or bypass lifecycle authority.
+
+**2026-07-24T10:30:48Z**
+
+The receipt-scoped normalization-authority slice is verified and ready for its
+own commit. One immutable portable token now binds the exact evidence
+generation, publication revision, source plan lineage, receipted work-item id,
+and selected, remaining, and unreachable obligation sets. The manager returns
+the retained PREOPT plan only with that token; canonical composition copies the
+token into its `FragmentPlan`; and lifecycle authority accepts it only when it
+matches the session's current receipted scope. Repeated vertical work items must
+advance by exactly one revision without changing source-plan lineage. Stale,
+skipped, regressed, untyped, or scope-drifted authority rejects. This does not
+mark the complete evidence generation normalized and adds no compatibility
+path.
+
+Focused local lifecycle, gateway, plan, lowering, and composition verification
+is 145/145 green. The current pinned Docker resolver authority suite is 262/262
+green. The earlier 303 count is not a current target: it included the
+intentionally deleted 46-test legacy island lowerer, while five current tests
+have since been added to the surviving resolver files. Changed-file Ruff and
+diff checks pass.
+
+The mandatory exact A560 canary completed in 15.27 seconds without a process
+segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784888923_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-scoped-normalization-authority.txt`. The semantic oracle
+remains red with one residual `while ( 1 )`.
+
+A560 now reaches C3 for the selected vertical fragment. The DB records the
+260-operation frontend-normalization transaction as committed, with all 639
+prepublication and 1180 postpublication outcomes passing, and event 156 records
+`canonical_semantic_plan_ready` through the scoped token. No canonical
+transaction is staged, so C4 is not reached.
+
+The first failed C4 obligation is
+`SemanticFragmentBackendRejected: root inventory maps two plan blocks to one
+physical version`. The final rebinding sequence includes the route source at
+`blk4@0x40A5F0` and a separate exact identity at `0x40A5F6` that also resolves
+to `blk4@0x40A5F0`; the current exception does not persist the two colliding
+plan block ids or their complete portable identities. The next vertical slice
+must first make that collision self-contained in the diagnostic DB, then prove
+whether the two plan identities are legitimate roles on one logical published
+version or an incorrect composition split. It must not silently deduplicate by
+serial, weaken unique ownership, or broaden beyond this fragment.

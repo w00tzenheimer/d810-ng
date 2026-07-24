@@ -71,7 +71,7 @@ class SessionFragmentPublicationLifecycleAuthority:
             plan.publication_purpose
             is FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
         ):
-            self.state.mark_canonical_semantic_plan_ready()
+            self.state.mark_canonical_semantic_plan_ready(plan.normalization_authority)
 
     def record_fragment_staged(self, plan: FragmentPlan) -> None:
         self._require_typed_plan(plan)

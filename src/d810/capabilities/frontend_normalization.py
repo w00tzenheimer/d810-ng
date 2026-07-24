@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.core.typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -31,8 +32,8 @@ class FrontendNormalizationPlanCapability(Protocol):
         self,
         function_ea: int,
         evidence_generation: int,
-    ) -> "FragmentPlan | None":
-        """Return one complete plan intent for an exact generation."""
+    ) -> "tuple[FragmentPlan, NormalizationWorkItemAuthority] | None":
+        """Return one complete plan plus its exact receipt authority."""
         ...
 
 

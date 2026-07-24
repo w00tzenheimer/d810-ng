@@ -84,6 +84,7 @@ from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
     FrontendNormalizationPlanCapability,
 )
+from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.capabilities.branch_witness import BranchWitnessCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
@@ -686,7 +687,7 @@ def _plan_candidate_normalization(
     context: FunctionPipelineContext,
     candidate: CanonicalSemanticEvidence,
     plan_provider: FrontendNormalizationPlanCapability,
-) -> FragmentPlan | None:
+) -> tuple[FragmentPlan, NormalizationWorkItemAuthority] | None:
     """Read receipt-associated PREOPT intent for one exact evidence generation."""
     first_proof = candidate.route_proofs[0] if candidate.route_proofs else None
     anchor_ea = (
@@ -694,11 +695,11 @@ def _plan_candidate_normalization(
         if first_proof is not None
         else int(context.graph.func_ea)
     )
-    plan = plan_provider.plan_for(
+    binding = plan_provider.plan_for(
         int(context.graph.func_ea),
         int(candidate.generation),
     )
-    if plan is None:
+    if binding is None:
         payload = {"evidence_generation": int(candidate.generation)}
         if first_proof is not None:
             payload["route_proof_id"] = first_proof.proof_id
@@ -709,10 +710,16 @@ def _plan_candidate_normalization(
             anchor_ea=anchor_ea,
             payload=payload,
         )
-    if not isinstance(plan, FragmentPlan):
+    if (
+        not isinstance(binding, tuple)
+        or len(binding) != 2
+        or not isinstance(binding[0], FragmentPlan)
+        or not isinstance(binding[1], NormalizationWorkItemAuthority)
+    ):
         raise TypeError(
-            "frontend normalization plan capability returned non-portable intent"
+            "frontend normalization plan capability returned invalid receipt binding"
         )
+    plan, authority = binding
     if (
         plan.publication_purpose
         is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
@@ -729,7 +736,7 @@ def _plan_candidate_normalization(
                 ),
             },
         )
-    return plan
+    return plan, authority
 
 
 def _compose_candidate_semantic_fragment(
@@ -785,12 +792,12 @@ def _compose_candidate_semantic_fragment(
                 "normalization_generation": int(frontend_evidence.generation),
             },
         )
-    normalization_plan = _plan_candidate_normalization(
+    normalization_binding = _plan_candidate_normalization(
         context,
         candidate,
         plan_provider,
     )
-    if normalization_plan is None:
+    if normalization_binding is None:
         first_route_anchor = (
             int(candidate.route_proofs[0].source_anchor_ea)
             if candidate.route_proofs
@@ -801,6 +808,7 @@ def _compose_candidate_semantic_fragment(
             reason_code="unpublished_normalization_plan_missing",
             anchor_ea=first_route_anchor,
         )
+    normalization_plan, normalization_authority = normalization_binding
 
     plans: list[FragmentPlan] = []
     first_rejection: CanonicalSemanticFragmentRejected | None = None
@@ -812,6 +820,7 @@ def _compose_candidate_semantic_fragment(
                 context.graph,
                 normalization_plan,
                 route_candidate,
+                normalization_authority=normalization_authority,
                 prohibited_dispatcher_serials=(
                     prohibited_dispatcher_serials
                 ),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -231,10 +232,19 @@ def test_pipeline_reports_modification_only_after_current_receipt_generation() -
     assert result.published_generation == GENERATION
     assert result.graph == _graph(normalized=True)
     assert len(backend.plans) == 1
-    retained_plan = plan_authority.plan_for(0x1000, GENERATION)
-    assert retained_plan is not None
+    retained = plan_authority.plan_for(0x1000, GENERATION)
+    assert retained is not None
+    retained_plan, authority = retained
     assert retained_plan.plan_id == "frontend-normalization:0x1000:g7"
     assert retained_plan is not backend.plans[0]
+    assert authority.evidence_generation == GENERATION
+    assert authority.publication_revision == 1
+    assert authority.source_plan_id == retained_plan.plan_id
+    assert authority.source_atomic_group_id == retained_plan.atomic_group_id
+    assert authority.work_item_id == "frontend-normalization:0x1000:g7:root@0x1100"
+    assert authority.selected_obligation_ids == ("direct@0x1100",)
+    assert authority.remaining_obligation_ids == ()
+    assert authority.unreachable_obligation_ids == ()
     assert plan_authority.plan_for(0x1000, GENERATION + 1) is None
     assert plan_authority.plan_for(0x1001, GENERATION) is None
 
@@ -266,6 +276,7 @@ def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance
     None
 ):
     state = _state()
+    plan_authority = _plan_authority()
     backend = _Backend(
         state,
         publish_receipt=True,
@@ -276,7 +287,7 @@ def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance
         source=_source(_graph(normalized=False)),
         backend=backend,
         evidence_provider=_Provider(_evidence()),
-        plan_authority=_plan_authority(),
+        plan_authority=plan_authority,
         lifecycle_state=state,
         native_key=NATIVE_KEY,
     )
@@ -290,6 +301,94 @@ def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance
     assert result.remaining_obligation_count == 1
     assert state.normalization_published_postvalidated_generation is None
     assert len(backend.plans) == 1
+    retained = plan_authority.plan_for(0x1000, GENERATION)
+    assert retained is not None
+    retained_plan, authority = retained
+    assert authority.source_plan_id == retained_plan.plan_id
+    assert authority.publication_revision == 1
+    assert authority.work_item_id == "frontend-normalization:g7:root@0x1100"
+    assert authority.selected_obligation_ids == ("direct@0x1100",)
+    assert authority.remaining_obligation_ids == ("direct@0x1400",)
+    assert authority.unreachable_obligation_ids == ()
+
+
+def test_plan_authority_advances_one_receipt_revision_without_changing_intent() -> None:
+    state = _state()
+    plan_authority = _plan_authority()
+    run_frontend_normalization_pipeline(
+        source=_source(_graph(normalized=False)),
+        backend=_Backend(
+            state,
+            publish_receipt=True,
+            partial_work_item=True,
+        ),
+        evidence_provider=_Provider(_evidence()),
+        plan_authority=plan_authority,
+        lifecycle_state=state,
+        native_key=NATIVE_KEY,
+    )
+    retained = plan_authority.plan_for(0x1000, GENERATION)
+    assert retained is not None
+    retained_plan, first_authority = retained
+    second_authority = replace(
+        first_authority,
+        publication_revision=2,
+        work_item_id="frontend-normalization:g7:root@0x1400",
+        selected_obligation_ids=("direct@0x1400",),
+        remaining_obligation_ids=(),
+    )
+
+    plan_authority.record_receipted_plan(
+        retained_plan,
+        authority=second_authority,
+    )
+
+    assert plan_authority.plan_for(0x1000, GENERATION) == (
+        retained_plan,
+        second_authority,
+    )
+    with pytest.raises(
+        FrontendNormalizationPublicationError,
+        match="receipt revision did not advance",
+    ):
+        plan_authority.record_receipted_plan(
+            retained_plan,
+            authority=first_authority,
+        )
+    with pytest.raises(
+        FrontendNormalizationPublicationError,
+        match="receipt revision did not advance",
+    ):
+        plan_authority.record_receipted_plan(
+            retained_plan,
+            authority=replace(second_authority, publication_revision=4),
+        )
+
+
+def test_plan_authority_rejects_untyped_receipt_authority() -> None:
+    state = _state()
+    plan_authority = _plan_authority()
+    backend = _Backend(state, publish_receipt=True)
+    run_frontend_normalization_pipeline(
+        source=_source(_graph(normalized=False)),
+        backend=backend,
+        evidence_provider=_Provider(_evidence()),
+        plan_authority=plan_authority,
+        lifecycle_state=state,
+        native_key=NATIVE_KEY,
+    )
+    retained = plan_authority.plan_for(0x1000, GENERATION)
+    assert retained is not None
+    retained_plan, _authority = retained
+
+    with pytest.raises(
+        TypeError,
+        match="typed receipt authority",
+    ):
+        plan_authority.record_receipted_plan(
+            retained_plan,
+            authority=object(),
+        )
 
 
 def test_pipeline_does_not_republish_a_generation_already_authoritative() -> None:

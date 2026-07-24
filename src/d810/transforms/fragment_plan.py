@@ -13,6 +13,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 import json
 
+from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
@@ -1065,6 +1066,7 @@ class FragmentPlan:
     prohibited_dispatcher_blocks: tuple[str, ...]
     operations: tuple[FragmentOperation, ...]
     work_item_scope: FragmentWorkItemScope | None = None
+    normalization_authority: NormalizationWorkItemAuthority | None = None
     return_carriers: tuple[FragmentReturnCarrier, ...] = ()
     terminal_returns: tuple[FragmentTerminalReturn, ...] = ()
     terminal_routes: tuple[FragmentTerminalRoute, ...] = ()
@@ -1094,9 +1096,21 @@ class FragmentPlan:
                 raise FragmentPlanRejected(
                     "frontend-normalization plan requires one work-item scope"
                 )
+            if self.normalization_authority is not None:
+                raise FragmentPlanRejected(
+                    "frontend-normalization plan cannot consume prior "
+                    "normalization authority"
+                )
         elif work_item_scope is not None:
             raise FragmentPlanRejected(
                 "canonical semantic plan cannot claim frontend work-item scope"
+            )
+        elif self.normalization_authority is not None and not isinstance(
+            self.normalization_authority,
+            NormalizationWorkItemAuthority,
+        ):
+            raise TypeError(
+                "canonical semantic plan normalization authority has the wrong type"
             )
 
         blocks = tuple(self.blocks)

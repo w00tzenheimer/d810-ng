@@ -27,6 +27,7 @@ from d810.analyses.control_flow.terminal_return_carrier_evidence import (
     TerminalReturnCarrierSource,
     TerminalReturnCarrierSourceKind,
 )
+from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
@@ -357,6 +358,24 @@ def _omitted_delivery_source_case() -> tuple[
     return graph, normalization_plan, evidence
 
 
+def _normalization_authority(
+    plan: FragmentPlan,
+    evidence: CanonicalSemanticEvidence,
+) -> NormalizationWorkItemAuthority:
+    scope = plan.work_item_scope
+    assert scope is not None
+    return NormalizationWorkItemAuthority(
+        evidence_generation=evidence.generation,
+        publication_revision=1,
+        source_plan_id=plan.plan_id,
+        source_atomic_group_id=plan.atomic_group_id,
+        work_item_id=scope.work_item_id,
+        selected_obligation_ids=scope.selected_obligation_ids,
+        remaining_obligation_ids=scope.remaining_obligation_ids,
+        unreachable_obligation_ids=scope.unreachable_obligation_ids,
+    )
+
+
 def test_canonical_route_composes_live_source_with_detached_target_body() -> None:
     graph, normalization_plan, evidence = (
         _live_source_detached_target_case()
@@ -366,6 +385,10 @@ def test_canonical_route_composes_live_source_with_detached_target_body() -> Non
         graph,
         normalization_plan,
         evidence,
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
         prohibited_dispatcher_serials=(90,),
     )
 
@@ -436,6 +459,10 @@ def test_detached_component_rebinds_published_replacement_boundary_as_external()
         graph,
         normalization_plan,
         evidence,
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
         prohibited_dispatcher_serials=(90,),
     )
 
@@ -516,6 +543,10 @@ def test_detached_component_keeps_proof_owned_imported_branch_normalization() ->
         graph,
         normalization_plan,
         evidence,
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
         prohibited_dispatcher_serials=(90,),
     )
 
@@ -535,6 +566,10 @@ def test_canonical_route_rebinds_retained_corridor_to_live_source_subset() -> No
         graph,
         normalization_plan,
         evidence,
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
         prohibited_dispatcher_serials=(90,),
     )
 
@@ -576,6 +611,10 @@ def test_canonical_composition_ids_external_blocks_by_stable_identity() -> None:
         graph,
         normalization_plan,
         evidence,
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
         prohibited_dispatcher_serials=(90,),
     )
 
@@ -625,6 +664,10 @@ def test_canonical_composition_rejects_shared_external_stable_identity() -> None
             graph,
             normalization_plan,
             evidence,
+            normalization_authority=_normalization_authority(
+                normalization_plan,
+                evidence,
+            ),
             prohibited_dispatcher_serials=(90,),
         )
 
@@ -658,6 +701,10 @@ def test_canonical_route_rejects_split_materialized_delivery_ownership() -> None
             graph,
             normalization_plan,
             evidence,
+            normalization_authority=_normalization_authority(
+                normalization_plan,
+                evidence,
+            ),
             prohibited_dispatcher_serials=(90,),
         )
 
@@ -703,6 +750,10 @@ def test_canonical_composition_rejects_ambiguous_detached_target_owner() -> None
             graph,
             ambiguous,
             evidence,
+            normalization_authority=_normalization_authority(
+                normalization_plan,
+                evidence,
+            ),
             prohibited_dispatcher_serials=(90,),
         )
 

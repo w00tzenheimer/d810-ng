@@ -13,6 +13,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteProofKind,
     SemanticRouteShape,
 )
+from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
@@ -432,6 +433,7 @@ def compose_canonical_semantic_fragment_plan(
     normalization_plan: FragmentPlan,
     evidence: CanonicalSemanticEvidence,
     *,
+    normalization_authority: NormalizationWorkItemAuthority,
     prohibited_dispatcher_serials: Iterable[int] = (),
 ) -> FragmentPlan:
     """Compose one live canonical route with one unpublished native target body."""
@@ -451,6 +453,29 @@ def compose_canonical_semantic_fragment_plan(
     if evidence.native_key != normalization_plan.native_key:
         raise CanonicalSemanticFragmentRejected(
             "canonical composition native authority does not match"
+        )
+    if not isinstance(
+        normalization_authority,
+        NormalizationWorkItemAuthority,
+    ):
+        raise TypeError(
+            "canonical composition requires normalization work-item authority"
+        )
+    if (
+        normalization_authority.evidence_generation != evidence.generation
+        or normalization_authority.source_plan_id != normalization_plan.plan_id
+        or normalization_authority.source_atomic_group_id
+        != normalization_plan.atomic_group_id
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition normalization authority drifted",
+            reason_code="normalization_work_item_authority_drift",
+            anchor_ea=int(graph.func_ea),
+            payload={
+                "authority_generation": (normalization_authority.evidence_generation),
+                "evidence_generation": int(evidence.generation),
+                "source_plan_id": normalization_authority.source_plan_id,
+            },
         )
     if len(evidence.route_proofs) != 1:
         raise CanonicalSemanticFragmentRejected(
@@ -678,6 +703,7 @@ def compose_canonical_semantic_fragment_plan(
         owned_originals=(original_id,),
         prohibited_dispatcher_blocks=prohibited_ids,
         operations=operations,
+        normalization_authority=normalization_authority,
         native_bodies=(native_body,),
     )
 
