@@ -115,6 +115,8 @@ EXPECTED_TABLE_INFO = {
         ("ea_i64", "INTEGER", 1, 0),
         ("opcode", "INTEGER", 1, 0),
         ("opcode_name", "TEXT", 1, 0),
+        ("iprops", "INTEGER", 1, 0),
+        ("is_assert", "INTEGER", 1, 0),
         ("dest_type", "TEXT", 0, 0),
         ("dest_stkoff", "INTEGER", 0, 0),
         ("dest_size", "INTEGER", 0, 0),
@@ -542,6 +544,7 @@ EXPECTED_INDEXES = {
     "instructions": [
         ("c", ("snapshot_id", "dest_stkoff")),
         ("c", ("snapshot_id", "ea_hex")),
+        ("c", ("snapshot_id", "is_assert")),
         ("c", ("snapshot_id", "opcode_name")),
         ("pk", ("snapshot_id", "block_serial", "insn_index")),
     ],

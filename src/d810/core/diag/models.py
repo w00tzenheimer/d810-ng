@@ -516,6 +516,11 @@ class Instruction(BaseModel):
     ea_i64 = IntegerField()
     opcode = IntegerField()
     opcode_name = TextField()
+    iprops = IntegerField(default=0)
+    is_assert = IntegerField(
+        default=0,
+        constraints=[Check("is_assert IN (0,1)")],
+    )
     dest_type = TextField(null=True)
     dest_stkoff = IntegerField(null=True)
     dest_size = IntegerField(null=True)
@@ -537,6 +542,7 @@ class Instruction(BaseModel):
             (("snapshot", "dest_stkoff"), False),
             (("snapshot", "opcode_name"), False),
             (("snapshot", "ea_hex"), False),
+            (("snapshot", "is_assert"), False),
         )
 
 
