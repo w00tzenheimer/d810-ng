@@ -559,8 +559,10 @@ class _NativeBodyStagingContext:
             )
         block.type = int(ida_hexrays.BLT_0WAY)
         block.flags = (
-            int(block_flags) & int(ida_hexrays.MBL_PUSH)
-        ) | int(ida_hexrays.MBL_KEEP) | int(ida_hexrays.MBL_FAKE)
+            (int(block_flags) & int(ida_hexrays.MBL_PUSH))
+            | int(ida_hexrays.MBL_KEEP)
+            | int(ida_hexrays.MBL_FAKE)
+        )
         block.start = int(self.mba.entry_ea)
         block.end = int(self.mba.entry_ea) + 1
         block.mark_lists_dirty()
@@ -588,18 +590,11 @@ class _NativeBodyStagingContext:
         branch = block.tail
         assert branch is not None
         live_ea = int(branch.ea)
-        assert (
-            self.instruction_origins[
-                (operation.source_block_id, live_ea)
-            ]
-            == int(operation.predicate_anchor_ea)
+        assert self.instruction_origins[(operation.source_block_id, live_ea)] == int(
+            operation.predicate_anchor_ea
         )
-        assert operation.operation_id not in (
-            self.predicate_live_eas_by_operation_id
-        )
-        self.predicate_live_eas_by_operation_id[
-            operation.operation_id
-        ] = live_ea
+        assert operation.operation_id not in (self.predicate_live_eas_by_operation_id)
+        self.predicate_live_eas_by_operation_id[operation.operation_id] = live_ea
 
     def materialize_direct_transfer(self, *, operation_id: str) -> None:
         operation = next(
@@ -616,12 +611,9 @@ class _NativeBodyStagingContext:
         target = self.blocks[operation.edges[0].target_block_id]
         assert source.tail is not None
         assert int(source.tail.opcode) == int(ida_hexrays.m_goto)
-        assert (
-            self.instruction_origins[
-                (operation.source_block_id, int(source.tail.ea))
-            ]
-            == int(rewrite.rewrite_anchor_ea)
-        )
+        assert self.instruction_origins[
+            (operation.source_block_id, int(source.tail.ea))
+        ] == int(rewrite.rewrite_anchor_ea)
         assert source.nsucc() == 0
         source.tail.l.make_blkref(int(target.serial))
         source.type = int(ida_hexrays.BLT_1WAY)
@@ -821,11 +813,9 @@ def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
             ),
         ),
     )
-    materializer = (
-        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
-            mba=destination,
-            function_ea=function_ea,
-        )
+    materializer = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=function_ea,
     )
 
     _prepare_and_stage_native_body(
@@ -844,9 +834,7 @@ def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
     ]
     assert tuple(context.blocks[entry_block.block_id].succset) == ()
     assert tuple(context.blocks[terminal_block.block_id].succset) == ()
-    assert int(context.blocks[entry_block.block_id].type) == int(
-        ida_hexrays.BLT_0WAY
-    )
+    assert int(context.blocks[entry_block.block_id].type) == int(ida_hexrays.BLT_0WAY)
     assert int(context.blocks[terminal_block.block_id].type) == int(
         ida_hexrays.BLT_0WAY
     )
@@ -993,39 +981,41 @@ def test_preopt_union_call_companion_reports_both_mismatched_inventories(
         detached_handler_island,
         "_template_call_signatures_in_range",
         lambda template, candidate_range: (
-            {
-                first_call_ea: signature,
-                second_call_ea: signature,
-            },
-            None,
-        )
-        if template is raw_template and candidate_range == native_range
-        else ({}, None),
+            (
+                {
+                    first_call_ea: signature,
+                    second_call_ea: signature,
+                },
+                None,
+            )
+            if template is raw_template and candidate_range == native_range
+            else ({}, None)
+        ),
     )
     calls_mba = SimpleNamespace(maturity=ida_hexrays.MMAT_CALLS)
     monkeypatch.setattr(
         detached_handler_island,
         "_mba_call_signatures_in_range",
         lambda mba, candidate_range: (
-            {
-                first_call_ea: signature,
-                invented_call_ea: signature,
-            },
-            None,
-        )
-        if mba is calls_mba and candidate_range == native_range
-        else ({}, None),
+            (
+                {
+                    first_call_ea: signature,
+                    invented_call_ea: signature,
+                },
+                None,
+            )
+            if mba is calls_mba and candidate_range == native_range
+            else ({}, None)
+        ),
     )
 
-    result = (
-        detached_handler_island.capture_preopt_union_call_companion_template(
-            function_ea,
-            union_target_ea,
-            native_range[0],
-            calls_mba,
-            native_range,
-            calls_native_ranges=(native_range,),
-        )
+    result = detached_handler_island.capture_preopt_union_call_companion_template(
+        function_ea,
+        union_target_ea,
+        native_range[0],
+        calls_mba,
+        native_range,
+        calls_native_ranges=(native_range,),
     )
 
     assert not result.captured
@@ -1087,15 +1077,13 @@ def test_preopt_union_call_companion_captures_only_calls_analysis_ranges(
         lambda _function_ea, _target_ea: {call_ea: object()},
     )
 
-    result = (
-        detached_handler_island.capture_preopt_union_call_companion_template(
-            function_ea,
-            union_target_ea,
-            native_range[0],
-            calls_mba,
-            native_range,
-            calls_native_ranges=calls_native_ranges,
-        )
+    result = detached_handler_island.capture_preopt_union_call_companion_template(
+        function_ea,
+        union_target_ea,
+        native_range[0],
+        calls_mba,
+        native_range,
+        calls_native_ranges=calls_native_ranges,
     )
 
     assert result.captured
@@ -1198,16 +1186,14 @@ def _calls_native_body_with_raw_call(
             (calls_entry, calls_continuation),
             maturity=ida_hexrays.MMAT_CALLS,
         )
-        result = (
-            detached_handler_island.capture_preopt_union_call_companion_template(
-                function_ea,
-                entry_ea,
-                entry_ea,
-                calls_source,
-                component_range,
-                calls_native_ranges=(component_range,),
-                owned_block_entry_eas=(entry_ea, continuation_ea),
-            )
+        result = detached_handler_island.capture_preopt_union_call_companion_template(
+            function_ea,
+            entry_ea,
+            entry_ea,
+            calls_source,
+            component_range,
+            calls_native_ranges=(component_range,),
+            owned_block_entry_eas=(entry_ea, continuation_ea),
         )
         assert result.captured is True
         assert result.call_eas == (call_ea,)
@@ -1354,14 +1340,10 @@ def test_calls_native_body_uses_exact_companion_and_removes_raw_pushes(
     imported = context.blocks["imported-call-entry"]
     rows = imported.instructions()
     assert tuple(
-        context.instruction_origins[
-            ("imported-call-entry", int(instruction.ea))
-        ]
+        context.instruction_origins[("imported-call-entry", int(instruction.ea))]
         for instruction in rows
     ) == (call_ea,)
-    assert not set(push_eas).intersection(
-        context.instruction_origins.values()
-    )
+    assert not set(push_eas).intersection(context.instruction_origins.values())
     assert len(rows) == 1
     owner = rows[0]
     assert int(owner.opcode) == int(ida_hexrays.m_mov)
@@ -1419,9 +1401,7 @@ def test_calls_native_body_reports_insufficient_destination_stack_window(
         "destination_stack_zero_vd": 4,
         "destination_stacksize": 0,
         "destination_tmpstk_size": None,
-        "failed_invariant": (
-            "destination_stack_zero_vd >= source_stack_span"
-        ),
+        "failed_invariant": ("destination_stack_zero_vd >= source_stack_span"),
         "required_stack_growth": 4,
         "source_call_spd": 0x20,
         "source_stack_span": 8,
@@ -1744,9 +1724,7 @@ def test_preopt_native_body_lowers_owned_direct_transfer_while_unpublished(
             target_block.block_id,
             discarded_block.block_id,
         ),
-        native_ranges=(
-            NativeEaInterval(source_ea, discarded_arm_ea + 1),
-        ),
+        native_ranges=(NativeEaInterval(source_ea, discarded_arm_ea + 1),),
         proof_ids=(operation_id,),
     )
     context = _NativeBodyStagingContext(
@@ -2009,9 +1987,7 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
         block_ids=(imported.block_id,),
         entry_block_ids=(imported.block_id,),
         terminal_block_ids=(),
-        native_ranges=(
-            NativeEaInterval(source_ea, unresolved_transfer_ea + 1),
-        ),
+        native_ranges=(NativeEaInterval(source_ea, unresolved_transfer_ea + 1),),
         proof_ids=(operation_id,),
     )
     context = _NativeBodyStagingContext(
@@ -2046,11 +2022,9 @@ def test_preopt_native_body_normalizes_proof_owned_computed_branch_before_stagin
         ),
     )
 
-    materializer = (
-        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
-            mba=destination,
-            function_ea=function_ea,
-        )
+    materializer = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=function_ea,
     )
     if expected_branch_opcode is None:
         with pytest.raises(
@@ -2187,9 +2161,7 @@ def test_preopt_native_body_materializes_storage_predicate_before_staging(
         block_ids=(imported.block_id,),
         entry_block_ids=(imported.block_id,),
         terminal_block_ids=(),
-        native_ranges=(
-            NativeEaInterval(consumer_ea, unresolved_transfer_ea + 1),
-        ),
+        native_ranges=(NativeEaInterval(consumer_ea, unresolved_transfer_ea + 1),),
         proof_ids=(operation_id,),
     )
     context = _NativeBodyStagingContext(
@@ -2244,9 +2216,7 @@ def test_preopt_native_body_materializes_storage_predicate_before_staging(
     )
     branch = staged[-1]
     assert int(branch.l.t) == int(ida_hexrays.mop_S)
-    assert int(branch.l.s.off) == (
-        predicate_ida_stkoff + destination_stack_delta
-    )
+    assert int(branch.l.s.off) == (predicate_ida_stkoff + destination_stack_delta)
     assert int(branch.l.size) == 4
     assert int(branch.r.t) == int(ida_hexrays.mop_n)
     assert int(branch.r.nnn.value) == 0
@@ -2480,11 +2450,7 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
                 left=_Operand(
                     ida_hexrays.mop_r,
                     register=7,
-                    size=(
-                        2
-                        if int(join_opcode) == int(ida_hexrays.m_icall)
-                        else 4
-                    ),
+                    size=(2 if int(join_opcode) == int(ida_hexrays.m_icall) else 4),
                 ),
                 right=(
                     _Operand(ida_hexrays.mop_r, register=8, size=4)
@@ -2574,9 +2540,7 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
         block_ids=(imported.block_id,),
         entry_block_ids=(imported.block_id,),
         terminal_block_ids=(),
-        native_ranges=(
-            NativeEaInterval(source_ea, unresolved_transfer_ea + 1),
-        ),
+        native_ranges=(NativeEaInterval(source_ea, unresolved_transfer_ea + 1),),
         proof_ids=(operation_id,),
     )
     context = _NativeBodyStagingContext(
@@ -2678,8 +2642,7 @@ def test_preopt_native_body_normalizes_only_exact_split_conditional_select(
                 "join_tail_operands="
                 f"(('l', {int(ida_hexrays.mop_r)}, 2), "
                 f"('r', {int(ida_hexrays.mop_r)}, 4), "
-                f"('d', {int(ida_hexrays.mop_z)}, 4))"
-                in reason
+                f"('d', {int(ida_hexrays.mop_z)}, 4))" in reason
             )
         assert context.staged_block_ids == []
         return
@@ -2868,9 +2831,7 @@ def test_preopt_native_body_normalizes_split_signed_select_from_real_start(
         block_ids=(imported.block_id,),
         entry_block_ids=(imported.block_id,),
         terminal_block_ids=(),
-        native_ranges=(
-            NativeEaInterval(source_ea, unresolved_transfer_ea + 1),
-        ),
+        native_ranges=(NativeEaInterval(source_ea, unresolved_transfer_ea + 1),),
         proof_ids=(operation_id,),
     )
     context = _NativeBodyStagingContext(
@@ -2904,11 +2865,9 @@ def test_preopt_native_body_normalizes_split_signed_select_from_real_start(
             ),
         ),
     )
-    materializer = (
-        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
-            mba=destination,
-            function_ea=function_ea,
-        )
+    materializer = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=function_ea,
     )
     if not normalization_succeeds:
         with pytest.raises(
@@ -3152,9 +3111,7 @@ def test_preopt_native_body_normalizes_signed_flag_xor_before_staging(
         block_ids=(imported.block_id,),
         entry_block_ids=(imported.block_id,),
         terminal_block_ids=(),
-        native_ranges=(
-            NativeEaInterval(source_ea, unresolved_transfer_ea + 1),
-        ),
+        native_ranges=(NativeEaInterval(source_ea, unresolved_transfer_ea + 1),),
         proof_ids=(operation_id,),
     )
     context = _NativeBodyStagingContext(
@@ -3188,11 +3145,9 @@ def test_preopt_native_body_normalizes_signed_flag_xor_before_staging(
             ),
         ),
     )
-    materializer = (
-        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
-            mba=destination,
-            function_ea=function_ea,
-        )
+    materializer = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=function_ea,
     )
     if expected_branch_opcode is None:
         with pytest.raises(
@@ -7078,10 +7033,13 @@ def test_terminal_return_port_abstains_atomically_without_unique_carrier(
     assert len(result.abstained_boundary_ports) == 1
     assert restored == []
     assert int(destination.qty) == qty_before
-    assert tuple(
-        tuple(int(instruction.opcode) for instruction in block.instructions())
-        for block in destination.blocks
-    ) == blocks_before
+    assert (
+        tuple(
+            tuple(int(instruction.opcode) for instruction in block.instructions())
+            for block in destination.blocks
+        )
+        == blocks_before
+    )
 
 
 def test_preflight_uses_proven_logical_source_when_predicate_is_absent(
@@ -10734,12 +10692,10 @@ def test_materialized_handler_lookup_uses_exact_imported_range_when_entry_is_eli
     identity = detached_handler_island.stable_mba_identity(destination)
     detached_handler_island._IMPORTED_NATIVE_BLOCK_RANGES[
         (identity, native_entry_ea, native_predicate_ea + 2)
-    ] = (
-        detached_handler_island._ImportedSnippetRoot(
-            serial_hint=1,
-            anchor_eas=(imported_entry_ea, imported_predicate_ea),
-            owned_instruction_eas=(imported_entry_ea, imported_predicate_ea),
-        )
+    ] = detached_handler_island._ImportedSnippetRoot(
+        serial_hint=1,
+        anchor_eas=(imported_entry_ea, imported_predicate_ea),
+        owned_instruction_eas=(imported_entry_ea, imported_predicate_ea),
     )
     detached_handler_island._IMPORTED_INSTRUCTION_ORIGINS.update(
         {
