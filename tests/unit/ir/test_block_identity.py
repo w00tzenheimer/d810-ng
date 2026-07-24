@@ -240,6 +240,36 @@ def test_snapshot_identity_keeps_block_start_as_range_not_exact_instruction() ->
     assert identity.exact_instruction_eas == frozenset({0x401005})
 
 
+def test_snapshot_identity_uses_native_origins_not_live_fictitious_eas() -> None:
+    live_predicate_ea = 0xF1C00018
+    identity = block_identity.stable_block_identity_from_snapshot(
+        BlockSnapshot(
+            serial=7,
+            block_type=0,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x401000,
+            native_start_ea=0x401000,
+            insn_snapshots=(
+                InsnSnapshot(
+                    opcode=0,
+                    ea=live_predicate_ea,
+                    native_ea=0x401020,
+                    operands=(),
+                ),
+            ),
+        ),
+        native_key=make_native_key(),
+    )
+
+    assert identity is not None
+    assert identity.native_ranges.contains(0x401000)
+    assert identity.native_ranges.contains(0x401020)
+    assert not identity.native_ranges.contains(live_predicate_ea)
+    assert identity.exact_instruction_eas == frozenset({0x401020})
+
+
 def test_stable_identity_exposes_one_serial_free_anchor_and_token() -> None:
     identity = block_identity.StableBlockIdentity.from_intervals(
         (

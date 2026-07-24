@@ -560,6 +560,8 @@ def capture_mop_snapshot(
 def capture_insn_snapshot(
     insn: "ida_hexrays.minsn_t",
     lvar_stkoff_map: dict[int, int] | None = None,
+    *,
+    native_ea: int | None = None,
 ) -> InsnSnapshot:
     """Capture a rich ``InsnSnapshot`` from a live ``minsn_t``.
 
@@ -599,6 +601,7 @@ def capture_insn_snapshot(
         opcode=opcode,
         ea=ea,
         operands=operands,
+        native_ea=native_ea,
         operand_slots=operand_slots,
         display_text=display_text,
         l=left,
@@ -622,6 +625,8 @@ def capture_insn_snapshot(
 def lift_block(
     blk: "ida_hexrays.mblock_t",
     lvar_stkoff_map: dict[int, int] | None = None,
+    *,
+    map_fict_ea: Callable[[int], int],
 ) -> BlockSnapshot:
     serial = blk.serial
     block_type = blk.type
@@ -634,9 +639,16 @@ def lift_block(
     insn_snapshots: list[InsnSnapshot] = []
     insn = blk.head
     while insn:
-        insn_snapshots.append(capture_insn_snapshot(insn, lvar_stkoff_map))
+        insn_snapshots.append(
+            capture_insn_snapshot(
+                insn,
+                lvar_stkoff_map,
+                native_ea=int(map_fict_ea(int(insn.ea))),
+            )
+        )
         insn = insn.next
 
+    mapped_start_ea = int(map_fict_ea(int(start_ea)))
     return BlockSnapshot(
         serial=serial,
         block_type=block_type,
@@ -644,6 +656,11 @@ def lift_block(
         preds=preds,
         flags=flags,
         start_ea=start_ea,
+        native_start_ea=(
+            mapped_start_ea
+            if 0 <= mapped_start_ea < 0xFFFFFFFFFFFFFFFF
+            else None
+        ),
         insn_snapshots=tuple(insn_snapshots),
         kind=_block_kind_from_hexrays(block_type),
         raw_block_type=int(block_type),
@@ -711,7 +728,11 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
     blocks = {}
     for i in range(mba.qty):
         blk = mba.get_mblock(i)
-        blocks[blk.serial] = lift_block(blk, lvar_stkoff_map)
+        blocks[blk.serial] = lift_block(
+            blk,
+            lvar_stkoff_map,
+            map_fict_ea=mba.map_fict_ea,
+        )
 
     # E2b: pin a small, portable metadata contract on every lifted
     # ``FlowGraph`` so preanalysis consumers never have to reach back into

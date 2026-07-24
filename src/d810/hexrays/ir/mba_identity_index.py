@@ -213,21 +213,25 @@ class MbaBlockIdentityIndex:
             block = mba.get_mblock(serial)
             if block is None:
                 continue
-            anchors: set[int] = set()
+            live_anchors: set[int] = set()
+            native_anchors: set[int] = set()
             imported_anchors: set[int] = set()
             instruction = getattr(block, "head", None)
             while instruction is not None:
                 instruction_ea = int(getattr(instruction, "ea", -1) or -1)
-                anchors.add(instruction_ea)
+                live_anchors.add(instruction_ea)
                 if instruction_ea in normalized_imported_origins:
-                    imported_anchors.add(
-                        normalized_imported_origins[instruction_ea]
-                    )
+                    native_ea = normalized_imported_origins[instruction_ea]
+                    imported_anchors.add(native_ea)
+                else:
+                    native_ea = int(mba.map_fict_ea(instruction_ea))
+                if 0 <= native_ea < 0xFFFFFFFFFFFFFFFF:
+                    native_anchors.add(native_ea)
                 instruction = getattr(instruction, "next", None)
             current_bindings = tuple(
                 binding
                 for binding in current_block_bindings
-                if anchors.intersection(binding.live_instruction_eas)
+                if live_anchors.intersection(binding.live_instruction_eas)
             )
             if current_bindings:
                 stable_identities = {
@@ -261,13 +265,12 @@ class MbaBlockIdentityIndex:
                     provenance=BlockHandleProvenance.IMPORTED_NATIVE,
                 )
                 continue
-            instruction_eas = tuple(
-                ea for ea in sorted(anchors) if 0 <= ea < 0xFFFFFFFFFFFFFFFF
-            )
-            native_anchors = set(instruction_eas)
+            instruction_eas = tuple(sorted(native_anchors))
             start_ea = int(getattr(block, "start", -1))
             if 0 <= start_ea < 0xFFFFFFFFFFFFFFFF:
-                native_anchors.add(start_ea)
+                mapped_start_ea = int(mba.map_fict_ea(start_ea))
+                if 0 <= mapped_start_ea < 0xFFFFFFFFFFFFFFFF:
+                    native_anchors.add(mapped_start_ea)
             if native_anchors:
                 index._bind_new_native(
                     StableBlockIdentity.from_intervals(

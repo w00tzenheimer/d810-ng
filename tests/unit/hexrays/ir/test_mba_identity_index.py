@@ -174,6 +174,10 @@ def test_builds_from_live_mba_without_retaining_it_and_abstains_on_cloned_eas() 
         def get_mblock(serial):
             return blocks.get(int(serial))
 
+        @staticmethod
+        def map_fict_ea(ea):
+            return int(ea)
+
     mba = Mba()
     index = MbaBlockIdentityIndex.from_mba(
         mba, generation=7, session_id="live-test", native_key=NATIVE_KEY
@@ -194,6 +198,48 @@ def test_builds_from_live_mba_without_retaining_it_and_abstains_on_cloned_eas() 
     assert index.identity_for_serial(2).exact_instruction_eas == frozenset({0x402003})
     assert index.identity_for_serial(3) is None
     assert not hasattr(index, "mba")
+
+
+def test_live_mba_identity_scan_maps_fictitious_eas_to_native_origins() -> None:
+    live_predicate_ea = 0xF1C00018
+
+    class Insn:
+        ea = live_predicate_ea
+        next = None
+
+    block = type(
+        "Block",
+        (),
+        {
+            "serial": 0,
+            "start": 0x401000,
+            "head": Insn(),
+        },
+    )()
+    mba = type(
+        "Mba",
+        (),
+        {
+            "qty": 1,
+            "get_mblock": lambda self, _serial: block,
+            "map_fict_ea": lambda self, ea: (
+                0x401020 if int(ea) == live_predicate_ea else int(ea)
+            ),
+        },
+    )()
+
+    index = MbaBlockIdentityIndex.from_mba(
+        mba,
+        generation=3,
+        native_key=NATIVE_KEY,
+    )
+
+    identity = index.identity_for_serial(0)
+    assert identity is not None
+    assert identity.native_ranges.contains(0x401000)
+    assert identity.native_ranges.contains(0x401020)
+    assert not identity.native_ranges.contains(live_predicate_ea)
+    assert identity.exact_instruction_eas == frozenset({0x401020})
 
 
 def test_live_mba_identity_scan_does_not_use_recycled_proxy_ids_as_cycles(
@@ -217,7 +263,11 @@ def test_live_mba_identity_scan_does_not_use_recycled_proxy_ids_as_cycles(
     mba = type(
         "Mba",
         (),
-        {"qty": 1, "get_mblock": lambda self, serial: block},
+        {
+            "qty": 1,
+            "get_mblock": lambda self, serial: block,
+            "map_fict_ea": lambda self, ea: int(ea),
+        },
     )()
     monkeypatch.setattr(
         identity_index_module,
@@ -263,7 +313,11 @@ def test_live_mba_identity_scan_uses_imported_eas_without_reading_operands() -> 
     mba = type(
         "Mba",
         (),
-        {"qty": 1, "get_mblock": lambda self, serial: block},
+        {
+            "qty": 1,
+            "get_mblock": lambda self, serial: block,
+            "map_fict_ea": lambda self, ea: int(ea),
+        },
     )()
 
     index = MbaBlockIdentityIndex.from_mba(
@@ -447,7 +501,11 @@ def test_refresh_from_live_mba_accepts_newly_published_imported_origins() -> Non
     mba = type(
         "Mba",
         (),
-        {"qty": 1, "get_mblock": lambda self, serial: block},
+        {
+            "qty": 1,
+            "get_mblock": lambda self, serial: block,
+            "map_fict_ea": lambda self, ea: int(ea),
+        },
     )()
     index = MbaBlockIdentityIndex.from_mba(
         mba,

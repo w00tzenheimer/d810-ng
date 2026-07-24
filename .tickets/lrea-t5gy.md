@@ -1326,3 +1326,34 @@ boundary back to its normalization-plan owner and replace fictitious live
 coordinates with the owner's portable native identity before composition. It
 must not teach stable identity binding to accept fictitious EAs or select an
 ambiguous candidate.
+
+**2026-07-24T11:03:32Z**
+
+The live/native EA provenance slice is verified and ready for its own commit.
+`InsnSnapshot` and `BlockSnapshot` now retain the native origins returned by
+the live adapter without replacing their callback-local live coordinates.
+Stable block identity and `MbaBlockIdentityIndex.from_mba()` consume those
+native origins, so Hex-Rays fictitious EAs cannot silently become portable
+native identity. Receipt-published imported origins remain authoritative for
+imported blocks.
+
+The focused portable suite is 96/96 green. The pinned Docker adapter suite is
+83/83 green across block identity, live-MBA indexing, the Hex-Rays translator,
+and manager-owned frontend normalization. The mandatory exact A560 canary
+completed in 12.45 seconds without a process segfault or INTERR. Primary DB:
+`.tmp/logs/d810_logs/000000000040a560_1784890738_11.diag.sqlite3`; pytest log:
+`.tmp/rhad-a560-v31-native-ea-origin.txt`. The semantic oracle remains red with
+one residual `while ( 1 )`, and the highest contiguous level remains C3
+because no canonical transaction is staged.
+
+The DB proves the intended ownership boundary advanced without losing the
+committed PREOPT transaction. The prior mixed identity ending in fictitious
+`0xF1C00018` is gone; `mba_t::map_fict_ea` resolves that live instruction to
+native `0x40A5D0`. The first C4 obligation is now the genuinely native
+root-inventory identity
+`native[0x40A560-0x40A561,0x40A5D0-0x40A5D1;exact=0x40A5D0]`,
+which still does not rebind uniquely. The next slice must make that ambiguity's
+native owner set self-contained in the diagnostic DB, then repair ownership
+provenance or plan composition from that evidence. It must not reintroduce
+fictitious identity, select a candidate by block order, or weaken unique
+rebinding.

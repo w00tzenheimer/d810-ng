@@ -199,8 +199,19 @@ class InsnSnapshot:
     is_conditional_jump: bool = False
     is_unconditional_jump: bool = False
     is_call: bool = False
+    # Portable native origin for a live instruction EA. Hex-Rays may assign a
+    # fictitious ``ea`` to generated microcode; adapters populate this field
+    # from ``mba_t::map_fict_ea`` without replacing the live lookup coordinate.
+    native_ea: int | None = None
 
     def __post_init__(self) -> None:
+        if self.native_ea is not None:
+            native_ea = int(self.native_ea)
+            if not 0 <= native_ea < 0xFFFFFFFFFFFFFFFF:
+                raise ValueError(
+                    "InsnSnapshot: native_ea must be a valid native address"
+                )
+            object.__setattr__(self, "native_ea", native_ea)
         if self.raw_opcode is None and self.opcode >= 0:
             object.__setattr__(self, "raw_opcode", int(self.opcode))
         if self.opcode < 0 and self.raw_opcode is not None:
@@ -304,6 +315,10 @@ class BlockSnapshot:
     tail_kind: InsnKind | None = None
     raw_block_type: int | None = None
     raw_tail_opcode: int | None = None
+    # Portable origin for ``start_ea`` when the live block coordinate is
+    # fictitious. The live coordinate remains available for callback-local
+    # reads while stable identity uses this native authority.
+    native_start_ea: int | None = None
 
     def __post_init__(self) -> None:
         if self.serial < 0:
@@ -316,6 +331,13 @@ class BlockSnapshot:
             raise ValueError(f"BlockSnapshot: block_type must be non-negative, got {self.block_type}")
         if self.start_ea < 0:
             raise ValueError(f"BlockSnapshot: start_ea must be non-negative, got {self.start_ea}")
+        if self.native_start_ea is not None:
+            native_start_ea = int(self.native_start_ea)
+            if not 0 <= native_start_ea < 0xFFFFFFFFFFFFFFFF:
+                raise ValueError(
+                    "BlockSnapshot: native_start_ea must be a valid native address"
+                )
+            object.__setattr__(self, "native_start_ea", native_start_ea)
         if not isinstance(self.succs, tuple):
             raise TypeError(f"BlockSnapshot: succs must be tuple, got {type(self.succs)}")
         if not isinstance(self.preds, tuple):
