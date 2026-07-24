@@ -52,6 +52,8 @@ from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentConditionalSelectEnvelope,
+    FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
     FragmentPlan,
     FragmentRangeObservation,
@@ -728,6 +730,12 @@ def _normalize_conditional_select_replacement(
     )
     if normalization is None or envelope is None:
         return
+    if isinstance(envelope, FragmentImportedConditionalSelectEnvelope):
+        return
+    if not isinstance(envelope, FragmentConditionalSelectEnvelope):
+        raise SemanticFragmentBackendRejected(
+            "conditional-select normalization has no recognized backend owner"
+        )
     source_plan_block = plan.block(operation.source_block_id)
     original_block_id = source_plan_block.replaces_block_id
     if original_block_id is None:

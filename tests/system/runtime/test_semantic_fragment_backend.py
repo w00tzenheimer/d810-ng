@@ -64,6 +64,7 @@ from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentDataFlowRole,
     FragmentEdge,
     FragmentFlagCorridor,
+    FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
@@ -2732,6 +2733,56 @@ def test_cached_preopt_body_binds_one_native_block_split_into_select_microblocks
         condition_producer_native_ea=condition_producer_ea,
         unresolved_transfer_native_ea=unresolved_transfer_ea,
     )
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x500000, select_ea),),
+        native_key=gateway.native_key,
+        exact_instruction_eas=(
+            0x500000,
+            condition_producer_ea,
+            predicate_ea,
+        ),
+    )
+    selected_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(select_ea, unresolved_transfer_ea),),
+        native_key=gateway.native_key,
+        exact_instruction_eas=(select_ea,),
+    )
+    join_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(unresolved_transfer_ea, 0x500010),),
+        native_key=gateway.native_key,
+        exact_instruction_eas=(unresolved_transfer_ea,),
+    )
+    operation = plan.operations[1]
+    normalization = operation.computed_branch_normalization
+    assert normalization is not None
+    plan = replace(
+        plan,
+        blocks=tuple(
+            (
+                replace(block, stable_identity=source_identity)
+                if block.block_id == operation.source_block_id
+                else block
+            )
+            for block in plan.blocks
+        ),
+        operations=(
+            plan.operations[0],
+            replace(
+                operation,
+                computed_branch_normalization=replace(
+                    normalization,
+                    conditional_select_envelope=(
+                        FragmentImportedConditionalSelectEnvelope(
+                            source_branch_ea=predicate_ea,
+                            selected_value_ea=select_ea,
+                            selected_value_identity=selected_identity,
+                            join_identity=join_identity,
+                        )
+                    ),
+                ),
+            ),
+        ),
+    )
 
     producer = _Instruction(ida_hexrays.m_setz, condition_producer_ea)
     producer.d.make_reg(2, 1)
@@ -2750,7 +2801,7 @@ def test_cached_preopt_body_binds_one_native_block_split_into_select_microblocks
             dhi.DetachedSnippetBlockTemplate(
                 source_serial=0,
                 native_entry_ea=0x500000,
-                native_end_ea=0x500010,
+                native_end_ea=select_ea,
                 instructions=(producer, predicate, source_tail),
                 block_type=int(ida_hexrays.BLT_2WAY),
                 block_flags=0,
@@ -2760,7 +2811,7 @@ def test_cached_preopt_body_binds_one_native_block_split_into_select_microblocks
             dhi.DetachedSnippetBlockTemplate(
                 source_serial=1,
                 native_entry_ea=select_ea,
-                native_end_ea=0x500010,
+                native_end_ea=unresolved_transfer_ea,
                 instructions=(selected_value,),
                 block_type=int(ida_hexrays.BLT_1WAY),
                 block_flags=0,
