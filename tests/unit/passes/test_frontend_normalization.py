@@ -1443,6 +1443,118 @@ def test_missing_downstream_transfer_source_is_normalized_inside_the_same_fragme
     assert imported_corridor.block_path == (imported_source.block_id,)
 
 
+def test_missing_downstream_direct_transfer_binds_its_transfer_block() -> None:
+    imported_entry_ea = 0x1400
+    imported_transfer_block_ea = 0x1410
+    imported_transfer_ea = 0x141E
+    imported_target_ea = 0x1500
+    live_proof = replace(
+        _conditional_proof(),
+        endpoints=(
+            _conditional_proof().endpoints[0],
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                identity=_identity(imported_entry_ea, 0x1420),
+                anchor_ea=imported_entry_ea,
+            ),
+        ),
+    )
+    imported_proof = NativeIndirectTransferProof(
+        proof_id=f"native-indirect-transfer@0x{imported_transfer_ea:X}",
+        atomic_group_id="frontend-normalization:g7",
+        shape=NativeTransferShape.DIRECT,
+        source_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(imported_entry_ea, 0x1420),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(imported_transfer_ea,),
+        ),
+        source_anchor_ea=imported_transfer_ea,
+        source_transfer_ea=imported_transfer_ea,
+        endpoints=(
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.DIRECT,
+                identity=_identity(imported_target_ea),
+                anchor_ea=imported_target_ea,
+            ),
+        ),
+    )
+    closure = NativeSemanticClosure(
+        included_block_eas=(
+            imported_entry_ea,
+            imported_transfer_block_ea,
+            imported_target_ea,
+        ),
+        native_ranges=(NativeRange(imported_entry_ea, 0x1510),),
+        proven_internal_edges=(),
+        abstentions=(),
+        seed_provenance=(),
+    )
+    native_cfg = NativeCfg(
+        {
+            imported_entry_ea: NativeBlock(
+                start_ea=imported_entry_ea,
+                end_ea=imported_transfer_block_ea,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.FALLTHROUGH,
+                        target_ea=imported_transfer_block_ea,
+                        source_instruction_ea=0x140E,
+                    ),
+                ),
+            ),
+            imported_transfer_block_ea: NativeBlock(
+                start_ea=imported_transfer_block_ea,
+                end_ea=0x1420,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.DIRECT_JUMP,
+                        target_ea=imported_target_ea,
+                        source_instruction_ea=imported_transfer_ea,
+                    ),
+                ),
+            ),
+            imported_target_ea: NativeBlock(
+                start_ea=imported_target_ea,
+                end_ea=0x1510,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+        }
+    )
+    evidence = replace(
+        _evidence(closure=closure, native_cfg=native_cfg),
+        transfer_proofs=(live_proof, imported_proof),
+    )
+
+    plan = plan_frontend_computed_branch_normalization(
+        _graph(faithful=False, include_false_target=False),
+        evidence,
+    )
+
+    assert plan is not None
+    operation = next(
+        operation
+        for operation in plan.operations
+        if operation.operation_id == imported_proof.proof_id
+    )
+    source = plan.block(operation.source_block_id)
+    assert source.role is FragmentBlockRole.IMPORTED
+    assert source.semantic_anchor_ea == imported_transfer_block_ea
+    assert source.stable_identity.exact_instruction_eas == frozenset(
+        {imported_transfer_block_ea, imported_transfer_ea}
+    )
+    prefix_operation = next(
+        operation
+        for operation in plan.operations
+        if operation.operation_id == f"native-body-edge@0x{imported_entry_ea:X}"
+    )
+    assert prefix_operation.edges == (
+        FragmentEdge(
+            role=SemanticEdgeRole.DIRECT,
+            target_block_id=source.block_id,
+        ),
+    )
+
+
 def test_imported_state_choice_consumes_its_exact_three_block_envelope() -> None:
     source_ea = 0x1400
     condition_ea = 0x1400
