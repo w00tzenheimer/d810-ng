@@ -3658,6 +3658,7 @@ def test_backend_projects_exact_data_flow_without_hiding_extra_uses(
         use_ea: int,
         identifier: int,
         size: int,
+        _predecessor_serials_by_block,
     ) -> list[DefSite]:
         assert use_ea == 0x401010
         assert identifier == live_identifier
@@ -3670,6 +3671,7 @@ def test_backend_projects_exact_data_flow_without_hiding_extra_uses(
         definition_ea: int,
         identifier: int,
         size: int,
+        _successor_serials_by_block,
     ) -> list[UseSite]:
         assert definition_ea == 0x401010
         assert identifier == live_identifier
@@ -3680,14 +3682,14 @@ def test_backend_projects_exact_data_flow_without_hiding_extra_uses(
         return result
 
     reaching_query_name = (
-        "find_reaching_defs_for_reg_use"
+        "find_reaching_defs_for_reg_use_in_projection"
         if storage_kind is StorageIdentityKind.REGISTER
-        else "find_reaching_defs_for_stkvar_use"
+        else "find_reaching_defs_for_stkvar_use_in_projection"
     )
     reached_uses_query_name = (
-        "find_uses_reached_by_reg_definition"
+        "find_uses_reached_by_reg_definition_in_projection"
         if storage_kind is StorageIdentityKind.REGISTER
-        else "find_uses_reached_by_stkvar_definition"
+        else "find_uses_reached_by_stkvar_definition_in_projection"
     )
     monkeypatch.setattr(sfb, reaching_query_name, _reaching_definitions)
     monkeypatch.setattr(sfb, reached_uses_query_name, _reached_uses)
@@ -3777,6 +3779,7 @@ def test_backend_rebinds_data_flow_instruction_origins(monkeypatch) -> None:
         use_ea: int,
         identifier: int,
         size: int,
+        _predecessor_serials_by_block,
     ) -> list[DefSite]:
         assert block_serial == original.serial
         assert use_ea == live_ea
@@ -3790,6 +3793,7 @@ def test_backend_rebinds_data_flow_instruction_origins(monkeypatch) -> None:
         definition_ea: int,
         identifier: int,
         size: int,
+        _successor_serials_by_block,
     ) -> list[UseSite]:
         assert block_serial == original.serial
         assert definition_ea == live_ea
@@ -3799,12 +3803,12 @@ def test_backend_rebinds_data_flow_instruction_origins(monkeypatch) -> None:
 
     monkeypatch.setattr(
         sfb,
-        "find_reaching_defs_for_stkvar_use",
+        "find_reaching_defs_for_stkvar_use_in_projection",
         _reaching_definitions,
     )
     monkeypatch.setattr(
         sfb,
-        "find_uses_reached_by_stkvar_definition",
+        "find_uses_reached_by_stkvar_definition_in_projection",
         _reached_uses,
     )
 
@@ -3814,6 +3818,8 @@ def test_backend_rebinds_data_flow_instruction_origins(monkeypatch) -> None:
         state,
         {"replacement": original},
         {original.serial: "replacement"},
+        {original.serial: ()},
+        {original.serial: ()},
     )
 
     assert relations == (
@@ -3883,6 +3889,7 @@ def test_backend_disambiguates_lowered_data_flow_sites_by_storage_and_role(
         use_ea: int,
         identifier: int,
         size: int,
+        _predecessor_serials_by_block,
     ) -> list[DefSite]:
         assert block_serial == original.serial
         assert use_ea == use_live_ea
@@ -3898,6 +3905,7 @@ def test_backend_disambiguates_lowered_data_flow_sites_by_storage_and_role(
         definition_ea: int,
         identifier: int,
         size: int,
+        _successor_serials_by_block,
     ) -> list[UseSite]:
         assert block_serial == original.serial
         assert definition_ea == definition_live_ea
@@ -3907,12 +3915,12 @@ def test_backend_disambiguates_lowered_data_flow_sites_by_storage_and_role(
 
     monkeypatch.setattr(
         sfb,
-        "find_reaching_defs_for_stkvar_use",
+        "find_reaching_defs_for_stkvar_use_in_projection",
         _reaching_definitions,
     )
     monkeypatch.setattr(
         sfb,
-        "find_uses_reached_by_stkvar_definition",
+        "find_uses_reached_by_stkvar_definition_in_projection",
         _reached_uses,
     )
 
@@ -3922,6 +3930,8 @@ def test_backend_disambiguates_lowered_data_flow_sites_by_storage_and_role(
         state,
         {"replacement": original},
         {original.serial: "replacement"},
+        {original.serial: ()},
+        {original.serial: ()},
     )
 
     assert len(relations) == 2
@@ -3976,7 +3986,66 @@ def test_backend_rejects_ambiguous_lowered_data_flow_sites_for_same_role() -> No
             state,
             use,
             original,
+            {original.serial: ()},
         )
+
+
+def test_backend_validates_data_flow_across_unpublished_root_projection() -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    entry.tail.d.make_reg(10, 4)
+    original.tail.r.make_reg(10, 4)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
+    storage = StorageIdentity(StorageIdentityKind.REGISTER, offset=10)
+    plan = replace(
+        plan,
+        data_flow_obligations=(
+            FragmentDataFlowObligation(
+                obligation_id="root-boundary-flow",
+                role=FragmentDataFlowRole.CONDITION,
+                definition=FragmentValueSite(
+                    site_id="root-boundary.def",
+                    block_id="entry",
+                    value_id="root-boundary",
+                    instruction_ea=0x401000,
+                    storage_identity=storage,
+                    width=4,
+                ),
+                uses=(
+                    FragmentValueSite(
+                        site_id="root-boundary.use",
+                        block_id="replacement",
+                        value_id="root-boundary",
+                        instruction_ea=0x401010,
+                        storage_identity=storage,
+                        width=4,
+                    ),
+                ),
+            ),
+        ),
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    assert validate_fragment_projection(plan, projection).passed
+    assert {
+        (relation.definition_site_id, relation.use_site_id)
+        for relation in projection.data_flow_relations
+    } == {("root-boundary.def", "root-boundary.use")}
+    assert tuple(entry.succset) == (original.serial,)
+    assert tuple(original.predset) == (entry.serial,)
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime root-boundary projection cleanup")
 
 
 def test_backend_rejects_duplicate_physical_data_flow_anchors(
@@ -3999,14 +4068,14 @@ def test_backend_rejects_duplicate_physical_data_flow_anchors(
 
     monkeypatch.setattr(
         sfb,
-        "find_reaching_defs_for_reg_use",
+        "find_reaching_defs_for_reg_use_in_projection",
         lambda _mba, block_serial, *_args: [
             DefSite(block_serial, 0x401010, ida_hexrays.m_mov)
         ],
     )
     monkeypatch.setattr(
         sfb,
-        "find_uses_reached_by_reg_definition",
+        "find_uses_reached_by_reg_definition_in_projection",
         lambda _mba, block_serial, *_args: [
             UseSite(block_serial, 0x401010, ida_hexrays.m_mov),
             UseSite(block_serial, 0x401010, ida_hexrays.m_mov),
@@ -4293,12 +4362,12 @@ def _install_range_data_flow_queries(monkeypatch, target: _Block) -> None:
 
     monkeypatch.setattr(
         sfb,
-        "find_uses_reached_by_reg_definition",
+        "find_uses_reached_by_reg_definition_in_projection",
         _reached_uses,
     )
     monkeypatch.setattr(
         sfb,
-        "find_reaching_defs_for_reg_use",
+        "find_reaching_defs_for_reg_use_in_projection",
         _reaching_definitions,
     )
 
@@ -4560,7 +4629,7 @@ def test_gateway_revalidates_data_flow_after_root_publication(
 
     monkeypatch.setattr(
         sfb,
-        "find_reaching_defs_for_reg_use",
+        "find_reaching_defs_for_reg_use_in_projection",
         lambda _mba, block_serial, *_args: [
             DefSite(block_serial, 0x401010, ida_hexrays.m_mov)
         ],
@@ -4576,7 +4645,7 @@ def test_gateway_revalidates_data_flow_after_root_publication(
 
     monkeypatch.setattr(
         sfb,
-        "find_uses_reached_by_reg_definition",
+        "find_uses_reached_by_reg_definition_in_projection",
         _reached_uses,
     )
 

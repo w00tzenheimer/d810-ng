@@ -13,8 +13,10 @@ from d810.hexrays.ir.exact_data_flow import (  # noqa: E402
     DefSite,
     UseSite,
     find_reaching_defs_for_reg_use,
+    find_reaching_defs_for_reg_use_in_projection,
     find_reaching_defs_for_stkvar_use,
     find_uses_reached_by_reg_definition,
+    find_uses_reached_by_reg_definition_in_projection,
     find_uses_reached_by_stkvar_definition,
 )
 
@@ -228,6 +230,41 @@ def test_stack_queries_respect_local_redefinitions_and_exact_definition() -> Non
         UseSite(0, 0x100C, ida_hexrays.m_mov),
         UseSite(1, 0x2000, ida_hexrays.m_mov),
     ]
+
+
+def test_projected_queries_follow_an_unpublished_root_edge() -> None:
+    definition = _Instruction(0x1000, destination=_reg())
+    use = _Instruction(0x2000, source=_reg())
+    block0 = _Block(0, (definition,))
+    block1 = _Block(1, (use,))
+    disconnected = {
+        0: _BlockChains(),
+        1: _BlockChains(),
+    }
+    mba = _Mba(
+        (block0, block1),
+        ud=_GraphChains(disconnected),
+        du=_GraphChains(disconnected),
+    )
+
+    assert find_reaching_defs_for_reg_use(mba, 1, 0x2000, 10, 4) == []
+    assert find_uses_reached_by_reg_definition(mba, 0, 0x1000, 10, 4) == []
+    assert find_reaching_defs_for_reg_use_in_projection(
+        mba,
+        1,
+        0x2000,
+        10,
+        4,
+        {0: (), 1: (0,)},
+    ) == [DefSite(0, 0x1000, ida_hexrays.m_mov)]
+    assert find_uses_reached_by_reg_definition_in_projection(
+        mba,
+        0,
+        0x1000,
+        10,
+        4,
+        {0: (1,), 1: ()},
+    ) == [UseSite(1, 0x2000, ida_hexrays.m_mov)]
 
 
 def test_exact_queries_abstain_when_ea_does_not_identify_one_instruction() -> None:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import ida_hexrays
 
 from d810.core.logging import getLogger
-from d810.core.typing import NamedTuple, Optional
+from d810.core.typing import Mapping, NamedTuple, Optional
 
 
 logger = getLogger(__name__)
@@ -417,6 +417,127 @@ def _find_uses_reached_by_exact_definition(
     return results
 
 
+def _find_reaching_defs_for_projected_exact_use(
+    mba: object,
+    block_serial: int,
+    use_ea: int,
+    predecessor_serials_by_block: Mapping[int, tuple[int, ...]],
+    *,
+    register: int | None = None,
+    stack_offset: int | None = None,
+    size: int,
+) -> list[DefSite]:
+    use_accesses = _block_storage_accesses(
+        mba,
+        block_serial,
+        register=register,
+        stack_offset=stack_offset,
+        size=size,
+    )
+    use_index = _exact_access_index(
+        use_accesses,
+        use_ea,
+        require_definition=False,
+    )
+    if use_index is None:
+        return []
+    local_definition, ambiguous = _last_unambiguous_definition(use_accesses[:use_index])
+    if ambiguous:
+        return []
+    if local_definition is not None:
+        return [_definition_site(block_serial, local_definition)]
+
+    results: list[DefSite] = []
+    visited: set[int] = set()
+    pending = list(predecessor_serials_by_block.get(int(block_serial), ()))
+    while pending:
+        predecessor_serial = int(pending.pop(0))
+        if predecessor_serial in visited:
+            continue
+        visited.add(predecessor_serial)
+        accesses = _block_storage_accesses(
+            mba,
+            predecessor_serial,
+            register=register,
+            stack_offset=stack_offset,
+            size=size,
+        )
+        definition, ambiguous = _last_unambiguous_definition(accesses)
+        if ambiguous:
+            return []
+        if definition is not None:
+            results.append(_definition_site(predecessor_serial, definition))
+            continue
+        pending.extend(
+            predecessor_serials_by_block.get(predecessor_serial, ())
+        )
+    return results
+
+
+def _find_uses_reached_by_projected_exact_definition(
+    mba: object,
+    block_serial: int,
+    definition_ea: int,
+    successor_serials_by_block: Mapping[int, tuple[int, ...]],
+    *,
+    register: int | None = None,
+    stack_offset: int | None = None,
+    size: int,
+) -> list[UseSite]:
+    definition_accesses = _block_storage_accesses(
+        mba,
+        block_serial,
+        register=register,
+        stack_offset=stack_offset,
+        size=size,
+    )
+    definition_index = _exact_access_index(
+        definition_accesses,
+        definition_ea,
+        require_definition=True,
+    )
+    if definition_index is None:
+        return []
+
+    results: list[UseSite] = []
+
+    def collect_uses_until_definition(
+        serial: int,
+        accesses: tuple[tuple[object, bool, bool], ...],
+    ) -> bool:
+        for instruction, has_use, has_definition in accesses:
+            if has_use:
+                results.append(_use_site(serial, instruction))
+            if has_definition:
+                return True
+        return False
+
+    if collect_uses_until_definition(
+        block_serial,
+        definition_accesses[definition_index + 1 :],
+    ):
+        return results
+
+    visited: set[int] = set()
+    pending = list(successor_serials_by_block.get(int(block_serial), ()))
+    while pending:
+        successor_serial = int(pending.pop(0))
+        if successor_serial in visited:
+            continue
+        visited.add(successor_serial)
+        accesses = _block_storage_accesses(
+            mba,
+            successor_serial,
+            register=register,
+            stack_offset=stack_offset,
+            size=size,
+        )
+        if collect_uses_until_definition(successor_serial, accesses):
+            continue
+        pending.extend(successor_serials_by_block.get(successor_serial, ()))
+    return results
+
+
 def find_reaching_defs_for_reg_use(
     mba: object,
     block_serial: int,
@@ -480,6 +601,82 @@ def find_uses_reached_by_stkvar_definition(
         mba,
         block_serial,
         definition_ea,
+        stack_offset=stack_offset,
+        size=size,
+    )
+
+
+def find_reaching_defs_for_reg_use_in_projection(
+    mba: object,
+    block_serial: int,
+    use_ea: int,
+    register: int,
+    size: int,
+    predecessor_serials_by_block: Mapping[int, tuple[int, ...]],
+) -> list[DefSite]:
+    """Return exact register definitions through unpublished projected edges."""
+    return _find_reaching_defs_for_projected_exact_use(
+        mba,
+        block_serial,
+        use_ea,
+        predecessor_serials_by_block,
+        register=register,
+        size=size,
+    )
+
+
+def find_reaching_defs_for_stkvar_use_in_projection(
+    mba: object,
+    block_serial: int,
+    use_ea: int,
+    stack_offset: int,
+    size: int,
+    predecessor_serials_by_block: Mapping[int, tuple[int, ...]],
+) -> list[DefSite]:
+    """Return exact stack definitions through unpublished projected edges."""
+    return _find_reaching_defs_for_projected_exact_use(
+        mba,
+        block_serial,
+        use_ea,
+        predecessor_serials_by_block,
+        stack_offset=stack_offset,
+        size=size,
+    )
+
+
+def find_uses_reached_by_reg_definition_in_projection(
+    mba: object,
+    block_serial: int,
+    definition_ea: int,
+    register: int,
+    size: int,
+    successor_serials_by_block: Mapping[int, tuple[int, ...]],
+) -> list[UseSite]:
+    """Return exact register uses through unpublished projected edges."""
+    return _find_uses_reached_by_projected_exact_definition(
+        mba,
+        block_serial,
+        definition_ea,
+        successor_serials_by_block,
+        register=register,
+        size=size,
+    )
+
+
+def find_uses_reached_by_stkvar_definition_in_projection(
+    mba: object,
+    block_serial: int,
+    definition_ea: int,
+    stack_offset: int,
+    size: int,
+    successor_serials_by_block: Mapping[int, tuple[int, ...]],
+) -> list[UseSite]:
+    """Return exact stack uses through unpublished projected edges."""
+    return _find_uses_reached_by_projected_exact_definition(
+        mba,
+        block_serial,
+        definition_ea,
+        successor_serials_by_block,
         stack_offset=stack_offset,
         size=size,
     )
@@ -560,7 +757,11 @@ __all__ = [
     "UseSite",
     "find_exact_storage_access_eas",
     "find_reaching_defs_for_reg_use",
+    "find_reaching_defs_for_reg_use_in_projection",
     "find_reaching_defs_for_stkvar_use",
+    "find_reaching_defs_for_stkvar_use_in_projection",
     "find_uses_reached_by_reg_definition",
+    "find_uses_reached_by_reg_definition_in_projection",
     "find_uses_reached_by_stkvar_definition",
+    "find_uses_reached_by_stkvar_definition_in_projection",
 ]

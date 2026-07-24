@@ -10,10 +10,10 @@ import ida_range
 from d810.core.typing import Mapping, Protocol, TYPE_CHECKING, runtime_checkable
 from d810.hexrays.ir.exact_data_flow import (
     find_exact_storage_access_eas,
-    find_reaching_defs_for_reg_use,
-    find_reaching_defs_for_stkvar_use,
-    find_uses_reached_by_reg_definition,
-    find_uses_reached_by_stkvar_definition,
+    find_reaching_defs_for_reg_use_in_projection,
+    find_reaching_defs_for_stkvar_use_in_projection,
+    find_uses_reached_by_reg_definition_in_projection,
+    find_uses_reached_by_stkvar_definition_in_projection,
 )
 from d810.hexrays.ir.exact_value_ranges import (
     ExactValueRangeQueryUnavailable,
@@ -2156,6 +2156,7 @@ def _query_reaching_definitions(
     state: SemanticFragmentBackendState,
     site,
     live_block,
+    predecessor_serials_by_block: Mapping[int, tuple[int, ...]],
 ):
     live_instruction_ea, identifier, storage_kind = _live_data_flow_site_binding(
         modifier,
@@ -2166,20 +2167,22 @@ def _query_reaching_definitions(
         require_definition=False,
     )
     if storage_kind is StorageIdentityKind.REGISTER:
-        return find_reaching_defs_for_reg_use(
+        return find_reaching_defs_for_reg_use_in_projection(
             modifier.mba,
             int(live_block.serial),
             live_instruction_ea,
             identifier,
             int(site.width),
+            predecessor_serials_by_block,
         )
     if storage_kind is StorageIdentityKind.STACK:
-        return find_reaching_defs_for_stkvar_use(
+        return find_reaching_defs_for_stkvar_use_in_projection(
             modifier.mba,
             int(live_block.serial),
             live_instruction_ea,
             identifier,
             int(site.width),
+            predecessor_serials_by_block,
         )
     raise AssertionError("live data-flow binding accepted an unsupported namespace")
 
@@ -2189,6 +2192,7 @@ def _query_reached_uses(
     state: SemanticFragmentBackendState,
     site,
     live_block,
+    successor_serials_by_block: Mapping[int, tuple[int, ...]],
 ):
     live_instruction_ea, identifier, storage_kind = _live_data_flow_site_binding(
         modifier,
@@ -2199,20 +2203,22 @@ def _query_reached_uses(
         require_definition=True,
     )
     if storage_kind is StorageIdentityKind.REGISTER:
-        return find_uses_reached_by_reg_definition(
+        return find_uses_reached_by_reg_definition_in_projection(
             modifier.mba,
             int(live_block.serial),
             live_instruction_ea,
             identifier,
             int(site.width),
+            successor_serials_by_block,
         )
     if storage_kind is StorageIdentityKind.STACK:
-        return find_uses_reached_by_stkvar_definition(
+        return find_uses_reached_by_stkvar_definition_in_projection(
             modifier.mba,
             int(live_block.serial),
             live_instruction_ea,
             identifier,
             int(site.width),
+            successor_serials_by_block,
         )
     raise AssertionError("live data-flow binding accepted an unsupported namespace")
 
@@ -2285,6 +2291,8 @@ def _project_data_flow_relations(
     state: SemanticFragmentBackendState,
     live_by_id: dict[str, object],
     ids_by_serial: dict[int, str],
+    predecessor_serials_by_block: Mapping[int, tuple[int, ...]],
+    successor_serials_by_block: Mapping[int, tuple[int, ...]],
 ) -> tuple[ProjectedDataFlowRelation, ...]:
     definitions = tuple(
         obligation.definition for obligation in plan.data_flow_obligations
@@ -2311,6 +2319,7 @@ def _project_data_flow_relations(
                 state,
                 definition,
                 definition_block,
+                successor_serials_by_block,
             )
         )
         _require_unambiguous_observed_anchors(
@@ -2352,6 +2361,7 @@ def _project_data_flow_relations(
                     state,
                     use,
                     use_block,
+                    predecessor_serials_by_block,
                 )
             )
             _require_unambiguous_observed_anchors(
@@ -2392,6 +2402,45 @@ def _project_data_flow_relations(
             ),
         )
     )
+
+
+def _projected_live_serial_topology(
+    live_by_id: Mapping[str, object],
+    successors_by_id: Mapping[str, list[str]],
+) -> tuple[dict[int, tuple[int, ...]], dict[int, tuple[int, ...]]]:
+    """Collapse instruction-free projected helpers into live block edges."""
+    serial_by_id = {
+        str(block_id): int(block.serial) for block_id, block in live_by_id.items()
+    }
+    successors_by_serial: dict[int, tuple[int, ...]] = {}
+    for block_id, serial in serial_by_id.items():
+        live_successors: list[int] = []
+        pending = list(successors_by_id.get(block_id, ()))
+        visited_helpers: set[str] = set()
+        while pending:
+            successor_id = str(pending.pop(0))
+            successor_serial = serial_by_id.get(successor_id)
+            if successor_serial is not None:
+                if successor_serial not in live_successors:
+                    live_successors.append(successor_serial)
+                continue
+            if successor_id in visited_helpers:
+                continue
+            visited_helpers.add(successor_id)
+            pending.extend(successors_by_id.get(successor_id, ()))
+        successors_by_serial[serial] = tuple(live_successors)
+
+    predecessor_lists = {serial: [] for serial in successors_by_serial}
+    for source_serial, successor_serials in successors_by_serial.items():
+        for successor_serial in successor_serials:
+            predecessors = predecessor_lists.setdefault(successor_serial, [])
+            if source_serial not in predecessors:
+                predecessors.append(source_serial)
+    predecessors_by_serial = {
+        serial: tuple(predecessors)
+        for serial, predecessors in predecessor_lists.items()
+    }
+    return (predecessors_by_serial, successors_by_serial)
 
 
 def _project_fragment(
@@ -2594,12 +2643,18 @@ def _project_fragment(
         )
         for binding in projection_bindings.values()
     )
+    (
+        predecessor_serials_by_block,
+        successor_serials_by_block,
+    ) = _projected_live_serial_topology(live_by_id, successors)
     data_flow_relations = _project_data_flow_relations(
         modifier,
         plan,
         state,
         live_by_id,
         ids_by_serial,
+        predecessor_serials_by_block,
+        successor_serials_by_block,
     )
     value_ranges = _project_value_ranges(state, plan, live_by_id)
     return_carriers = _project_return_carriers(
