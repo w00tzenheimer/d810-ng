@@ -3926,8 +3926,7 @@ def test_backend_disambiguates_lowered_data_flow_sites_by_storage_and_role(
 
     assert len(relations) == 2
     assert {
-        (relation.use_def_observed, relation.def_use_observed)
-        for relation in relations
+        (relation.use_def_observed, relation.def_use_observed) for relation in relations
     } == {(True, False), (False, True)}
 
 
@@ -3969,8 +3968,7 @@ def test_backend_rejects_ambiguous_lowered_data_flow_sites_for_same_role() -> No
     with pytest.raises(
         sfb.SemanticFragmentBackendRejected,
         match=(
-            "data-flow use .* has ambiguous live storage access at "
-            "replacement@0x401010"
+            "data-flow use .* has ambiguous live storage access at replacement@0x401010"
         ),
     ):
         sfb._query_reaching_definitions(
