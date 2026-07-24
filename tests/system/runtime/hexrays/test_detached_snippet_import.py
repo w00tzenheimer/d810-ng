@@ -5401,8 +5401,6 @@ def _terminal_return_import_fixture() -> tuple[
     from d810.analyses.control_flow.detached_handler_island import (
         DetachedSnippetBoundaryPortOwner,
     )
-    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
-    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
     from d810.analyses.control_flow.materialized_indirect_transfer import (
         TerminalReturnCarrierRequest,
     )
@@ -6447,7 +6445,6 @@ def test_preopt_import_preserves_fresh_live_predicate_for_imported_arms(
         DetachedSnippetBoundaryPortOwner,
     )
     from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
-    from d810.transforms.graph_modification import PreserveLivePredicateCondition
 
     _install_runtime_fakes(monkeypatch)
     function_ea = 0x9000
