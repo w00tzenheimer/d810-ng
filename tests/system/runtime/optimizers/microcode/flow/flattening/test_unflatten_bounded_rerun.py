@@ -1519,6 +1519,52 @@ def test_recovery_gate_reports_session_profile_and_identity_phase() -> None:
     }
 
 
+def test_materialized_handler_completeness_reports_final_native_ea_inventory() -> None:
+    reported = []
+    rule = _fresh_rule()
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    mba = SimpleNamespace(entry_ea=_EA, maturity=_MAT)
+
+    rule._report_materialized_handler_completeness(
+        mba,
+        state_var_reg=20,
+        resolver_target_count=66,
+        live_handler_owner_count=53,
+        terminal_state_targets=((0x19A7218A, 0x40C898),),
+        missing_handler_targets=(
+            (0x22C02855, 0x40B1EA),
+            (0x23B8E806, 0x40AA2C),
+        ),
+    )
+
+    assert len(reported) == 1
+    record = reported[0]
+    assert record.consumer == "state_machine_cff_unflattener"
+    assert record.strategy == "materialized_handler_completeness"
+    assert record.fact_id == "resolver_session:materialized_handler_identity"
+    assert record.maturity == "MMAT_GLBOPT1"
+    assert record.decision == "declined"
+    assert record.reason == "missing_materialized_handler_targets"
+    assert record.payload == {
+        "first_missing_handler_target": {
+            "state": "0x22C02855",
+            "target_ea": "0x40B1EA",
+        },
+        "live_handler_owner_count": 53,
+        "materialized_state_var_reg": 20,
+        "missing_handler_targets": [
+            {"state": "0x22C02855", "target_ea": "0x40B1EA"},
+            {"state": "0x23B8E806", "target_ea": "0x40AA2C"},
+        ],
+        "resolver_target_count": 66,
+        "terminal_state_targets": [
+            {"state": "0x19A7218A", "target_ea": "0x40C898"},
+        ],
+    }
+
+
 def test_unbound_materialized_preopt_deferral_is_persisted() -> None:
     reported = []
     rule = _fresh_rule()
