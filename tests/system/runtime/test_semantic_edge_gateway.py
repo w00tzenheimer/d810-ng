@@ -149,6 +149,18 @@ def _call_tail(*, ea: int):
     )
 
 
+def _analyzed_call_owner(*, ea: int):
+    call = _call_tail(ea=ea)
+    return SimpleNamespace(
+        opcode=int(ida_hexrays.m_mov),
+        ea=int(ea),
+        l=SimpleNamespace(t=int(ida_hexrays.mop_d), d=call),
+        r=_BlockReference(),
+        d=_BlockReference(),
+        next=None,
+    )
+
+
 def _proxy(gateway: MbaMutationGateway, serial: int):
     handle = gateway.identity_index.handle_for_serial(int(serial))
     assert handle is not None
@@ -306,6 +318,46 @@ def test_gateway_materializes_call_fallthrough_through_adjacent_helper(
     assert receipt.planned_operation_count == 2
 
 
+def test_gateway_materializes_analyzed_call_owner_fallthrough(
+    monkeypatch,
+) -> None:
+    source = _Block(1, start=0x401010)
+    target = _Block(3, start=0x401030)
+    owner = _analyzed_call_owner(ea=0x401011)
+    source.head = owner
+    source.tail = owner
+    mba = _Mba(source, target)
+    gateway = make_mutation_gateway(mba)
+    _install_helper_builder(monkeypatch)
+
+    receipt = _apply(
+        gateway,
+        mba,
+        _operation(
+            gateway,
+            source=1,
+            role=SemanticEdgeRole.CALL_FALLTHROUGH,
+            target=3,
+        ),
+    )
+
+    assert receipt is not None
+    live_source = mba.get_mblock(1)
+    helper = mba.get_mblock(2)
+    live_target = mba.get_mblock(4)
+    assert live_source.tail is owner
+    assert int(live_source.tail.opcode) == int(ida_hexrays.m_mov)
+    assert int(live_source.tail.l.t) == int(ida_hexrays.mop_d)
+    assert int(live_source.tail.l.d.opcode) == int(ida_hexrays.m_call)
+    assert tuple(live_source.succset) == (2,)
+    assert live_source.nextb is helper
+    assert tuple(helper.succset) == (int(live_target.serial),)
+    assert tuple(helper.predset) == (int(live_source.serial),)
+    assert tuple(live_target.predset) == (int(helper.serial),)
+    assert receipt.operation_count == 2
+    assert receipt.planned_operation_count == 2
+
+
 def test_gateway_rejects_call_fallthrough_for_non_call_before_helper_creation(
     monkeypatch,
 ) -> None:
@@ -397,7 +449,7 @@ def test_gateway_reports_portable_call_fallthrough_shape_diagnostic(
     assert "tail_ea=0x401011" in message
     assert "tail_opcode=m_call(" in message
     assert "tail_dest_type=" in message
-    assert "expected=zero-way block-closing m_call or m_icall" in message
+    assert "expected=zero-way block-closing m_call or m_icall owner" in message
     assert helper_calls == 0
     assert gateway.receipts == ()
 
