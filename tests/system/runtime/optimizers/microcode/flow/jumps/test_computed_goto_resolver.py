@@ -8689,6 +8689,189 @@ class _PreoptUnionFakeMba:
         self._events.append("build_preopt_graph")
 
 
+def _install_requested_call_companion_harness(
+    monkeypatch,
+    *,
+    capture_succeeds: bool,
+) -> dict[str, object]:
+    import ida_hexrays
+    import idaapi
+
+    function_ea = 0x1000
+    component_start_ea = 0x2000
+    component_end_ea = 0x2040
+    call_ea = 0x2020
+    cfg = NativeCfg(
+        {
+            component_start_ea: NativeBlock(
+                component_start_ea,
+                component_end_ea,
+                terminal=NativeTerminalKind.RETURN,
+            )
+        }
+    )
+    closure = plan_native_semantic_closure(
+        cfg,
+        (
+            ResolverProvenHandlerEntry(
+                entry_ea=component_start_ea,
+                provenance="test_call_companion",
+            ),
+        ),
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={0x1010: (component_start_ea,)},
+        reachable_eas=(function_ea, component_start_ea),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+        native_stack_frame_offsets=((call_ea, (-8, -4)),),
+    )
+    _session, state = _resolver_session(resolution)
+    assert state.native_preanalysis.set_prepatch_preopt_union_source(
+        state.native_key,
+        computed_goto_resolver._PrepatchPreoptUnionSource(
+            primary_seed_ea=component_start_ea,
+            seed_eas=(component_start_ea,),
+            seed_native_ranges=(
+                (
+                    component_start_ea,
+                    ((component_start_ea, component_end_ea),),
+                ),
+            ),
+            native_ranges=((component_start_ea, component_end_ea),),
+            imported_block_entry_eas=(component_start_ea,),
+            cfg=cfg,
+            closure=closure,
+        ),
+    )
+    native_range = (component_start_ea, component_end_ea)
+    assert state.request_call_companion_ranges((native_range,))
+
+    monkeypatch.setattr(ida_hexrays, "mba_ranges_t", _PreoptUnionFakeRanges)
+    monkeypatch.setattr(ida_hexrays, "hexrays_failure_t", _PreoptUnionFakeFailure)
+    monkeypatch.setattr(ida_hexrays, "DECOMP_NO_WAIT", 0x10, raising=False)
+    monkeypatch.setattr(ida_hexrays, "DECOMP_ALL_BLKS", 0x20, raising=False)
+    monkeypatch.setattr(ida_hexrays, "MMAT_CALLS", 4, raising=False)
+    monkeypatch.setattr(idaapi, "range_t", lambda start, end: (start, end))
+
+    calls_events: list[str] = []
+    calls_mba = SimpleNamespace(
+        build_graph=lambda: calls_events.append("build_calls_graph"),
+    )
+    generated: list[tuple[tuple[tuple[int, int], ...], int, int]] = []
+
+    def generate(_generator, ranges, _failure, _retlist, flags, maturity):
+        generated.append((tuple(ranges.items), int(flags), int(maturity)))
+        return calls_mba
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_generate_microcode_without_d810",
+        generate,
+    )
+    captures: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def capture(*args: object, **kwargs: object) -> object:
+        captures.append((args, kwargs))
+        return SimpleNamespace(
+            captured=capture_succeeds,
+            call_eas=(call_ea,),
+            reason=None if capture_succeeds else "call_ea_set_mismatch",
+        )
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "capture_preopt_union_call_companion_template",
+        capture,
+    )
+    return {
+        "state": state,
+        "function_ea": function_ea,
+        "component_start_ea": component_start_ea,
+        "call_ea": call_ea,
+        "native_range": native_range,
+        "calls_mba": calls_mba,
+        "calls_events": calls_events,
+        "generated": generated,
+        "captures": captures,
+    }
+
+
+def test_prepare_requested_call_companion_captures_exact_calls_component(
+    monkeypatch,
+) -> None:
+    import ida_hexrays
+
+    harness = _install_requested_call_companion_harness(
+        monkeypatch,
+        capture_succeeds=True,
+    )
+    state = harness["state"]
+
+    outcomes = (
+        computed_goto_resolver.prepare_requested_detached_call_companions(state)
+    )
+
+    assert outcomes == (
+        computed_goto_resolver.CallCompanionPreparationOutcome(
+            native_range=harness["native_range"],
+            component_target_ea=harness["component_start_ea"],
+            captured=True,
+            call_eas=(harness["call_ea"],),
+            reason="captured",
+        ),
+    )
+    assert harness["generated"] == [
+        (
+            (harness["native_range"],),
+            int(ida_hexrays.DECOMP_NO_WAIT | ida_hexrays.DECOMP_ALL_BLKS),
+            int(ida_hexrays.MMAT_CALLS),
+        )
+    ]
+    assert harness["calls_events"] == ["build_calls_graph"]
+    assert harness["captures"] == [
+        (
+            (
+                harness["function_ea"],
+                harness["component_start_ea"],
+                harness["component_start_ea"],
+                harness["calls_mba"],
+                harness["native_range"],
+            ),
+            {
+                "owned_block_entry_eas": (harness["component_start_ea"],),
+                "native_stack_frame_offsets_by_ea": {
+                    harness["call_ea"]: (-8, -4)
+                },
+            },
+        )
+    ]
+    assert state.pending_call_companion_ranges == ()
+    assert not state.snippet_capture_active
+
+
+def test_prepare_requested_call_companion_retains_failed_request(
+    monkeypatch,
+) -> None:
+    harness = _install_requested_call_companion_harness(
+        monkeypatch,
+        capture_succeeds=False,
+    )
+    state = harness["state"]
+
+    outcomes = (
+        computed_goto_resolver.prepare_requested_detached_call_companions(state)
+    )
+
+    assert len(outcomes) == 1
+    assert not outcomes[0].captured
+    assert outcomes[0].reason == "call_ea_set_mismatch"
+    assert state.pending_call_companion_ranges == (harness["native_range"],)
+    assert not state.snippet_capture_active
+
+
 def test_preopt_resolver_cuts_exclude_materialized_multi_target_sites() -> None:
     resolution = ComputedGotoResolution(
         function_ea=0x1000,

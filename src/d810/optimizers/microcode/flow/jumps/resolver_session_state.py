@@ -27,6 +27,7 @@ from d810.capabilities.frontend_normalization import (
     FrontendNormalizationPlanCapability,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.core.typing import Sequence
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.ir.block_identity import (
     BoundBlock,
@@ -78,6 +79,7 @@ class ResolverSessionState:
     snippet_capture_profile_ea: int | None = None
     preopt_union_import_active: bool = False
     pending_preopt_reimport: bool = False
+    pending_call_companion_ranges: tuple[tuple[int, int], ...] = ()
     preopt_union_imported_mbas: set[tuple[int, int, int]] = field(default_factory=set)
     preopt_union_mutated_mbas: set[tuple[int, int, int]] = field(default_factory=set)
     attempted_mbas: set[tuple[int, int, int, int]] = field(default_factory=set)
@@ -243,6 +245,57 @@ class ResolverSessionState:
         self.snippet_capture_active = False
         self.snippet_capture_profile_ea = None
 
+    def request_call_companion_ranges(
+        self,
+        ranges: Sequence[tuple[int, int]],
+    ) -> bool:
+        """Queue portable native ranges for manager-owned CALLS preparation."""
+        normalized = tuple(
+            sorted(
+                {
+                    (int(start_ea), int(end_ea))
+                    for start_ea, end_ea in ranges
+                    if int(start_ea) > 0 and int(end_ea) > int(start_ea)
+                }
+            )
+        )
+        if len(normalized) != len(
+            {
+                (int(start_ea), int(end_ea))
+                for start_ea, end_ea in ranges
+            }
+        ):
+            raise ValueError(
+                "call companion requests require positive nonempty native ranges"
+            )
+        merged = tuple(
+            sorted(
+                {
+                    *self.pending_call_companion_ranges,
+                    *normalized,
+                }
+            )
+        )
+        if merged == self.pending_call_companion_ranges:
+            return False
+        self.pending_call_companion_ranges = merged
+        return True
+
+    def acknowledge_call_companion_range(
+        self,
+        native_range: tuple[int, int],
+    ) -> bool:
+        """Remove one range only after its analyzed CALLS authority is cached."""
+        normalized = (int(native_range[0]), int(native_range[1]))
+        if normalized not in self.pending_call_companion_ranges:
+            return False
+        self.pending_call_companion_ranges = tuple(
+            row
+            for row in self.pending_call_companion_ranges
+            if row != normalized
+        )
+        return True
+
     def release_live_bindings(self) -> None:
         """Drop every current-MBA binding when the top-level session ends."""
         self.identity_index = None
@@ -251,6 +304,7 @@ class ResolverSessionState:
         self.snippet_capture_profile_ea = None
         self.preopt_union_import_active = False
         self.pending_preopt_reimport = False
+        self.pending_call_companion_ranges = ()
         self.preopt_union_imported_mbas.clear()
         self.preopt_union_mutated_mbas.clear()
         self.attempted_mbas.clear()
