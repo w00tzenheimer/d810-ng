@@ -512,6 +512,175 @@ def test_detached_component_rebinds_published_replacement_boundary_as_external()
     ) == (0x1100,)
 
 
+def test_detached_component_stops_at_unique_current_imported_successor() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            30: _block(
+                30,
+                0x1250,
+                succs=(),
+                preds=(),
+                insn_eas=(0x1250, 0x1251),
+            ),
+        },
+    )
+    (native_body,) = normalization_plan.native_bodies
+    published_successor = FragmentBlock(
+        block_id="detached-successor",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=_identity(0x1250),
+        native_body_id=native_body.body_id,
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(*normalization_plan.blocks, published_successor),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="detached-normalization",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=published_successor.block_id,
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    published_successor.block_id,
+                ),
+                terminal_block_ids=(published_successor.block_id,),
+                native_ranges=(
+                    *native_body.native_ranges,
+                    NativeEaInterval(0x1250, 0x1251),
+                ),
+            ),
+        ),
+    )
+    current_identity_by_serial = _current_identity_authority(graph)
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        current_identity_by_serial=current_identity_by_serial,
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    (native_body,) = plan.native_bodies
+    assert native_body.block_ids == ("detached-target",)
+    assert native_body.terminal_block_ids == ()
+    operation = next(
+        operation
+        for operation in plan.operations
+        if operation.operation_id == "detached-normalization"
+    )
+    (edge,) = operation.edges
+    successor = plan.block(edge.target_block_id)
+    assert successor.role is FragmentBlockRole.EXTERNAL
+    assert (
+        successor.materialization
+        is FragmentBlockMaterialization.REUSE_PUBLISHED
+    )
+    assert successor.stable_identity == current_identity_by_serial[30]
+
+
+def test_detached_component_rejects_ambiguous_current_imported_successor() -> None:
+    graph, normalization_plan, evidence = (
+        _live_source_detached_target_case()
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            30: _block(30, 0x1250, succs=(), preds=()),
+            31: _block(31, 0x1250, succs=(), preds=()),
+        },
+    )
+    (native_body,) = normalization_plan.native_bodies
+    published_successor = FragmentBlock(
+        block_id="detached-successor",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=_identity(0x1250),
+        native_body_id=native_body.body_id,
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(*normalization_plan.blocks, published_successor),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="detached-normalization",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=published_successor.block_id,
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    published_successor.block_id,
+                ),
+                terminal_block_ids=(published_successor.block_id,),
+                native_ranges=(
+                    *native_body.native_ranges,
+                    NativeEaInterval(0x1250, 0x1251),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        CanonicalSemanticFragmentRejected,
+        match="published imported boundary has multiple current owners",
+    ) as exc_info:
+        compose_canonical_semantic_fragment_plan(
+            graph,
+            normalization_plan,
+            evidence,
+            current_identity_by_serial=_current_identity_authority(graph),
+            normalization_authority=_normalization_authority(
+                normalization_plan,
+                evidence,
+            ),
+            prohibited_dispatcher_serials=(90,),
+        )
+
+    rejection = exc_info.value
+    assert (
+        rejection.reason_code
+        == "published_imported_boundary_current_owner_ambiguous"
+    )
+    assert rejection.payload["current_owner_labels"] == (
+        "blk30@0x1250",
+        "blk31@0x1250",
+    )
+
+
 def test_projected_boundary_reuses_its_unique_current_owner_role() -> None:
     graph, normalization_plan, evidence = (
         _live_source_detached_target_case()

@@ -237,6 +237,35 @@ def _current_owners_contained_by_identity(
     return tuple(owners)
 
 
+def _current_owners_containing_identity(
+    graph: FlowGraph,
+    identity: StableBlockIdentity,
+    *,
+    current_identity_by_serial: Mapping[int, StableBlockIdentity],
+) -> tuple[tuple[int, int, StableBlockIdentity], ...]:
+    """Return current blocks that uniquely cover a portable native identity."""
+    owners = []
+    for serial, block in graph.blocks.items():
+        current_identity = current_identity_by_serial.get(int(serial))
+        if (
+            current_identity is None
+            or current_identity.native_key != identity.native_key
+            or not all(
+                current_identity.native_ranges.contains(interval.start_ea)
+                for interval in identity.native_ranges.intervals
+            )
+        ):
+            continue
+        owners.append(
+            (
+                int(block.serial),
+                int(block.start_ea),
+                current_identity,
+            )
+        )
+    return tuple(owners)
+
+
 def _portable_dispatcher_scc_witnesses(
     graph: FlowGraph,
     prohibited_serials: tuple[int, ...],
@@ -336,9 +365,11 @@ def _merged_imported_ranges(
 
 
 def _detached_target_component(
+    graph: FlowGraph,
     plan: FragmentPlan,
     target: FragmentBlock,
     *,
+    current_identity_by_serial: Mapping[int, StableBlockIdentity],
     canonical_proof_id: str,
 ) -> tuple[
     tuple[FragmentBlock, ...],
@@ -360,6 +391,7 @@ def _detached_target_component(
     }
     selected_ids: set[str] = set()
     selected_operation_ids: set[str] = set()
+    published_imported_identity_by_id: dict[str, StableBlockIdentity] = {}
     pending = [target.block_id]
     while pending:
         block_id = pending.pop()
@@ -385,6 +417,38 @@ def _detached_target_component(
                     raise CanonicalSemanticFragmentRejected(
                         "detached canonical target crosses native-body ownership"
                     )
+                current_owners = _current_owners_containing_identity(
+                    graph,
+                    edge_target.stable_identity,
+                    current_identity_by_serial=current_identity_by_serial,
+                )
+                if (
+                    edge_target.block_id != target.block_id
+                    and len(current_owners) > 1
+                ):
+                    raise CanonicalSemanticFragmentRejected(
+                        "published imported boundary has multiple current owners",
+                        reason_code=(
+                            "published_imported_boundary_current_owner_ambiguous"
+                        ),
+                        anchor_ea=int(edge_target.semantic_anchor_ea),
+                        payload={
+                            "boundary_block_id": edge_target.block_id,
+                            "current_owner_labels": tuple(
+                                f"blk{serial}@0x{anchor_ea:X}"
+                                for serial, anchor_ea, _identity in current_owners
+                            ),
+                        },
+                    )
+                if (
+                    edge_target.block_id != target.block_id
+                    and len(current_owners) == 1
+                ):
+                    selected_ids.add(edge_target.block_id)
+                    published_imported_identity_by_id[
+                        edge_target.block_id
+                    ] = current_owners[0][2]
+                    continue
                 pending.append(edge_target.block_id)
             else:
                 selected_ids.add(edge_target.block_id)
@@ -397,7 +461,10 @@ def _detached_target_component(
     selected_imported_ids = frozenset(
         block_id
         for block_id in selected_ids
-        if plan.block(block_id).role is FragmentBlockRole.IMPORTED
+        if (
+            plan.block(block_id).role is FragmentBlockRole.IMPORTED
+            and block_id not in published_imported_identity_by_id
+        )
     )
     scoped_body_id = (
         f"{native_body.body_id}:canonical:{canonical_proof_id}"
@@ -410,11 +477,15 @@ def _detached_target_component(
             or block.block_id in selected_imported_ids
         ):
             continue
-        identity = block.stable_identity
+        identity = published_imported_identity_by_id.get(
+            block.block_id,
+            block.stable_identity,
+        )
         if (
             block.role
             not in {
                 FragmentBlockRole.EXTERNAL,
+                FragmentBlockRole.IMPORTED,
                 FragmentBlockRole.REPLACEMENT,
             }
             or identity is None
@@ -650,8 +721,10 @@ def compose_canonical_semantic_fragment_plan(
     )
     target_blocks, target_operations, native_body = (
         _detached_target_component(
+            graph,
             normalization_plan,
             target,
+            current_identity_by_serial=current_identity_by_serial,
             canonical_proof_id=proof.proof_id,
         )
     )
