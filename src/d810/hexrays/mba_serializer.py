@@ -16,6 +16,7 @@ normally reach this module through
 IDA imports are guarded so the rest of ``d810.core.diag`` stays
 unit-testable without IDA.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,22 +27,49 @@ except ImportError:
     _ihr = None
 
 from d810.core.observability_models import BlockSnapshot, InstructionSnapshot
+from d810.core.typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import ida_hexrays
 
 # ---------- opcode / mop helpers ----------
 
 _OPCODE_NAME_CACHE: dict[int, str] = {}
 
 
+def _sdk_opcode_name(opcode: int) -> str | None:
+    """Resolve an opcode through Hex-Rays opcode constants, never mreg names."""
+    if _ihr is None:
+        return None
+
+    try:
+        from d810.hexrays.utils.hexrays_helpers import OPCODES_INFO
+    except ImportError:
+        OPCODES_INFO = {}
+
+    info = OPCODES_INFO.get(int(opcode))
+    if info is not None:
+        raw_name = str(info.get("name") or "")
+        if raw_name:
+            return raw_name if raw_name.startswith("m_") else f"m_{raw_name}"
+
+    for attribute_name in dir(_ihr):
+        if not attribute_name.startswith("m_"):
+            continue
+        try:
+            attribute_value = getattr(_ihr, attribute_name)
+        except AttributeError:
+            continue
+        if isinstance(attribute_value, int) and int(attribute_value) == int(opcode):
+            return attribute_name
+    return None
+
+
 def _opcode_name(opcode: int) -> str:
     """Return human-readable opcode name, with a cache to avoid repeated lookups."""
     if opcode in _OPCODE_NAME_CACHE:
         return _OPCODE_NAME_CACHE[opcode]
-    try:
-        name = _ihr.get_mreg_name(opcode, 0)  # type: ignore[union-attr]
-        if not name:
-            name = f"op_{opcode}"
-    except Exception:
-        name = f"op_{opcode}"
+    name = _sdk_opcode_name(opcode) or f"op_{opcode}"
     _OPCODE_NAME_CACHE[opcode] = name
     return name
 
@@ -204,7 +232,9 @@ def _instruction_snapshot_meta(
     }:
         meta["call_setup_registers"] = [
             dict(record)
-            for _, record in sorted(block_register_defs.items(), key=lambda item: item[0])
+            for _, record in sorted(
+                block_register_defs.items(), key=lambda item: item[0]
+            )
         ]
 
     try:
@@ -302,25 +332,27 @@ def mba_to_block_snapshots(
                 block_register_defs=block_register_defs,
             )
             iprops = int(insn.iprops)
-            insns.append(InstructionSnapshot(
-                index=insn_idx,
-                ea=insn.ea,
-                opcode=insn.opcode,
-                opcode_name=_opcode_name(insn.opcode),
-                iprops=iprops,
-                is_assert=bool(iprops & _ihr.IPROP_ASSERT),
-                dest_type=dest_type,
-                dest_stkoff=dest_stkoff,
-                dest_size=dest_size,
-                src_l_type=src_l_type,
-                src_l_stkoff=src_l_stkoff,
-                src_l_value=src_l_value,
-                src_r_type=src_r_type,
-                src_r_stkoff=src_r_stkoff,
-                src_r_value=src_r_value,
-                dstr=dstr,
-                meta=meta,
-            ))
+            insns.append(
+                InstructionSnapshot(
+                    index=insn_idx,
+                    ea=insn.ea,
+                    opcode=insn.opcode,
+                    opcode_name=_opcode_name(insn.opcode),
+                    iprops=iprops,
+                    is_assert=bool(iprops & _ihr.IPROP_ASSERT),
+                    dest_type=dest_type,
+                    dest_stkoff=dest_stkoff,
+                    dest_size=dest_size,
+                    src_l_type=src_l_type,
+                    src_l_stkoff=src_l_stkoff,
+                    src_l_value=src_l_value,
+                    src_r_type=src_r_type,
+                    src_r_stkoff=src_r_stkoff,
+                    src_r_value=src_r_value,
+                    dstr=dstr,
+                    meta=meta,
+                )
+            )
             _record_register_definition(
                 block_register_defs,
                 insn_index=insn_idx,
@@ -340,17 +372,19 @@ def mba_to_block_snapshots(
         }
         type_name = _BLT_NAMES.get(blk.type, f"BLT_{blk.type}")
 
-        blocks.append(BlockSnapshot(
-            serial=idx,
-            block_type=blk.type,
-            type_name=type_name,
-            start_ea=blk.start,
-            end_ea=blk.end,
-            nsucc=blk.nsucc(),
-            npred=blk.npred(),
-            succs=succs,
-            preds=preds,
-            instructions=insns,
-        ))
+        blocks.append(
+            BlockSnapshot(
+                serial=idx,
+                block_type=blk.type,
+                type_name=type_name,
+                start_ea=blk.start,
+                end_ea=blk.end,
+                nsucc=blk.nsucc(),
+                npred=blk.npred(),
+                succs=succs,
+                preds=preds,
+                instructions=insns,
+            )
+        )
 
     return blocks
