@@ -75,6 +75,7 @@ from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
 from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
     build_canonical_semantic_fragment_plan,
+    compose_canonical_semantic_boundary_fragment_plan,
     compose_canonical_semantic_fragment_plan,
 )
 from d810.transforms.fragment_plan import (
@@ -841,6 +842,7 @@ def _compose_candidate_semantic_fragment(
     }
 
     plans: list[FragmentPlan] = []
+    unresolved_boundary_anchors: list[int] = []
     first_rejection: CanonicalSemanticFragmentRejected | None = None
     first_rejected_proof = None
     for route_index, proof in enumerate(candidate.route_proofs):
@@ -865,9 +867,70 @@ def _compose_candidate_semantic_fragment(
             if first_rejection is None:
                 first_rejection = exc
                 first_rejected_proof = proof
+            if (
+                exc.reason_code == "published_imported_boundary_topology_unresolved"
+                and exc.anchor_ea is not None
+            ):
+                boundary_anchor_ea = int(exc.anchor_ea)
+                if boundary_anchor_ea not in unresolved_boundary_anchors:
+                    unresolved_boundary_anchors.append(boundary_anchor_ea)
             continue
         plans.append(plan)
+    boundary_plans: list[tuple[int, FragmentPlan]] = []
+    first_boundary_rejection: CanonicalSemanticFragmentRejected | None = None
     if not plans:
+        for boundary_anchor_ea in unresolved_boundary_anchors:
+            try:
+                boundary_plan = compose_canonical_semantic_boundary_fragment_plan(
+                    context.graph,
+                    normalization_plan,
+                    boundary_anchor_ea=boundary_anchor_ea,
+                    available_evidence=candidate,
+                    current_identity_by_serial=current_identity_by_serial,
+                    normalization_authority=normalization_authority,
+                    prohibited_dispatcher_serials=prohibited_dispatcher_serials,
+                )
+            except CanonicalSemanticFragmentRejected as exc:
+                if first_boundary_rejection is None:
+                    first_boundary_rejection = exc
+                continue
+            boundary_plans.append((boundary_anchor_ea, boundary_plan))
+    if boundary_plans:
+        boundary_anchor_ea, boundary_plan = min(
+            boundary_plans,
+            key=lambda item: (
+                len(item[1].operations),
+                len(item[1].blocks),
+                int(item[0]),
+                item[1].plan_id,
+            ),
+        )
+        route_proof_ids = tuple(
+            operation.operation_id.removeprefix("route:")
+            for operation in boundary_plan.operations
+            if operation.operation_id.startswith("route:")
+        )
+        raise CanonicalSemanticFragmentRejected(
+            "bounded canonical boundary plan requires detached reference-oracle "
+            "proof before live publication",
+            reason_code="canonical_boundary_detached_oracle_required",
+            anchor_ea=boundary_anchor_ea,
+            payload={
+                "atomic_group_id": boundary_plan.atomic_group_id,
+                "block_count": len(boundary_plan.blocks),
+                "boundary_anchor_ea": f"0x{boundary_anchor_ea:X}",
+                "native_body_count": len(boundary_plan.native_bodies),
+                "operation_count": len(boundary_plan.operations),
+                "operation_ids": tuple(
+                    operation.operation_id for operation in boundary_plan.operations
+                ),
+                "plan_id": boundary_plan.plan_id,
+                "route_proof_ids": route_proof_ids,
+            },
+        )
+    if not plans:
+        if first_boundary_rejection is not None:
+            first_rejection = first_boundary_rejection
         first_route_anchor = (
             int(first_rejection.anchor_ea)
             if first_rejection is not None and first_rejection.anchor_ea is not None
